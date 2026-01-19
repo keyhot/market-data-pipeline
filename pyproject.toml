@@ -1,0 +1,20 @@
+[project]
+name = "market-data-pipeline"
+version = "0.1.0"
+description = "Automated market data ingestion and visualization platform"
+authors = [
+    {name = "keyhot",email = "azamatov0202@gmail.com"}
+]
+requires-python = "^3.11"
+dependencies = [
+    "pandas (>=2.3.3,<3.0.0)",
+    "yfinance (>=1.0,<2.0)",
+    "python-dotenv (>=1.2.1,<2.0.0)",
+    "fastapi (>=0.128.0,<0.129.0)",
+    "uvicorn (>=0.40.0,<0.41.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
