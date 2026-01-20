@@ -1,7 +1,12 @@
 from fastapi import FastAPI
 from ingestion.fetcher import fetch_ticker
+from config.logging import init_logging
 
 app = FastAPI(title="Market Data Pipeline API")
+
+logger = init_logging()
+logger.info("API initialized")
+logger.info({"token": "abcd1234", "ticker": "AAPL"})
 
 @app.get("/health")
 def health():
