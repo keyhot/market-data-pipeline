@@ -1,3 +1,10 @@
+# Data files #
+data/raw/
+data/processed/
+
+# Log files #
+logs/
+
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
