@@ -1,6 +1,8 @@
 # Data files #
-data/raw/
-data/processed/
+data/raw/events/
+data/raw/tickers/
+data/processed/events/
+data/processed/tickers/
 
 # Log files #
 logs/
