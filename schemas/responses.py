@@ -3,6 +3,6 @@ from typing import Optional, Any
 
 
 class ApiResponse(BaseModel):
-    status: str
+    status: int
     message: Optional[str] = None
     data: Optional[Any] = None
