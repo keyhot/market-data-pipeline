@@ -1,31 +1,40 @@
-import yfinance as yf
 import pandas as pd
-from config.exceptions import UnsupportedEventTypeError, NoDataFoundError, DataProviderError, BaseAppException
-from yfinance.exceptions import YFRateLimitError
+from config.exceptions import (
+    UnsupportedEventTypeError,
+    NoDataFoundError,
+    BaseAppException,
+)
+from ingestion.yfinance_provider import YFinanceProvider
 
-EVENT_MAP = {
-    "dividends": lambda t: t.dividends,
-    "splits": lambda t: t.splits,
-    "actions": lambda t: t.actions,
-}
 
-def fetch_events(ticker_symbol: str, event_type: str, start=None, end=None):
+EVENT_TYPES = {"dividends", "splits", "actions"}
+
+
+def fetch_events(
+    ticker_symbol: str,
+    event_type: str,
+    start=None,
+    end=None,
+    provider=None,
+) -> pd.DataFrame:
+
+    if provider is None:
+        provider = YFinanceProvider()
+
     event_type = event_type.lower()
 
-    if event_type not in EVENT_MAP:
-        raise UnsupportedEventTypeError(f"Unsupported event_type: {event_type}")
+    if event_type not in EVENT_TYPES:
+        raise UnsupportedEventTypeError(
+            f"Unsupported event_type: {event_type}"
+        )
 
     try:
-        ticker = yf.Ticker(ticker_symbol)
-        events = EVENT_MAP[event_type](ticker)
-
-    except YFRateLimitError:
-        raise DataProviderError("Upstream rate limit exceeded", status_code=503)
+        events = provider.get_events(ticker_symbol, event_type)
     except Exception as e:
-        raise DataProviderError(f"Upstream provider error: {e}", status_code=503)
+        raise BaseAppException(f"Failed to fetch events: {e}")
 
-    if events is None:
-        raise NoDataFoundError("No events found")
+    if events is None or events.empty:
+        raise NoDataFoundError("No events found for the given parameters")
 
     if isinstance(events, pd.Series):
         events = events.to_frame(name=event_type)
