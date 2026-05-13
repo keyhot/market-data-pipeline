@@ -1,35 +1,29 @@
 import pandas as pd
+
 from config.exceptions import (
-    UnsupportedEventTypeError,
-    NoDataFoundError,
     BaseAppException,
+    InvalidDateError,
+    NoDataFoundError,
 )
+from ingestion.providers import MarketDataProvider
 from ingestion.yfinance_provider import YFinanceProvider
-
-
-EVENT_TYPES = {"dividends", "splits", "actions"}
 
 
 def fetch_events(
     ticker_symbol: str,
     event_type: str,
-    start=None,
-    end=None,
-    provider=None,
+    start: str | None = None,
+    end: str | None = None,
+    provider: MarketDataProvider | None = None,
 ) -> pd.DataFrame:
 
     if provider is None:
         provider = YFinanceProvider()
 
-    event_type = event_type.lower()
-
-    if event_type not in EVENT_TYPES:
-        raise UnsupportedEventTypeError(
-            f"Unsupported event_type: {event_type}"
-        )
-
     try:
         events = provider.get_events(ticker_symbol, event_type)
+    except BaseAppException:
+        raise
     except Exception as e:
         raise BaseAppException(f"Failed to fetch events: {e}")
 
@@ -39,12 +33,16 @@ def fetch_events(
     if isinstance(events, pd.Series):
         events = events.to_frame(name=event_type)
 
-    if start is not None:
-        start_ts = pd.to_datetime(start)
+    try:
+        start_ts = pd.to_datetime(start) if start is not None else None
+        end_ts = pd.to_datetime(end) if end is not None else None
+    except ValueError as e:
+        raise InvalidDateError(f"Invalid date: {e}") from e
+
+    if start_ts is not None:
         events = events[events.index >= start_ts]
 
-    if end is not None:
-        end_ts = pd.to_datetime(end)
+    if end_ts is not None:
         events = events[events.index <= end_ts]
 
     if events.empty:

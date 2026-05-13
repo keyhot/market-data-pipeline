@@ -1,7 +1,9 @@
-import re
-import time
 import logging
 import logging.config
+import time
+from pathlib import Path
+
+_LOGS_DIR = Path(__file__).parent.parent / "logs"
 
 sensitive_keys = (
     "headers",
@@ -21,9 +23,13 @@ class SensitiveDataFilter(logging.Filter):
             record.msg = sanitize(record.msg)
         return True
 
+
 def sanitize(obj):
     if isinstance(obj, dict):
-        return {k: ("******" if k in sensitive_keys else sanitize(v)) for k, v in obj.items()}
+        return {
+            k: ("******" if k in sensitive_keys else sanitize(v))
+            for k, v in obj.items()
+        }
     elif isinstance(obj, (list, tuple)):
         return [sanitize(v) for v in obj]
     elif hasattr(obj, "__dict__"):
@@ -31,7 +37,10 @@ def sanitize(obj):
     else:
         return obj
 
-def init_logging(log_level: str = "DEBUG", formatter: str = "console") -> logging.Logger:
+
+def init_logging(
+    log_level: str = "DEBUG", formatter: str = "console"
+) -> logging.Logger:
     LOGGING_CONFIG = {
         "version": 1,
         "disable_existing_loggers": True,
@@ -57,9 +66,9 @@ def init_logging(log_level: str = "DEBUG", formatter: str = "console") -> loggin
                 "formatter": "default",
                 "class": "logging.handlers.RotatingFileHandler",
                 "level": log_level,
-                "filename": "logs/logs.log",
+                "filename": str(_LOGS_DIR / "logs.log"),
                 "mode": "a",
-                "maxBytes": 10485760, #10MB
+                "maxBytes": 10485760,  # 10MB
                 "backupCount": 5,
                 "filters": ["sensitive_data_filter"],
             },
@@ -87,6 +96,7 @@ def init_logging(log_level: str = "DEBUG", formatter: str = "console") -> loggin
         },
     }
 
+    _LOGS_DIR.mkdir(exist_ok=True)
     logging.Formatter.converter = time.gmtime
     logging.config.dictConfig(LOGGING_CONFIG)
     logger = logging.getLogger(__name__)

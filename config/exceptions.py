@@ -6,7 +6,9 @@ class BaseAppException(Exception):
 
 
 class DataProviderError(BaseAppException):
-    def __init__(self, message: str = "Upstream data provider error", status_code: int = 503):
+    def __init__(
+        self, message: str = "Upstream data provider error", status_code: int = 503
+    ):
         super().__init__(message, status_code)
 
 
@@ -17,4 +19,14 @@ class NoDataFoundError(BaseAppException):
 
 class UnsupportedEventTypeError(BaseAppException):
     def __init__(self, message: str = "Unsupported event type", status_code: int = 400):
+        super().__init__(message, status_code)
+
+
+class DataTooLargeError(BaseAppException):
+    def __init__(self, message: str = "Response too large", status_code: int = 400):
+        super().__init__(message, status_code)
+
+
+class InvalidDateError(BaseAppException):
+    def __init__(self, message: str = "Invalid date", status_code: int = 400):
         super().__init__(message, status_code)
