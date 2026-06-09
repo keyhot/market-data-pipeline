@@ -1,8 +1,8 @@
 import pandas as pd
 
 from config.exceptions import BaseAppException, DataTooLargeError, NoDataFoundError
+from ingestion.factory import get_default_provider
 from ingestion.providers import MarketDataProvider
-from ingestion.yfinance_provider import YFinanceProvider
 
 MAX_TICKER_ROWS = 5000
 
@@ -13,7 +13,7 @@ def fetch_ticker(
     provider: MarketDataProvider | None = None,
 ) -> pd.DataFrame:
     if provider is None:
-        provider = YFinanceProvider()
+        provider = get_default_provider()
 
     try:
         history = provider.get_history(ticker_symbol, time_range)

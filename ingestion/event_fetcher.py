@@ -5,8 +5,8 @@ from config.exceptions import (
     InvalidDateError,
     NoDataFoundError,
 )
+from ingestion.factory import get_default_provider
 from ingestion.providers import MarketDataProvider
-from ingestion.yfinance_provider import YFinanceProvider
 
 
 def fetch_events(
@@ -18,7 +18,7 @@ def fetch_events(
 ) -> pd.DataFrame:
 
     if provider is None:
-        provider = YFinanceProvider()
+        provider = get_default_provider()
 
     try:
         events = provider.get_events(ticker_symbol, event_type)
