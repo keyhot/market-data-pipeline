@@ -9,7 +9,6 @@ requires-python = ">=3.11"
 dependencies = [
     "pandas (>=2.3.3,<3.0.0)",
     "yfinance (>=1.0,<2.0)",
-    "python-dotenv (>=1.2.1,<2.0.0)",
     "fastapi (>=0.128.0,<1.0.0)",
     "uvicorn (>=0.40.0,<1.0.0)",
 ]

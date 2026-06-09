@@ -38,9 +38,7 @@ def sanitize(obj):
         return obj
 
 
-def init_logging(
-    log_level: str = "DEBUG", formatter: str = "console"
-) -> logging.Logger:
+def init_logging(log_level: str = "DEBUG") -> logging.Logger:
     LOGGING_CONFIG = {
         "version": 1,
         "disable_existing_loggers": True,

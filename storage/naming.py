@@ -19,24 +19,8 @@ def raw_data_path(ticker, interval, timestamp=None) -> Path:
     return _DATA_ROOT / "raw" / "tickers" / f"{ticker}_{interval}_{timestamp}.csv"
 
 
-def processed_data_path(ticker, data_type, timestamp=None) -> Path:
-    ticker = sanitize_ticker(ticker)
-    if timestamp is None:
-        timestamp = utc_timestamp_str()
-    filename = f"{ticker}_{data_type}_{timestamp}.csv"
-    return _DATA_ROOT / "processed" / "tickers" / filename
-
-
 def raw_event_path(ticker, event_type, timestamp=None) -> Path:
     ticker = sanitize_ticker(ticker)
     if timestamp is None:
         timestamp = utc_timestamp_str()
     return _DATA_ROOT / "raw" / "events" / f"{ticker}_{event_type}_{timestamp}.csv"
-
-
-def processed_event_path(ticker, event_type, timestamp=None) -> Path:
-    ticker = sanitize_ticker(ticker)
-    if timestamp is None:
-        timestamp = utc_timestamp_str()
-    filename = f"{ticker}_{event_type}_{timestamp}.csv"
-    return _DATA_ROOT / "processed" / "events" / filename
