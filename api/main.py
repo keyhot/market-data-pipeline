@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from config.exceptions import BaseAppException
 from config.logging import init_logging
 from ingestion.event_fetcher import fetch_events
+from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker
 from schemas.responses import ApiResponse
 from storage.filesystem import save_csv
@@ -55,6 +56,10 @@ async def base_app_exception_handler(request: Request, exc: BaseAppException):
 
 @app.get("/ticker/{ticker_symbol}/{time_range}", response_model=ApiResponse)
 def ticker(ticker_symbol: str, time_range: TimeRange):
+    was_cached = (
+        get_default_provider().peek_history(ticker_symbol, time_range) is not None
+    )
+
     data = fetch_ticker(ticker_symbol, time_range)
     logger.info(
         "Fetched ticker data",
@@ -62,16 +67,23 @@ def ticker(ticker_symbol: str, time_range: TimeRange):
             "ticker_symbol": ticker_symbol,
             "time_range": time_range,
             "rows": len(data),
+            "cached": was_cached,
         },
     )
-    path = raw_data_path(ticker_symbol, time_range)
-    save_csv(path, data)
-    logger.info("Stored ticker data", extra={"file_path": path})
 
-    return ApiResponse(
-        status=200,
-        data={"ticker": ticker_symbol, "rows": len(data), "file_path": str(path)},
-    )
+    response_data = {
+        "ticker": ticker_symbol,
+        "rows": len(data),
+        "cached": was_cached,
+    }
+
+    if not was_cached:
+        path = raw_data_path(ticker_symbol, time_range)
+        save_csv(path, data)
+        logger.info("Stored ticker data", extra={"file_path": path})
+        response_data["file_path"] = str(path)
+
+    return ApiResponse(status=200, data=response_data)
 
 
 @app.get("/events/{ticker_symbol}/{event_type}", response_model=ApiResponse)
@@ -81,6 +93,10 @@ def event(
     start: str | None = None,
     end: str | None = None,
 ):
+    was_cached = (
+        get_default_provider().peek_events(ticker_symbol, event_type) is not None
+    )
+
     events = fetch_events(ticker_symbol, event_type, start=start, end=end)
     logger.info(
         "Fetched events",
@@ -88,20 +104,23 @@ def event(
             "ticker_symbol": ticker_symbol,
             "event_type": event_type,
             "events": len(events),
+            "cached": was_cached,
         },
     )
-    path = raw_event_path(ticker_symbol, event_type)
-    save_csv(path, events)
-    logger.info("Stored events", extra={"file_path": path})
 
-    return ApiResponse(
-        status=200,
-        data={
-            "ticker": ticker_symbol,
-            "event_type": event_type,
-            "events": len(events),
-            "file_path": str(path),
-            "start": start,
-            "end": end,
-        },
-    )
+    response_data = {
+        "ticker": ticker_symbol,
+        "event_type": event_type,
+        "events": len(events),
+        "start": start,
+        "end": end,
+        "cached": was_cached,
+    }
+
+    if not was_cached:
+        path = raw_event_path(ticker_symbol, event_type)
+        save_csv(path, events)
+        logger.info("Stored events", extra={"file_path": path})
+        response_data["file_path"] = str(path)
+
+    return ApiResponse(status=200, data=response_data)

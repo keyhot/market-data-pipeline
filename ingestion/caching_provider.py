@@ -42,6 +42,18 @@ class CachingProvider(MarketDataProvider):
         self._store_value(key, value)
         return value
 
+    def peek_history(self, ticker_symbol: str, time_range: str):
+        return self._lookup(("history", ticker_symbol, time_range))
+
+    def peek_events(self, ticker_symbol: str, event_type: str):
+        return self._lookup(("events", ticker_symbol, event_type))
+
+    def invalidate_history(self, ticker_symbol: str, time_range: str) -> None:
+        self.invalidate(("history", ticker_symbol, time_range))
+
+    def invalidate_events(self, ticker_symbol: str, event_type: str) -> None:
+        self.invalidate(("events", ticker_symbol, event_type))
+
     def invalidate(self, key: tuple | None = None) -> None:
         with self._lock:
             if key is None:

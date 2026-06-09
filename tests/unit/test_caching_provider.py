@@ -136,3 +136,74 @@ def test_invalidate_all():
     cache.get_events("AAPL", "dividends")
     assert inner.history_calls == 2
     assert inner.events_calls == 2
+
+
+def test_peek_history_returns_none_on_miss():
+    inner = CountingProvider()
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+
+    assert cache.peek_history("AAPL", "1d") is None
+    assert inner.history_calls == 0
+
+
+def test_peek_history_returns_cached_on_hit_without_calling_inner():
+    inner = CountingProvider()
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+
+    cache.get_history("AAPL", "1d")
+    assert inner.history_calls == 1
+
+    peeked = cache.peek_history("AAPL", "1d")
+    assert peeked is not None
+    assert inner.history_calls == 1
+
+
+def test_peek_events_returns_none_on_miss_and_value_on_hit():
+    inner = CountingProvider()
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+
+    assert cache.peek_events("AAPL", "dividends") is None
+    cache.get_events("AAPL", "dividends")
+    assert cache.peek_events("AAPL", "dividends") is not None
+    assert inner.events_calls == 1
+
+
+def test_invalidate_history_clears_specific_key():
+    inner = CountingProvider()
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+
+    cache.get_history("AAPL", "1d")
+    cache.get_history("MSFT", "1d")
+    cache.invalidate_history("AAPL", "1d")
+
+    assert cache.peek_history("AAPL", "1d") is None
+    assert cache.peek_history("MSFT", "1d") is not None
+
+
+def test_invalidate_events_clears_specific_key():
+    inner = CountingProvider()
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+
+    cache.get_events("AAPL", "dividends")
+    cache.get_events("AAPL", "splits")
+    cache.invalidate_events("AAPL", "dividends")
+
+    assert cache.peek_events("AAPL", "dividends") is None
+    assert cache.peek_events("AAPL", "splits") is not None
+
+
+def test_base_provider_peek_and_invalidate_are_no_ops():
+    from ingestion.providers import MarketDataProvider
+
+    class TrivialProvider(MarketDataProvider):
+        def get_history(self, t, r):
+            return None
+
+        def get_events(self, t, e):
+            return None
+
+    p = TrivialProvider()
+    assert p.peek_history("AAPL", "1d") is None
+    assert p.peek_events("AAPL", "dividends") is None
+    p.invalidate_history("AAPL", "1d")
+    p.invalidate_events("AAPL", "dividends")
