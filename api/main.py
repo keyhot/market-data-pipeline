@@ -1,6 +1,6 @@
 import asyncio
 import time
-from enum import Enum
+from enum import StrEnum
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -16,7 +16,7 @@ from storage.filesystem import save_csv
 from storage.naming import raw_data_path, raw_event_path
 
 
-class TimeRange(str, Enum):
+class TimeRange(StrEnum):
     ONE_DAY = "1d"
     FIVE_DAYS = "5d"
     ONE_MONTH = "1mo"
@@ -30,7 +30,7 @@ class TimeRange(str, Enum):
     MAX = "max"
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     DIVIDENDS = "dividends"
     SPLITS = "splits"
     ACTIONS = "actions"
