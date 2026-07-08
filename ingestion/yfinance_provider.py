@@ -1,7 +1,11 @@
 import yfinance as yf
 from yfinance.exceptions import YFRateLimitError
 
-from config.exceptions import BaseAppException, DataProviderError
+from config.exceptions import (
+    BaseAppException,
+    DataProviderError,
+    UnsupportedEventTypeError,
+)
 from ingestion.providers import MarketDataProvider
 
 
@@ -30,3 +34,5 @@ class YFinanceProvider(MarketDataProvider):
             raise DataProviderError("Upstream rate limit exceeded", status_code=503)
         except Exception as e:
             raise BaseAppException(f"Failed to fetch events: {e}", status_code=503)
+
+        raise UnsupportedEventTypeError(f"Unsupported event type: {event_type}")

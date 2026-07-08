@@ -7,8 +7,10 @@ from config.exceptions import (
     BaseAppException,
     InvalidDateError,
     NoDataFoundError,
+    UnsupportedEventTypeError,
 )
 from ingestion.event_fetcher import fetch_events
+from ingestion.yfinance_provider import YFinanceProvider
 
 
 class FakeProviderSuccess:
@@ -59,3 +61,17 @@ def test_fetch_events_provider_generic_error(mock_ticker):
 
     with pytest.raises(BaseAppException):
         fetch_events("AAPL", "dividends")
+
+
+@patch("ingestion.yfinance_provider.yf.Ticker")
+def test_unknown_event_type_raises_unsupported_error(mock_ticker):
+    with pytest.raises(UnsupportedEventTypeError) as exc_info:
+        YFinanceProvider().get_events("AAPL", "earnings")
+
+    assert exc_info.value.status_code == 400
+
+
+@patch("ingestion.yfinance_provider.yf.Ticker")
+def test_fetch_events_propagates_unsupported_event_type(mock_ticker):
+    with pytest.raises(UnsupportedEventTypeError):
+        fetch_events("AAPL", "earnings")
