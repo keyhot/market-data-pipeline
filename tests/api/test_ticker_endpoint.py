@@ -9,7 +9,7 @@ from config.exceptions import NoDataFoundError
 client = TestClient(app)
 
 
-@patch("api.main.fetch_ticker")
+@patch("api.main.fetch_ticker_async")
 def test_fetch_ticker_success(mock_fetch):
     mock_fetch.return_value = pd.DataFrame({"Close": [100, 101]})
 
@@ -23,7 +23,7 @@ def test_fetch_ticker_success(mock_fetch):
     assert json_data["data"]["rows"] == 2
 
 
-@patch("api.main.fetch_ticker")
+@patch("api.main.fetch_ticker_async")
 def test_fetch_ticker_no_data(mock_fetch):
     mock_fetch.side_effect = NoDataFoundError("No data returned")
 

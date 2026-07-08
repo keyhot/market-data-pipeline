@@ -1,3 +1,4 @@
+import asyncio
 import time
 from enum import Enum
 
@@ -9,7 +10,7 @@ from config.exceptions import BaseAppException
 from config.logging import init_logging
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_default_provider
-from ingestion.fetcher import fetch_ticker
+from ingestion.fetcher import fetch_ticker_async
 from schemas.responses import ApiResponse
 from storage.filesystem import save_csv
 from storage.naming import raw_data_path, raw_event_path
@@ -78,13 +79,15 @@ async def base_app_exception_handler(request: Request, exc: BaseAppException):
     return JSONResponse(status_code=exc.status_code, content=response.model_dump())
 
 
-@app.get("/ticker/{ticker_symbol}/{time_range}", response_model=ApiResponse)
-def ticker(ticker_symbol: str, time_range: TimeRange):
+MAX_BATCH_SYMBOLS = 10
+
+
+async def _fetch_and_store_ticker(ticker_symbol: str, time_range: TimeRange) -> dict:
     was_cached = (
         get_default_provider().peek_history(ticker_symbol, time_range) is not None
     )
 
-    data = fetch_ticker(ticker_symbol, time_range)
+    data = await fetch_ticker_async(ticker_symbol, time_range)
     logger.info(
         "Fetched ticker data",
         extra={
@@ -95,7 +98,7 @@ def ticker(ticker_symbol: str, time_range: TimeRange):
         },
     )
 
-    response_data = {
+    result = {
         "ticker": ticker_symbol,
         "rows": len(data),
         "cached": was_cached,
@@ -105,9 +108,64 @@ def ticker(ticker_symbol: str, time_range: TimeRange):
         path = raw_data_path(ticker_symbol, time_range)
         save_csv(path, data)
         logger.info("Stored ticker data", extra={"file_path": path})
-        response_data["file_path"] = str(path)
+        result["file_path"] = str(path)
+
+    return result
+
+
+@app.get("/ticker/{ticker_symbol}/{time_range}", response_model=ApiResponse)
+async def ticker(ticker_symbol: str, time_range: TimeRange):
+    response_data = await _fetch_and_store_ticker(ticker_symbol, time_range)
 
     return ApiResponse(status=200, data=response_data)
+
+
+@app.get("/tickers/{time_range}", response_model=ApiResponse)
+async def tickers(time_range: TimeRange, symbols: str):
+    symbol_list = list(
+        dict.fromkeys(s.strip().upper() for s in symbols.split(",") if s.strip())
+    )
+
+    if not symbol_list:
+        raise BaseAppException("No symbols provided", status_code=400)
+
+    if len(symbol_list) > MAX_BATCH_SYMBOLS:
+        raise BaseAppException(
+            f"Too many symbols: {len(symbol_list)} exceeds "
+            f"the {MAX_BATCH_SYMBOLS} symbol limit",
+            status_code=400,
+        )
+
+    outcomes = await asyncio.gather(
+        *(_fetch_and_store_ticker(symbol, time_range) for symbol in symbol_list),
+        return_exceptions=True,
+    )
+
+    results = {}
+    succeeded = 0
+    for symbol, outcome in zip(symbol_list, outcomes):
+        if isinstance(outcome, BaseAppException):
+            results[symbol] = {"error": outcome.message, "status": outcome.status_code}
+        elif isinstance(outcome, BaseException):
+            logger.error(
+                "Unexpected error fetching symbol in batch",
+                extra={"ticker_symbol": symbol, "error": repr(outcome)},
+            )
+            results[symbol] = {"error": "Internal error", "status": 500}
+        else:
+            results[symbol] = outcome
+            succeeded += 1
+
+    return ApiResponse(
+        status=200,
+        data={
+            "time_range": time_range,
+            "requested": len(symbol_list),
+            "succeeded": succeeded,
+            "failed": len(symbol_list) - succeeded,
+            "results": results,
+        },
+    )
 
 
 @app.get("/events/{ticker_symbol}/{event_type}", response_model=ApiResponse)
