@@ -56,12 +56,16 @@ def health():
     return ApiResponse(
         status=200,
         message="API is healthy",
+        data={"scheduler": scheduler_service.status()},
     )
 
 
 @app.get("/metrics")
 def metrics():
-    return ApiResponse(status=200, data=metrics_registry.snapshot())
+    return ApiResponse(
+        status=200,
+        data={**metrics_registry.snapshot(), "scheduler": scheduler_service.status()},
+    )
 
 
 @app.exception_handler(BaseAppException)
