@@ -1,0 +1,17 @@
+# Symbols the background scheduler ingests continuously.
+# time_ranges must be valid TimeRange values (1d, 5d, 1mo, ...),
+# event_types must be valid EventType values (dividends, splits, actions).
+
+interval_seconds: 300
+
+tickers:
+  - symbol: AAPL
+    time_ranges: [1d]
+  - symbol: MSFT
+    time_ranges: [1d]
+  - symbol: GOOG
+    time_ranges: [1d]
+
+events:
+  - symbol: AAPL
+    event_types: [dividends]

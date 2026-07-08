@@ -1,6 +1,5 @@
 import asyncio
 import time
-from enum import StrEnum
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -11,30 +10,10 @@ from config.logging import init_logging
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker_async
+from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
 from storage.filesystem import save_csv
 from storage.naming import raw_data_path, raw_event_path
-
-
-class TimeRange(StrEnum):
-    ONE_DAY = "1d"
-    FIVE_DAYS = "5d"
-    ONE_MONTH = "1mo"
-    THREE_MONTHS = "3mo"
-    SIX_MONTHS = "6mo"
-    ONE_YEAR = "1y"
-    TWO_YEARS = "2y"
-    FIVE_YEARS = "5y"
-    TEN_YEARS = "10y"
-    YTD = "ytd"
-    MAX = "max"
-
-
-class EventType(StrEnum):
-    DIVIDENDS = "dividends"
-    SPLITS = "splits"
-    ACTIONS = "actions"
-
 
 app = FastAPI(title="Market Data Pipeline API")
 
