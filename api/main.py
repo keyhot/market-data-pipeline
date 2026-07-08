@@ -1,5 +1,6 @@
 import asyncio
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -10,12 +11,24 @@ from config.logging import init_logging
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker_async
+from scheduler.service import SchedulerService, scheduler_enabled
 from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
 from storage.filesystem import save_csv
 from storage.naming import raw_data_path, raw_event_path
 
-app = FastAPI(title="Market Data Pipeline API")
+scheduler_service = SchedulerService()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if scheduler_enabled():
+        scheduler_service.start()
+    yield
+    scheduler_service.shutdown()
+
+
+app = FastAPI(title="Market Data Pipeline API", lifespan=lifespan)
 
 logger = init_logging()
 logger.info("API initialized")
