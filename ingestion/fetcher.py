@@ -22,6 +22,28 @@ def fetch_ticker(
     except Exception as e:
         raise BaseAppException(f"Failed to fetch ticker data: {e}", status_code=503)
 
+    return _validate_history(history)
+
+
+async def fetch_ticker_async(
+    ticker_symbol: str,
+    time_range: str,
+    provider: MarketDataProvider | None = None,
+) -> pd.DataFrame:
+    if provider is None:
+        provider = get_default_provider()
+
+    try:
+        history = await provider.get_history_async(ticker_symbol, time_range)
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Failed to fetch ticker data: {e}", status_code=503)
+
+    return _validate_history(history)
+
+
+def _validate_history(history: pd.DataFrame) -> pd.DataFrame:
     if history.empty:
         raise NoDataFoundError("No data returned")
 
