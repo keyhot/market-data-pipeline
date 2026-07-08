@@ -24,3 +24,10 @@ def raw_event_path(ticker, event_type, timestamp=None) -> Path:
     if timestamp is None:
         timestamp = utc_timestamp_str()
     return _DATA_ROOT / "raw" / "events" / f"{ticker}_{event_type}_{timestamp}.csv"
+
+
+def raw_news_path(ticker, timestamp=None) -> Path:
+    ticker = sanitize_ticker(ticker)
+    if timestamp is None:
+        timestamp = utc_timestamp_str()
+    return _DATA_ROOT / "raw" / "news" / f"{ticker}_news_{timestamp}.csv"

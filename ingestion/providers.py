@@ -23,7 +23,13 @@ class MarketDataProvider(ABC):
     ) -> pd.DataFrame:
         return await asyncio.to_thread(self.get_events, ticker_symbol, event_type)
 
+    def get_news(self, ticker_symbol: str) -> list[dict]:
+        raise NotImplementedError(f"{type(self).__name__} does not provide news")
+
     def peek_history(self, ticker_symbol: str, time_range: str):
+        return None
+
+    def peek_news(self, ticker_symbol: str):
         return None
 
     def peek_events(self, ticker_symbol: str, event_type: str):

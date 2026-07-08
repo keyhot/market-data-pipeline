@@ -42,8 +42,20 @@ class CachingProvider(MarketDataProvider):
         self._store_value(key, value)
         return value
 
+    def get_news(self, ticker_symbol: str) -> list[dict]:
+        key = ("news", ticker_symbol)
+        cached = self._lookup(key)
+        if cached is not None:
+            return cached
+        value = self._inner.get_news(ticker_symbol)
+        self._store_value(key, value)
+        return value
+
     def peek_history(self, ticker_symbol: str, time_range: str):
         return self._lookup(("history", ticker_symbol, time_range))
+
+    def peek_news(self, ticker_symbol: str):
+        return self._lookup(("news", ticker_symbol))
 
     def peek_events(self, ticker_symbol: str, event_type: str):
         return self._lookup(("events", ticker_symbol, event_type))

@@ -19,6 +19,14 @@ class YFinanceProvider(MarketDataProvider):
         except Exception as e:
             raise BaseAppException(f"Failed to fetch ticker data: {e}", status_code=503)
 
+    def get_news(self, ticker_symbol: str) -> list[dict]:
+        try:
+            return yf.Ticker(ticker_symbol).news or []
+        except YFRateLimitError:
+            raise DataProviderError("Upstream rate limit exceeded", status_code=503)
+        except Exception as e:
+            raise BaseAppException(f"Failed to fetch news: {e}", status_code=503)
+
     def get_events(self, ticker_symbol: str, event_type: str):
         try:
             ticker = yf.Ticker(ticker_symbol)

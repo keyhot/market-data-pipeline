@@ -2,7 +2,8 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+import pandas as pd
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
@@ -11,13 +12,16 @@ from config.logging import init_logging
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker_async
+from ingestion.news_fetcher import fetch_news
 from scheduler.service import SchedulerService, scheduler_enabled
 from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
 from storage.filesystem import save_csv
 from storage.naming import raw_data_path, raw_event_path
+from storage.news_store import CsvNewsStore
 
 scheduler_service = SchedulerService()
+news_store = CsvNewsStore()
 
 
 @asynccontextmanager
@@ -162,6 +166,44 @@ async def tickers(time_range: TimeRange, symbols: str):
             "results": results,
         },
     )
+
+
+@app.get("/news/{ticker_symbol}", response_model=ApiResponse)
+def news(
+    ticker_symbol: str,
+    limit: int = Query(10, ge=1, le=100),
+    since: str | None = None,
+):
+    was_cached = get_default_provider().peek_news(ticker_symbol) is not None
+
+    items = fetch_news(ticker_symbol, limit=limit, since=since)
+    logger.info(
+        "Fetched news",
+        extra={
+            "ticker_symbol": ticker_symbol,
+            "news_items": len(items),
+            "cached": was_cached,
+        },
+    )
+
+    response_data = {
+        "ticker": ticker_symbol,
+        "count": len(items),
+        "since": since,
+        "cached": was_cached,
+        "items": items.assign(
+            published_at=items["published_at"].map(
+                lambda ts: ts.isoformat() if pd.notna(ts) else None
+            )
+        ).to_dict(orient="records"),
+    }
+
+    if not was_cached:
+        path = news_store.save(ticker_symbol, items)
+        logger.info("Stored news", extra={"file_path": path})
+        response_data["file_path"] = path
+
+    return ApiResponse(status=200, data=response_data)
 
 
 @app.get("/events/{ticker_symbol}/{event_type}", response_model=ApiResponse)
