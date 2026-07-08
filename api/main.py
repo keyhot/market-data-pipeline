@@ -1,8 +1,10 @@
+import time
 from enum import Enum
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
 from config.exceptions import BaseAppException
 from config.logging import init_logging
 from ingestion.event_fetcher import fetch_events
@@ -38,6 +40,23 @@ app = FastAPI(title="Market Data Pipeline API")
 logger = init_logging()
 logger.info("API initialized")
 
+metrics_registry = MetricsRegistry()
+
+
+@app.middleware("http")
+async def record_request_metrics(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start
+
+    route = request.scope.get("route")
+    # Record the route template, not the raw path, to keep cardinality bounded.
+    path = route.path if route is not None else UNMATCHED_ROUTE
+    if path != "/metrics":
+        metrics_registry.record(request.method, path, response.status_code, duration)
+
+    return response
+
 
 @app.get("/health")
 def health():
@@ -45,6 +64,11 @@ def health():
         status=200,
         message="API is healthy",
     )
+
+
+@app.get("/metrics")
+def metrics():
+    return ApiResponse(status=200, data=metrics_registry.snapshot())
 
 
 @app.exception_handler(BaseAppException)
