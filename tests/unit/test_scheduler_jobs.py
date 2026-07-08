@@ -1,0 +1,64 @@
+from unittest.mock import patch
+
+import pandas as pd
+import pytest
+
+from config.exceptions import NoDataFoundError
+from ingestion import factory
+from scheduler.jobs import run_event_job, run_ticker_job
+
+
+@pytest.fixture(autouse=True)
+def fresh_provider():
+    factory.reset_default_provider()
+    yield
+    factory.reset_default_provider()
+
+
+@patch("scheduler.jobs.save_csv")
+@patch("ingestion.yfinance_provider.yf.Ticker")
+def test_ticker_job_fetches_and_saves(mock_ticker, mock_save):
+    mock_ticker.return_value.history.return_value = pd.DataFrame({"Close": [1, 2]})
+
+    result = run_ticker_job("AAPL", "1d")
+
+    assert result["rows"] == 2
+    assert result["cached"] is False
+    assert "file_path" in result
+    assert mock_save.call_count == 1
+
+
+@patch("scheduler.jobs.save_csv")
+@patch("ingestion.yfinance_provider.yf.Ticker")
+def test_ticker_job_skips_save_on_cache_hit(mock_ticker, mock_save):
+    mock_ticker.return_value.history.return_value = pd.DataFrame({"Close": [1, 2]})
+
+    run_ticker_job("AAPL", "1d")
+    result = run_ticker_job("AAPL", "1d")
+
+    assert result["cached"] is True
+    assert "file_path" not in result
+    assert mock_save.call_count == 1
+
+
+@patch("scheduler.jobs.save_csv")
+@patch("ingestion.yfinance_provider.yf.Ticker")
+def test_event_job_fetches_and_saves(mock_ticker, mock_save):
+    mock_ticker.return_value.dividends = pd.Series([1.0], name="dividends")
+
+    result = run_event_job("AAPL", "dividends")
+
+    assert result["events"] == 1
+    assert result["cached"] is False
+    assert mock_save.call_count == 1
+
+
+@patch("scheduler.jobs.save_csv")
+@patch("ingestion.yfinance_provider.yf.Ticker")
+def test_ticker_job_propagates_domain_errors(mock_ticker, mock_save):
+    mock_ticker.return_value.history.return_value = pd.DataFrame()
+
+    with pytest.raises(NoDataFoundError):
+        run_ticker_job("AAPL", "1d")
+
+    mock_save.assert_not_called()
