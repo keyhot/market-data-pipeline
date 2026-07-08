@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -9,8 +10,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from scheduler import jobs
 from scheduler.watchlist import Watchlist, load_watchlist
+from storage.state import load_state, save_state
 
 SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
+DEFAULT_STATE_PATH = Path(__file__).parent.parent / "data" / "scheduler_state.json"
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +24,14 @@ def scheduler_enabled() -> bool:
 
 
 class SchedulerService:
-    def __init__(self, watchlist: Watchlist | None = None):
+    def __init__(
+        self,
+        watchlist: Watchlist | None = None,
+        state_path: Path = DEFAULT_STATE_PATH,
+    ):
         self._watchlist = watchlist
+        self._state_path = state_path
+        self._state: dict[str, str] = {}
         self._scheduler: BackgroundScheduler | None = None
         self._interval_seconds: int | None = None
         self._job_ids: list[str] = []
@@ -39,6 +48,7 @@ class SchedulerService:
 
         watchlist = self._watchlist or load_watchlist()
         self._interval_seconds = watchlist.interval_seconds
+        self._state = load_state(self._state_path)
         self._job_ids = []
         self._scheduler = BackgroundScheduler()
 
@@ -88,6 +98,14 @@ class SchedulerService:
         )
 
     def _run_job(self, job_id: str, func: Callable, args: tuple) -> None:
+        if self._recently_succeeded(job_id):
+            logger.info(
+                "Skipping job, last success within interval",
+                extra={"job_id": job_id},
+            )
+            self._record(job_id, "last_skipped", datetime.now(UTC).isoformat())
+            return
+
         try:
             func(*args)
         except Exception as e:
@@ -98,7 +116,23 @@ class SchedulerService:
             )
             return
 
-        self._record(job_id, "last_success", datetime.now(UTC).isoformat())
+        now_iso = datetime.now(UTC).isoformat()
+        self._record(job_id, "last_success", now_iso)
+        with self._lock:
+            self._state[job_id] = now_iso
+            save_state(self._state_path, self._state)
+
+    def _recently_succeeded(self, job_id: str) -> bool:
+        with self._lock:
+            raw = self._state.get(job_id)
+        if not raw:
+            return False
+        try:
+            last_success = datetime.fromisoformat(raw)
+        except ValueError:
+            return False
+        elapsed = (datetime.now(UTC) - last_success).total_seconds()
+        return elapsed < self._interval_seconds
 
     def _record(self, job_id: str, key: str, value) -> None:
         with self._lock:
