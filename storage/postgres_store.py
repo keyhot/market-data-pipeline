@@ -6,6 +6,10 @@ from storage.db import get_pool
 
 EVENT_TYPES = ("dividends", "splits")
 
+# Every current fetch produces daily bars; the API's TimeRange is the fetch
+# range, not bar granularity (docs/postgres-schema-spike.md).
+BAR_INTERVAL = "1d"
+
 # DO UPDATE (not DO NOTHING): Yahoo revises recent bars — the latest fetch
 # wins, and the row count still can't grow.
 _PRICE_BARS_SQL = """
@@ -75,6 +79,62 @@ def upsert_corporate_events(
         if not pd.isna(value)
     ]
     return _executemany(_CORPORATE_EVENTS_SQL, rows)
+
+
+def upsert_events_snapshot(symbol: str, event_type: str, events: pd.DataFrame) -> int:
+    """Upsert any fetcher-shaped events snapshot, decomposing 'actions'
+    (Dividends + Stock Splits side by side) into the two stored types."""
+    if event_type != "actions":
+        return upsert_corporate_events(symbol, event_type, events)
+
+    written = 0
+    for column, single_type in (("Dividends", "dividends"), ("Stock Splits", "splits")):
+        if column in events.columns:
+            written += upsert_corporate_events(
+                symbol, single_type, events[events[column] != 0][[column]]
+            )
+    return written
+
+
+def get_price_bars(
+    symbol: str, interval: str = BAR_INTERVAL, limit: int = 100
+) -> list[dict]:
+    """Latest `limit` bars for a symbol, oldest first (chart-friendly)."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT bar_timestamp, open, high, low, close, volume FROM price_bars"
+            " WHERE symbol = %s AND interval = %s"
+            " ORDER BY bar_timestamp DESC LIMIT %s",
+            (symbol.upper(), interval, limit),
+        ).fetchall()
+    return [
+        {
+            "timestamp": ts.isoformat(),
+            "open": _as_float(open_),
+            "high": _as_float(high),
+            "low": _as_float(low),
+            "close": _as_float(close),
+            "volume": volume,
+        }
+        for ts, open_, high, low, close, volume in reversed(rows)
+    ]
+
+
+def record_ingestion_run(
+    job_id: str,
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    rows_written: int | None = None,
+    error: str | None = None,
+) -> None:
+    with get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO ingestion_runs"
+            " (job_id, started_at, finished_at, status, rows_written, error)"
+            " VALUES (%s, %s, %s, %s, %s, %s)",
+            (job_id, started_at, finished_at, status, rows_written, error),
+        )
 
 
 def upsert_news(symbol: str, news: pd.DataFrame) -> int:

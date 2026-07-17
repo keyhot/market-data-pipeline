@@ -22,9 +22,7 @@ from storage.db import ping  # noqa: E402
 # SYMBOL may itself contain underscores (sanitized BRK.B -> BRK_B).
 _TIMESTAMP_PARTS = 2
 
-# Ticker filenames encode the fetch range (5d, 1mo, ...), not bar granularity;
-# every current fetch produces daily bars (docs/postgres-schema-spike.md).
-BAR_INTERVAL = "1d"
+_EVENT_KINDS = postgres_store.EVENT_TYPES + ("actions",)
 
 
 def backfill(data_root: Path) -> dict[str, int]:
@@ -38,35 +36,18 @@ def backfill(data_root: Path) -> dict[str, int]:
             skipped.append(path)
             continue
         written["price_bars"] += postgres_store.upsert_price_bars(
-            symbol, BAR_INTERVAL, df
+            symbol, postgres_store.BAR_INTERVAL, df
         )
 
     for path in _snapshots_oldest_first(data_root / "events"):
         symbol, event_type = _parse_name(path)
         df = _read_csv(path)
-        if df is None:
+        if df is None or event_type not in _EVENT_KINDS:
             skipped.append(path)
             continue
-        if event_type == "actions":
-            # An actions snapshot is dividends + splits side by side.
-            for column, single_type in (
-                ("Dividends", "dividends"),
-                ("Stock Splits", "splits"),
-            ):
-                if column not in df.columns:
-                    continue
-                events = df[df[column] != 0][[column]]
-                written["corporate_events"] += (
-                    postgres_store.upsert_corporate_events(
-                        symbol, single_type, events
-                    )
-                )
-        elif event_type in postgres_store.EVENT_TYPES:
-            written["corporate_events"] += postgres_store.upsert_corporate_events(
-                symbol, event_type, df
-            )
-        else:
-            skipped.append(path)
+        written["corporate_events"] += postgres_store.upsert_events_snapshot(
+            symbol, event_type, df
+        )
 
     for path in _snapshots_oldest_first(data_root / "news"):
         symbol, _ = _parse_name(path)
