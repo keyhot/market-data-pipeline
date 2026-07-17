@@ -31,13 +31,27 @@ Set `SCHEDULER_ENABLED=true` to run background fetches for everything in
 `data/scheduler_state.json`, so restarts don't re-fetch fresh data. Scheduler
 health shows up on `/health` and `/metrics`.
 
-## Postgres (upcoming L2 storage)
+## Postgres (L2 storage)
 
 `docker compose up -d` starts a local Postgres 16 (copy `.env.example` to
-`.env` first). The schema design lives in `docs/postgres-schema-spike.md`.
+`.env` first) and applies `db/init.sql` on first boot. The schema design
+lives in `docs/postgres-schema-spike.md`.
+
+Writes go through the idempotent upserts in `storage/postgres_store.py`
+(connection pool in `storage/db.py`, configured via `DATABASE_URL`). Replay
+the existing CSV snapshots into Postgres with:
+
+```bash
+python scripts/backfill_postgres.py
+```
+
+The script is rerunnable — a second run changes no row counts.
 
 ## Tests
 
 ```bash
 pytest
 ```
+
+Integration tests in `tests/integration/` need the docker-compose Postgres
+and auto-skip when it's unreachable.
