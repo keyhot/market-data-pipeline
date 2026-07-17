@@ -7,7 +7,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
-from config.exceptions import BaseAppException
+from config.exceptions import BaseAppException, NoDataFoundError
 from config.logging import init_logging
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_default_provider
@@ -16,9 +16,17 @@ from ingestion.news_fetcher import fetch_news
 from scheduler.service import SchedulerService, scheduler_enabled
 from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
+from storage.dual_write import (
+    mirror_events,
+    mirror_news,
+    mirror_price_bars,
+    postgres_status,
+    write_metrics,
+)
 from storage.filesystem import save_csv
 from storage.naming import raw_data_path, raw_event_path
 from storage.news_store import CsvNewsStore
+from storage.postgres_store import BAR_INTERVAL, get_price_bars
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
@@ -60,7 +68,10 @@ def health():
     return ApiResponse(
         status=200,
         message="API is healthy",
-        data={"scheduler": scheduler_service.status()},
+        data={
+            "scheduler": scheduler_service.status(),
+            "postgres": postgres_status(),
+        },
     )
 
 
@@ -68,7 +79,11 @@ def health():
 def metrics():
     return ApiResponse(
         status=200,
-        data={**metrics_registry.snapshot(), "scheduler": scheduler_service.status()},
+        data={
+            **metrics_registry.snapshot(),
+            "scheduler": scheduler_service.status(),
+            "postgres_writes": write_metrics(),
+        },
     )
 
 
@@ -107,6 +122,7 @@ async def _fetch_and_store_ticker(ticker_symbol: str, time_range: TimeRange) -> 
     if not was_cached:
         path = raw_data_path(ticker_symbol, time_range)
         save_csv(path, data)
+        mirror_price_bars(ticker_symbol, data)
         logger.info("Stored ticker data", extra={"file_path": path})
         result["file_path"] = str(path)
 
@@ -200,10 +216,38 @@ def news(
 
     if not was_cached:
         path = news_store.save(ticker_symbol, items)
+        mirror_news(ticker_symbol, items)
         logger.info("Stored news", extra={"file_path": path})
         response_data["file_path"] = path
 
     return ApiResponse(status=200, data=response_data)
+
+
+@app.get("/bars/{ticker_symbol}", response_model=ApiResponse)
+def bars(
+    ticker_symbol: str,
+    interval: str = BAR_INTERVAL,
+    limit: int = Query(100, ge=1, le=1000),
+):
+    try:
+        stored_bars = get_price_bars(ticker_symbol, interval=interval, limit=limit)
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+
+    if not stored_bars:
+        raise NoDataFoundError("No bars stored for the given parameters")
+
+    return ApiResponse(
+        status=200,
+        data={
+            "ticker": ticker_symbol.upper(),
+            "interval": interval,
+            "count": len(stored_bars),
+            "bars": stored_bars,
+        },
+    )
 
 
 @app.get("/events/{ticker_symbol}/{event_type}", response_model=ApiResponse)
@@ -240,6 +284,7 @@ def event(
     if not was_cached:
         path = raw_event_path(ticker_symbol, event_type)
         save_csv(path, events)
+        mirror_events(ticker_symbol, event_type, events)
         logger.info("Stored events", extra={"file_path": path})
         response_data["file_path"] = str(path)
 
