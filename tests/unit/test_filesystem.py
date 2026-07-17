@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from storage.filesystem import RETENTION_COUNT, save_csv
+from storage.filesystem import (
+    CSV_WRITE_ENABLED_ENV,
+    RETENTION_COUNT,
+    csv_write_enabled,
+    save_csv,
+)
 
 
 def make_csv(directory: Path, name: str) -> Path:
@@ -46,3 +51,14 @@ def test_keep_zero_deletes_all(tmp_path):
         save_csv(path, pd.DataFrame({"v": [1]}), keep=0)
 
     assert len(list(tmp_path.glob("AAPL_1d_*.csv"))) == 0
+
+
+def test_csv_writes_default_on(monkeypatch):
+    monkeypatch.delenv(CSV_WRITE_ENABLED_ENV, raising=False)
+    assert csv_write_enabled() is True
+
+
+def test_csv_writes_explicit_off(monkeypatch):
+    for value in ("0", "false", "no"):
+        monkeypatch.setenv(CSV_WRITE_ENABLED_ENV, value)
+        assert csv_write_enabled() is False

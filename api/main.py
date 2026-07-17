@@ -16,7 +16,7 @@ from ingestion.news_fetcher import fetch_news
 from scheduler.service import SchedulerService, scheduler_enabled
 from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
-from storage.filesystem import save_csv
+from storage.filesystem import csv_write_enabled, save_csv
 from storage.naming import raw_data_path, raw_event_path
 from storage.news_store import CsvNewsStore
 from storage.postgres_store import BAR_INTERVAL, get_price_bars
@@ -121,10 +121,11 @@ async def _fetch_and_store_ticker(ticker_symbol: str, time_range: TimeRange) -> 
 
     if not was_cached:
         write_price_bars(ticker_symbol, data)
-        path = raw_data_path(ticker_symbol, time_range)
-        save_csv(path, data)
-        logger.info("Stored ticker data", extra={"file_path": path})
-        result["file_path"] = str(path)
+        if csv_write_enabled():
+            path = raw_data_path(ticker_symbol, time_range)
+            save_csv(path, data)
+            logger.info("Stored ticker data", extra={"file_path": path})
+            result["file_path"] = str(path)
 
     return result
 
@@ -216,9 +217,10 @@ def news(
 
     if not was_cached:
         write_news(ticker_symbol, items)
-        path = news_store.save(ticker_symbol, items)
-        logger.info("Stored news", extra={"file_path": path})
-        response_data["file_path"] = path
+        if csv_write_enabled():
+            path = news_store.save(ticker_symbol, items)
+            logger.info("Stored news", extra={"file_path": path})
+            response_data["file_path"] = path
 
     return ApiResponse(status=200, data=response_data)
 
@@ -283,9 +285,10 @@ def event(
 
     if not was_cached:
         write_events(ticker_symbol, event_type, events)
-        path = raw_event_path(ticker_symbol, event_type)
-        save_csv(path, events)
-        logger.info("Stored events", extra={"file_path": path})
-        response_data["file_path"] = str(path)
+        if csv_write_enabled():
+            path = raw_event_path(ticker_symbol, event_type)
+            save_csv(path, events)
+            logger.info("Stored events", extra={"file_path": path})
+            response_data["file_path"] = str(path)
 
     return ApiResponse(status=200, data=response_data)

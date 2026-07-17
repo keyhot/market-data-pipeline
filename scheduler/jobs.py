@@ -3,7 +3,7 @@ import logging
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker
-from storage.filesystem import save_csv
+from storage.filesystem import csv_write_enabled, save_csv
 from storage.naming import raw_data_path, raw_event_path
 from storage.writes import write_events, write_price_bars
 
@@ -23,9 +23,10 @@ def run_ticker_job(symbol: str, time_range: str) -> dict:
 
     if not was_cached:
         write_price_bars(symbol, data)
-        path = raw_data_path(symbol, time_range)
-        save_csv(path, data)
-        result["file_path"] = str(path)
+        if csv_write_enabled():
+            path = raw_data_path(symbol, time_range)
+            save_csv(path, data)
+            result["file_path"] = str(path)
 
     logger.info("Scheduled ticker fetch complete", extra=result)
     return result
@@ -44,9 +45,10 @@ def run_event_job(symbol: str, event_type: str) -> dict:
 
     if not was_cached:
         write_events(symbol, event_type, events)
-        path = raw_event_path(symbol, event_type)
-        save_csv(path, events)
-        result["file_path"] = str(path)
+        if csv_write_enabled():
+            path = raw_event_path(symbol, event_type)
+            save_csv(path, events)
+            result["file_path"] = str(path)
 
     logger.info("Scheduled event fetch complete", extra=result)
     return result

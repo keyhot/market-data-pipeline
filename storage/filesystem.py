@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -22,3 +23,13 @@ def _prune_files(path: Path, keep: int) -> None:
     matches = sorted(path.parent.glob(f"{prefix}_*.csv"))
     for old in matches[: max(0, len(matches) - keep)]:
         old.unlink()
+
+
+CSV_WRITE_ENABLED_ENV = "CSV_WRITE_ENABLED"
+
+
+def csv_write_enabled() -> bool:
+    raw = os.environ.get(CSV_WRITE_ENABLED_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no"}
