@@ -202,3 +202,35 @@ def test_backfill_is_rerunnable(tmp_path):
     assert _count("price_bars", BACKFILL_SYMBOL) == 2
     assert _count("corporate_events", BACKFILL_SYMBOL) == 1
     assert _count("news_items", BACKFILL_SYMBOL) == 1
+
+
+def test_get_corporate_events_filters_and_orders():
+    events = pd.DataFrame(
+        {"dividends": [0.25, 0.26]},
+        index=pd.to_datetime(["2026-02-10", "2026-05-10"], utc=True),
+    )
+    postgres_store.upsert_corporate_events(BARS_SYMBOL, "dividends", events)
+
+    stored = postgres_store.get_corporate_events(BARS_SYMBOL, event_type="dividends")
+
+    assert [e["value"] for e in stored] == [0.25, 0.26]
+    assert postgres_store.get_corporate_events(BARS_SYMBOL, event_type="splits") == []
+    assert len(postgres_store.get_corporate_events(BARS_SYMBOL)) == 2
+
+
+def test_get_news_items_newest_first():
+    news = pd.DataFrame(
+        {
+            "id": ["story-1", "story-2"],
+            "title": ["old", "new"],
+            "publisher": ["Wire", "Wire"],
+            "url": ["https://example.com/1", "https://example.com/2"],
+            "published_at": pd.to_datetime(["2026-03-01", "2026-03-02"], utc=True),
+            "summary": ["s1", "s2"],
+        }
+    )
+    postgres_store.upsert_news(BARS_SYMBOL, news)
+
+    items = postgres_store.get_news_items(BARS_SYMBOL)
+
+    assert [i["title"] for i in items] == ["new", "old"]
