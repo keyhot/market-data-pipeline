@@ -61,8 +61,9 @@ CREATE TABLE news_items (
 
 CREATE INDEX idx_news_symbol_time ON news_items (symbol, published_at DESC);
 
--- Scheduler observability outlives process restarts (replaces
--- data/scheduler_state.json once L2 lands).
+-- Scheduler observability outlives process restarts (replaced
+-- data/scheduler_state.json in Sprint 7 — see
+-- storage/postgres_store.latest_success_times()).
 CREATE TABLE ingestion_runs (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     job_id      TEXT        NOT NULL,            -- 'ticker:AAPL:1d'

@@ -137,6 +137,16 @@ def record_ingestion_run(
         )
 
 
+def latest_success_times() -> dict[str, str]:
+    """job_id -> ISO timestamp of its newest successful ingestion run."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT job_id, max(started_at) FROM ingestion_runs"
+            " WHERE status = 'success' GROUP BY job_id"
+        ).fetchall()
+    return {job_id: ts.isoformat() for job_id, ts in rows}
+
+
 def upsert_news(symbol: str, news: pd.DataFrame) -> int:
     """Upsert fetcher-shaped news (NEWS_COLUMNS from ingestion.news_fetcher)."""
     rows = []
@@ -186,3 +196,65 @@ def _as_int(value) -> int | None:
 
 def _as_str(value) -> str | None:
     return None if value is None or pd.isna(value) else str(value)
+
+
+def get_corporate_events(
+    symbol: str, event_type: str | None = None, limit: int = 100
+) -> list[dict]:
+    """Latest `limit` events for a symbol, oldest first. None = all types."""
+    sql = (
+        "SELECT event_date, event_type, value FROM corporate_events"
+        " WHERE symbol = %s"
+    )
+    params: list = [symbol.upper()]
+    if event_type is not None:
+        sql += " AND event_type = %s"
+        params.append(event_type)
+    sql += " ORDER BY event_date DESC LIMIT %s"
+    params.append(limit)
+
+    with get_pool().connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {"date": event_date.isoformat(), "event_type": kind, "value": _as_float(value)}
+        for event_date, kind, value in reversed(rows)
+    ]
+
+
+def get_latest_closes(symbols: list[str]) -> list[dict]:
+    """Newest daily close per symbol; symbols without bars are absent."""
+    if not symbols:
+        return []
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (symbol) symbol, bar_timestamp, close"
+            " FROM price_bars WHERE symbol = ANY(%s) AND interval = %s"
+            " ORDER BY symbol, bar_timestamp DESC",
+            ([s.upper() for s in symbols], BAR_INTERVAL),
+        ).fetchall()
+    return [
+        {"symbol": symbol, "timestamp": ts.isoformat(), "close": _as_float(close)}
+        for symbol, ts, close in rows
+    ]
+
+
+def get_news_items(symbol: str, limit: int = 20) -> list[dict]:
+    """Latest `limit` news items for a symbol, newest first."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT id, title, publisher, url, published_at, summary"
+            " FROM news_items WHERE symbol = %s"
+            " ORDER BY published_at DESC NULLS LAST LIMIT %s",
+            (symbol.upper(), limit),
+        ).fetchall()
+    return [
+        {
+            "id": id_,
+            "title": title,
+            "publisher": publisher,
+            "url": url,
+            "published_at": published_at.isoformat() if published_at else None,
+            "summary": summary,
+        }
+        for id_, title, publisher, url, published_at, summary in rows
+    ]

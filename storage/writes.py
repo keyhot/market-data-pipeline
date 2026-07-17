@@ -1,7 +1,9 @@
-"""Best-effort Postgres mirroring behind POSTGRES_WRITE_ENABLED.
+# storage/writes.py
+"""Mandatory Postgres write path (Sprint 7 cutover).
 
-During the dual-write phase CSV stays the source of truth: a Postgres
-failure is logged and counted, never raised to the caller.
+Postgres is the source of truth: POSTGRES_WRITE_ENABLED defaults on, and a
+write failure raises StorageWriteError instead of being swallowed. Set the
+flag to 0/false/no only for offline development without a database.
 """
 
 import logging
@@ -10,6 +12,7 @@ import threading
 
 import pandas as pd
 
+from config.exceptions import StorageWriteError
 from storage import postgres_store
 from storage.db import ping
 
@@ -22,8 +25,10 @@ _counts_lock = threading.Lock()
 
 
 def postgres_write_enabled() -> bool:
-    raw = os.environ.get(POSTGRES_WRITE_ENABLED_ENV, "")
-    return raw.strip().lower() in {"1", "true", "yes"}
+    raw = os.environ.get(POSTGRES_WRITE_ENABLED_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no"}
 
 
 def postgres_status() -> dict:
@@ -36,8 +41,8 @@ def write_metrics() -> dict:
         return dict(_counts)
 
 
-def mirror_price_bars(symbol: str, bars: pd.DataFrame) -> None:
-    _mirror(
+def write_price_bars(symbol: str, bars: pd.DataFrame) -> None:
+    _write(
         "price_bars",
         lambda: postgres_store.upsert_price_bars(
             symbol, postgres_store.BAR_INTERVAL, bars
@@ -45,8 +50,8 @@ def mirror_price_bars(symbol: str, bars: pd.DataFrame) -> None:
     )
 
 
-def mirror_events(symbol: str, event_type: str, events: pd.DataFrame) -> None:
-    _mirror(
+def write_events(symbol: str, event_type: str, events: pd.DataFrame) -> None:
+    _write(
         "corporate_events",
         lambda: postgres_store.upsert_events_snapshot(
             symbol, str(event_type), events
@@ -54,11 +59,11 @@ def mirror_events(symbol: str, event_type: str, events: pd.DataFrame) -> None:
     )
 
 
-def mirror_news(symbol: str, news: pd.DataFrame) -> None:
-    _mirror("news_items", lambda: postgres_store.upsert_news(symbol, news))
+def write_news(symbol: str, news: pd.DataFrame) -> None:
+    _write("news_items", lambda: postgres_store.upsert_news(symbol, news))
 
 
-def _mirror(table: str, write) -> None:
+def _write(table: str, write) -> None:
     if not postgres_write_enabled():
         return
     try:
@@ -66,9 +71,9 @@ def _mirror(table: str, write) -> None:
     except Exception as e:
         with _counts_lock:
             _counts["errors"] += 1
-        logger.warning(
-            "Postgres mirror write failed", extra={"table": table, "error": str(e)}
+        logger.error(
+            "Postgres write failed", extra={"table": table, "error": str(e)}
         )
-        return
+        raise StorageWriteError(f"Failed to persist {table}: {e}") from e
     with _counts_lock:
         _counts[table] += written

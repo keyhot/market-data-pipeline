@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__SYMBOL__ — Market Data Pipeline</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #131722; color: #d1d4dc;
+           font-family: system-ui, sans-serif; }
+    header { display: flex; align-items: baseline; gap: 1rem;
+             padding: 1rem 1.5rem; }
+    h1 { margin: 0; font-size: 1.4rem; }
+    a { color: #5b9cf6; text-decoration: none; }
+    #chart { height: 70vh; margin: 0 1.5rem; }
+    #status { padding: 0.5rem 1.5rem; color: #787b86; }
+    footer { padding: 1rem 1.5rem; font-size: 0.8rem; color: #787b86; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>__SYMBOL__</h1>
+    <a href="/dashboard">← dashboard</a>
+  </header>
+  <div id="chart"></div>
+  <p id="status">Loading bars…</p>
+  <footer>
+    Charting by <a href="https://www.tradingview.com/">TradingView</a>
+    Lightweight Charts
+  </footer>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"
+          integrity="sha384-OK7vELvjHdhUFi31JYioPIcRHTROLdcDa6ZsNWgvgLaKj+9JqhU0Ad8g4wz3CXjA"
+          crossorigin="anonymous"></script>
+  <script>
+    const SYMBOL = "__SYMBOL__";
+    const status = document.getElementById("status");
+
+    async function draw() {
+      const response = await fetch(`/bars/__SYMBOL__?limit=250`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        status.textContent =
+          body.message || `No stored bars for ${SYMBOL} (HTTP ${response.status})`;
+        return;
+      }
+      const { data } = await response.json();
+      const candles = data.bars.map((bar) => ({
+        time: bar.timestamp.slice(0, 10),
+        open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+      }));
+
+      const chart = LightweightCharts.createChart(
+        document.getElementById("chart"),
+        {
+          layout: { background: { color: "#131722" }, textColor: "#d1d4dc" },
+          grid: {
+            vertLines: { color: "#1e222d" },
+            horzLines: { color: "#1e222d" },
+          },
+          autoSize: true,
+        }
+      );
+      chart.addCandlestickSeries().setData(candles);
+      chart.timeScale().fitContent();
+      status.textContent = `${data.count} daily bars from Postgres`;
+    }
+
+    draw().catch((err) => { status.textContent = `Failed to load: ${err}`; });
+  </script>
+</body>
+</html>

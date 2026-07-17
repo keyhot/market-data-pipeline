@@ -19,10 +19,11 @@ trades, built solo, layer by layer. Five planes, each independently useful.
 └──────────────────────────────┘   └───────────────────┘
 ```
 
-## Data plane (L1 + L2 — current focus)
+## Data plane (L1 done, L2 done — Sprint 7)
 
-- What exists: FastAPI + provider abstraction + APScheduler watchlist ingester,
-  CSV landing zone, Postgres migration planned (`postgres-schema-spike.md`).
+- What exists: FastAPI + provider abstraction + APScheduler watchlist ingester;
+  Postgres is now the primary store (mandatory writes, CSV snapshots optional
+  — see `postgres-schema-spike.md` for the schema and the cutover rationale).
 - Real-time upgrade (later): swap yfinance for a websocket source via the
   existing `MarketDataProvider` abstraction. Candidates: Polygon.io, Alpaca
   Market Data, Finnhub, Databento.
@@ -44,10 +45,12 @@ trades, built solo, layer by layer. Five planes, each independently useful.
 - Paper trading via Alpaca's paper API before any real money. Frame the model
   as a publicly accountable experiment (live P&L is stream content).
 
-## Presentation plane (L3)
+## Presentation plane (L3 — started)
 
-- Everything is a web page: small React/Next.js (or vanilla JS) frontend fed
-  by FastAPI over WebSockets/SSE.
+- Started Sprint 7: `GET /chart/{symbol}` and `GET /dashboard` are
+  server-rendered pages fed by the stored bars (`docs/charting-stack-decision.md`).
+  Everything beyond that is still a web page: small React/Next.js (or vanilla
+  JS) frontend fed by FastAPI over WebSockets/SSE.
 - Charts: TradingView Lightweight Charts (free, canvas, terminal aesthetic).
 - Internal monitoring: Grafana straight on Postgres.
 - Stream overlays are the same pages, loaded as OBS Browser Sources.
@@ -73,10 +76,10 @@ trades, built solo, layer by layer. Five planes, each independently useful.
 
 ## Sequencing
 
-1. Postgres migration (Sprint 6)
+1. Postgres migration (Sprint 6) — completed Sprint 7 (Postgres primary, mandatory writes)
 2. Intraday / crypto data source
 3. Model v0: baseline + backtest + paper trading
-4. Overlay pages (L3)
+4. Overlay pages (L3) — started Sprint 7 (`/chart/{symbol}`, `/dashboard`)
 5. Stream MVP — one scene (chart + ticker + music), uptime boring first
 6. Director, commentary, character — content upgrades
 

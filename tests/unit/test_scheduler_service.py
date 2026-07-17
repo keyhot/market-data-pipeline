@@ -16,11 +16,8 @@ def make_watchlist():
     )
 
 
-def make_service(tmp_path, watchlist=None):
-    return SchedulerService(
-        watchlist=watchlist or make_watchlist(),
-        state_path=tmp_path / "scheduler_state.json",
-    )
+def make_service(watchlist=None):
+    return SchedulerService(watchlist=watchlist or make_watchlist())
 
 
 def test_scheduler_enabled_reads_env(monkeypatch):
@@ -34,7 +31,7 @@ def test_scheduler_enabled_reads_env(monkeypatch):
     assert scheduler_enabled() is False
 
 
-def test_start_registers_jobs_and_runs_them_immediately(tmp_path):
+def test_start_registers_jobs_and_runs_them_immediately():
     ran = {"ticker": threading.Event(), "events": threading.Event()}
 
     def fake_ticker_job(symbol, time_range):
@@ -45,7 +42,7 @@ def test_start_registers_jobs_and_runs_them_immediately(tmp_path):
         ran["events"].set()
         return {}
 
-    service = make_service(tmp_path)
+    service = make_service()
     with (
         patch("scheduler.service.jobs.run_ticker_job", fake_ticker_job),
         patch("scheduler.service.jobs.run_event_job", fake_event_job),
@@ -65,7 +62,7 @@ def test_start_registers_jobs_and_runs_them_immediately(tmp_path):
     assert "last_success" in status["jobs"]["events:AAPL:dividends"]
 
 
-def test_job_failure_recorded_not_fatal(tmp_path):
+def test_job_failure_recorded_not_fatal():
     ran = threading.Event()
 
     def failing_job(symbol, time_range):
@@ -75,7 +72,7 @@ def test_job_failure_recorded_not_fatal(tmp_path):
     watchlist = Watchlist(
         interval_seconds=300, tickers=(TickerJobSpec("AAPL", "1d"),), events=()
     )
-    service = make_service(tmp_path, watchlist)
+    service = make_service(watchlist)
     with patch("scheduler.service.jobs.run_ticker_job", failing_job):
         service.start()
         try:
@@ -88,7 +85,10 @@ def test_job_failure_recorded_not_fatal(tmp_path):
     assert "last_success" not in job_status
 
 
-def test_restart_skips_recently_fetched_jobs(tmp_path):
+def test_start_skips_jobs_with_recent_ingestion_run(monkeypatch):
+    from datetime import UTC, datetime
+
+    monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "1")
     watchlist = Watchlist(
         interval_seconds=300, tickers=(TickerJobSpec("AAPL", "1d"),), events=()
     )
@@ -98,35 +98,44 @@ def test_restart_skips_recently_fetched_jobs(tmp_path):
         ran.set()
         return {}
 
-    with patch("scheduler.service.jobs.run_ticker_job", fake_job):
-        first = make_service(tmp_path, watchlist)
-        first.start()
-        try:
-            assert ran.wait(timeout=5)
-        finally:
-            first.shutdown()
-        # Wait for the state file write that follows the job run.
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if (tmp_path / "scheduler_state.json").exists():
-                break
-            time.sleep(0.05)
-
-        ran.clear()
-        second = make_service(tmp_path, watchlist)
-        second.start()
+    recent = {"ticker:AAPL:1d": datetime.now(UTC).isoformat()}
+    with (
+        patch("scheduler.service.jobs.run_ticker_job", fake_job),
+        patch("scheduler.service.latest_success_times", return_value=recent),
+        patch("scheduler.service.record_ingestion_run"),
+    ):
+        service = SchedulerService(watchlist=watchlist)
+        service.start()
         try:
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                job_status = second.status()["jobs"]["ticker:AAPL:1d"]
-                if "last_skipped" in job_status:
+                if "last_skipped" in service.status()["jobs"].get("ticker:AAPL:1d", {}):
                     break
                 time.sleep(0.05)
         finally:
-            second.shutdown()
+            service.shutdown()
 
     assert not ran.is_set()
-    assert "last_skipped" in second.status()["jobs"]["ticker:AAPL:1d"]
+    assert "last_skipped" in service.status()["jobs"]["ticker:AAPL:1d"]
+
+
+def test_start_survives_unreachable_postgres(monkeypatch):
+    monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "1")
+    with (
+        patch(
+            "scheduler.service.latest_success_times",
+            side_effect=RuntimeError("db down"),
+        ),
+        patch("scheduler.service.record_ingestion_run"),
+        patch("scheduler.service.jobs.run_ticker_job", lambda *a: {}),
+        patch("scheduler.service.jobs.run_event_job", lambda *a: {}),
+    ):
+        service = SchedulerService(watchlist=make_watchlist())
+        service.start()
+        try:
+            assert service.running
+        finally:
+            service.shutdown()
 
 
 def test_lifespan_does_not_start_scheduler_when_disabled(monkeypatch):

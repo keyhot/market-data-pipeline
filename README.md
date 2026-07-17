@@ -21,6 +21,10 @@ uvicorn api.main:app --reload
 | `GET /events/{symbol}/{type}` | Dividends, splits, or actions, with optional `start`/`end` filters |
 | `GET /news/{symbol}` | Latest news with `limit` and `since` filters |
 | `GET /bars/{symbol}` | Stored price bars from Postgres, oldest first (`interval`, `limit` params) |
+| `GET /stored/events/{symbol}/{type}` | Stored corporate events from Postgres (`limit` 1-1000; `actions` returns all types) |
+| `GET /stored/news/{symbol}` | Stored news from Postgres (`limit` 1-100) |
+| `GET /chart/{symbol}` | HTML candlestick page for one symbol |
+| `GET /dashboard` | HTML watchlist table with latest closes, linking to each chart |
 
 Fetched data is cached in memory (TTL via `CACHE_TTL_SECONDS`) and persisted as
 timestamped CSVs under `data/raw/`.
@@ -28,11 +32,11 @@ timestamped CSVs under `data/raw/`.
 ## Continuous ingestion
 
 Set `SCHEDULER_ENABLED=true` to run background fetches for everything in
-`config/watchlist.yaml` on an interval. Last-run state is persisted to
-`data/scheduler_state.json`, so restarts don't re-fetch fresh data. Scheduler
-health shows up on `/health` and `/metrics`.
+`config/watchlist.yaml` on an interval. Skip-logic seeds last-success times
+from the `ingestion_runs` table in Postgres, so restarts don't re-fetch fresh
+data. Scheduler health shows up on `/health` and `/metrics`.
 
-## Postgres (L2 storage)
+## Postgres (L2 storage — primary as of Sprint 7)
 
 `docker compose up -d` starts a local Postgres 16 (copy `.env.example` to
 `.env` first) and applies `db/init.sql` on first boot. The schema design
@@ -46,14 +50,35 @@ the existing CSV snapshots into Postgres with:
 python scripts/backfill_postgres.py
 ```
 
-The script is rerunnable — a second run changes no row counts.
+The script is rerunnable — a second run changes no row counts. Before
+flipping storage defaults in a new environment, verify the two stores agree:
 
-Set `POSTGRES_WRITE_ENABLED=true` to dual-write: every uncached fetch (API
-endpoints and scheduler jobs) mirrors into Postgres alongside the CSV. Mirror
-failures are logged and counted on `/metrics` (`postgres_writes`), never
-surfaced to callers — CSV stays the source of truth for now. `/health` reports
-Postgres connectivity, scheduler runs are recorded in the `ingestion_runs`
-table, and `GET /bars/{symbol}` serves the stored bars.
+```bash
+python scripts/check_parity.py
+```
+
+Postgres is now the source of truth: every uncached fetch (API endpoints and
+scheduler jobs) writes to Postgres first, and a write failure raises a 503
+(`StorageWriteError`) rather than being swallowed. CSV snapshots are a
+separate, independently toggleable copy. `/health` reports Postgres
+connectivity, `/metrics` exposes write counts (`postgres_writes`), scheduler
+runs are recorded in the `ingestion_runs` table, and `GET /bars/{symbol}`
+serves the stored bars.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `POSTGRES_WRITE_ENABLED` | on | Postgres is the source of truth; uncached fetches fail with 503 if the write fails. Set to `0` only for offline dev. |
+| `CSV_WRITE_ENABLED` | on | Also snapshot fetches to `data/raw/*.csv`. Set to `0` to run Postgres-only. |
+| `SCHEDULER_ENABLED` | off | Background watchlist ingestion. Skip-logic now reads the `ingestion_runs` table (the old `data/scheduler_state.json` is gone). |
+
+## First charts (L3)
+
+`GET /chart/{symbol}` renders a candlestick page for one symbol and
+`GET /dashboard` lists the watchlist with latest closes, linking to each
+chart. Both are server-rendered HTML from `api/templates/`, fed by the
+existing `/bars/{symbol}` JSON endpoint. Stack choice and constraints (CDN
+script, SRI-pinned version, attribution requirement) are in
+`docs/charting-stack-decision.md`.
 
 ## Tests
 

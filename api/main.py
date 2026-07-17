@@ -1,10 +1,12 @@
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
 from config.exceptions import BaseAppException, NoDataFoundError
@@ -14,19 +16,26 @@ from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker_async
 from ingestion.news_fetcher import fetch_news
 from scheduler.service import SchedulerService, scheduler_enabled
+from scheduler.watchlist import load_watchlist
 from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
-from storage.dual_write import (
-    mirror_events,
-    mirror_news,
-    mirror_price_bars,
-    postgres_status,
-    write_metrics,
-)
-from storage.filesystem import save_csv
+from storage.filesystem import csv_write_enabled, save_csv
 from storage.naming import raw_data_path, raw_event_path
 from storage.news_store import CsvNewsStore
-from storage.postgres_store import BAR_INTERVAL, get_price_bars
+from storage.postgres_store import (
+    BAR_INTERVAL,
+    get_corporate_events,
+    get_latest_closes,
+    get_news_items,
+    get_price_bars,
+)
+from storage.writes import (
+    postgres_status,
+    write_events,
+    write_metrics,
+    write_news,
+    write_price_bars,
+)
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
@@ -61,6 +70,24 @@ async def record_request_metrics(request: Request, call_next):
         metrics_registry.record(request.method, path, response.status_code, duration)
 
     return response
+
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9.^=-]{1,15}$")
+
+
+def _validated_symbol(raw: str) -> str:
+    symbol = raw.upper()
+    if not _SYMBOL_PATTERN.fullmatch(symbol):
+        raise BaseAppException(f"Invalid symbol: {raw!r}", status_code=400)
+    return symbol
+
+
+def _render_template(name: str, replacements: dict[str, str]) -> str:
+    html = (_TEMPLATES_DIR / name).read_text()
+    for placeholder, value in replacements.items():
+        html = html.replace(placeholder, value)
+    return html
 
 
 @app.get("/health")
@@ -120,11 +147,12 @@ async def _fetch_and_store_ticker(ticker_symbol: str, time_range: TimeRange) -> 
     }
 
     if not was_cached:
-        path = raw_data_path(ticker_symbol, time_range)
-        save_csv(path, data)
-        mirror_price_bars(ticker_symbol, data)
-        logger.info("Stored ticker data", extra={"file_path": path})
-        result["file_path"] = str(path)
+        write_price_bars(ticker_symbol, data)
+        if csv_write_enabled():
+            path = raw_data_path(ticker_symbol, time_range)
+            save_csv(path, data)
+            logger.info("Stored ticker data", extra={"file_path": path})
+            result["file_path"] = str(path)
 
     return result
 
@@ -215,10 +243,11 @@ def news(
     }
 
     if not was_cached:
-        path = news_store.save(ticker_symbol, items)
-        mirror_news(ticker_symbol, items)
-        logger.info("Stored news", extra={"file_path": path})
-        response_data["file_path"] = path
+        write_news(ticker_symbol, items)
+        if csv_write_enabled():
+            path = news_store.save(ticker_symbol, items)
+            logger.info("Stored news", extra={"file_path": path})
+            response_data["file_path"] = path
 
     return ApiResponse(status=200, data=response_data)
 
@@ -247,6 +276,94 @@ def bars(
             "count": len(stored_bars),
             "bars": stored_bars,
         },
+    )
+
+
+@app.get("/stored/events/{ticker_symbol}/{event_type}", response_model=ApiResponse)
+def stored_events(
+    ticker_symbol: str,
+    event_type: EventType,
+    limit: int = Query(100, ge=1, le=1000),
+):
+    stored_type = None if event_type == EventType.ACTIONS else str(event_type)
+    try:
+        events = get_corporate_events(
+            ticker_symbol, event_type=stored_type, limit=limit
+        )
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+
+    if not events:
+        raise NoDataFoundError("No events stored for the given parameters")
+
+    return ApiResponse(
+        status=200,
+        data={
+            "ticker": ticker_symbol.upper(),
+            "event_type": event_type,
+            "count": len(events),
+            "events": events,
+        },
+    )
+
+
+@app.get("/stored/news/{ticker_symbol}", response_model=ApiResponse)
+def stored_news(ticker_symbol: str, limit: int = Query(20, ge=1, le=100)):
+    try:
+        items = get_news_items(ticker_symbol, limit=limit)
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+
+    if not items:
+        raise NoDataFoundError("No news stored for the given parameters")
+
+    return ApiResponse(
+        status=200,
+        data={
+            "ticker": ticker_symbol.upper(),
+            "count": len(items),
+            "items": items,
+        },
+    )
+
+
+@app.get("/chart/{ticker_symbol}", response_class=HTMLResponse)
+def chart(ticker_symbol: str):
+    symbol = _validated_symbol(ticker_symbol)
+    return HTMLResponse(_render_template("chart.html", {"__SYMBOL__": symbol}))
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    deduped = dict.fromkeys(spec.symbol.upper() for spec in load_watchlist().tickers)
+    symbols = []
+    for raw in deduped:
+        if _SYMBOL_PATTERN.fullmatch(raw):
+            symbols.append(raw)
+        else:
+            logger.warning("Skipping invalid watchlist symbol", extra={"symbol": raw})
+    try:
+        closes = {row["symbol"]: row for row in get_latest_closes(symbols)}
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+
+    rows = []
+    for symbol in symbols:
+        row = closes.get(symbol)
+        close = f"{row['close']:.2f}" if row and row["close"] is not None else "—"
+        as_of = row["timestamp"][:10] if row else "—"
+        rows.append(
+            f'      <tr><td><a href="/chart/{symbol}">{symbol}</a></td>'
+            f'<td class="num">{close}</td><td>{as_of}</td></tr>'
+        )
+    return HTMLResponse(
+        _render_template("dashboard.html", {"__ROWS__": "\n".join(rows)})
     )
 
 
@@ -282,10 +399,11 @@ def event(
     }
 
     if not was_cached:
-        path = raw_event_path(ticker_symbol, event_type)
-        save_csv(path, events)
-        mirror_events(ticker_symbol, event_type, events)
-        logger.info("Stored events", extra={"file_path": path})
-        response_data["file_path"] = str(path)
+        write_events(ticker_symbol, event_type, events)
+        if csv_write_enabled():
+            path = raw_event_path(ticker_symbol, event_type)
+            save_csv(path, events)
+            logger.info("Stored events", extra={"file_path": path})
+            response_data["file_path"] = str(path)
 
     return ApiResponse(status=200, data=response_data)

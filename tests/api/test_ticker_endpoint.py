@@ -36,3 +36,16 @@ def test_fetch_ticker_invalid_time_range():
     response = client.get("/ticker/AAPL/invalid")
 
     assert response.status_code == 422
+
+
+@patch("api.main.fetch_ticker_async")
+def test_ticker_skips_csv_when_flag_disabled(mock_fetch, monkeypatch):
+    monkeypatch.setenv("CSV_WRITE_ENABLED", "0")
+    mock_fetch.return_value = pd.DataFrame({"Close": [100, 101]})
+
+    with patch("api.main.save_csv") as save:
+        response = client.get("/ticker/AAPL/1d")
+
+    assert response.status_code == 200
+    save.assert_not_called()
+    assert "file_path" not in response.json()["data"]
