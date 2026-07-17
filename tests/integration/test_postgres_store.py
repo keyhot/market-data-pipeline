@@ -24,12 +24,16 @@ def clean_test_rows():
     _delete_test_rows()
 
 
+TEST_JOB_ID = "test:ZZTEST:1d"
+
+
 def _delete_test_rows():
     with get_pool().connection() as conn:
         for table in ("price_bars", "corporate_events", "news_items"):
             conn.execute(
                 f"DELETE FROM {table} WHERE symbol = ANY(%s)", (_TEST_SYMBOLS,)
             )
+        conn.execute("DELETE FROM ingestion_runs WHERE job_id = %s", (TEST_JOB_ID,))
 
 
 def _count(table: str, symbol: str) -> int:
@@ -110,6 +114,42 @@ def test_news_upsert_is_idempotent_and_skips_incomplete_rows():
     assert postgres_store.upsert_news(BARS_SYMBOL, news) == 1
 
     assert _count("news_items", BARS_SYMBOL) == 1
+
+
+def test_get_price_bars_reads_back_oldest_first():
+    postgres_store.upsert_price_bars(BARS_SYMBOL, "1d", _bars())
+
+    bars = postgres_store.get_price_bars(BARS_SYMBOL, limit=10)
+
+    assert [bar["close"] for bar in bars] == [100.0, 101.0]
+    assert bars[0]["timestamp"] < bars[1]["timestamp"]
+    assert bars[0]["volume"] == 1000
+
+
+def test_get_price_bars_respects_limit_keeping_latest():
+    postgres_store.upsert_price_bars(BARS_SYMBOL, "1d", _bars())
+
+    bars = postgres_store.get_price_bars(BARS_SYMBOL, limit=1)
+
+    assert len(bars) == 1
+    assert bars[0]["close"] == 101.0
+
+
+def test_record_ingestion_run_round_trips():
+    from datetime import UTC, datetime
+
+    started = datetime.now(UTC)
+    postgres_store.record_ingestion_run(
+        TEST_JOB_ID, started, datetime.now(UTC), "success", rows_written=7
+    )
+
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, rows_written, error FROM ingestion_runs"
+            " WHERE job_id = %s",
+            (TEST_JOB_ID,),
+        ).fetchone()
+    assert row == ("success", 7, None)
 
 
 def test_backfill_is_rerunnable(tmp_path):
