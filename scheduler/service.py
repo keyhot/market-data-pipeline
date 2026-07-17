@@ -10,6 +10,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from scheduler import jobs
 from scheduler.watchlist import Watchlist, load_watchlist
+from storage.dual_write import postgres_write_enabled
+from storage.postgres_store import record_ingestion_run
 from storage.state import load_state, save_state
 
 SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
@@ -98,29 +100,62 @@ class SchedulerService:
         )
 
     def _run_job(self, job_id: str, func: Callable, args: tuple) -> None:
+        started_at = datetime.now(UTC)
+
         if self._recently_succeeded(job_id):
             logger.info(
                 "Skipping job, last success within interval",
                 extra={"job_id": job_id},
             )
-            self._record(job_id, "last_skipped", datetime.now(UTC).isoformat())
+            self._record(job_id, "last_skipped", started_at.isoformat())
+            self._record_run(job_id, started_at, "skipped")
             return
 
         try:
-            func(*args)
+            result = func(*args)
         except Exception as e:
             self._record(job_id, "last_error", str(e))
             self._record(job_id, "last_error_at", datetime.now(UTC).isoformat())
+            self._record_run(job_id, started_at, "error", error=str(e))
             logger.error(
                 "Scheduled job failed", extra={"job_id": job_id, "error": str(e)}
             )
             return
+
+        rows = result.get("rows", result.get("events")) if result else None
+        self._record_run(job_id, started_at, "success", rows_written=rows)
 
         now_iso = datetime.now(UTC).isoformat()
         self._record(job_id, "last_success", now_iso)
         with self._lock:
             self._state[job_id] = now_iso
             save_state(self._state_path, self._state)
+
+    def _record_run(
+        self,
+        job_id: str,
+        started_at: datetime,
+        status: str,
+        rows_written: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Best-effort run history; never lets a Postgres hiccup fail the job."""
+        if not postgres_write_enabled():
+            return
+        try:
+            record_ingestion_run(
+                job_id,
+                started_at,
+                datetime.now(UTC),
+                status,
+                rows_written=rows_written,
+                error=error,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record ingestion run",
+                extra={"job_id": job_id, "error": str(e)},
+            )
 
     def _recently_succeeded(self, job_id: str) -> bool:
         with self._lock:
