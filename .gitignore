@@ -1,11 +1,19 @@
 # Claude Code #
 CLAUDE.md
+.claude/
+.superpowers/
+.remember/
+
+# graphify knowledge graph (generated) #
+graphify-out/
 
 # Data files #
 data/raw/events/
 data/raw/tickers/
+data/raw/news/
 data/processed/events/
 data/processed/tickers/
+data/processed/news/
 
 # Log files #
 logs/
