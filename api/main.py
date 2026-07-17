@@ -1,10 +1,12 @@
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
 from config.exceptions import BaseAppException, NoDataFoundError
@@ -66,6 +68,24 @@ async def record_request_metrics(request: Request, call_next):
         metrics_registry.record(request.method, path, response.status_code, duration)
 
     return response
+
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9.^=-]{1,15}$")
+
+
+def _validated_symbol(raw: str) -> str:
+    symbol = raw.upper()
+    if not _SYMBOL_PATTERN.fullmatch(symbol):
+        raise BaseAppException(f"Invalid symbol: {raw!r}", status_code=400)
+    return symbol
+
+
+def _render_template(name: str, replacements: dict[str, str]) -> str:
+    html = (_TEMPLATES_DIR / name).read_text()
+    for placeholder, value in replacements.items():
+        html = html.replace(placeholder, value)
+    return html
 
 
 @app.get("/health")
@@ -307,6 +327,12 @@ def stored_news(ticker_symbol: str, limit: int = Query(20, ge=1, le=100)):
             "items": items,
         },
     )
+
+
+@app.get("/chart/{ticker_symbol}", response_class=HTMLResponse)
+def chart(ticker_symbol: str):
+    symbol = _validated_symbol(ticker_symbol)
+    return HTMLResponse(_render_template("chart.html", {"__SYMBOL__": symbol}))
 
 
 @app.get("/events/{ticker_symbol}/{event_type}", response_model=ApiResponse)
