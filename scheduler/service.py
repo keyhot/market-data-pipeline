@@ -2,7 +2,6 @@ import logging
 import os
 import threading
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -10,12 +9,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from scheduler import jobs
 from scheduler.watchlist import Watchlist, load_watchlist
-from storage.postgres_store import record_ingestion_run
-from storage.state import load_state, save_state
+from storage.postgres_store import latest_success_times, record_ingestion_run
 from storage.writes import postgres_write_enabled
 
 SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
-DEFAULT_STATE_PATH = Path(__file__).parent.parent / "data" / "scheduler_state.json"
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +23,8 @@ def scheduler_enabled() -> bool:
 
 
 class SchedulerService:
-    def __init__(
-        self,
-        watchlist: Watchlist | None = None,
-        state_path: Path = DEFAULT_STATE_PATH,
-    ):
+    def __init__(self, watchlist: Watchlist | None = None):
         self._watchlist = watchlist
-        self._state_path = state_path
         self._state: dict[str, str] = {}
         self._scheduler: BackgroundScheduler | None = None
         self._interval_seconds: int | None = None
@@ -50,7 +42,7 @@ class SchedulerService:
 
         watchlist = self._watchlist or load_watchlist()
         self._interval_seconds = watchlist.interval_seconds
-        self._state = load_state(self._state_path)
+        self._state = self._load_last_success()
         self._job_ids = []
         self._scheduler = BackgroundScheduler()
 
@@ -77,6 +69,20 @@ class SchedulerService:
                 "interval_seconds": watchlist.interval_seconds,
             },
         )
+
+    def _load_last_success(self) -> dict[str, str]:
+        """Seed skip-logic from ingestion_runs; on any failure start empty —
+        re-running a job is safe because every write is an idempotent upsert."""
+        if not postgres_write_enabled():
+            return {}
+        try:
+            return latest_success_times()
+        except Exception as e:
+            logger.warning(
+                "Could not load last-success times from Postgres",
+                extra={"error": str(e)},
+            )
+            return {}
 
     def shutdown(self) -> None:
         if self._scheduler is not None:
@@ -129,7 +135,6 @@ class SchedulerService:
         self._record(job_id, "last_success", now_iso)
         with self._lock:
             self._state[job_id] = now_iso
-            save_state(self._state_path, self._state)
 
     def _record_run(
         self,

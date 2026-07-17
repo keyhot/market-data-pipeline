@@ -137,6 +137,16 @@ def record_ingestion_run(
         )
 
 
+def latest_success_times() -> dict[str, str]:
+    """job_id -> ISO timestamp of its newest successful ingestion run."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT job_id, max(started_at) FROM ingestion_runs"
+            " WHERE status = 'success' GROUP BY job_id"
+        ).fetchall()
+    return {job_id: ts.isoformat() for job_id, ts in rows}
+
+
 def upsert_news(symbol: str, news: pd.DataFrame) -> int:
     """Upsert fetcher-shaped news (NEWS_COLUMNS from ingestion.news_fetcher)."""
     rows = []

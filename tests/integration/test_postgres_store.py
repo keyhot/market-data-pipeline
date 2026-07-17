@@ -152,6 +152,21 @@ def test_record_ingestion_run_round_trips():
     assert row == ("success", 7, None)
 
 
+def test_latest_success_times_returns_newest_success_per_job():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    postgres_store.record_ingestion_run(
+        TEST_JOB_ID, now - timedelta(hours=2), now - timedelta(hours=2), "success"
+    )
+    postgres_store.record_ingestion_run(TEST_JOB_ID, now, now, "success")
+    postgres_store.record_ingestion_run(TEST_JOB_ID, now, now, "error", error="x")
+
+    times = postgres_store.latest_success_times()
+
+    assert times[TEST_JOB_ID] == now.isoformat()
+
+
 def test_backfill_is_rerunnable(tmp_path):
     from scripts.backfill_postgres import backfill
 
