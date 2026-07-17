@@ -61,3 +61,40 @@ def test_dashboard_503_when_postgres_down():
         patch("api.main.get_latest_closes", side_effect=RuntimeError("down")),
     ):
         assert client.get("/dashboard").status_code == 503
+
+
+def test_dashboard_skips_symbols_failing_the_whitelist():
+    watchlist = Watchlist(
+        interval_seconds=300,
+        tickers=(
+            TickerJobSpec('AAPL"><script>', "1d"),
+            TickerJobSpec("AAPL", "1d"),
+        ),
+        events=(),
+    )
+    with (
+        patch("api.main.load_watchlist", return_value=watchlist),
+        patch("api.main.get_latest_closes", return_value=[]) as reader,
+    ):
+        response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "<script>" not in response.text
+    assert '"><' not in response.text
+    assert 'href="/chart/AAPL"' in response.text
+    reader.assert_called_once_with(["AAPL"])
+
+
+def test_dashboard_renders_dash_for_null_close():
+    closes = [
+        {"symbol": "AAPL", "timestamp": "2026-07-16T00:00:00+00:00", "close": None}
+    ]
+    with (
+        patch("api.main.load_watchlist", return_value=_watchlist()),
+        patch("api.main.get_latest_closes", return_value=closes),
+    ):
+        response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "—" in response.text
+    assert ">None<" not in response.text

@@ -339,9 +339,13 @@ def chart(ticker_symbol: str):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
-    symbols = list(
-        dict.fromkeys(spec.symbol.upper() for spec in load_watchlist().tickers)
-    )
+    deduped = dict.fromkeys(spec.symbol.upper() for spec in load_watchlist().tickers)
+    symbols = []
+    for raw in deduped:
+        if _SYMBOL_PATTERN.fullmatch(raw):
+            symbols.append(raw)
+        else:
+            logger.warning("Skipping invalid watchlist symbol", extra={"symbol": raw})
     try:
         closes = {row["symbol"]: row for row in get_latest_closes(symbols)}
     except BaseAppException:
@@ -352,7 +356,7 @@ def dashboard():
     rows = []
     for symbol in symbols:
         row = closes.get(symbol)
-        close = f"{row['close']:.2f}" if row else "—"
+        close = f"{row['close']:.2f}" if row and row["close"] is not None else "—"
         as_of = row["timestamp"][:10] if row else "—"
         rows.append(
             f'      <tr><td><a href="/chart/{symbol}">{symbol}</a></td>'
