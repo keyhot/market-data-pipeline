@@ -16,6 +16,7 @@ from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker_async
 from ingestion.news_fetcher import fetch_news
 from scheduler.service import SchedulerService, scheduler_enabled
+from scheduler.watchlist import load_watchlist
 from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
 from storage.filesystem import csv_write_enabled, save_csv
@@ -24,6 +25,7 @@ from storage.news_store import CsvNewsStore
 from storage.postgres_store import (
     BAR_INTERVAL,
     get_corporate_events,
+    get_latest_closes,
     get_news_items,
     get_price_bars,
 )
@@ -333,6 +335,32 @@ def stored_news(ticker_symbol: str, limit: int = Query(20, ge=1, le=100)):
 def chart(ticker_symbol: str):
     symbol = _validated_symbol(ticker_symbol)
     return HTMLResponse(_render_template("chart.html", {"__SYMBOL__": symbol}))
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    symbols = list(
+        dict.fromkeys(spec.symbol.upper() for spec in load_watchlist().tickers)
+    )
+    try:
+        closes = {row["symbol"]: row for row in get_latest_closes(symbols)}
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+
+    rows = []
+    for symbol in symbols:
+        row = closes.get(symbol)
+        close = f"{row['close']:.2f}" if row else "—"
+        as_of = row["timestamp"][:10] if row else "—"
+        rows.append(
+            f'      <tr><td><a href="/chart/{symbol}">{symbol}</a></td>'
+            f'<td class="num">{close}</td><td>{as_of}</td></tr>'
+        )
+    return HTMLResponse(
+        _render_template("dashboard.html", {"__ROWS__": "\n".join(rows)})
+    )
 
 
 @app.get("/events/{ticker_symbol}/{event_type}", response_model=ApiResponse)

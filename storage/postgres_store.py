@@ -221,6 +221,23 @@ def get_corporate_events(
     ]
 
 
+def get_latest_closes(symbols: list[str]) -> list[dict]:
+    """Newest daily close per symbol; symbols without bars are absent."""
+    if not symbols:
+        return []
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (symbol) symbol, bar_timestamp, close"
+            " FROM price_bars WHERE symbol = ANY(%s) AND interval = %s"
+            " ORDER BY symbol, bar_timestamp DESC",
+            ([s.upper() for s in symbols], BAR_INTERVAL),
+        ).fetchall()
+    return [
+        {"symbol": symbol, "timestamp": ts.isoformat(), "close": _as_float(close)}
+        for symbol, ts, close in rows
+    ]
+
+
 def get_news_items(symbol: str, limit: int = 20) -> list[dict]:
     """Latest `limit` news items for a symbol, newest first."""
     with get_pool().connection() as conn:

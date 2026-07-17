@@ -218,6 +218,16 @@ def test_get_corporate_events_filters_and_orders():
     assert len(postgres_store.get_corporate_events(BARS_SYMBOL)) == 2
 
 
+def test_get_latest_closes_returns_newest_bar_per_symbol():
+    postgres_store.upsert_price_bars(BARS_SYMBOL, "1d", _bars())
+
+    closes = postgres_store.get_latest_closes([BARS_SYMBOL, "ZZABSENT"])
+
+    assert len(closes) == 1
+    assert closes[0]["symbol"] == BARS_SYMBOL
+    assert closes[0]["close"] == 101.0
+
+
 def test_get_news_items_newest_first():
     news = pd.DataFrame(
         {
