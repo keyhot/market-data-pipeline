@@ -20,6 +20,7 @@ uvicorn api.main:app --reload
 | `GET /tickers/{range}?symbols=A,B,C` | Concurrent batch fetch for up to 10 symbols |
 | `GET /events/{symbol}/{type}` | Dividends, splits, or actions, with optional `start`/`end` filters |
 | `GET /news/{symbol}` | Latest news with `limit` and `since` filters |
+| `GET /bars/{symbol}` | Stored price bars from Postgres, oldest first (`interval`, `limit` params) |
 
 Fetched data is cached in memory (TTL via `CACHE_TTL_SECONDS`) and persisted as
 timestamped CSVs under `data/raw/`.
@@ -46,6 +47,13 @@ python scripts/backfill_postgres.py
 ```
 
 The script is rerunnable — a second run changes no row counts.
+
+Set `POSTGRES_WRITE_ENABLED=true` to dual-write: every uncached fetch (API
+endpoints and scheduler jobs) mirrors into Postgres alongside the CSV. Mirror
+failures are logged and counted on `/metrics` (`postgres_writes`), never
+surfaced to callers — CSV stays the source of truth for now. `/health` reports
+Postgres connectivity, scheduler runs are recorded in the `ingestion_runs`
+table, and `GET /bars/{symbol}` serves the stored bars.
 
 ## Tests
 
