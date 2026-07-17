@@ -10,9 +10,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from scheduler import jobs
 from scheduler.watchlist import Watchlist, load_watchlist
-from storage.dual_write import postgres_write_enabled
 from storage.postgres_store import record_ingestion_run
 from storage.state import load_state, save_state
+from storage.writes import postgres_write_enabled
 
 SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
 DEFAULT_STATE_PATH = Path(__file__).parent.parent / "data" / "scheduler_state.json"

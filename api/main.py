@@ -16,17 +16,17 @@ from ingestion.news_fetcher import fetch_news
 from scheduler.service import SchedulerService, scheduler_enabled
 from schemas.enums import EventType, TimeRange
 from schemas.responses import ApiResponse
-from storage.dual_write import (
-    mirror_events,
-    mirror_news,
-    mirror_price_bars,
-    postgres_status,
-    write_metrics,
-)
 from storage.filesystem import save_csv
 from storage.naming import raw_data_path, raw_event_path
 from storage.news_store import CsvNewsStore
 from storage.postgres_store import BAR_INTERVAL, get_price_bars
+from storage.writes import (
+    postgres_status,
+    write_events,
+    write_metrics,
+    write_news,
+    write_price_bars,
+)
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
@@ -120,9 +120,9 @@ async def _fetch_and_store_ticker(ticker_symbol: str, time_range: TimeRange) -> 
     }
 
     if not was_cached:
+        write_price_bars(ticker_symbol, data)
         path = raw_data_path(ticker_symbol, time_range)
         save_csv(path, data)
-        mirror_price_bars(ticker_symbol, data)
         logger.info("Stored ticker data", extra={"file_path": path})
         result["file_path"] = str(path)
 
@@ -215,8 +215,8 @@ def news(
     }
 
     if not was_cached:
+        write_news(ticker_symbol, items)
         path = news_store.save(ticker_symbol, items)
-        mirror_news(ticker_symbol, items)
         logger.info("Stored news", extra={"file_path": path})
         response_data["file_path"] = path
 
@@ -282,9 +282,9 @@ def event(
     }
 
     if not was_cached:
+        write_events(ticker_symbol, event_type, events)
         path = raw_event_path(ticker_symbol, event_type)
         save_csv(path, events)
-        mirror_events(ticker_symbol, event_type, events)
         logger.info("Stored events", extra={"file_path": path})
         response_data["file_path"] = str(path)
 

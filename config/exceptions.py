@@ -30,3 +30,8 @@ class DataTooLargeError(BaseAppException):
 class InvalidDateError(BaseAppException):
     def __init__(self, message: str = "Invalid date", status_code: int = 400):
         super().__init__(message, status_code)
+
+
+class StorageWriteError(BaseAppException):
+    def __init__(self, message: str = "Failed to persist data", status_code: int = 503):
+        super().__init__(message, status_code)

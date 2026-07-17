@@ -1,29 +1,32 @@
+# tests/unit/test_writes.py
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
-from storage import dual_write
-from storage.dual_write import (
+from config.exceptions import StorageWriteError
+from storage import writes
+from storage.writes import (
     POSTGRES_WRITE_ENABLED_ENV,
-    mirror_events,
-    mirror_news,
-    mirror_price_bars,
     postgres_status,
+    postgres_write_enabled,
+    write_events,
     write_metrics,
+    write_news,
+    write_price_bars,
 )
 
 
 @pytest.fixture(autouse=True)
 def reset_counts():
-    with dual_write._counts_lock:
-        saved = dict(dual_write._counts)
-        dual_write._counts.update(
+    with writes._counts_lock:
+        saved = dict(writes._counts)
+        writes._counts.update(
             {"price_bars": 0, "corporate_events": 0, "news_items": 0, "errors": 0}
         )
     yield
-    with dual_write._counts_lock:
-        dual_write._counts.update(saved)
+    with writes._counts_lock:
+        writes._counts.update(saved)
 
 
 def _bars():
@@ -33,26 +36,37 @@ def _bars():
     )
 
 
-def test_mirror_is_noop_when_flag_disabled(monkeypatch):
+def test_flag_defaults_on_when_unset(monkeypatch):
     monkeypatch.delenv(POSTGRES_WRITE_ENABLED_ENV, raising=False)
+    assert postgres_write_enabled() is True
 
-    with patch("storage.dual_write.postgres_store") as store:
-        mirror_price_bars("AAPL", _bars())
+
+def test_flag_explicit_off(monkeypatch):
+    for value in ("0", "false", "no"):
+        monkeypatch.setenv(POSTGRES_WRITE_ENABLED_ENV, value)
+        assert postgres_write_enabled() is False
+
+
+def test_write_is_noop_when_flag_disabled(monkeypatch):
+    monkeypatch.setenv(POSTGRES_WRITE_ENABLED_ENV, "0")
+
+    with patch("storage.writes.postgres_store") as store:
+        write_price_bars("AAPL", _bars())
 
     store.upsert_price_bars.assert_not_called()
     assert write_metrics()["price_bars"] == 0
 
 
-def test_mirror_counts_rows_when_enabled(monkeypatch):
+def test_write_counts_rows_when_enabled(monkeypatch):
     monkeypatch.setenv(POSTGRES_WRITE_ENABLED_ENV, "true")
 
-    with patch("storage.dual_write.postgres_store") as store:
+    with patch("storage.writes.postgres_store") as store:
         store.upsert_price_bars.return_value = 5
         store.upsert_events_snapshot.return_value = 2
         store.upsert_news.return_value = 3
-        mirror_price_bars("AAPL", _bars())
-        mirror_events("AAPL", "dividends", _bars())
-        mirror_news("AAPL", _bars())
+        write_price_bars("AAPL", _bars())
+        write_events("AAPL", "dividends", _bars())
+        write_news("AAPL", _bars())
 
     counts = write_metrics()
     assert counts["price_bars"] == 5
@@ -61,12 +75,13 @@ def test_mirror_counts_rows_when_enabled(monkeypatch):
     assert counts["errors"] == 0
 
 
-def test_mirror_swallows_postgres_failure(monkeypatch):
+def test_write_failure_raises_storage_write_error(monkeypatch):
     monkeypatch.setenv(POSTGRES_WRITE_ENABLED_ENV, "true")
 
-    with patch("storage.dual_write.postgres_store") as store:
+    with patch("storage.writes.postgres_store") as store:
         store.upsert_price_bars.side_effect = RuntimeError("db down")
-        mirror_price_bars("AAPL", _bars())
+        with pytest.raises(StorageWriteError):
+            write_price_bars("AAPL", _bars())
 
     counts = write_metrics()
     assert counts["errors"] == 1
@@ -74,9 +89,9 @@ def test_mirror_swallows_postgres_failure(monkeypatch):
 
 
 def test_postgres_status_disabled_skips_ping(monkeypatch):
-    monkeypatch.delenv(POSTGRES_WRITE_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(POSTGRES_WRITE_ENABLED_ENV, "0")
 
-    with patch("storage.dual_write.ping") as ping:
+    with patch("storage.writes.ping") as ping:
         status = postgres_status()
 
     ping.assert_not_called()
@@ -86,5 +101,5 @@ def test_postgres_status_disabled_skips_ping(monkeypatch):
 def test_postgres_status_enabled_reports_ping(monkeypatch):
     monkeypatch.setenv(POSTGRES_WRITE_ENABLED_ENV, "1")
 
-    with patch("storage.dual_write.ping", return_value=True):
+    with patch("storage.writes.ping", return_value=True):
         assert postgres_status() == {"enabled": True, "connected": True}
