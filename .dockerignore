@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+.remember
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+data/
+graphify-out/
+tests/
+docs/
+*.md
+.env

@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:16
     container_name: market-data-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-market_data}
       POSTGRES_USER: ${POSTGRES_USER:-market_data}
@@ -16,6 +17,47 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  api:
+    build: .
+    container_name: market-data-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-market_data}@postgres:5432/${POSTGRES_DB:-market_data}
+      SCHEDULER_ENABLED: "false"
+      WS_INGEST_ENABLED: "false"
+      # Postgres is the source of truth; no CSV snapshots inside containers.
+      CSV_WRITE_ENABLED: "0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  scheduler:
+    build: .
+    container_name: market-data-scheduler
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-market_data}@postgres:5432/${POSTGRES_DB:-market_data}
+      SCHEDULER_ENABLED: "true"
+      WS_INGEST_ENABLED: "true"
+      CSV_WRITE_ENABLED: "0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   postgres_data:
