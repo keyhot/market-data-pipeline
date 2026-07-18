@@ -1,6 +1,7 @@
 import logging
 import os
 
+from ingestion.binance_provider import BinanceProvider
 from ingestion.caching_provider import (
     DEFAULT_MAX_ENTRIES,
     DEFAULT_TTL_SECONDS,
@@ -13,6 +14,7 @@ CACHE_TTL_ENV = "CACHE_TTL_SECONDS"
 CACHE_MAX_ENTRIES_ENV = "CACHE_MAX_ENTRIES"
 
 _default_provider: MarketDataProvider | None = None
+_crypto_provider: MarketDataProvider | None = None
 _logger = logging.getLogger(__name__)
 
 
@@ -46,6 +48,18 @@ def get_default_provider() -> MarketDataProvider:
     return _default_provider
 
 
+def get_crypto_provider() -> MarketDataProvider:
+    global _crypto_provider
+    if _crypto_provider is None:
+        ttl = _read_positive_int(CACHE_TTL_ENV, DEFAULT_TTL_SECONDS)
+        max_entries = _read_positive_int(CACHE_MAX_ENTRIES_ENV, DEFAULT_MAX_ENTRIES)
+        _crypto_provider = CachingProvider(
+            BinanceProvider(), ttl_seconds=ttl, max_entries=max_entries
+        )
+    return _crypto_provider
+
+
 def reset_default_provider() -> None:
-    global _default_provider
+    global _default_provider, _crypto_provider
     _default_provider = None
+    _crypto_provider = None

@@ -16,10 +16,14 @@ class WatchlistError(Exception):
     pass
 
 
+VALID_MARKETS = {"equity", "crypto"}
+
+
 @dataclass(frozen=True)
 class TickerJobSpec:
     symbol: str
     time_range: str
+    market: str = "equity"
 
 
 @dataclass(frozen=True)
@@ -52,13 +56,21 @@ def load_watchlist(path: Path = DEFAULT_WATCHLIST_PATH) -> Watchlist:
     tickers = []
     for entry in raw.get("tickers") or []:
         symbol = _read_symbol(entry)
+        market = entry.get("market", "equity")
+        if market not in VALID_MARKETS:
+            raise WatchlistError(
+                f"Invalid market {market!r} for {symbol}; "
+                f"valid: {sorted(VALID_MARKETS)}"
+            )
         for time_range in entry.get("time_ranges") or []:
             if time_range not in _VALID_TIME_RANGES:
                 raise WatchlistError(
                     f"Invalid time_range {time_range!r} for {symbol}; "
                     f"valid: {sorted(_VALID_TIME_RANGES)}"
                 )
-            tickers.append(TickerJobSpec(symbol=symbol, time_range=time_range))
+            tickers.append(
+                TickerJobSpec(symbol=symbol, time_range=time_range, market=market)
+            )
 
     events = []
     for entry in raw.get("events") or []:

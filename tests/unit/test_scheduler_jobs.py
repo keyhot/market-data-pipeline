@@ -15,6 +15,12 @@ def fresh_provider():
     factory.reset_default_provider()
 
 
+@pytest.fixture(autouse=True)
+def market_always_open(monkeypatch):
+    """Equity-job tests must not depend on the wall clock."""
+    monkeypatch.setattr("scheduler.jobs.is_equity_market_open", lambda: True)
+
+
 @patch("scheduler.jobs.save_csv")
 @patch("ingestion.yfinance_provider.yf.Ticker")
 def test_ticker_job_fetches_and_saves(mock_ticker, mock_save):

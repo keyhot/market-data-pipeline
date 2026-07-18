@@ -11,6 +11,12 @@ tickers:
     time_ranges: [1d]
   - symbol: GOOG
     time_ranges: [1d]
+  - symbol: BTCUSDT
+    time_ranges: [1d]
+    market: crypto
+  - symbol: ETHUSDT
+    time_ranges: [1d]
+    market: crypto
 
 events:
   - symbol: AAPL

@@ -34,7 +34,7 @@ def test_scheduler_enabled_reads_env(monkeypatch):
 def test_start_registers_jobs_and_runs_them_immediately():
     ran = {"ticker": threading.Event(), "events": threading.Event()}
 
-    def fake_ticker_job(symbol, time_range):
+    def fake_ticker_job(symbol, time_range, market="equity"):
         ran["ticker"].set()
         return {}
 
@@ -65,7 +65,7 @@ def test_start_registers_jobs_and_runs_them_immediately():
 def test_job_failure_recorded_not_fatal():
     ran = threading.Event()
 
-    def failing_job(symbol, time_range):
+    def failing_job(symbol, time_range, market="equity"):
         ran.set()
         raise RuntimeError("boom")
 
@@ -94,7 +94,7 @@ def test_start_skips_jobs_with_recent_ingestion_run(monkeypatch):
     )
     ran = threading.Event()
 
-    def fake_job(symbol, time_range):
+    def fake_job(symbol, time_range, market="equity"):
         ran.set()
         return {}
 

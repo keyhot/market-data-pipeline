@@ -50,7 +50,7 @@ class SchedulerService:
             self._add_job(
                 f"ticker:{spec.symbol}:{spec.time_range}",
                 jobs.run_ticker_job,
-                (spec.symbol, spec.time_range),
+                (spec.symbol, spec.time_range, spec.market),
                 watchlist.interval_seconds,
             )
         for spec in watchlist.events:
