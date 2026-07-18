@@ -68,3 +68,34 @@ def test_ticker_job_propagates_domain_errors(mock_ticker, mock_save):
         run_ticker_job("AAPL", "1d")
 
     mock_save.assert_not_called()
+
+
+@patch("scheduler.jobs.save_csv")
+def test_equity_job_skipped_when_market_closed(mock_save, monkeypatch):
+    monkeypatch.setattr("scheduler.jobs.is_equity_market_open", lambda: False)
+
+    result = run_ticker_job("AAPL", "1d")
+
+    assert result["skipped"] == "market_closed"
+    assert mock_save.call_count == 0
+
+
+@patch("scheduler.jobs.save_csv")
+def test_crypto_job_ignores_market_hours_and_uses_crypto_provider(
+    mock_save, monkeypatch
+):
+    monkeypatch.setattr("scheduler.jobs.is_equity_market_open", lambda: False)
+
+    class FakeCrypto:
+        def peek_history(self, symbol, time_range):
+            return None
+
+        def get_history(self, symbol, time_range):
+            return pd.DataFrame({"Close": [1.0, 2.0, 3.0]})
+
+    monkeypatch.setattr("scheduler.jobs.get_crypto_provider", lambda: FakeCrypto())
+
+    result = run_ticker_job("BTCUSDT", "1d", market="crypto")
+
+    assert result["rows"] == 3
+    assert result["cached"] is False

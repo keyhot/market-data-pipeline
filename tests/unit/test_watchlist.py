@@ -82,3 +82,33 @@ def test_checked_in_watchlist_is_valid():
     watchlist = load_watchlist(DEFAULT_WATCHLIST_PATH)
 
     assert watchlist.tickers
+
+
+def test_crypto_market_parsed(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        "tickers:\n"
+        "  - symbol: BTCUSDT\n"
+        "    time_ranges: [1d]\n"
+        "    market: crypto\n"
+        "  - symbol: AAPL\n"
+        "    time_ranges: [1d]\n",
+    )
+
+    watchlist = load_watchlist(path)
+
+    assert watchlist.tickers[0].market == "crypto"
+    assert watchlist.tickers[1].market == "equity"
+
+
+def test_invalid_market_rejected(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        "tickers:\n"
+        "  - symbol: BTCUSDT\n"
+        "    time_ranges: [1d]\n"
+        "    market: forex\n",
+    )
+
+    with pytest.raises(WatchlistError, match="market"):
+        load_watchlist(path)
