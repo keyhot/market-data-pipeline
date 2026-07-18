@@ -11,6 +11,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
 from config.exceptions import BaseAppException, NoDataFoundError
 from config.logging import init_logging
+from ingestion.binance_ws import (
+    BinanceKlineIngester,
+    crypto_watchlist_symbols,
+    ws_ingest_enabled,
+)
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_default_provider
 from ingestion.fetcher import fetch_ticker_async
@@ -45,7 +50,19 @@ news_store = CsvNewsStore()
 async def lifespan(app: FastAPI):
     if scheduler_enabled():
         scheduler_service.start()
+    ws_task: asyncio.Task | None = None
+    if ws_ingest_enabled():
+        symbols = crypto_watchlist_symbols(load_watchlist())
+        if symbols:
+            ingester = BinanceKlineIngester(symbols)
+            ws_task = asyncio.create_task(ingester.run())
     yield
+    if ws_task is not None:
+        ws_task.cancel()
+        try:
+            await ws_task
+        except asyncio.CancelledError:
+            pass
     scheduler_service.shutdown()
 
 

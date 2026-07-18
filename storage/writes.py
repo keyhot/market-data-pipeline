@@ -41,11 +41,13 @@ def write_metrics() -> dict:
         return dict(_counts)
 
 
-def write_price_bars(symbol: str, bars: pd.DataFrame) -> None:
+def write_price_bars(
+    symbol: str, bars: pd.DataFrame, interval: str | None = None
+) -> None:
     _write(
         "price_bars",
         lambda: postgres_store.upsert_price_bars(
-            symbol, postgres_store.BAR_INTERVAL, bars
+            symbol, interval or postgres_store.BAR_INTERVAL, bars
         ),
     )
 

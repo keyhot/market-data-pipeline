@@ -120,6 +120,18 @@ def get_price_bars(
     ]
 
 
+def latest_bar_timestamp(symbol: str, interval: str = BAR_INTERVAL) -> datetime | None:
+    """Newest stored bar for a symbol/interval; None when nothing is stored.
+    Used by the websocket ingester to bound its reconnect gap backfill."""
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT max(bar_timestamp) FROM price_bars"
+            " WHERE symbol = %s AND interval = %s",
+            (symbol.upper(), interval),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def record_ingestion_run(
     job_id: str,
     started_at: datetime,
