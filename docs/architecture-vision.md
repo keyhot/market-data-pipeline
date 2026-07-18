@@ -68,16 +68,18 @@ director, backed by Postgres):
 └──────────────────────────────┘   └───────────────────┘
 ```
 
-## Data plane (L1 done, L2 done — Sprint 7)
+## Data plane (L1 done, L2 done — Sprint 7; live crypto — Sprint 8)
 
 - What exists: FastAPI + provider abstraction + APScheduler watchlist ingester;
   Postgres is now the primary store (mandatory writes, CSV snapshots optional
   — see `postgres-schema-spike.md` for the schema and the cutover rationale).
-- Real-time upgrade (later): swap yfinance for a websocket source via the
-  existing `MarketDataProvider` abstraction. Candidates: Polygon.io, Alpaca
-  Market Data, Finnhub, Databento.
+- Real-time (Sprint 8, done for crypto): `BinanceProvider` (public REST) plus
+  a websocket 1m-kline ingester (`ingestion/binance_ws.py`) with reconnect
+  gap-backfill; equity jobs are market-hours aware. A paid equities websocket
+  (Polygon.io, Alpaca, Finnhub, Databento) remains a later swap via the same
+  `MarketDataProvider` abstraction.
 - 24/7 constraint: equity markets close nights/weekends — crypto websockets
-  (Binance/Coinbase) are the free, truly-24/7 filler.
+  (Binance) are the free, truly-24/7 filler. Live since Sprint 8.
 - When intraday ticks land: add the TimescaleDB extension (hypertables,
   compression, continuous aggregates). Keep APScheduler; no Kafka/Celery at
   solo scale.

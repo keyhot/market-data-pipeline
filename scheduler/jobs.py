@@ -44,6 +44,17 @@ def run_ticker_job(symbol: str, time_range: str, market: str = "equity") -> dict
 
 
 def run_event_job(symbol: str, event_type: str) -> dict:
+    # Corporate events are an equity-only concept; skip off-hours like tickers
+    # (yfinance fetches full history under the hood even for dividends).
+    if not is_equity_market_open():
+        result = {
+            "symbol": symbol,
+            "event_type": event_type,
+            "skipped": "market_closed",
+        }
+        logger.info("Skipping equity event fetch, market closed", extra=result)
+        return result
+
     was_cached = get_default_provider().peek_events(symbol, event_type) is not None
 
     events = fetch_events(symbol, event_type)

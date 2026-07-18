@@ -99,3 +99,13 @@ def test_crypto_job_ignores_market_hours_and_uses_crypto_provider(
 
     assert result["rows"] == 3
     assert result["cached"] is False
+
+
+@patch("scheduler.jobs.save_csv")
+def test_event_job_skipped_when_market_closed(mock_save, monkeypatch):
+    monkeypatch.setattr("scheduler.jobs.is_equity_market_open", lambda: False)
+
+    result = run_event_job("AAPL", "dividends")
+
+    assert result["skipped"] == "market_closed"
+    assert mock_save.call_count == 0

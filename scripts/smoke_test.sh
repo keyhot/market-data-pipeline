@@ -41,8 +41,10 @@ curl -fsS "$API/chart/$SYMBOL?interval=1m" | grep -q "const SYMBOL = \"$SYMBOL\"
   || fail "/chart page did not render"
 
 say "asserting /stream/bars/$SYMBOL emits (SSE)…"
-timeout 10 curl -fsSN "$API/stream/bars/$SYMBOL?interval=1m&poll_seconds=1" \
-  | head -c 1 >/dev/null || fail "SSE stream produced no output"
+# `|| true` guards curl's SIGPIPE exit when head closes the pipe (pipefail).
+SSE_HEAD=$(timeout 10 curl -sN "$API/stream/bars/$SYMBOL?interval=1m&poll_seconds=1" \
+  | head -c 20 || true)
+[ -n "$SSE_HEAD" ] || fail "SSE stream produced no output"
 
 if [ "${KEEP_DOWN:-0}" = "1" ]; then
   say "compose down…"

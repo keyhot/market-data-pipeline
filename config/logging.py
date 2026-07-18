@@ -41,7 +41,10 @@ def sanitize(obj):
 def init_logging(log_level: str = "DEBUG") -> logging.Logger:
     LOGGING_CONFIG = {
         "version": 1,
-        "disable_existing_loggers": True,
+        # Must stay False: app module loggers (scheduler.jobs, ingestion.*)
+        # are created at import time, before init_logging() runs — True
+        # silently disables them all (found during Sprint 8 smoke testing).
+        "disable_existing_loggers": False,
         "formatters": {
             "default": {
                 "format": "%(asctime)s | [%(levelname)s] | %(name)s | %(message)s",
