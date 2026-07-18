@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import time
 from contextlib import asynccontextmanager
@@ -6,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
 from config.exceptions import BaseAppException, NoDataFoundError
@@ -348,10 +349,55 @@ def stored_news(ticker_symbol: str, limit: int = Query(20, ge=1, le=100)):
     )
 
 
-@app.get("/chart/{ticker_symbol}", response_class=HTMLResponse)
-def chart(ticker_symbol: str):
+@app.get("/stream/bars/{ticker_symbol}")
+async def stream_bars(
+    ticker_symbol: str,
+    interval: str = BAR_INTERVAL,
+    poll_seconds: float = Query(3.0, ge=0.5, le=60.0),
+):
+    """Server-Sent Events: emits each bar stored after the client connected.
+    Polls Postgres — works across containers, and EventSource auto-reconnects."""
     symbol = _validated_symbol(ticker_symbol)
-    return HTMLResponse(_render_template("chart.html", {"__SYMBOL__": symbol}))
+    return StreamingResponse(
+        _bar_event_stream(symbol, interval, poll_seconds),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+async def _bar_event_stream(symbol: str, interval: str, poll_seconds: float):
+    last_ts: str | None = None
+    while True:
+        try:
+            stored = await asyncio.to_thread(get_price_bars, symbol, interval, 10)
+        except Exception:
+            stored = []  # transient DB failure: keep the stream alive
+        if stored:
+            if last_ts is None:
+                # Bars from before the connect; the page fetched those via /bars.
+                last_ts = stored[-1]["timestamp"]
+            else:
+                for bar in stored:
+                    if bar["timestamp"] > last_ts:
+                        last_ts = bar["timestamp"]
+                        yield f"data: {json.dumps(bar)}\n\n"
+        yield ": keepalive\n\n"
+        await asyncio.sleep(poll_seconds)
+
+
+_ALLOWED_CHART_INTERVALS = {"1d", "1m"}
+
+
+@app.get("/chart/{ticker_symbol}", response_class=HTMLResponse)
+def chart(ticker_symbol: str, interval: str = BAR_INTERVAL):
+    symbol = _validated_symbol(ticker_symbol)
+    if interval not in _ALLOWED_CHART_INTERVALS:
+        raise BaseAppException(f"Invalid interval: {interval!r}", status_code=400)
+    return HTMLResponse(
+        _render_template(
+            "chart.html", {"__SYMBOL__": symbol, "__INTERVAL__": interval}
+        )
+    )
 
 
 @app.get("/dashboard", response_class=HTMLResponse)

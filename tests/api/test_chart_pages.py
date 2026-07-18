@@ -13,9 +13,11 @@ def test_chart_page_serves_html_with_symbol():
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "AAPL" in response.text
-    assert "/bars/AAPL" in response.text
+    assert 'const SYMBOL = "AAPL"' in response.text
+    assert 'const INTERVAL = "1d"' in response.text
+    assert "/stream/bars/" in response.text
     assert "__SYMBOL__" not in response.text
+    assert "__INTERVAL__" not in response.text
 
 
 def test_chart_page_rejects_injection_attempts():

@@ -33,10 +33,42 @@
           crossorigin="anonymous"></script>
   <script>
     const SYMBOL = "__SYMBOL__";
+    const INTERVAL = "__INTERVAL__";
     const status = document.getElementById("status");
 
+    // Daily bars use a date string; intraday bars need UNIX seconds.
+    function barTime(timestamp) {
+      return INTERVAL === "1d"
+        ? timestamp.slice(0, 10)
+        : Math.floor(Date.parse(timestamp) / 1000);
+    }
+
+    function toCandle(bar) {
+      return {
+        time: barTime(bar.timestamp),
+        open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+      };
+    }
+
+    function watchLive(series) {
+      const source = new EventSource(
+        `/stream/bars/${SYMBOL}?interval=${INTERVAL}`
+      );
+      source.onmessage = (event) => {
+        const bar = JSON.parse(event.data);
+        series.update(toCandle(bar));
+        status.textContent =
+          `Live · last ${INTERVAL} bar ${bar.timestamp} close ${bar.close}`;
+      };
+      source.onerror = () => {
+        status.textContent = "Live stream reconnecting…";
+      };
+    }
+
     async function draw() {
-      const response = await fetch(`/bars/__SYMBOL__?limit=250`);
+      const response = await fetch(
+        `/bars/${SYMBOL}?limit=250&interval=${INTERVAL}`
+      );
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         status.textContent =
@@ -44,10 +76,7 @@
         return;
       }
       const { data } = await response.json();
-      const candles = data.bars.map((bar) => ({
-        time: bar.timestamp.slice(0, 10),
-        open: bar.open, high: bar.high, low: bar.low, close: bar.close,
-      }));
+      const candles = data.bars.map(toCandle);
 
       const chart = LightweightCharts.createChart(
         document.getElementById("chart"),
@@ -58,11 +87,14 @@
             horzLines: { color: "#1e222d" },
           },
           autoSize: true,
+          timeScale: { timeVisible: INTERVAL !== "1d" },
         }
       );
-      chart.addCandlestickSeries().setData(candles);
+      const series = chart.addCandlestickSeries();
+      series.setData(candles);
       chart.timeScale().fitContent();
-      status.textContent = `${data.count} daily bars from Postgres`;
+      status.textContent = `${data.count} ${INTERVAL} bars from Postgres`;
+      watchLive(series);
     }
 
     draw().catch((err) => { status.textContent = `Failed to load: ${err}`; });
