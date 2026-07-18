@@ -29,11 +29,14 @@ TEST_JOB_ID = "test:ZZTEST:1d"
 
 def _delete_test_rows():
     with get_pool().connection() as conn:
-        for table in ("price_bars", "corporate_events", "news_items"):
+        for table in ("price_bars", "corporate_events", "news_items", "signals"):
             conn.execute(
                 f"DELETE FROM {table} WHERE symbol = ANY(%s)", (_TEST_SYMBOLS,)
             )
         conn.execute("DELETE FROM ingestion_runs WHERE job_id = %s", (TEST_JOB_ID,))
+        conn.execute(
+            "DELETE FROM world_events WHERE symbol = ANY(%s)", (_TEST_SYMBOLS,)
+        )
 
 
 def _count(table: str, symbol: str) -> int:
@@ -244,3 +247,52 @@ def test_get_news_items_newest_first():
     items = postgres_store.get_news_items(BARS_SYMBOL)
 
     assert [i["title"] for i in items] == ["new", "old"]
+
+
+def test_signals_upsert_is_idempotent():
+    from datetime import datetime, timezone
+
+    ts = datetime(2026, 7, 19, tzinfo=timezone.utc)
+    signal = {
+        "symbol": BARS_SYMBOL,
+        "interval": "1m",
+        "signal_timestamp": ts,
+        "model_version": "test-v0",
+        "horizon_bars": 15,
+        "direction": "up",
+        "probability": 0.55,
+    }
+    postgres_store.upsert_signals([signal])
+    postgres_store.upsert_signals([{**signal, "probability": 0.6}])
+
+    rows = postgres_store.get_signals(BARS_SYMBOL, "1m")
+
+    assert len(rows) == 1
+    assert rows[0]["probability"] == 0.6
+    assert rows[0]["outcome"] is None
+
+
+def test_world_events_append_and_read_back():
+    from datetime import datetime, timezone
+
+    ts = datetime(2026, 7, 19, tzinfo=timezone.utc)
+    postgres_store.append_world_events(
+        [
+            {
+                "occurred_at": ts,
+                "event_type": "volatility_spike",
+                "symbol": BARS_SYMBOL,
+                "severity": 3.2,
+                "payload": {"zscore": 3.2},
+            }
+        ]
+    )
+
+    events = postgres_store.get_world_events(symbol=BARS_SYMBOL)
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "volatility_spike"
+    assert events[0]["payload"] == {"zscore": 3.2}
+    assert postgres_store.latest_world_event_time(
+        "volatility_spike", BARS_SYMBOL
+    ) == ts

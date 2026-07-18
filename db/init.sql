@@ -54,3 +54,39 @@ CREATE TABLE ingestion_runs (
     rows_written INTEGER,
     error       TEXT
 );
+
+-- Model plane (Sprint 9): one row per prediction. resolved_at/outcome are
+-- filled by the Sprint 10 resolver; signals is the only model/world table
+-- where UPDATE is permitted (resolution only).
+CREATE TABLE signals (
+    symbol           TEXT        NOT NULL,
+    interval         TEXT        NOT NULL,        -- bar granularity the model ran on
+    signal_timestamp TIMESTAMPTZ NOT NULL,        -- the bar the prediction is made AT
+    model_version    TEXT        NOT NULL,        -- date + git sha, see model/train.py
+    horizon_bars     INTEGER     NOT NULL,
+    direction        TEXT        NOT NULL,        -- 'up' | 'down'
+    probability      DOUBLE PRECISION NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at      TIMESTAMPTZ,
+    outcome          TEXT,                        -- 'win' | 'loss' (NULL = pending)
+    PRIMARY KEY (symbol, interval, signal_timestamp, model_version)
+);
+
+CREATE INDEX idx_signals_unresolved ON signals (symbol, signal_timestamp)
+    WHERE resolved_at IS NULL;
+
+-- The Living World's memory (Sprint 9): append-only — application code has
+-- no UPDATE or DELETE path, by design. History (including failures)
+-- accumulates forever. See docs/world-memory.md.
+CREATE TABLE world_events (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    event_type  TEXT        NOT NULL,             -- 'volatility_spike' | 'gap_open' | ...
+    symbol      TEXT,                             -- NULL for market-wide events
+    severity    DOUBLE PRECISION NOT NULL,        -- salience score, higher = more notable
+    payload     JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_world_events_time ON world_events (occurred_at DESC);
+CREATE INDEX idx_world_events_type_time ON world_events (event_type, occurred_at DESC);

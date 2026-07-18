@@ -179,6 +179,136 @@ def upsert_news(symbol: str, news: pd.DataFrame) -> int:
     return _executemany(_NEWS_SQL, rows)
 
 
+_SIGNALS_SQL = """
+    INSERT INTO signals
+        (symbol, interval, signal_timestamp, model_version, horizon_bars,
+         direction, probability)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (symbol, interval, signal_timestamp, model_version) DO UPDATE SET
+        horizon_bars = EXCLUDED.horizon_bars,
+        direction = EXCLUDED.direction,
+        probability = EXCLUDED.probability
+"""
+
+
+def upsert_signals(signals: list[dict]) -> int:
+    """Idempotent signal upsert; re-predicting the same bar never duplicates.
+    Resolution columns (resolved_at, outcome) are owned by the Sprint 10
+    resolver and deliberately untouched here."""
+    rows = [
+        (
+            s["symbol"].upper(),
+            s["interval"],
+            _as_datetime(s["signal_timestamp"]),
+            s["model_version"],
+            int(s["horizon_bars"]),
+            s["direction"],
+            float(s["probability"]),
+        )
+        for s in signals
+    ]
+    return _executemany(_SIGNALS_SQL, rows)
+
+
+def get_signals(
+    symbol: str, interval: str = BAR_INTERVAL, limit: int = 50
+) -> list[dict]:
+    """Latest signals for a symbol, newest first, outcomes included."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT signal_timestamp, model_version, horizon_bars, direction,"
+            " probability, resolved_at, outcome FROM signals"
+            " WHERE symbol = %s AND interval = %s"
+            " ORDER BY signal_timestamp DESC LIMIT %s",
+            (symbol.upper(), interval, limit),
+        ).fetchall()
+    return [
+        {
+            "signal_timestamp": ts.isoformat(),
+            "model_version": version,
+            "horizon_bars": horizon,
+            "direction": direction,
+            "probability": probability,
+            "resolved_at": resolved.isoformat() if resolved else None,
+            "outcome": outcome,
+        }
+        for ts, version, horizon, direction, probability, resolved, outcome in rows
+    ]
+
+
+_WORLD_EVENTS_SQL = """
+    INSERT INTO world_events (occurred_at, event_type, symbol, severity, payload)
+    VALUES (%s, %s, %s, %s, %s)
+"""
+
+
+def append_world_events(events: list[dict]) -> int:
+    """Append-only by design: the world's memory has no update or delete
+    path anywhere in application code (docs/world-memory.md)."""
+    import json as _json
+
+    rows = [
+        (
+            _as_datetime(e["occurred_at"]),
+            e["event_type"],
+            e.get("symbol", "").upper() or None,
+            float(e["severity"]),
+            _json.dumps(e.get("payload", {})),
+        )
+        for e in events
+    ]
+    return _executemany(_WORLD_EVENTS_SQL, rows)
+
+
+def get_world_events(
+    limit: int = 50,
+    event_type: str | None = None,
+    symbol: str | None = None,
+    since: datetime | None = None,
+) -> list[dict]:
+    """Latest world events, newest first."""
+    clauses, params = [], []
+    if event_type is not None:
+        clauses.append("event_type = %s")
+        params.append(event_type)
+    if symbol is not None:
+        clauses.append("symbol = %s")
+        params.append(symbol.upper())
+    if since is not None:
+        clauses.append("occurred_at > %s")
+        params.append(since)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT id, occurred_at, event_type, symbol, severity, payload"
+            f" FROM world_events{where} ORDER BY occurred_at DESC, id DESC LIMIT %s",
+            (*params, limit),
+        ).fetchall()
+    return [
+        {
+            "id": event_id,
+            "occurred_at": occurred.isoformat(),
+            "event_type": etype,
+            "symbol": sym,
+            "severity": severity,
+            "payload": payload,
+        }
+        for event_id, occurred, etype, sym, severity, payload in rows
+    ]
+
+
+def latest_world_event_time(event_type: str, symbol: str | None) -> datetime | None:
+    """Newest occurrence of an event type (per symbol) — the salience
+    cooldown guard derives its state from here, not from process memory."""
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT max(occurred_at) FROM world_events"
+            " WHERE event_type = %s AND symbol IS NOT DISTINCT FROM %s",
+            (event_type, symbol.upper() if symbol else None),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def _executemany(sql: str, rows: list[tuple]) -> int:
     if not rows:
         return 0
