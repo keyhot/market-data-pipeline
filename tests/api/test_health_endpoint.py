@@ -37,4 +37,10 @@ def test_metrics_includes_postgres_write_counters():
     response = client.get("/metrics")
 
     writes = response.json()["data"]["postgres_writes"]
-    assert set(writes) == {"price_bars", "corporate_events", "news_items", "errors"}
+    assert set(writes) == {
+        "price_bars",
+        "corporate_events",
+        "news_items",
+        "signals",
+        "errors",
+    }
