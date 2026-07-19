@@ -65,6 +65,13 @@ class SchedulerService:
                     (symbol, "1m"),
                     watchlist.interval_seconds,
                 )
+            if postgres_write_enabled():
+                self._add_job(
+                    "resolver:signals",
+                    jobs.run_resolver_job,
+                    (),
+                    watchlist.interval_seconds,
+                )
         for spec in watchlist.events:
             self._add_job(
                 f"events:{spec.symbol}:{spec.event_type}",

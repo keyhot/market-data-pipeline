@@ -101,3 +101,16 @@ def run_salience_job(symbol: str, interval: str = "1m") -> dict:
     }
     logger.info("Salience job complete", extra=result)
     return result
+
+
+def run_resolver_job() -> dict:
+    """Resolve signals past their horizon into public win/loss world events."""
+    from world.resolver import resolve_pending
+
+    resolutions = resolve_pending()
+    result = {
+        "resolved": len(resolutions),
+        "outcomes": sorted({r["outcome"] for r in resolutions}),
+    }
+    logger.info("Resolver job complete", extra=result)
+    return result

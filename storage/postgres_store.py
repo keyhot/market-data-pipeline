@@ -236,6 +236,62 @@ def get_signals(
     ]
 
 
+def get_unresolved_signals(limit: int = 500) -> list[dict]:
+    """Pending signals, oldest first — the resolver's work queue."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT symbol, interval, signal_timestamp, model_version,"
+            " horizon_bars, direction, probability FROM signals"
+            " WHERE resolved_at IS NULL ORDER BY signal_timestamp LIMIT %s",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "symbol": symbol,
+            "interval": interval,
+            "signal_timestamp": ts,
+            "model_version": version,
+            "horizon_bars": horizon,
+            "direction": direction,
+            "probability": probability,
+        }
+        for symbol, interval, ts, version, horizon, direction, probability in rows
+    ]
+
+
+def resolve_signal(
+    symbol: str,
+    interval: str,
+    signal_timestamp: datetime,
+    model_version: str,
+    outcome: str,
+) -> int:
+    """The single sanctioned signals UPDATE (docs/world-memory.md): fill
+    resolved_at/outcome exactly once — the resolved_at guard makes re-runs
+    no-ops, so restarts can't double-resolve."""
+    with get_pool().connection() as conn:
+        cursor = conn.execute(
+            "UPDATE signals SET resolved_at = now(), outcome = %s"
+            " WHERE symbol = %s AND interval = %s AND signal_timestamp = %s"
+            " AND model_version = %s AND resolved_at IS NULL",
+            (outcome, symbol.upper(), interval, signal_timestamp, model_version),
+        )
+        return cursor.rowcount
+
+
+def get_bar_close(
+    symbol: str, interval: str, bar_timestamp: datetime
+) -> float | None:
+    """Close of one exact stored bar; None when that bar is missing."""
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT close FROM price_bars WHERE symbol = %s AND interval = %s"
+            " AND bar_timestamp = %s",
+            (symbol.upper(), interval, bar_timestamp),
+        ).fetchone()
+    return _as_float(row[0]) if row else None
+
+
 _WORLD_EVENTS_SQL = """
     INSERT INTO world_events (occurred_at, event_type, symbol, severity, payload)
     VALUES (%s, %s, %s, %s, %s)
