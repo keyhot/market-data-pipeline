@@ -1,14 +1,21 @@
 import logging
 
+import pandas as pd
+
 from ingestion.event_fetcher import fetch_events
 from ingestion.factory import get_crypto_provider, get_default_provider
 from ingestion.fetcher import fetch_ticker
 from scheduler.market_hours import is_equity_market_open
 from storage.filesystem import csv_write_enabled, save_csv
 from storage.naming import raw_data_path, raw_event_path
+from storage.postgres_store import get_price_bars
 from storage.writes import write_events, write_price_bars
+from world.events import record_salient_events
 
 logger = logging.getLogger(__name__)
+
+# Rolling stats need vol_window + lookback; fetch with slack.
+_SALIENCE_BARS_LIMIT = 120
 
 
 def run_ticker_job(symbol: str, time_range: str, market: str = "equity") -> dict:
@@ -73,4 +80,24 @@ def run_event_job(symbol: str, event_type: str) -> dict:
             result["file_path"] = str(path)
 
     logger.info("Scheduled event fetch complete", extra=result)
+    return result
+
+
+def run_salience_job(symbol: str, interval: str = "1m") -> dict:
+    """Evaluate salience rules over recent stored bars; append world events.
+    Crypto-only for now (runs 24/7 off the websocket-ingested 1m stream)."""
+    bars = pd.DataFrame(get_price_bars(symbol, interval, _SALIENCE_BARS_LIMIT))
+    if bars.empty:
+        result = {"symbol": symbol, "skipped": "no_stored_bars"}
+        logger.info("Salience skipped, no bars", extra=result)
+        return result
+
+    events = record_salient_events(symbol, bars)
+    result = {
+        "symbol": symbol,
+        "interval": interval,
+        "events": len(events),
+        "event_types": sorted({e["event_type"] for e in events}),
+    }
+    logger.info("Salience job complete", extra=result)
     return result

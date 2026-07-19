@@ -11,6 +11,7 @@ from scheduler import jobs
 from scheduler.watchlist import Watchlist, load_watchlist
 from storage.postgres_store import latest_success_times, record_ingestion_run
 from storage.writes import postgres_write_enabled
+from world.salience import salience_enabled
 
 SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
 
@@ -53,6 +54,17 @@ class SchedulerService:
                 (spec.symbol, spec.time_range, spec.market),
                 watchlist.interval_seconds,
             )
+        if salience_enabled():
+            crypto_symbols = dict.fromkeys(
+                spec.symbol for spec in watchlist.tickers if spec.market == "crypto"
+            )
+            for symbol in crypto_symbols:
+                self._add_job(
+                    f"salience:{symbol}:1m",
+                    jobs.run_salience_job,
+                    (symbol, "1m"),
+                    watchlist.interval_seconds,
+                )
         for spec in watchlist.events:
             self._add_job(
                 f"events:{spec.symbol}:{spec.event_type}",
