@@ -34,7 +34,11 @@ from storage.postgres_store import (
     get_latest_closes,
     get_news_items,
     get_price_bars,
+    get_signal_accuracy,
+    get_signals,
+    get_world_events,
 )
+from world.salience import KNOWN_EVENT_TYPES
 from storage.writes import (
     postgres_status,
     write_events,
@@ -381,6 +385,104 @@ async def _bar_event_stream(symbol: str, interval: str, poll_seconds: float):
                     if bar["timestamp"] > last_ts:
                         last_ts = bar["timestamp"]
                         yield f"data: {json.dumps(bar)}\n\n"
+        yield ": keepalive\n\n"
+        await asyncio.sleep(poll_seconds)
+
+
+@app.get("/world/events", response_model=ApiResponse)
+def world_events(
+    limit: int = Query(50, ge=1, le=500),
+    event_type: str | None = None,
+    symbol: str | None = None,
+    since: str | None = None,
+):
+    if event_type is not None and event_type not in KNOWN_EVENT_TYPES:
+        raise BaseAppException(
+            f"Unknown event type: {event_type!r}", status_code=400
+        )
+    validated_symbol = _validated_symbol(symbol) if symbol else None
+    since_dt = None
+    if since is not None:
+        try:
+            since_dt = pd.Timestamp(since).to_pydatetime()
+        except ValueError:
+            raise BaseAppException(f"Invalid since: {since!r}", status_code=400)
+    try:
+        events = get_world_events(
+            limit=limit,
+            event_type=event_type,
+            symbol=validated_symbol,
+            since=since_dt,
+        )
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+    if not events:
+        raise NoDataFoundError("No world events for the given parameters")
+    return ApiResponse(
+        status=200, data={"count": len(events), "events": events}
+    )
+
+
+@app.get("/signals/{ticker_symbol}", response_model=ApiResponse)
+def signals(
+    ticker_symbol: str,
+    interval: str = "1m",
+    limit: int = Query(50, ge=1, le=500),
+):
+    symbol = _validated_symbol(ticker_symbol)
+    try:
+        stored = get_signals(symbol, interval, limit)
+        accuracy = get_signal_accuracy(symbol, interval)
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+    if not stored:
+        raise NoDataFoundError("No signals stored for the given parameters")
+    return ApiResponse(
+        status=200,
+        data={
+            "ticker": symbol,
+            "interval": interval,
+            "count": len(stored),
+            "signals": stored,
+            "accuracy": accuracy,
+        },
+    )
+
+
+@app.get("/stream/world/events")
+async def stream_world_events(
+    poll_seconds: float = Query(3.0, ge=0.5, le=60.0),
+):
+    """SSE: emits world events stored after the client connected."""
+    return StreamingResponse(
+        _world_event_stream(poll_seconds),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+async def _world_event_stream(poll_seconds: float):
+    last_id: int | None = None
+    while True:
+        try:
+            stored = await asyncio.to_thread(get_world_events, 20)
+        except Exception:
+            stored = []  # transient DB failure: keep the stream alive
+        if stored:
+            newest_first = stored  # reader returns newest first
+            if last_id is None:
+                # Events from before the connect; the page fetched those
+                # via /world/events.
+                last_id = newest_first[0]["id"]
+            else:
+                fresh = [e for e in newest_first if e["id"] > last_id]
+                for event in reversed(fresh):  # emit oldest first
+                    last_id = max(last_id, event["id"])
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
         yield ": keepalive\n\n"
         await asyncio.sleep(poll_seconds)
 

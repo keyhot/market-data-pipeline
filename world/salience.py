@@ -168,3 +168,18 @@ def detect_model_events(
             }
         )
     return events
+
+
+# Every event type the world can currently emit — the API validates against
+# this set, and the renderer/overlays map visuals from it.
+KNOWN_EVENT_TYPES = frozenset(
+    {
+        "big_move",
+        "volatility_spike",
+        "gap_open",
+        "volume_anomaly",
+        "streak",
+        "signal_resolved",
+        "model_losing_streak",
+    }
+)
