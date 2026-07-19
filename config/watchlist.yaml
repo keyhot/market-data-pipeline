@@ -14,9 +14,11 @@ tickers:
   - symbol: BTCUSDT
     time_ranges: [1d]
     market: crypto
+    predict: true
   - symbol: ETHUSDT
     time_ranges: [1d]
     market: crypto
+    predict: true
 
 events:
   - symbol: AAPL

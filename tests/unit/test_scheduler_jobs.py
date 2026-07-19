@@ -5,7 +5,7 @@ import pytest
 
 from config.exceptions import NoDataFoundError
 from ingestion import factory
-from scheduler.jobs import run_event_job, run_ticker_job
+from scheduler.jobs import run_event_job, run_inference_job, run_ticker_job
 
 
 @pytest.fixture(autouse=True)
@@ -109,3 +109,41 @@ def test_event_job_skipped_when_market_closed(mock_save, monkeypatch):
 
     assert result["skipped"] == "market_closed"
     assert mock_save.call_count == 0
+
+
+@patch("model.predict.predict")
+def test_inference_job_writes_signal(mock_predict, monkeypatch):
+    mock_predict.return_value = {"direction": "up", "probability": 0.7}
+
+    result = run_inference_job("BTCUSDT", "1m", market="crypto")
+
+    assert result["direction"] == "up"
+    mock_predict.assert_called_once_with("BTCUSDT", "1m")
+
+
+@patch("model.predict.predict")
+def test_inference_job_skips_without_model(mock_predict):
+    from model.predict import NoModelArtifact
+
+    mock_predict.side_effect = NoModelArtifact("none")
+
+    result = run_inference_job("DOGEUSDT", "1m", market="crypto")
+
+    assert result["skipped"] == "no_model"
+
+
+@patch("model.predict.predict")
+def test_inference_job_skips_equity_off_hours(mock_predict, monkeypatch):
+    monkeypatch.setattr("scheduler.jobs.is_equity_market_open", lambda: False)
+
+    result = run_inference_job("AAPL", "1d", market="equity")
+
+    assert result["skipped"] == "market_closed"
+    mock_predict.assert_not_called()
+
+
+@patch("model.predict.predict", return_value=None)
+def test_inference_job_skips_on_short_history(mock_predict):
+    result = run_inference_job("BTCUSDT", "1m", market="crypto")
+
+    assert result["skipped"] == "no_data"

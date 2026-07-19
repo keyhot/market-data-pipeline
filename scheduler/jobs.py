@@ -114,3 +114,37 @@ def run_resolver_job() -> dict:
     }
     logger.info("Resolver job complete", extra=result)
     return result
+
+
+def run_inference_job(
+    symbol: str, interval: str = "1m", market: str = "crypto"
+) -> dict:
+    """Write one model signal for the newest complete bar. Missing artifact
+    is a logged skip, never a crash — training is a manual runbook step."""
+    from model.predict import NoModelArtifact, predict
+
+    if market == "equity" and not is_equity_market_open():
+        result = {"symbol": symbol, "skipped": "market_closed"}
+        logger.info("Skipping equity inference, market closed", extra=result)
+        return result
+
+    try:
+        signal = predict(symbol, interval)
+    except NoModelArtifact:
+        result = {"symbol": symbol, "interval": interval, "skipped": "no_model"}
+        logger.info("Skipping inference, no trained model", extra=result)
+        return result
+
+    if signal is None:
+        result = {"symbol": symbol, "interval": interval, "skipped": "no_data"}
+        logger.info("Skipping inference, not enough bars", extra=result)
+        return result
+
+    result = {
+        "symbol": symbol,
+        "interval": interval,
+        "direction": signal["direction"],
+        "probability": round(signal["probability"], 4),
+    }
+    logger.info("Inference complete", extra=result)
+    return result

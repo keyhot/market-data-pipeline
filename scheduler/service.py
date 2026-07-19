@@ -72,6 +72,20 @@ class SchedulerService:
                     (),
                     watchlist.interval_seconds,
                 )
+        predict_specs = dict.fromkeys(
+            (spec.symbol, spec.market)
+            for spec in watchlist.tickers
+            if spec.predict
+        )
+        for symbol, market in predict_specs:
+            # Crypto models run on the websocket 1m stream; equities on 1d.
+            interval = "1m" if market == "crypto" else "1d"
+            self._add_job(
+                f"inference:{symbol}:{interval}",
+                jobs.run_inference_job,
+                (symbol, interval, market),
+                watchlist.interval_seconds,
+            )
         for spec in watchlist.events:
             self._add_job(
                 f"events:{spec.symbol}:{spec.event_type}",

@@ -49,6 +49,10 @@ services:
       SCHEDULER_ENABLED: "true"
       WS_INGEST_ENABLED: "true"
       CSV_WRITE_ENABLED: "0"
+    volumes:
+      # Model artifacts are trained on the host (python -m model.train);
+      # the mount means retraining needs no image rebuild.
+      - ./model/artifacts:/app/model/artifacts:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -24,6 +24,7 @@ class TickerJobSpec:
     symbol: str
     time_range: str
     market: str = "equity"
+    predict: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,11 @@ def load_watchlist(path: Path = DEFAULT_WATCHLIST_PATH) -> Watchlist:
                 f"Invalid market {market!r} for {symbol}; "
                 f"valid: {sorted(VALID_MARKETS)}"
             )
+        predict = entry.get("predict", False)
+        if not isinstance(predict, bool):
+            raise WatchlistError(
+                f"predict must be a boolean for {symbol}, got {predict!r}"
+            )
         for time_range in entry.get("time_ranges") or []:
             if time_range not in _VALID_TIME_RANGES:
                 raise WatchlistError(
@@ -69,7 +75,12 @@ def load_watchlist(path: Path = DEFAULT_WATCHLIST_PATH) -> Watchlist:
                     f"valid: {sorted(_VALID_TIME_RANGES)}"
                 )
             tickers.append(
-                TickerJobSpec(symbol=symbol, time_range=time_range, market=market)
+                TickerJobSpec(
+                    symbol=symbol,
+                    time_range=time_range,
+                    market=market,
+                    predict=predict,
+                )
             )
 
     events = []
