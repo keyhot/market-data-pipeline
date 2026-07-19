@@ -38,7 +38,6 @@ from storage.postgres_store import (
     get_signals,
     get_world_events,
 )
-from world.salience import KNOWN_EVENT_TYPES
 from storage.writes import (
     postgres_status,
     write_events,
@@ -46,6 +45,7 @@ from storage.writes import (
     write_news,
     write_price_bars,
 )
+from world.salience import KNOWN_EVENT_TYPES
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
