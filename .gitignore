@@ -207,5 +207,6 @@ pyrightconfig.json
 ### VisualStudioCode Patch ###
 # Ignore all local history of files
 .history
-.ionidemodel/artifacts/
+.ionide
+model/artifacts/
 backups/
