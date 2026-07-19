@@ -487,6 +487,26 @@ async def _world_event_stream(poll_seconds: float):
         await asyncio.sleep(poll_seconds)
 
 
+@app.get("/overlay/signals", response_class=HTMLResponse)
+def overlay_signals():
+    """OBS Browser Source strip (~1920x120): live signals + track record."""
+    symbols = [
+        spec.symbol.upper()
+        for spec in load_watchlist().tickers
+        if spec.predict and _SYMBOL_PATTERN.fullmatch(spec.symbol.upper())
+    ]
+    deduped = list(dict.fromkeys(symbols))
+    return HTMLResponse(
+        _render_template("overlay_signals.html", {"__SYMBOLS__": json.dumps(deduped)})
+    )
+
+
+@app.get("/overlay/events", response_class=HTMLResponse)
+def overlay_events():
+    """OBS Browser Source feed (~480x1080): latest salient world events."""
+    return HTMLResponse(_render_template("overlay_events.html", {}))
+
+
 _ALLOWED_CHART_INTERVALS = {"1d", "1m"}
 
 

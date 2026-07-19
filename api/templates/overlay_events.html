@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>World Events — Market Data Pipeline</title>
+  <style>
+    :root { color-scheme: dark; --bg: #131722; }
+    body { margin: 0; background: var(--bg); color: #d1d4dc;
+           font-family: system-ui, sans-serif; overflow: hidden; }
+    #feed { display: flex; flex-direction: column; gap: 0.5rem;
+            padding: 1rem; max-width: 480px; }
+    .event { display: flex; gap: 0.6rem; align-items: flex-start;
+             padding: 0.5rem 0.7rem; background: #1e222d; border-radius: 6px;
+             border-left: 4px solid #363a45; }
+    .event.sev-low { border-left-color: #4a90d9; }
+    .event.sev-med { border-left-color: #f2a900; }
+    .event.sev-high { border-left-color: #ef5350; }
+    .body { display: flex; flex-direction: column; gap: 0.1rem; }
+    .headline { font-size: 0.9rem; }
+    .meta { color: #787b86; font-size: 0.72rem; }
+    .event.fresh { animation: pop 0.6s ease-out; }
+    @keyframes pop { from { transform: translateY(-6px); opacity: 0; } }
+  </style>
+</head>
+<body>
+  <div id="feed"></div>
+  <script>
+    const feed = document.getElementById("feed");
+    const MAX_ROWS = 20;
+
+    // Severity → visual weight; thresholds documented in docs/world-memory.md.
+    function sevClass(severity) {
+      if (severity >= 5) return "sev-high";
+      if (severity >= 2) return "sev-med";
+      return "sev-low";
+    }
+
+    const HEADLINES = {
+      big_move: (e) => `${e.symbol} big move — ${e.payload.sigmas?.toFixed(1)}σ bar`,
+      volatility_spike: (e) => `${e.symbol} volatility spike — ${e.payload.ratio?.toFixed(1)}× calm`,
+      gap_open: (e) => `${e.symbol} gap open — ${(e.payload.gap * 100).toFixed(2)}%`,
+      volume_anomaly: (e) => `${e.symbol} volume anomaly — ${e.payload.volume_zscore?.toFixed(1)}σ`,
+      streak: (e) => `${e.symbol} ${e.payload.direction} streak — ${e.payload.bars} bars`,
+      signal_resolved: (e) => `model ${e.payload.outcome === "win" ? "won" : "lost"} on ${e.symbol}` +
+        ` (called ${e.payload.direction} p=${e.payload.probability?.toFixed(2)})`,
+      model_losing_streak: (e) => `model on a ${e.payload.streak}-loss streak (${e.symbol})`,
+    };
+
+    function headline(e) {
+      const fn = HEADLINES[e.event_type];
+      try { return fn ? fn(e) : `${e.symbol || "market"} ${e.event_type}`; }
+      catch { return `${e.symbol || "market"} ${e.event_type}`; }
+    }
+
+    function relTime(iso) {
+      const secs = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+      if (secs < 90) return `${Math.round(secs)}s ago`;
+      if (secs < 5400) return `${Math.round(secs / 60)}m ago`;
+      return `${Math.round(secs / 3600)}h ago`;
+    }
+
+    function addEvent(e, fresh) {
+      const row = document.createElement("div");
+      row.className = `event ${sevClass(e.severity)}` + (fresh ? " fresh" : "");
+      const body = document.createElement("div");
+      body.className = "body";
+      const head = document.createElement("div");
+      head.className = "headline";
+      head.textContent = headline(e);           /* textContent: payloads are data */
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent =
+        `${e.event_type} · severity ${e.severity.toFixed(1)} · ${relTime(e.occurred_at)}`;
+      body.append(head, meta);
+      row.appendChild(body);
+      feed.prepend(row);
+      while (feed.children.length > MAX_ROWS) feed.lastChild.remove();
+    }
+
+    async function initial() {
+      const response = await fetch("/world/events?limit=20");
+      if (!response.ok) return;
+      const { data } = await response.json();
+      data.events.slice().reverse().forEach((e) => addEvent(e, false));
+    }
+
+    initial().then(() => {
+      const source = new EventSource("/stream/world/events");
+      source.onmessage = (event) => addEvent(JSON.parse(event.data), true);
+    });
+  </script>
+</body>
+</html>

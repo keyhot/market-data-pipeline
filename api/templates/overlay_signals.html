@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Signals — Market Data Pipeline</title>
+  <style>
+    :root { color-scheme: dark; --bg: #131722; }
+    body { margin: 0; background: var(--bg); color: #d1d4dc;
+           font-family: system-ui, sans-serif; overflow: hidden; }
+    #strip { display: flex; gap: 2rem; align-items: center;
+             height: 120px; padding: 0 1.5rem; }
+    .cell { display: flex; flex-direction: column; gap: 0.3rem; min-width: 260px; }
+    .row1 { display: flex; align-items: baseline; gap: 0.6rem; }
+    .sym { font-weight: 700; font-size: 1.1rem; }
+    .dir-up { color: #26a69a; } .dir-down { color: #ef5350; }
+    .prob { color: #787b86; font-size: 0.9rem; }
+    .dots { display: flex; gap: 4px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #363a45; }
+    .dot.win { background: #26a69a; } .dot.loss { background: #ef5350; }
+    .stats { color: #787b86; font-size: 0.8rem; }
+    .note { position: fixed; right: 1rem; bottom: 0.3rem; color: #50535e;
+            font-size: 0.65rem; }
+  </style>
+</head>
+<body>
+  <div id="strip"></div>
+  <p class="note">signal-based simulation — not broker P&amp;L</p>
+  <script>
+    const SYMBOLS = __SYMBOLS__;
+    const strip = document.getElementById("strip");
+    const cells = {};
+
+    function makeCell(symbol) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      const row1 = document.createElement("div");
+      row1.className = "row1";
+      const sym = document.createElement("span");
+      sym.className = "sym";
+      sym.textContent = symbol;
+      const dir = document.createElement("span");
+      const prob = document.createElement("span");
+      prob.className = "prob";
+      row1.append(sym, dir, prob);
+      const dots = document.createElement("div");
+      dots.className = "dots";
+      for (let i = 0; i < 10; i++) {
+        const d = document.createElement("span");
+        d.className = "dot";
+        dots.appendChild(d);
+      }
+      const stats = document.createElement("div");
+      stats.className = "stats";
+      cell.append(row1, dots, stats);
+      strip.appendChild(cell);
+      cells[symbol] = { dir, prob, dots, stats };
+      return cells[symbol];
+    }
+
+    function render(symbol, data) {
+      const cell = cells[symbol] || makeCell(symbol);
+      const latest = data.signals[0];
+      if (latest) {
+        cell.dir.textContent = latest.direction === "up" ? "▲" : "▼";
+        cell.dir.className = latest.direction === "up" ? "dir-up" : "dir-down";
+        cell.prob.textContent = "p=" + latest.probability.toFixed(2);
+      }
+      const resolved = data.signals.filter(s => s.outcome).slice(0, 10);
+      const dots = cell.dots.children;
+      for (let i = 0; i < 10; i++) {
+        dots[i].className = "dot" +
+          (resolved[i] ? " " + resolved[i].outcome : "");
+      }
+      const acc = data.accuracy;
+      cell.stats.textContent = acc.resolved
+        ? `hit ${(acc.hit_rate * 100).toFixed(0)}% of ${acc.resolved}` +
+          ` · streak ${acc.current_streak} ${acc.streak_outcome}`
+        : "no resolved signals yet";
+    }
+
+    async function refresh(symbol) {
+      const response = await fetch(`/signals/${symbol}?limit=30`);
+      if (!response.ok) { makeCell(symbol).stats.textContent = "no signals yet"; return; }
+      const { data } = await response.json();
+      render(symbol, data);
+    }
+
+    SYMBOLS.forEach(refresh);
+
+    const source = new EventSource("/stream/world/events");
+    source.onmessage = (event) => {
+      const worldEvent = JSON.parse(event.data);
+      if (worldEvent.event_type === "signal_resolved" &&
+          SYMBOLS.includes(worldEvent.symbol)) {
+        refresh(worldEvent.symbol);
+      }
+    };
+  </script>
+</body>
+</html>
