@@ -44,10 +44,10 @@ director, backed by Postgres):
 
 - **Salience engine** (v0 live since Sprint 9, `world/salience.py`) — turns
   the bar/news/signal stream into discrete world events. Deterministic rules
-  (volatility spikes, gap opens, streaks, volume anomalies; prediction
-  resolution arrives in Sprint 10); no LLM in this path. Personalities are
-  policies over this event stream (different thresholds → different
-  characters).
+  (volatility spikes, gap opens, streaks, volume anomalies; since Sprint 10
+  also prediction resolution and model losing streaks — the world reacting
+  to its inhabitant); no LLM in this path. Personalities are policies over
+  this event stream (different thresholds → different characters).
 - **World event log** (recording since 2026-07-19) — append-only
   `world_events` table; current world state is a projection over it.
   Immutable by design, so history (including failures) accumulates for free.

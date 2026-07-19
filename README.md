@@ -38,8 +38,13 @@ uvicorn api.main:app --reload
 | `GET /stream/bars/{symbol}` | Server-Sent Events: bars stored after connect (`interval`, `poll_seconds`) |
 | `GET /stored/events/{symbol}/{type}` | Stored corporate events from Postgres (`limit` 1-1000; `actions` returns all types) |
 | `GET /stored/news/{symbol}` | Stored news from Postgres (`limit` 1-100) |
+| `GET /world/events` | Stored world events (`limit`, `event_type`, `symbol`, `since`) |
+| `GET /signals/{symbol}` | Model signals with outcomes + rolling accuracy |
+| `GET /stream/world/events` | Server-Sent Events: world events stored after connect |
 | `GET /chart/{symbol}` | HTML candlestick page for one symbol |
 | `GET /dashboard` | HTML watchlist table with latest closes, linking to each chart |
+| `GET /overlay/signals` | OBS-ready live signal strip (predictions, win/loss dots, hit rate) |
+| `GET /overlay/events` | OBS-ready live world-event feed |
 
 Fetched data is cached in memory (TTL via `CACHE_TTL_SECONDS`) and persisted as
 timestamped CSVs under `data/raw/`.
@@ -123,6 +128,16 @@ inference writing idempotent rows to the `signals` table
 (`python -m model.predict ...`). Design rules and the honest (currently
 losing) backtest numbers: `docs/model-plane.md` and
 `docs/freqai-takeaways.md`.
+
+## The accountability loop (Sprint 10)
+
+Every prediction becomes a public, resolved world event: the scheduler runs
+model inference on a cadence (watchlist `predict: true`), the resolver
+scores each signal against realized bars (`world/resolver.py`), and
+outcomes land as `signal_resolved` world events — confident wrong calls
+score highest, and losing streaks trigger `model_losing_streak` events.
+`/overlay/signals` and `/overlay/events` render it all live, OBS-ready.
+Full design: `docs/accountability-loop.md`.
 
 ## World memory (Sprint 9)
 
