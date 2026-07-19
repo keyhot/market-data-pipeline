@@ -30,6 +30,7 @@ class SalienceConfig:
     big_move_sigmas: float = 4.0   # single-bar return vs rolling sigma
     lookback_bars: int = 10        # evaluate this many recent bars per run
     cooldown_minutes: int = 30     # same type+symbol suppressed within this
+    model_losing_streak: int = 3   # consecutive resolved losses → event
 
 
 def detect_events(
@@ -135,3 +136,35 @@ def _normalize(bars: pd.DataFrame) -> pd.DataFrame:
     if not frame.index.is_monotonic_increasing:
         frame = frame.sort_index()
     return frame
+
+
+def detect_model_events(
+    symbol: str, accuracy: dict, config: SalienceConfig | None = None
+) -> list[dict]:
+    """Salience fed by the model's own track record rather than the market —
+    the first rule where the world reacts to the inhabitant, not the price.
+    `accuracy` is storage.postgres_store.get_signal_accuracy output."""
+    from datetime import datetime, timezone
+
+    config = config or SalienceConfig()
+    events: list[dict] = []
+    if (
+        accuracy.get("streak_outcome") == "loss"
+        and accuracy.get("current_streak", 0) >= config.model_losing_streak
+    ):
+        streak = accuracy["current_streak"]
+        events.append(
+            {
+                "occurred_at": datetime.now(timezone.utc),
+                "event_type": "model_losing_streak",
+                "symbol": symbol.upper(),
+                # grows with the streak: 3 losses = 1.0, each extra +0.33
+                "severity": round(streak / config.model_losing_streak, 4),
+                "payload": {
+                    "streak": streak,
+                    "hit_rate": accuracy.get("hit_rate"),
+                    "window": accuracy.get("window"),
+                },
+            }
+        )
+    return events

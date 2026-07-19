@@ -43,3 +43,33 @@ def record_salient_events(
             extra={"symbol": symbol, "count": len(accepted)},
         )
     return accepted
+
+
+def record_model_events(
+    symbol: str, interval: str = "1m", config: SalienceConfig | None = None
+) -> list[dict]:
+    """Check the model's track record for salient patterns (losing streaks)
+    and append them — same DB-backed cooldown as market events."""
+    from storage.postgres_store import get_signal_accuracy
+    from world.salience import detect_model_events
+
+    config = config or SalienceConfig()
+    accuracy = get_signal_accuracy(symbol, interval)
+    candidates = detect_model_events(symbol, accuracy, config)
+    if not candidates:
+        return []
+
+    cooldown = timedelta(minutes=config.cooldown_minutes)
+    accepted = []
+    for event in candidates:
+        last = latest_world_event_time(event["event_type"], symbol)
+        if last is not None and event["occurred_at"] - last < cooldown:
+            continue
+        accepted.append(event)
+    if accepted:
+        append_world_events(accepted)
+        logger.info(
+            "Model events recorded",
+            extra={"symbol": symbol, "count": len(accepted)},
+        )
+    return accepted

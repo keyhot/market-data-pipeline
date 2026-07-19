@@ -105,12 +105,17 @@ def run_salience_job(symbol: str, interval: str = "1m") -> dict:
 
 def run_resolver_job() -> dict:
     """Resolve signals past their horizon into public win/loss world events."""
+    from world.events import record_model_events
     from world.resolver import resolve_pending
 
     resolutions = resolve_pending()
+    model_events = 0
+    for symbol in sorted({r["symbol"] for r in resolutions}):
+        model_events += len(record_model_events(symbol))
     result = {
         "resolved": len(resolutions),
         "outcomes": sorted({r["outcome"] for r in resolutions}),
+        "model_events": model_events,
     }
     logger.info("Resolver job complete", extra=result)
     return result

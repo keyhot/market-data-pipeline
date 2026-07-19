@@ -236,6 +236,43 @@ def get_signals(
     ]
 
 
+def get_signal_accuracy(
+    symbol: str, interval: str = "1m", window: int = 50
+) -> dict:
+    """Rolling honesty: hit rate and streak over the last `window` resolved
+    signals. Zero resolved signals is a defined empty result, not an error."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT outcome, probability FROM signals"
+            " WHERE symbol = %s AND interval = %s AND resolved_at IS NOT NULL"
+            " ORDER BY signal_timestamp DESC LIMIT %s",
+            (symbol.upper(), interval, window),
+        ).fetchall()
+    outcomes = [outcome for outcome, _ in rows]
+    wins = outcomes.count("win")
+    streak = 0
+    for outcome in outcomes:  # newest first; count the leading run
+        if outcome != outcomes[0]:
+            break
+        streak += 1
+    return {
+        "symbol": symbol.upper(),
+        "interval": interval,
+        "window": window,
+        "resolved": len(outcomes),
+        "wins": wins,
+        "losses": len(outcomes) - wins,
+        "hit_rate": wins / len(outcomes) if outcomes else None,
+        "current_streak": streak,
+        "streak_outcome": outcomes[0] if outcomes else None,
+    }
+
+
+def get_all_signal_accuracy(symbols: list[str], interval: str = "1m") -> list[dict]:
+    """Accuracy summaries for many symbols (dashboard/overlay shape)."""
+    return [get_signal_accuracy(symbol, interval) for symbol in symbols]
+
+
 def get_unresolved_signals(limit: int = 500) -> list[dict]:
     """Pending signals, oldest first — the resolver's work queue."""
     with get_pool().connection() as conn:
