@@ -296,3 +296,43 @@ def test_world_events_append_and_read_back():
     assert postgres_store.latest_world_event_time(
         "volatility_spike", BARS_SYMBOL
     ) == ts
+
+
+def test_signal_resolution_round_trip():
+    """Full accountability loop against real Postgres: signal → realized
+    bar → resolver → outcome + signal_resolved world event."""
+    from datetime import datetime, timedelta, timezone
+
+    from world.resolver import resolve_pending
+
+    signal_ts = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    postgres_store.upsert_price_bars(BARS_SYMBOL, "1d", _bars())
+    postgres_store.upsert_signals(
+        [
+            {
+                "symbol": BARS_SYMBOL,
+                "interval": "1d",
+                "signal_timestamp": signal_ts,
+                "model_version": "test-v0",
+                "horizon_bars": 1,
+                "direction": "up",
+                "probability": 0.7,
+            }
+        ]
+    )
+
+    resolutions = resolve_pending(now=signal_ts + timedelta(days=2))
+
+    ours = [r for r in resolutions if r["symbol"] == BARS_SYMBOL]
+    assert len(ours) == 1
+    assert ours[0]["outcome"] == "win"  # _bars closes rise 100 -> 101
+    stored = postgres_store.get_signals(BARS_SYMBOL, "1d")
+    assert stored[0]["outcome"] == "win"
+    events = postgres_store.get_world_events(
+        event_type="signal_resolved", symbol=BARS_SYMBOL
+    )
+    assert len(events) == 1
+
+    # idempotence: a second run resolves nothing new for this symbol
+    again = resolve_pending(now=signal_ts + timedelta(days=2))
+    assert [r for r in again if r["symbol"] == BARS_SYMBOL] == []
