@@ -113,6 +113,27 @@ stored — try `GET /chart/BTCUSDT?interval=1m` with the websocket ingester
 running. Stack choice and constraints (CDN script, SRI-pinned version,
 attribution requirement) are in `docs/charting-stack-decision.md`.
 
+## Model plane (Sprint 9)
+
+The first trade predictor: shared feature pipeline (`model/features.py`,
+no-lookahead guaranteed by tests), LightGBM direction baseline
+(`python -m model.train --symbol BTCUSDT --interval 1m`), walk-forward
+backtest with fees + slippage (`python -m model.backtest ...`), and one-shot
+inference writing idempotent rows to the `signals` table
+(`python -m model.predict ...`). Design rules and the honest (currently
+losing) backtest numbers: `docs/model-plane.md` and
+`docs/freqai-takeaways.md`.
+
+## World memory (Sprint 9)
+
+The Living World's memory started recording: deterministic salience rules
+(`world/salience.py` — volatility spikes, gaps, streaks, volume anomalies)
+turn the live bar stream into append-only `world_events` rows via scheduler
+jobs (flag `SALIENCE_ENABLED`, default on). Nothing ever updates or deletes
+a world event — see `docs/world-memory.md`. Nightly backups:
+`scripts/backup_postgres.sh` (cron 03:10, 14-day retention, restore drill in
+the script header).
+
 ## Tests
 
 ```bash

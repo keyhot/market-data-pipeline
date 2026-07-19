@@ -42,15 +42,17 @@ and today's market already altered the environment before any chart appears.
 Architecturally this adds two components (both live in the broadcast plane's
 director, backed by Postgres):
 
-- **Salience engine** — turns the bar/news/signal stream into discrete world
-  events. Starts as deterministic rules (volatility z-scores, gap opens,
-  streaks, volume anomalies, prediction-vs-outcome resolution); no LLM needed
-  for v0. Personalities are policies over this event stream (different
-  thresholds → different characters).
-- **World event log** — append-only `world_events` table; current world state
-  is a projection over it. Immutable by design, so history (including failures)
-  accumulates for free. Should start recording *before* the world renders, so
-  the world is born with a past.
+- **Salience engine** (v0 live since Sprint 9, `world/salience.py`) — turns
+  the bar/news/signal stream into discrete world events. Deterministic rules
+  (volatility spikes, gap opens, streaks, volume anomalies; prediction
+  resolution arrives in Sprint 10); no LLM in this path. Personalities are
+  policies over this event stream (different thresholds → different
+  characters).
+- **World event log** (recording since 2026-07-19) — append-only
+  `world_events` table; current world state is a projection over it.
+  Immutable by design, so history (including failures) accumulates for free.
+  Started recording before the world renders, so the world is born with a
+  past. Nightly pg_dump backups (`scripts/backup_postgres.sh`).
 
 ```
 ┌─ Data plane ──────────┐   ┌─ Model plane ────────────┐
@@ -84,7 +86,7 @@ director, backed by Postgres):
   compression, continuous aggregates). Keep APScheduler; no Kafka/Celery at
   solo scale.
 
-## Model plane (trade predictor)
+## Model plane (trade predictor — v0 live since Sprint 9)
 
 - Features from Postgres via pandas/Polars; baselines with LightGBM/XGBoost
   (direction probability), PyTorch sequence models only after a boosted-tree
