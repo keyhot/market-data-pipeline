@@ -20,7 +20,13 @@ POSTGRES_WRITE_ENABLED_ENV = "POSTGRES_WRITE_ENABLED"
 
 logger = logging.getLogger(__name__)
 
-_counts = {"price_bars": 0, "corporate_events": 0, "news_items": 0, "errors": 0}
+_counts = {
+    "price_bars": 0,
+    "corporate_events": 0,
+    "news_items": 0,
+    "signals": 0,
+    "errors": 0,
+}
 _counts_lock = threading.Lock()
 
 
@@ -63,6 +69,10 @@ def write_events(symbol: str, event_type: str, events: pd.DataFrame) -> None:
 
 def write_news(symbol: str, news: pd.DataFrame) -> None:
     _write("news_items", lambda: postgres_store.upsert_news(symbol, news))
+
+
+def write_signals(signals: list[dict]) -> None:
+    _write("signals", lambda: postgres_store.upsert_signals(signals))
 
 
 def _write(table: str, write) -> None:
