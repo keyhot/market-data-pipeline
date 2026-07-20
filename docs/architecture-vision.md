@@ -113,6 +113,12 @@ director, backed by Postgres):
 
 ## Broadcast plane (L4)
 
+> Status (Sprint 11): Stream MVP tooling live — SCENE_SPEC-as-code
+> (`scripts/stream_scene.py`), `stream_ctl` build/start/stop/status,
+> watchdog with auto-recovery, stream lifecycle world events with offline
+> spool. Go-live + 24h soak pending user steps (websocket enable, stream
+> key, audio files).
+
 - OBS Studio + obs-websocket v5 (`obsws-python`) for autonomous scene/source
   control; RTMP out to YouTube/Twitch. 24/7 encoding wants NVENC/QuickSync.
 - Director service: Python process housing the salience engine and world

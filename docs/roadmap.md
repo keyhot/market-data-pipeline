@@ -44,10 +44,14 @@ the project is never more than a week from a demoable state.
 - Overlay-grade pages: live P&L strip, signal ticker, event feed — the same
   pages OBS will load later.
 
-### Sprint 11 — Stream MVP
+### Sprint 11 — Stream MVP *(in progress 2026-07-20)*
 - OBS + obs-websocket + RTMP to YouTube/Twitch; one scene, boring and
   reliable. Uptime is the entire feature. NVENC/QuickSync encoder.
 - Existing chart/overlay pages as Browser Sources. DMCA-safe audio bed.
+- Actuals so far: scene/ctl/watchdog/lifecycle-events/soak tooling all landed
+  test-first in one day (33 new tests); OBS was already installed (32.1.2).
+  Remaining: user steps (websocket enable, stream key, audio) then go-live +
+  24h soak.
 
 ### Sprint 12 — World Renderer v0
 - One room, one character, a handful of world-state variables — a PixiJS (or

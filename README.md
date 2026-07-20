@@ -149,6 +149,24 @@ a world event — see `docs/world-memory.md`. Nightly backups:
 `scripts/backup_postgres.sh` (cron 03:10, 14-day retention, restore drill in
 the script header).
 
+## Streaming (Sprint 11)
+
+The stream is code-controlled from day one. Cold start to live:
+
+```bash
+docker compose up -d                                  # the pages ARE the scene
+poetry run python scripts/stream_ctl.py build         # scene from SCENE_SPEC (idempotent)
+poetry run python scripts/stream_ctl.py configure-output  # RTMP from OBS_STREAM_KEY in .env
+poetry run python scripts/stream_ctl.py start         # records a stream_started world event
+poetry run python scripts/stream_watchdog.py          # or the systemd user service
+```
+
+Layout constants: `scripts/stream_scene.py`. The watchdog auto-recovers OBS and
+the stream (backoff, dropped-frame detection), and every lifecycle transition —
+`stream_started` / `stream_stopped` / `stream_dropped` — is an append-only world
+event (JSONL spool when Postgres is down). Soak measurement:
+`scripts/soak_report.py`. Full procedure: `docs/streaming-runbook.md`.
+
 ## Tests
 
 ```bash
