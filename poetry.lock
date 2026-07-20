@@ -743,6 +743,21 @@ files = [
 ]
 
 [[package]]
+name = "obsws-python"
+version = "1.8.0"
+description = "A Python SDK for OBS Studio WebSocket v5.0"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "obsws_python-1.8.0-py3-none-any.whl", hash = "sha256:537bde416e149b6f59e0b2f31761d4a40329feafec171bde6fc1346ab8516e28"},
+    {file = "obsws_python-1.8.0.tar.gz", hash = "sha256:e082894f80deb0836861fdc3c222e497308c8f66328da6075baba5b456a20971"},
+]
+
+[package.dependencies]
+websocket-client = "*"
+
+[[package]]
 name = "packaging"
 version = "26.0"
 description = "Core utilities for Python packages"
@@ -1679,6 +1694,23 @@ h11 = ">=0.8"
 standard = ["colorama (>=0.4) ; sys_platform == \"win32\"", "httptools (>=0.6.3)", "python-dotenv (>=0.13)", "pyyaml (>=5.1)", "uvloop (>=0.15.1) ; sys_platform != \"win32\" and sys_platform != \"cygwin\" and platform_python_implementation != \"PyPy\"", "watchfiles (>=0.13)", "websockets (>=10.4)"]
 
 [[package]]
+name = "websocket-client"
+version = "1.9.0"
+description = "WebSocket client for Python with low level API options"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef"},
+    {file = "websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98"},
+]
+
+[package.extras]
+docs = ["Sphinx (>=6.0)", "myst-parser (>=2.0.0)", "sphinx_rtd_theme (>=1.1.0)"]
+optional = ["python-socks", "wsaccel"]
+test = ["pytest", "websockets"]
+
+[[package]]
 name = "websockets"
 version = "16.1.1"
 description = "An implementation of the WebSocket Protocol (RFC 6455 & 7692)"
@@ -1830,4 +1862,4 @@ repair = ["scipy (>=1.6.3)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "70480e78af462996d8f1364309d5069e4b4baa17aefae6af357017474f60ddc6"
+content-hash = "62655bcc514368058d2d46527876802ae74086dd1d093720eba874b9742b6a9c"
