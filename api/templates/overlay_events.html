@@ -44,6 +44,11 @@
       signal_resolved: (e) => `model ${e.payload.outcome === "win" ? "won" : "lost"} on ${e.symbol}` +
         ` (called ${e.payload.direction} p=${e.payload.probability?.toFixed(2)})`,
       model_losing_streak: (e) => `model on a ${e.payload.streak}-loss streak (${e.symbol})`,
+      stream_started: (e) => e.payload.recovery_seconds != null
+        ? `stream back — recovered in ${Math.round(e.payload.recovery_seconds)}s`
+        : "stream went live",
+      stream_stopped: (e) => "stream stopped",
+      stream_dropped: (e) => "stream dropped — recovering",
     };
 
     function headline(e) {

@@ -181,5 +181,9 @@ KNOWN_EVENT_TYPES = frozenset(
         "streak",
         "signal_resolved",
         "model_losing_streak",
+        # stream lifecycle (Sprint 11) — severities in world/stream_events.py
+        "stream_started",
+        "stream_stopped",
+        "stream_dropped",
     }
 )
