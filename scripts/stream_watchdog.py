@@ -8,12 +8,16 @@ api/scheduler containers; this covers the host-side pieces compose can't.
 
 import logging
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
-from config.logging import init_logging
-from scripts import stream_ctl
-from world.stream_events import record_stream_event
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from config.logging import init_logging  # noqa: E402
+from scripts import stream_ctl  # noqa: E402
+from world.stream_events import record_stream_event  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

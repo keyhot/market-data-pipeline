@@ -9,9 +9,12 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
-from scripts import stream_scene
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts import stream_scene  # noqa: E402
 
 EXIT_OBS_UNREACHABLE = 2
 

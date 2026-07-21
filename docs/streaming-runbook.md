@@ -27,6 +27,9 @@ few user-machine steps are marked **[user step]**.
 
 - Verify: `poetry run python scripts/stream_ctl.py status` → JSON with
   `obs_version`. Exit code 2 means the websocket is unreachable.
+  - These CLI commands read `OBS_WS_URL`/`OBS_WS_PASSWORD` straight from the
+    shell environment (no dotenv loading), so export `.env` into the shell
+    first: `set -a && source .env && set +a`.
 
 ## 2. Environment keys (`.env`, never committed)
 
@@ -104,6 +107,7 @@ Description=Stream watchdog (market-data-pipeline)
 
 [Service]
 WorkingDirectory=%h/Projects/market-data-pipeline
+EnvironmentFile=%h/Projects/market-data-pipeline/.env
 ExecStart=/usr/bin/env poetry run python scripts/stream_watchdog.py
 Restart=on-failure
 RestartSec=10
