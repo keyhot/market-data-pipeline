@@ -524,6 +524,20 @@ def overlay_events():
     return HTMLResponse(_render_template("overlay_events.html", {}))
 
 
+@app.get("/world", response_class=HTMLResponse)
+def world_page():
+    """The Living World room — a Browser Source for the world-focus scene."""
+    symbols = [
+        spec.symbol.upper()
+        for spec in load_watchlist().tickers
+        if spec.market == "crypto" and _SYMBOL_PATTERN.fullmatch(spec.symbol.upper())
+    ]
+    deduped = list(dict.fromkeys(symbols))
+    return HTMLResponse(
+        _render_template("world.html", {"__SYMBOLS__": json.dumps(deduped)})
+    )
+
+
 _ALLOWED_CHART_INTERVALS = {"1d", "1m"}
 
 
