@@ -240,6 +240,16 @@ def test_projection_ignores_input_ordering():
     assert forward == backward
 
 
+def test_fold_event_does_not_mutate_its_input():
+    """Purity, asserted directly. The chunk test below CANNOT check this —
+    reduce(f, xs+ys) == reduce(f, ys, reduce(f, xs)) is the left-fold law and
+    holds for impure f too, as long as f is deterministic."""
+    before = empty_state()
+    snapshot = json.dumps(before, sort_keys=True)
+    fold_event(before, _event(1, "big_move", 6.0, {"return": 0.03}))
+    assert json.dumps(before, sort_keys=True) == snapshot
+
+
 def test_folding_in_halves_equals_folding_whole():
     events = [
         _event(i, "big_move", 5.0 + i * 0.1, {"return": 0.01 * (-1) ** i}, minute=i)
@@ -492,15 +502,17 @@ def project_state(events: list[dict], now: datetime | None = None) -> dict:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `poetry run pytest tests/unit/test_world_state.py -q`
-Expected: `25 passed` (15 from the tier parametrize + 10 others)
+Expected: `26 passed` (15 from the tier parametrize + 11 others)
 
-- [ ] **Step 5: Mutation-check the fold purity**
+- [ ] **Step 5: Mutation-check that the purity test actually bites**
 
 Temporarily change `new["recent"] = [entry, *state["recent"]][:RECENT_LIMIT]` to
 `state["recent"].insert(0, entry); new["recent"] = state["recent"][:RECENT_LIMIT]`.
 
 Run: `poetry run pytest tests/unit/test_world_state.py -q`
-Expected: `test_folding_in_halves_equals_folding_whole` FAILS (the shared list leaks between accumulators). **Revert the mutation.** If it passes, the determinism tests are not actually checking purity — fix them before continuing.
+Expected: **`test_fold_event_does_not_mutate_its_input` FAILS** — and note that `test_folding_in_halves_equals_folding_whole` still *passes*, which is exactly why the direct assertion exists. **Revert the mutation.**
+
+If the purity test passes under the mutation, the test is wrong, not the code — fix it before continuing.
 
 - [ ] **Step 6: Lint and commit**
 
@@ -1075,10 +1087,16 @@ Expected: FAIL — `assert 404 == 200`.
 
     function historyLine(h) {
       if (!h.total_events) return "";
+      // "seen" is deliberate: these are folded over the served window, not the
+      // whole table. Overstating them would be the one thing this project
+      // refuses to do with its own numbers.
       const parts = [`${h.total_events} events remembered`];
-      if (h.longest_streak) parts.push(`longest streak ${h.longest_streak.bars} bars`);
+      if (h.longest_streak) {
+        parts.push(`longest streak seen ${h.longest_streak.bars} bars`);
+      }
       if (h.worst_loss) {
-        parts.push(`worst loss ${(h.worst_loss.realized_return * 100).toFixed(2)}%`);
+        parts.push(
+          `worst loss seen ${(h.worst_loss.realized_return * 100).toFixed(2)}%`);
       }
       if (h.outages) parts.push(`${h.outages} outages`);
       return parts.join(" · ");         /* set via .text: payloads are data */
@@ -1316,18 +1334,22 @@ def _parse(timestamp: str | datetime) -> datetime:
     return datetime.fromisoformat(timestamp)
 ```
 
-- [ ] **Step 5: Drop the private accumulator in `project_state`**
+- [ ] **Step 5: Drop the private accumulator and record the window in `project_state`**
 
 Before the `generated_at` line:
 
 ```python
     state.pop("_down_since", None)
+    # History is folded over the events the CALLER supplied, not the whole
+    # table — /world/state passes limit=500. Recording the window keeps
+    # "worst loss" honest: it means worst-in-window, not worst-ever.
+    state["history"]["window"] = len(ordered)
 ```
 
 - [ ] **Step 6: Run the full projection suite**
 
 Run: `poetry run pytest tests/unit/test_world_state.py -q`
-Expected: `29 passed` — including the chunk-invariance test from Task 2, which now also covers the history accumulators.
+Expected: `30 passed` — including the purity and chunk-invariance tests from Task 2, which now also covers the history accumulators.
 
 - [ ] **Step 7: Lint and commit**
 
@@ -2032,7 +2054,7 @@ git commit -m "Provider: freqtrade dry-run sidecar as the fourth compose service
 
 **Files:**
 - Create: `world/trader_events.py`
-- Modify: `scheduler/jobs.py`, `scheduler/service.py`, `world/salience.py` (`KNOWN_EVENT_TYPES`), `world/reactions.py` (`REACTIONS`), `api/templates/overlay_events.html` (`HEADLINES`)
+- Modify: `world/state.py` (a `trader` branch in the fold — without it the character can never wake), `scheduler/jobs.py`, `scheduler/service.py`, `world/salience.py` (`KNOWN_EVENT_TYPES`), `world/reactions.py` (`REACTIONS`), `api/templates/overlay_events.html` (`HEADLINES`)
 - Test: `tests/unit/test_trader_events.py`
 
 **Interfaces:**
@@ -2152,6 +2174,40 @@ def test_unreachable_sidecar_is_a_logged_skip_not_a_crash():
             raise ConnectionError("no route to host")
 
     assert record_trader_events(client=DeadClient()) == []
+
+
+def test_trader_events_do_not_pollute_the_market_symbol_map():
+    """A trader event carries its pair in the payload, never in symbol —
+    otherwise the room would fold one inhabitant's trades into BTCUSDT's
+    market mood and show trading activity as if it were price action."""
+    from world.state import project_state
+
+    events = diff_trader_state(
+        {"open_trade_ids": [], "profit_closed_percent": 0.0},
+        {"open_trades": [_trade(1)], "profit_closed_percent": 0.0},
+    )
+    state = project_state([{**e, "id": i, "occurred_at": e["occurred_at"].isoformat()}
+                           for i, e in enumerate(events, start=1)])
+    assert state["symbols"] == {}
+
+
+def test_projection_wakes_the_trader_character():
+    from world.state import project_state
+
+    events = diff_trader_state(
+        {"open_trade_ids": [], "profit_closed_percent": 0.0},
+        {"open_trades": [_trade(1), _trade(2)], "profit_closed_percent": 0.0},
+    )
+    state = project_state([{**e, "id": i, "occurred_at": e["occurred_at"].isoformat()}
+                           for i, e in enumerate(events, start=1)])
+    assert state["trader"] is not None
+    assert state["trader"]["open_trades"] == 2
+
+
+def test_projection_leaves_the_trader_asleep_without_trader_events():
+    from world.state import project_state
+
+    assert project_state([])["trader"] is None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -2256,10 +2312,14 @@ class FreqtradeClient:
 
 
 def _event(event_type: str, severity: float, payload: dict) -> dict:
+    # symbol stays NULL deliberately: the trader's pair belongs in the payload,
+    # not in world_events.symbol. Writing "BTCUSDT" here would fold the trader's
+    # activity into the *market's* per-symbol mood in world/state.py, making
+    # the room show one inhabitant's trades as if they were price action.
     return {
         "occurred_at": datetime.now(timezone.utc),
         "event_type": event_type,
-        "symbol": (payload.get("pair") or "").replace("/", "") or None,
+        "symbol": None,
         "severity": round(severity, 4),
         "payload": payload,
     }
@@ -2310,11 +2370,21 @@ def diff_trader_state(previous: dict, current: dict) -> list[dict]:
 
 def _load_previous() -> dict:
     """Reconstruct the last-seen state from the world's own memory rather than
-    a state file — the log is already the durable record."""
+    a state file — the log is already the durable record.
+
+    Reads are filtered PER EVENT TYPE, never a single newest-N over the whole
+    log: trader events are sparse, and after the ~60-day backfill a blanket
+    `get_world_events(limit=200)` would return nothing but market events,
+    silently reconstructing an empty state and re-emitting every open trade.
+    """
+    rows: list[dict] = []
     try:
-        rows = get_world_events(limit=200)
+        for event_type in sorted(TRADER_EVENT_TYPES):
+            rows.extend(get_world_events(limit=200, event_type=event_type))
     except Exception:
         return {}
+    rows.sort(key=lambda r: (r["occurred_at"], r.get("id") or 0), reverse=True)
+
     open_ids: set[int] = set()
     profit = None
     for row in reversed(rows):  # oldest first
@@ -2357,7 +2427,51 @@ def record_trader_events(client=None) -> list[dict]:
     return events
 ```
 
-- [ ] **Step 7: Add the scheduler job to `scheduler/jobs.py`**
+- [ ] **Step 7: Teach the projection about the trader — `world/state.py`**
+
+Without this the TRADER character can never wake up: `world.html` reads
+`state.trader`, and nothing else in the plan produces that key.
+
+Add to the dict returned by `empty_state()`:
+
+```python
+        "trader": None,
+```
+
+Carry it through at the top of `fold_event`, beside the other copied keys:
+
+```python
+        "trader": dict(state["trader"]) if state["trader"] else None,
+```
+
+And add this branch, just before the `history` block:
+
+```python
+    if etype in ("trader_opened", "trader_closed", "trader_milestone"):
+        trader = new["trader"] or {
+            "open_trades": 0, "profit_pct": 0.0, "mood": "decisive",
+            "last_event": None,
+        }
+        if etype == "trader_opened":
+            trader["open_trades"] += 1
+        elif etype == "trader_closed":
+            trader["open_trades"] = max(0, trader["open_trades"] - 1)
+        if "profit_pct" in payload:
+            trader["profit_pct"] = round(float(payload["profit_pct"]), 4)
+        # Mood comes from the reaction table's own vocabulary so the canvas
+        # palette needs no trader-specific colours beyond those in Step 4.
+        trader["mood"] = (
+            "proud" if trader["profit_pct"] > 0
+            else "weighing" if trader["profit_pct"] < 0
+            else "decisive"
+        )
+        trader["last_event"] = {"event_type": etype, "occurred_at": event["occurred_at"]}
+        new["trader"] = trader
+```
+
+The `trader` key stays `None` until a `trader_*` event exists, which is what keeps `world.html` rendering the character as "asleep" when Tasks 8–9 are cut.
+
+- [ ] **Step 8: Add the scheduler job to `scheduler/jobs.py`**
 
 After `run_resolver_job` (which ends at line 121):
 
@@ -2375,7 +2489,7 @@ def run_trader_mirror_job() -> dict:
     return result
 ```
 
-- [ ] **Step 8: Register it as a singleton in `scheduler/service.py`**
+- [ ] **Step 9: Register it as a singleton in `scheduler/service.py`**
 
 Following the `resolver:signals` precedent (line 69), inside the `if salience_enabled():` block, after the resolver registration:
 
@@ -2395,12 +2509,12 @@ And add the import beside `from world.salience import salience_enabled` (line 14
 from world.trader_events import trader_mirror_enabled
 ```
 
-- [ ] **Step 9: Run the tests to verify they pass**
+- [ ] **Step 10: Run the tests to verify they pass**
 
 Run: `poetry run pytest tests/unit/test_trader_events.py tests/unit/test_reactions.py -q`
-Expected: `19 passed` — the registry-invariant test from Task 3 now also covers the three `trader_*` types.
+Expected: `22 passed` (11 trader + 11 reactions) — the registry-invariant test from Task 3 now also covers the three `trader_*` types, and three new tests pin the projection wiring that actually wakes the character.
 
-- [ ] **Step 10: Confirm a real event appears**
+- [ ] **Step 11: Confirm a real event appears**
 
 ```bash
 sg docker -c "docker compose up -d --build"
@@ -2411,14 +2525,16 @@ sg docker -c "docker compose exec -T postgres psql -U market_data -d market_data
 ```
 Expected: at least one `trader_opened` row. Then reload `/world` — the TRADER character is no longer "asleep".
 
-- [ ] **Step 11: Lint and commit**
+- [ ] **Step 12: Lint and commit**
 
 ```bash
-ruff check world/trader_events.py scheduler/jobs.py scheduler/service.py \
-  world/salience.py world/reactions.py tests/unit/test_trader_events.py
-git add world/trader_events.py scheduler/jobs.py scheduler/service.py \
-  world/salience.py world/reactions.py api/templates/world.html \
-  api/templates/overlay_events.html tests/unit/test_trader_events.py
+ruff check world/trader_events.py world/state.py scheduler/jobs.py \
+  scheduler/service.py world/salience.py world/reactions.py \
+  tests/unit/test_trader_events.py
+git add world/trader_events.py world/state.py scheduler/jobs.py \
+  scheduler/service.py world/salience.py world/reactions.py \
+  api/templates/world.html api/templates/overlay_events.html \
+  tests/unit/test_trader_events.py
 git commit -m "World: trader inhabitant mirrored from the freqtrade sidecar"
 ```
 
@@ -2571,6 +2687,24 @@ backfill only inserts.
   signals. When the two disagree, the disagreement is real. If the sidecar is
   not running, the trader renders as dormant and the room is still complete.
 
+## Known limitation: history is windowed, not total
+
+`GET /world/state` folds the newest 500 events. Every `history` field is
+therefore scoped to that window: `worst_loss` means *worst loss in the last
+500 events*, not worst ever. After the 60-day backfill the log is far larger
+than 500 rows, so the gap is real, and it is why the page says "worst loss
+**seen**" rather than "worst loss ever".
+
+`history.window` carries the event count the projection actually saw, so a
+consumer can always tell what the numbers cover.
+
+The fix is a small set of aggregate queries over the whole table
+(`min(realized_return)`, `max(bars)`, `sum` of downtime) folded in beside the
+windowed projection. That is deliberately deferred rather than faked: a
+number the world states about itself has to be true, and a wrong "worst loss
+ever" is exactly the kind of quiet dishonesty the metrics culture here exists
+to prevent.
+
 ## OBS integration
 
 `/world` is a Browser Source at 1920×1080 with an opaque `#131722`
@@ -2685,5 +2819,6 @@ State plainly: which of the ten tasks landed, whether the freqtrade pair was cut
 - **Binance pagination is new code** on a provider that has only ever done single requests. ~87 sequential calls per symbol; the `sleep_seconds` default of 0.25s exists to respect the weight limit, and the no-forward-progress guard exists so a malformed response can't spin forever.
 - **The unique index changes live runtime behaviour**, not just backfill behaviour. Task 7 Step 10 pins this deliberately rather than asserting it.
 - **The model is losing** — 178W/215L, 45.3% hit rate. Honest, and it is content, but the room must not be designed to look celebratory by default.
+- **History is windowed to the served 500 events, not the whole table.** The unit tests feed `project_state` a complete list, so they pass while the deployed endpoint computes "worst loss" over a slice. Documented as a known limitation in `docs/world-renderer.md` with the aggregate-query fix described; the page copy says "seen" rather than "ever" so nothing on screen overstates it. Worth closing in Sprint 13.
 - **No CSP exists anywhere in the repo.** Not a blocker (the SRI pin is the active protection), but `/world` makes it a third page loading a third-party library, which raises the value of adding one.
 - **`docs/postgres-schema-spike.md` is stale** — it predates Sprint 9 and documents neither `world_events` nor `signals`. `db/init.sql` is the real source of truth.
