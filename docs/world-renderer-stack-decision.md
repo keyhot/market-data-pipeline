@@ -12,7 +12,7 @@ numbers. PixiJS is a 2D WebGL compositor built for exactly that shape.
 |---|---|---|
 | Dimensionality | 2D-native; scene is a display list | 3D scene graph; 2D means an orthographic camera and manual layout |
 | Text quality | First-class `Text`/`BitmapText`, crisp at fixed DPR | Needs `TextGeometry` (font loading) or DOM/CSS overlays; both are awkward |
-| CDN bundle (minified) | ~780 KB, single UMD `PIXI` global | Comparable, but a usable 2D setup needs extra loaders |
+| CDN bundle (minified) | ~780 KB, single `PIXI` global (IIFE, no module wrapper) | Comparable, but a usable 2D setup needs extra loaders |
 | 24/7 OBS CPU cost | Lower — no lighting, no depth pass, no per-frame matrix work we don't need | Higher for identical output |
 | Sprint 14 headroom | Many small interacting sprites is Pixi's core case | Would be fighting the abstraction |
 | Licence | MIT | MIT |
@@ -42,6 +42,21 @@ Both are MIT, so no attribution footer is required (unlike TradingView on
 - **Procedural geometry only in v0** — shapes, lines, and text, no external
   sprite or texture assets. Art becomes a later addition behind the same
   projection and reaction layers.
+
+## Pinned artifact
+
+Copy these two values verbatim into the `<script>` tag; do not retype or
+re-derive them.
+
+- **URL:** `https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js`
+- **Integrity:** `sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq`
+- **Also required:** `crossorigin="anonymous"`
+
+Regenerate the hash if the pin ever moves:
+
+```bash
+curl -sfL "<url>" | openssl dgst -sha384 -binary | openssl base64 -A
+```
 
 ## How it's wired
 
