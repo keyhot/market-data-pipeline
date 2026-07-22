@@ -56,6 +56,7 @@
       drawRoom();
       model = character("MODEL");
       trader = character("TRADER");
+      positionCharacters();
       await refresh();
       subscribe();
       setInterval(refresh, 60000);   // projection stays authoritative server-side
@@ -175,7 +176,9 @@
       source.onmessage = (message) => react(JSON.parse(message.data));
     }
 
-    boot();
+    boot().catch(() => {
+      fallback.textContent = "renderer failed to start — the world is still running";
+    });
   </script>
 </body>
 </html>
