@@ -158,3 +158,61 @@ def test_empty_log_projects_an_empty_but_valid_state():
     assert state["event_count"] == 0
     assert state["symbols"] == {}
     assert state["model"]["resolved"] == 0
+
+
+def test_history_records_worst_loss_and_longest_streak():
+    events = [
+        _event(1, "signal_resolved", 1.2,
+               {"outcome": "loss", "realized_return": -0.02}),
+        _event(2, "signal_resolved", 1.9,
+               {"outcome": "loss", "realized_return": -0.08}, minute=1),
+        _event(3, "streak", 9.0, {"bars": 9, "direction": "up"}, minute=2),
+        _event(4, "streak", 14.0, {"bars": 14, "direction": "down"}, minute=3),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["worst_loss"]["realized_return"] == -0.08
+    assert history["longest_streak"]["bars"] == 14
+    assert history["total_events"] == 4
+
+
+def test_history_accumulates_downtime_across_outages():
+    events = [
+        _event(1, "stream_started", 1.0, symbol=None),
+        _event(2, "stream_dropped", 5.0, symbol=None, minute=10),
+        _event(3, "stream_started", 1.0, symbol=None, minute=25),
+        _event(4, "stream_stopped", 2.0, symbol=None, minute=40),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["downtime_seconds"] == pytest.approx(15 * 60)
+    assert history["outages"] == 1
+
+
+def test_history_first_seen_is_the_oldest_event():
+    events = [_event(2, "big_move", 5.0, {"return": 0.01}, minute=30),
+              _event(1, "big_move", 5.0, {"return": 0.01})]
+    assert project_state(events, now=BASE)["history"]["first_seen"] == BASE.isoformat()
+
+
+def test_a_month_of_history_differs_materially_from_a_fresh_log():
+    """The month-away property: a world that has lived is not a world that
+    just booted, even when the recent window looks the same."""
+    aged = [
+        _event(i, "signal_resolved", 1.5,
+               {"outcome": "loss", "realized_return": -0.01}, minute=i * 60)
+        for i in range(1, 200)
+    ]
+    # One bad day early on, long since out of the recent window. A world that
+    # has lived still carries it; a freshly-booted one has never seen it.
+    aged[10]["payload"]["realized_return"] = -0.35
+    fresh = aged[-3:]
+    aged_state = project_state(aged, now=BASE)
+    fresh_state = project_state(fresh, now=BASE)
+
+    assert (
+        aged_state["history"]["total_events"] > fresh_state["history"]["total_events"]
+    )
+    assert (
+        aged_state["history"]["worst_loss"]["realized_return"]
+        < fresh_state["history"]["worst_loss"]["realized_return"]
+    )
+    assert aged_state["recent"] != []

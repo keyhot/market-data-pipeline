@@ -42,6 +42,12 @@ def severity_tier(event_type: str, severity: float) -> int:
     return sum(1 for cut in cuts if severity >= cut)
 
 
+def _parse(timestamp: str | datetime) -> datetime:
+    if isinstance(timestamp, datetime):
+        return timestamp
+    return datetime.fromisoformat(timestamp)
+
+
 def empty_state() -> dict:
     return {
         "event_count": 0,
@@ -56,6 +62,16 @@ def empty_state() -> dict:
         },
         "stream": {"state": "unknown", "drops": 0, "last_transition": None},
         "recent": [],
+        "history": {
+            "total_events": 0,
+            "first_seen": None,
+            "worst_loss": None,
+            "longest_streak": None,
+            "biggest_move": None,
+            "downtime_seconds": 0.0,
+            "outages": 0,
+        },
+        "_down_since": None,
     }
 
 
@@ -97,6 +113,8 @@ def fold_event(state: dict, event: dict) -> dict:
         "model": dict(state["model"]),
         "stream": dict(state["stream"]),
         "recent": state["recent"],
+        "history": dict(state["history"]),
+        "_down_since": state["_down_since"],
     }
     etype = event["event_type"]
     payload = event.get("payload") or {}
@@ -146,6 +164,56 @@ def fold_event(state: dict, event: dict) -> dict:
         if etype == "stream_dropped":
             stream["drops"] += 1
 
+    history = new["history"]
+    history["total_events"] += 1
+    if history["first_seen"] is None:
+        history["first_seen"] = event["occurred_at"]
+
+    if etype == "signal_resolved" and payload.get("outcome") == "loss":
+        realized = float(payload.get("realized_return", 0.0))
+        worst = history["worst_loss"]
+        if worst is None or realized < worst["realized_return"]:
+            history["worst_loss"] = {
+                "symbol": symbol,
+                "realized_return": realized,
+                "occurred_at": event["occurred_at"],
+            }
+    elif etype == "streak":
+        bars = int(payload.get("bars", 0))
+        longest = history["longest_streak"]
+        if longest is None or bars > longest["bars"]:
+            history["longest_streak"] = {
+                "symbol": symbol,
+                "bars": bars,
+                "direction": payload.get("direction"),
+                "occurred_at": event["occurred_at"],
+            }
+    elif etype == "big_move":
+        sigmas = float(payload.get("sigmas", event["severity"]))
+        biggest = history["biggest_move"]
+        if biggest is None or sigmas > biggest["sigmas"]:
+            history["biggest_move"] = {
+                "symbol": symbol,
+                "sigmas": sigmas,
+                "occurred_at": event["occurred_at"],
+            }
+
+    # Downtime accrues between a stop/drop and the next start. An unclosed
+    # outage stays open rather than being guessed at — the log is the record.
+    if etype in ("stream_stopped", "stream_dropped"):
+        if new["_down_since"] is None:
+            new["_down_since"] = event["occurred_at"]
+        if etype == "stream_dropped":
+            history["outages"] += 1
+    elif etype == "stream_started" and new["_down_since"] is not None:
+        down = _parse(new["_down_since"])
+        history["downtime_seconds"] = round(
+            history["downtime_seconds"] + (_parse(event["occurred_at"]) - down)
+            .total_seconds(),
+            3,
+        )
+        new["_down_since"] = None
+
     # Newest-first, capped. Slicing a fresh list keeps fold_event pure.
     entry = {
         "id": event.get("id"),
@@ -172,5 +240,10 @@ def project_state(events: list[dict], now: datetime | None = None) -> dict:
     state["model"]["hit_rate"] = (
         state["model"]["wins"] / resolved if resolved else None
     )
+    state.pop("_down_since", None)
+    # History is folded over the events the CALLER supplied, not the whole
+    # table — /world/state passes limit=500. Recording the window keeps
+    # "worst loss" honest: it means worst-in-window, not worst-ever.
+    state["history"]["window"] = len(ordered)
     state["generated_at"] = (now or datetime.now(timezone.utc)).isoformat()
     return state
