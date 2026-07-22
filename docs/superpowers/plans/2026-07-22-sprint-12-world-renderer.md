@@ -1021,6 +1021,13 @@ Expected: FAIL — `assert 404 == 200`.
       drawRoom();
       model = character("MODEL");
       trader = character("TRADER");
+      // Unconditionally, BEFORE the first fetch: character() sets only .y, so
+      // without this both characters sit stacked at x=0, half off-canvas. The
+      // call inside draw() is not enough — draw() is only reached on a
+      // successful refresh(), and /world/state legitimately 404s on an empty
+      // log (first boot). A broken room is worse than an empty one on a 24/7
+      // broadcast surface.
+      positionCharacters();
       await refresh();
       subscribe();
       setInterval(refresh, 60000);   // projection stays authoritative server-side
@@ -1140,7 +1147,12 @@ Expected: FAIL — `assert 404 == 200`.
       source.onmessage = (message) => react(JSON.parse(message.data));
     }
 
-    boot();
+    // A rejected boot() must say so. On a GPU-less or headless Browser Source
+    // app.init() can reject, and an unhandled rejection would leave "Waking the
+    // world…" on screen forever — neither a room nor an error.
+    boot().catch(() => {
+      fallback.textContent = "renderer failed to start — the world is still running";
+    });
   </script>
 </body>
 </html>
