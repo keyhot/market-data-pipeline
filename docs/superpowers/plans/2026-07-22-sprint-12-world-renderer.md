@@ -74,7 +74,7 @@ numbers. PixiJS is a 2D WebGL compositor built for exactly that shape.
 |---|---|---|
 | Dimensionality | 2D-native; scene is a display list | 3D scene graph; 2D means an orthographic camera and manual layout |
 | Text quality | First-class `Text`/`BitmapText`, crisp at fixed DPR | Needs `TextGeometry` (font loading) or DOM/CSS overlays; both are awkward |
-| CDN bundle (minified) | ~780 KB, single UMD `PIXI` global | Comparable, but a usable 2D setup needs extra loaders |
+| CDN bundle (minified) | ~780 KB, single `PIXI` global (IIFE, no module wrapper) | Comparable, but a usable 2D setup needs extra loaders |
 | 24/7 OBS CPU cost | Lower — no lighting, no depth pass, no per-frame matrix work we don't need | Higher for identical output |
 | Sprint 14 headroom | Many small interacting sprites is Pixi's core case | Would be fighting the abstraction |
 | Licence | MIT | MIT |
@@ -105,6 +105,15 @@ Both are MIT, so no attribution footer is required (unlike TradingView on
   sprite or texture assets. Art becomes a later addition behind the same
   projection and reaction layers.
 
+## Pinned artifact
+
+Copy these two values verbatim into the `<script>` tag; do not retype or
+re-derive them. Step 1's command regenerates the hash if the pin ever moves.
+
+- **URL:** `https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js`
+- **Integrity:** `sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq`
+- **Also required:** `crossorigin="anonymous"`
+
 ## How it's wired
 
 `GET /world/state` returns the projection; `api/templates/world.html` draws it
@@ -112,6 +121,10 @@ and applies deltas from `EventSource('/stream/world/events')`. The renderer
 never computes state — it only draws what `world/state.py` and
 `world/reactions.py` produced.
 ```
+
+**This section is the task's whole point** — the Interfaces block above promises
+this document *produces* the pinned URL and hash for Task 5 to copy. A version of
+this doc that names only the version number does not satisfy that contract.
 
 - [ ] **Step 3: Commit**
 
