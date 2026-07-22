@@ -2605,12 +2605,21 @@ def test_endpoint_state_matches_the_pure_projection():
         assert served[key] == direct[key]
 
 
-def test_the_page_and_the_state_endpoint_agree_on_symbols():
+def test_the_page_embeds_every_crypto_watchlist_symbol():
+    """The page filters its pillars against an embedded symbol list, so a
+    watchlist symbol missing from the page renders no pillar however much
+    state the projection produces for it."""
+    from scheduler.watchlist import load_watchlist
+
     page = client.get("/world").text
-    with patch("api.main.get_world_events", return_value=_log()):
-        data = client.get("/world/state").json()["data"]
-    for symbol in data["symbols"]:
-        assert symbol in page or symbol not in ("BTCUSDT", "ETHUSDT")
+    expected = {
+        spec.symbol.upper()
+        for spec in load_watchlist().tickers
+        if spec.market == "crypto"
+    }
+    assert expected, "watchlist has no crypto symbols — fixture assumption broken"
+    missing = sorted(s for s in expected if s not in page)
+    assert missing == [], f"symbols absent from /world: {missing}"
 ```
 
 - [ ] **Step 2: Run the whole suite**
