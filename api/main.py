@@ -45,7 +45,9 @@ from storage.writes import (
     write_news,
     write_price_bars,
 )
+from world.reactions import attach_reactions
 from world.salience import KNOWN_EVENT_TYPES
+from world.state import project_state
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
@@ -423,6 +425,21 @@ def world_events(
     return ApiResponse(
         status=200, data={"count": len(events), "events": events}
     )
+
+
+@app.get("/world/state", response_model=ApiResponse)
+def world_state(limit: int = Query(500, ge=1, le=2000)):
+    """The world_events log folded into what the room currently shows.
+    The renderer computes nothing — it draws this."""
+    try:
+        events = get_world_events(limit=limit)
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+    if not events:
+        raise NoDataFoundError("No world events recorded yet")
+    return ApiResponse(status=200, data=attach_reactions(project_state(events)))
 
 
 @app.get("/signals/{ticker_symbol}", response_model=ApiResponse)
