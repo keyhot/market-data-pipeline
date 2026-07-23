@@ -49,6 +49,10 @@ services:
       SCHEDULER_ENABLED: "true"
       WS_INGEST_ENABLED: "true"
       CSV_WRITE_ENABLED: "0"
+      FREQTRADE_URL: ${FREQTRADE_URL:-http://freqtrade:8080}
+      FREQTRADE_USERNAME: ${FREQTRADE_USERNAME:-worldwatcher}
+      FREQTRADE_PASSWORD: ${FREQTRADE_PASSWORD}
+      TRADER_MIRROR_ENABLED: ${TRADER_MIRROR_ENABLED:-1}
     volumes:
       # Model artifacts are trained on the host (python -m model.train);
       # the mount means retraining needs no image rebuild.
@@ -63,5 +67,29 @@ services:
       retries: 5
       start_period: 20s
 
+  freqtrade:
+    image: freqtradeorg/freqtrade:stable
+    container_name: market-data-freqtrade
+    restart: unless-stopped
+    # GPL boundary: separate container, REST-only, never imported or vendored.
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy SampleStrategy
+    environment:
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET}
+      FREQTRADE__API_SERVER__USERNAME: ${FREQTRADE_USERNAME:-worldwatcher}
+      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_PASSWORD}
+    volumes:
+      - ./config/freqtrade:/freqtrade/user_data:ro
+      - freqtrade_data:/freqtrade/user_data/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v1/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
 volumes:
   postgres_data:
+  freqtrade_data:

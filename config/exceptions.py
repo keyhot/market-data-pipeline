@@ -35,3 +35,10 @@ class InvalidDateError(BaseAppException):
 class StorageWriteError(BaseAppException):
     def __init__(self, message: str = "Failed to persist data", status_code: int = 503):
         super().__init__(message, status_code)
+
+
+class FreqtradeUnreachableError(BaseAppException):
+    def __init__(
+        self, message: str = "freqtrade sidecar unreachable", status_code: int = 503
+    ):
+        super().__init__(message, status_code)
