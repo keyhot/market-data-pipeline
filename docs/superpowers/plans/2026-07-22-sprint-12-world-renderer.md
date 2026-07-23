@@ -1868,6 +1868,10 @@ def main() -> int:
                    "types": sorted({e["event_type"] for e in events})},
         )
         if args.dry_run:
+            # The preview an operator runs before the real 60-day backfill must
+            # report a truthful count — accumulate candidates, don't skip past
+            # the counter.
+            total += len(events)
             continue
         total += append_world_events_backfill(events)
 
