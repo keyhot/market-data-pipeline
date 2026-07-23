@@ -2214,12 +2214,34 @@ def test_severity_grows_with_the_size_of_the_pnl_swing():
     assert large[0]["severity"] > small[0]["severity"]
 
 
-def test_first_observation_does_not_replay_history():
-    """An empty previous state means we've never looked — reporting every
-    already-open trade as newly opened would fabricate events."""
+def test_first_observation_seeds_a_flagged_baseline():
+    """An empty previous state means we've never looked. We can't attest we
+    witnessed these opens, so they're emitted flagged baseline:true (learned,
+    not witnessed) rather than silently — staying silent would deadlock the
+    pipeline and the trader character could never wake from a cold log."""
     events = diff_trader_state({}, {"open_trades": [_trade(1), _trade(2)],
                                     "profit_closed_percent": 3.0})
-    assert events == []
+    assert [e["event_type"] for e in events] == ["trader_opened", "trader_opened"]
+    assert all(e["payload"]["baseline"] is True for e in events)
+    assert {e["payload"]["trade_id"] for e in events} == {1, 2}
+
+
+def test_record_trader_events_wakes_from_a_cold_log(monkeypatch):
+    """The bug this closes: on a cold world_events log the trader must emit its
+    first event or the character can never wake. Drives the REAL _load_previous
+    (cold log -> {}) end to end — the coverage whose absence hid the deadlock."""
+    written = []
+    monkeypatch.setattr("world.trader_events.get_world_events",
+                        lambda limit=200, event_type=None: [])
+    monkeypatch.setattr(
+        "world.trader_events.append_world_events",
+        lambda events: written.extend(events) or len(events),
+    )
+    client = FakeClient({"open_trades": [_trade(1), _trade(2)]},
+                        {"profit_closed_percent": 0.0})
+    events = record_trader_events(client=client)
+    assert all(e["payload"]["baseline"] is True for e in events)
+    assert len(written) == 2  # persisted -> the next poll is no longer a cold start
 
 
 def test_record_trader_events_uses_the_injected_client(monkeypatch):
@@ -2320,8 +2342,10 @@ Add the moods to `MOOD_COLOR` in `api/templates/world.html`:
 Inside `HEADLINES`, after `stream_dropped`:
 
 ```javascript
-      trader_opened: (e) => `trader opened ${e.payload.pair}`,
-      trader_closed: (e) => `trader closed ${e.payload.pair} — ` +
+      trader_opened: (e) => e.payload.baseline
+        ? `trader already holding ${e.payload.pair ?? "a position"}`
+        : `trader opened ${e.payload.pair ?? "a position"}`,
+      trader_closed: (e) => `trader closed ${e.payload.pair ?? "a position"} — ` +
         `${e.payload.profit_pct?.toFixed(2)}%`,
       trader_milestone: (e) => `trader P&L now ${e.payload.profit_pct?.toFixed(2)}%`,
 ```
@@ -2401,16 +2425,29 @@ def _event(event_type: str, severity: float, payload: dict) -> dict:
 def diff_trader_state(previous: dict, current: dict) -> list[dict]:
     """Pure diff between the last observation and the current one.
 
-    An empty `previous` means we have never looked; emitting every already-open
-    trade as newly opened would fabricate history, so the first observation is
-    silent by design.
+    An empty `previous` means we have never looked. We cannot attest we
+    witnessed the currently-open trades open, so the first observation seeds a
+    baseline: each open trade is emitted flagged `baseline: true` — the same
+    "learned, not witnessed" honesty as backfilled market events. Staying
+    silent instead deadlocks the whole pipeline: nothing would ever be
+    persisted, so `_load_previous` would return `{}` forever and every poll
+    would look like the first, leaving the trader character permanently asleep.
     """
+    now_open = {t["trade_id"]: t for t in current.get("open_trades") or []}
+
     if not previous:
-        return []
+        return [
+            _event("trader_opened", 1.0, {
+                "trade_id": trade_id,
+                "pair": trade.get("pair"),
+                "baseline": True,
+            })
+            for trade_id, trade in sorted(now_open.items())
+        ]
 
     events: list[dict] = []
     was_open = set(previous.get("open_trade_ids") or [])
-    now_open = {t["trade_id"]: t for t in current.get("open_trades") or []}
+    open_pairs = previous.get("open_pairs") or {}
 
     for trade_id in sorted(set(now_open) - was_open):
         trade = now_open[trade_id]
@@ -2424,10 +2461,11 @@ def diff_trader_state(previous: dict, current: dict) -> list[dict]:
 
     for trade_id in sorted(was_open - set(now_open)):
         # Severity tracks how much the closed P&L moved: a scratch exit is
-        # routine, a large one is worth the room reacting to.
+        # routine, a large one is worth the room reacting to. The pair comes
+        # from the remembered open — the closed trade is gone from `current`.
         events.append(_event("trader_closed", 1.0 + swing / 2.0, {
             "trade_id": trade_id,
-            "pair": None,
+            "pair": open_pairs.get(trade_id),
             "profit_pct": round(closed_now, 4),
             "swing_pct": round(closed_now - closed_before, 4),
         }))
@@ -2458,21 +2496,23 @@ def _load_previous() -> dict:
         return {}
     rows.sort(key=lambda r: (r["occurred_at"], r.get("id") or 0), reverse=True)
 
-    open_ids: set[int] = set()
+    open_pairs: dict = {}
     profit = None
     for row in reversed(rows):  # oldest first
         payload = row.get("payload") or {}
+        trade_id = payload.get("trade_id")
         if row["event_type"] == "trader_opened":
-            open_ids.add(payload.get("trade_id"))
+            open_pairs[trade_id] = payload.get("pair")
         elif row["event_type"] == "trader_closed":
-            open_ids.discard(payload.get("trade_id"))
+            open_pairs.pop(trade_id, None)
             profit = payload.get("profit_pct", profit)
         elif row["event_type"] == "trader_milestone":
             profit = payload.get("profit_pct", profit)
-    if profit is None and not open_ids:
+    if profit is None and not open_pairs:
         return {}
     return {
-        "open_trade_ids": sorted(i for i in open_ids if i is not None),
+        "open_trade_ids": sorted(i for i in open_pairs if i is not None),
+        "open_pairs": {i: p for i, p in open_pairs.items() if i is not None},
         "profit_closed_percent": profit or 0.0,
     }
 

@@ -70,16 +70,29 @@ def _event(event_type: str, severity: float, payload: dict) -> dict:
 def diff_trader_state(previous: dict, current: dict) -> list[dict]:
     """Pure diff between the last observation and the current one.
 
-    An empty `previous` means we have never looked; emitting every already-open
-    trade as newly opened would fabricate history, so the first observation is
-    silent by design.
+    An empty `previous` means we have never looked. We cannot attest we
+    witnessed the currently-open trades open, so the first observation seeds a
+    baseline: each open trade is emitted flagged `baseline: true` — the same
+    "learned, not witnessed" honesty as backfilled market events. Staying
+    silent instead deadlocks the whole pipeline: nothing would ever be
+    persisted, so `_load_previous` would return `{}` forever and every poll
+    would look like the first, leaving the trader character permanently asleep.
     """
+    now_open = {t["trade_id"]: t for t in current.get("open_trades") or []}
+
     if not previous:
-        return []
+        return [
+            _event("trader_opened", 1.0, {
+                "trade_id": trade_id,
+                "pair": trade.get("pair"),
+                "baseline": True,
+            })
+            for trade_id, trade in sorted(now_open.items())
+        ]
 
     events: list[dict] = []
     was_open = set(previous.get("open_trade_ids") or [])
-    now_open = {t["trade_id"]: t for t in current.get("open_trades") or []}
+    open_pairs = previous.get("open_pairs") or {}
 
     for trade_id in sorted(set(now_open) - was_open):
         trade = now_open[trade_id]
@@ -93,10 +106,11 @@ def diff_trader_state(previous: dict, current: dict) -> list[dict]:
 
     for trade_id in sorted(was_open - set(now_open)):
         # Severity tracks how much the closed P&L moved: a scratch exit is
-        # routine, a large one is worth the room reacting to.
+        # routine, a large one is worth the room reacting to. The pair comes
+        # from the remembered open — the closed trade is gone from `current`.
         events.append(_event("trader_closed", 1.0 + swing / 2.0, {
             "trade_id": trade_id,
-            "pair": None,
+            "pair": open_pairs.get(trade_id),
             "profit_pct": round(closed_now, 4),
             "swing_pct": round(closed_now - closed_before, 4),
         }))
@@ -127,21 +141,23 @@ def _load_previous() -> dict:
         return {}
     rows.sort(key=lambda r: (r["occurred_at"], r.get("id") or 0), reverse=True)
 
-    open_ids: set[int] = set()
+    open_pairs: dict = {}
     profit = None
     for row in reversed(rows):  # oldest first
         payload = row.get("payload") or {}
+        trade_id = payload.get("trade_id")
         if row["event_type"] == "trader_opened":
-            open_ids.add(payload.get("trade_id"))
+            open_pairs[trade_id] = payload.get("pair")
         elif row["event_type"] == "trader_closed":
-            open_ids.discard(payload.get("trade_id"))
+            open_pairs.pop(trade_id, None)
             profit = payload.get("profit_pct", profit)
         elif row["event_type"] == "trader_milestone":
             profit = payload.get("profit_pct", profit)
-    if profit is None and not open_ids:
+    if profit is None and not open_pairs:
         return {}
     return {
-        "open_trade_ids": sorted(i for i in open_ids if i is not None),
+        "open_trade_ids": sorted(i for i in open_pairs if i is not None),
+        "open_pairs": {i: p for i, p in open_pairs.items() if i is not None},
         "profit_closed_percent": profit or 0.0,
     }
 

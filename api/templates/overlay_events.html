@@ -49,8 +49,10 @@
         : "stream went live",
       stream_stopped: (e) => "stream stopped",
       stream_dropped: (e) => "stream dropped — recovering",
-      trader_opened: (e) => `trader opened ${e.payload.pair}`,
-      trader_closed: (e) => `trader closed ${e.payload.pair} — ` +
+      trader_opened: (e) => e.payload.baseline
+        ? `trader already holding ${e.payload.pair ?? "a position"}`
+        : `trader opened ${e.payload.pair ?? "a position"}`,
+      trader_closed: (e) => `trader closed ${e.payload.pair ?? "a position"} — ` +
         `${e.payload.profit_pct?.toFixed(2)}%`,
       trader_milestone: (e) => `trader P&L now ${e.payload.profit_pct?.toFixed(2)}%`,
     };

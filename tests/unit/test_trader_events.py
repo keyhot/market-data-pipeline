@@ -66,12 +66,95 @@ def test_severity_grows_with_the_size_of_the_pnl_swing():
     assert large[0]["severity"] > small[0]["severity"]
 
 
-def test_first_observation_does_not_replay_history():
-    """An empty previous state means we've never looked — reporting every
-    already-open trade as newly opened would fabricate events."""
+def test_first_observation_seeds_a_flagged_baseline():
+    """An empty previous state means we've never looked. We can't attest we
+    witnessed these opens, so they're emitted flagged baseline:true (learned,
+    not witnessed) rather than silently — staying silent would deadlock the
+    pipeline and the trader character could never wake from a cold log."""
     events = diff_trader_state({}, {"open_trades": [_trade(1), _trade(2)],
                                     "profit_closed_percent": 3.0})
-    assert events == []
+    assert [e["event_type"] for e in events] == ["trader_opened", "trader_opened"]
+    assert all(e["payload"]["baseline"] is True for e in events)
+    assert {e["payload"]["trade_id"] for e in events} == {1, 2}
+
+
+def test_normal_opens_are_not_flagged_baseline():
+    events = diff_trader_state(
+        {"open_trade_ids": [], "profit_closed_percent": 0.0},
+        {"open_trades": [_trade(5)], "profit_closed_percent": 0.0},
+    )
+    assert events[0]["event_type"] == "trader_opened"
+    assert "baseline" not in events[0]["payload"]
+
+
+def test_closed_event_carries_the_pair_from_the_remembered_open():
+    """The closed trade is gone from `current`, so its pair must come from the
+    remembered open — otherwise the overlay renders 'trader closed null'."""
+    previous = {"open_trade_ids": [1], "open_pairs": {1: "ETH/USDT"},
+                "profit_closed_percent": 0.0}
+    events = diff_trader_state(previous, {"open_trades": [],
+                                          "profit_closed_percent": -2.5})
+    closed = [e for e in events if e["event_type"] == "trader_closed"]
+    assert closed[0]["payload"]["pair"] == "ETH/USDT"
+
+
+def test_load_previous_returns_empty_on_a_cold_log(monkeypatch):
+    """The deadlock hinge: an empty log yields {} (never observed). The first
+    record_trader_events must still escape it via the baseline path."""
+    from world.trader_events import _load_previous
+
+    monkeypatch.setattr("world.trader_events.get_world_events",
+                        lambda limit=200, event_type=None: [])
+    assert _load_previous() == {}
+
+
+def test_load_previous_reconstructs_open_trades_and_pairs(monkeypatch):
+    from world.trader_events import _load_previous
+
+    rows_by_type = {
+        "trader_opened": [
+            {"id": 1, "occurred_at": "2026-07-20T12:00:00+00:00",
+             "event_type": "trader_opened",
+             "payload": {"trade_id": 1, "pair": "BTC/USDT"}},
+            {"id": 2, "occurred_at": "2026-07-20T12:05:00+00:00",
+             "event_type": "trader_opened",
+             "payload": {"trade_id": 2, "pair": "ETH/USDT"}},
+        ],
+        "trader_closed": [
+            {"id": 3, "occurred_at": "2026-07-20T12:10:00+00:00",
+             "event_type": "trader_closed",
+             "payload": {"trade_id": 1, "profit_pct": -2.5}},
+        ],
+        "trader_milestone": [],
+    }
+    monkeypatch.setattr(
+        "world.trader_events.get_world_events",
+        lambda limit=200, event_type=None: rows_by_type[event_type],
+    )
+    prev = _load_previous()
+    assert prev["open_trade_ids"] == [2]
+    assert prev["open_pairs"] == {2: "ETH/USDT"}
+    assert prev["profit_closed_percent"] == -2.5
+
+
+def test_record_trader_events_wakes_from_a_cold_log(monkeypatch):
+    """The bug this closes: on a cold world_events log the trader must emit its
+    first event or the character can never wake. Drives the REAL _load_previous
+    (cold log -> {}) end to end — the coverage whose absence hid the deadlock."""
+    written = []
+    monkeypatch.setattr("world.trader_events.get_world_events",
+                        lambda limit=200, event_type=None: [])
+    monkeypatch.setattr(
+        "world.trader_events.append_world_events",
+        lambda events: written.extend(events) or len(events),
+    )
+    client = FakeClient({"open_trades": [_trade(1), _trade(2)]},
+                        {"profit_closed_percent": 0.0})
+    events = record_trader_events(client=client)
+
+    assert [e["event_type"] for e in events] == ["trader_opened", "trader_opened"]
+    assert all(e["payload"]["baseline"] is True for e in events)
+    assert len(written) == 2  # persisted -> the next poll is no longer a cold start
 
 
 def test_record_trader_events_uses_the_injected_client(monkeypatch):
