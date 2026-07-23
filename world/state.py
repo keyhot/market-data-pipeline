@@ -61,6 +61,7 @@ def empty_state() -> dict:
             "streak_outcome": None,
         },
         "stream": {"state": "unknown", "drops": 0, "last_transition": None},
+        "trader": None,
         "recent": [],
         "history": {
             "total_events": 0,
@@ -112,6 +113,7 @@ def fold_event(state: dict, event: dict) -> dict:
         "symbols": dict(state["symbols"]),
         "model": dict(state["model"]),
         "stream": dict(state["stream"]),
+        "trader": dict(state["trader"]) if state["trader"] else None,
         "recent": state["recent"],
         "history": dict(state["history"]),
         "_down_since": state["_down_since"],
@@ -163,6 +165,29 @@ def fold_event(state: dict, event: dict) -> dict:
         stream["last_transition"] = event["occurred_at"]
         if etype == "stream_dropped":
             stream["drops"] += 1
+
+    if etype in ("trader_opened", "trader_closed", "trader_milestone"):
+        trader = new["trader"] or {
+            "open_trades": 0, "profit_pct": 0.0, "mood": "decisive",
+            "last_event": None,
+        }
+        if etype == "trader_opened":
+            trader["open_trades"] += 1
+        elif etype == "trader_closed":
+            trader["open_trades"] = max(0, trader["open_trades"] - 1)
+        if "profit_pct" in payload:
+            trader["profit_pct"] = round(float(payload["profit_pct"]), 4)
+        # Mood comes from the reaction table's own vocabulary so the canvas
+        # palette needs no trader-specific colours beyond those in Step 4.
+        trader["mood"] = (
+            "proud" if trader["profit_pct"] > 0
+            else "weighing" if trader["profit_pct"] < 0
+            else "decisive"
+        )
+        trader["last_event"] = {
+            "event_type": etype, "occurred_at": event["occurred_at"]
+        }
+        new["trader"] = trader
 
     history = new["history"]
     history["total_events"] += 1

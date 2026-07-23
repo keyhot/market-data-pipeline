@@ -21,6 +21,9 @@ REACTIONS: dict[str, tuple[str, str]] = {
     "stream_started": ("relieved", "wave"),
     "stream_stopped": ("idle", "sleep"),
     "stream_dropped": ("alarmed", "flicker"),
+    "trader_opened": ("decisive", "step"),
+    "trader_closed": ("weighing", "turn"),
+    "trader_milestone": ("proud", "cheer"),
 }
 
 # Types whose meaning genuinely flips on payload content.
