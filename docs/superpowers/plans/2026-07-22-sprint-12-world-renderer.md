@@ -1224,6 +1224,32 @@ def test_history_records_worst_loss_and_longest_streak():
     assert history["total_events"] == 4
 
 
+def test_dropped_frames_is_degraded_not_downtime():
+    """dropped_frames = the stream degraded but stayed live; the watchdog
+    records it and never restarts. It must not book live airtime as downtime
+    (scripts/soak_report.py, CLAUDE.md). Truthfulness invariant."""
+    events = [
+        _event(1, "stream_started", 1.0, symbol=None),
+        _event(2, "stream_dropped", 5.0, {"reason": "dropped_frames"},
+               symbol=None, minute=10),
+        _event(3, "stream_started", 1.0, symbol=None, minute=40),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["downtime_seconds"] == 0
+    assert history["outages"] == 0
+
+
+def test_consecutive_drops_before_recovery_are_one_outage():
+    events = [
+        _event(1, "stream_dropped", 5.0, symbol=None),
+        _event(2, "stream_dropped", 5.0, symbol=None, minute=6),
+        _event(3, "stream_started", 1.0, symbol=None, minute=10),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["outages"] == 1
+    assert history["downtime_seconds"] == 10 * 60
+
+
 def test_history_accumulates_downtime_across_outages():
     events = [
         _event(1, "stream_started", 1.0, symbol=None),
@@ -1336,10 +1362,25 @@ and insert this block just before the `recent` handling at the end:
     # Downtime accrues between a stop/drop and the next start. An unclosed
     # outage stays open rather than being guessed at — the log is the record.
     if etype in ("stream_stopped", "stream_dropped"):
-        if new["_down_since"] is None:
-            new["_down_since"] = event["occurred_at"]
-        if etype == "stream_dropped":
-            history["outages"] += 1
+        # dropped_frames means the stream degraded but stayed LIVE — the
+        # watchdog records it and deliberately does not restart, so no
+        # stream_started follows. Booking that live span as downtime would
+        # fabricate an outage, which the truthfulness invariant forbids.
+        # Canonical handling: scripts/soak_report.py:23-30, CLAUDE.md
+        # ("dropped_frames = degraded, not downtime").
+        degraded = (
+            etype == "stream_dropped"
+            and payload.get("reason") == "dropped_frames"
+        )
+        if not degraded:
+            opening = new["_down_since"] is None
+            if opening:
+                new["_down_since"] = event["occurred_at"]
+            # One outage per downtime period opened by a drop, deduped —
+            # consecutive drops before recovery are one outage, matching
+            # soak_report.py's `if open_outage is None`.
+            if etype == "stream_dropped" and opening:
+                history["outages"] += 1
     elif etype == "stream_started" and new["_down_since"] is not None:
         down = _parse(new["_down_since"])
         history["downtime_seconds"] = round(
