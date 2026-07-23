@@ -201,10 +201,24 @@ def fold_event(state: dict, event: dict) -> dict:
     # Downtime accrues between a stop/drop and the next start. An unclosed
     # outage stays open rather than being guessed at — the log is the record.
     if etype in ("stream_stopped", "stream_dropped"):
-        if new["_down_since"] is None:
-            new["_down_since"] = event["occurred_at"]
-        if etype == "stream_dropped":
-            history["outages"] += 1
+        # dropped_frames means the stream degraded but stayed LIVE — the
+        # watchdog records it and deliberately does not restart, so no
+        # stream_started follows. Booking that live span as downtime would
+        # fabricate an outage. Canonical handling: scripts/soak_report.py:23-30
+        # and CLAUDE.md ("dropped_frames = degraded, not downtime").
+        degraded = (
+            etype == "stream_dropped"
+            and payload.get("reason") == "dropped_frames"
+        )
+        if not degraded:
+            opening = new["_down_since"] is None
+            if opening:
+                new["_down_since"] = event["occurred_at"]
+            # Count one outage per downtime period opened by a drop, deduped —
+            # consecutive drops before recovery are one outage, matching
+            # soak_report.py's `if open_outage is None`.
+            if etype == "stream_dropped" and opening:
+                history["outages"] += 1
     elif etype == "stream_started" and new["_down_since"] is not None:
         down = _parse(new["_down_since"])
         history["downtime_seconds"] = round(

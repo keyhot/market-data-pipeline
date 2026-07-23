@@ -216,3 +216,29 @@ def test_a_month_of_history_differs_materially_from_a_fresh_log():
         < fresh_state["history"]["worst_loss"]["realized_return"]
     )
     assert aged_state["recent"] != []
+
+
+def test_dropped_frames_is_degraded_not_downtime():
+    """dropped_frames = the stream degraded but stayed live; the watchdog
+    records it and never restarts. It must not book live airtime as downtime
+    (scripts/soak_report.py, CLAUDE.md). Truthfulness invariant."""
+    events = [
+        _event(1, "stream_started", 1.0, symbol=None),
+        _event(2, "stream_dropped", 5.0, {"reason": "dropped_frames"},
+               symbol=None, minute=10),
+        _event(3, "stream_started", 1.0, symbol=None, minute=40),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["downtime_seconds"] == 0
+    assert history["outages"] == 0
+
+
+def test_consecutive_drops_before_recovery_are_one_outage():
+    events = [
+        _event(1, "stream_dropped", 5.0, symbol=None),
+        _event(2, "stream_dropped", 5.0, symbol=None, minute=6),
+        _event(3, "stream_started", 1.0, symbol=None, minute=10),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["outages"] == 1
+    assert history["downtime_seconds"] == 10 * 60
