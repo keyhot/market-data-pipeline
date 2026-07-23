@@ -90,3 +90,8 @@ CREATE TABLE world_events (
 
 CREATE INDEX idx_world_events_time ON world_events (occurred_at DESC);
 CREATE INDEX idx_world_events_type_time ON world_events (event_type, occurred_at DESC);
+
+-- Natural key: the same rule firing for the same symbol at the same instant
+-- IS the same event. Makes the Sprint 12 historical backfill re-runnable.
+CREATE UNIQUE INDEX uq_world_events_natural
+    ON world_events (event_type, occurred_at, symbol) NULLS NOT DISTINCT;
