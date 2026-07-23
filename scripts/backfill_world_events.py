@@ -136,6 +136,7 @@ def main() -> int:
                    "types": sorted({e["event_type"] for e in events})},
         )
         if args.dry_run:
+            total += len(events)
             continue
         total += append_world_events_backfill(events)
 

@@ -146,3 +146,35 @@ def test_stamp_backfilled_handles_a_missing_payload():
     assert stamp_backfilled([{"event_type": "streak"}])[0]["payload"] == {
         "backfilled": True
     }
+
+
+def test_dry_run_reports_candidate_count_without_writing(monkeypatch, capsys):
+    """--dry-run must preview the real candidate count and never write. The
+    count an operator sanity-checks before a live 60-day backfill has to be true."""
+    import scripts.backfill_world_events as bf
+
+    monkeypatch.setattr(
+        bf, "backfill_symbol",
+        lambda symbol, days, provider, config=None: [
+            {"event_type": "big_move", "symbol": symbol,
+             "occurred_at": BASE, "severity": 5.0, "payload": {"backfilled": True}},
+            {"event_type": "streak", "symbol": symbol,
+             "occurred_at": BASE, "severity": 9.0, "payload": {"backfilled": True}},
+        ],
+    )
+    calls = []
+    monkeypatch.setattr(
+        bf, "append_world_events_backfill",
+        lambda events: calls.append(events) or len(events),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["backfill_world_events.py", "--symbols", "BTCUSDT", "--dry-run"],
+    )
+
+    rc = bf.main()
+
+    assert rc == 0
+    assert calls == [], "dry-run must not write to the store"
+    out = capsys.readouterr().out
+    assert "would write 2 world events" in out
