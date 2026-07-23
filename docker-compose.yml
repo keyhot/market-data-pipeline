@@ -77,9 +77,9 @@ services:
       --config /freqtrade/user_data/config.json
       --strategy SampleStrategy
     environment:
-      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET}
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET:?FREQTRADE_JWT_SECRET is required}
       FREQTRADE__API_SERVER__USERNAME: ${FREQTRADE_USERNAME:-worldwatcher}
-      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_PASSWORD}
+      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_PASSWORD:?FREQTRADE_PASSWORD is required}
     volumes:
       - ./config/freqtrade:/freqtrade/user_data:ro
       - freqtrade_data:/freqtrade/user_data/data
