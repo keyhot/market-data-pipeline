@@ -2020,10 +2020,10 @@ Dry-run, keyless, REST on. Note from `docs/freqtrade-sidecar-spike.md`: a short 
     "listen_port": 8080,
     "verbosity": "error",
     "enable_openapi": false,
-    "jwt_secret_key": "replace-with-a-long-random-string-at-least-32-chars",
+    "jwt_secret_key": "",
     "CORS_origins": [],
     "username": "worldwatcher",
-    "password": "replace-me"
+    "password": ""
   },
   "bot_name": "world-trader",
   "initial_state": "running",
@@ -2068,9 +2068,12 @@ In `docker-compose.yml`, after the `scheduler` service and before `volumes:`. No
       --config /freqtrade/user_data/config.json
       --strategy SampleStrategy
     environment:
-      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET}
+      # Fail closed: compose refuses to start the sidecar unless a real secret
+      # is supplied, so the trading API can never come up with a repo-known
+      # credential. config.json ships these values empty for the same reason.
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET:?FREQTRADE_JWT_SECRET is required}
       FREQTRADE__API_SERVER__USERNAME: ${FREQTRADE_USERNAME:-worldwatcher}
-      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_PASSWORD}
+      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_PASSWORD:?FREQTRADE_PASSWORD is required}
     volumes:
       - ./config/freqtrade:/freqtrade/user_data:ro
       - freqtrade_data:/freqtrade/user_data/data
