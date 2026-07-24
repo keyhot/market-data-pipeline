@@ -22,10 +22,18 @@ def compute_uptime(
         payload = event.get("payload") or {}
         if etype == "stream_dropped":
             degraded = payload.get("reason") == "dropped_frames"
-            if open_outage is None:
+            if degraded:
+                # Degraded = live-but-impaired, zero downtime. Record and move
+                # on — leaving it sitting in open_outage would block a real
+                # outage that fires before the next stream_started, deleting
+                # that outage's downtime from the report.
+                outages.append(
+                    {"start": occurred, "end": occurred, "reason": "dropped_frames"}
+                )
+            elif open_outage is None:
                 open_outage = {
                     "start": occurred,
-                    "end": occurred if degraded else None,
+                    "end": None,
                     "reason": payload.get("reason", "unknown"),
                 }
         elif etype == "stream_started" and open_outage is not None:

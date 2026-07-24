@@ -114,6 +114,9 @@ def run_resolver_job() -> dict:
         model_events += len(record_model_events(symbol))
     result = {
         "resolved": len(resolutions),
+        # "rows" is what _run_job records as rows_written in ingestion_runs;
+        # without it this job always logged NULL despite resolving signals.
+        "rows": len(resolutions),
         "outcomes": sorted({r["outcome"] for r in resolutions}),
         "model_events": model_events,
     }

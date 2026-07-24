@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 import pandas as pd
 import websockets
@@ -68,6 +69,14 @@ class BinanceKlineIngester:
                     backoff = _BACKOFF_INITIAL_SECONDS
                     async for message in ws:
                         await asyncio.to_thread(self.handle_message, message)
+                # The async-for ends without raising on a *clean* server close
+                # (Binance recycles connections ~daily). Fall through to the same
+                # backoff sleep as a drop — otherwise this busy-loops with zero
+                # delay, hammering the REST backfill + WS endpoints.
+                logger.info(
+                    "Kline stream closed cleanly, reconnecting",
+                    extra={"backoff_seconds": backoff},
+                )
             except asyncio.CancelledError:
                 logger.info("Kline ingester stopped")
                 raise
@@ -76,8 +85,8 @@ class BinanceKlineIngester:
                     "Kline stream dropped, reconnecting",
                     extra={"error": str(e), "backoff_seconds": backoff},
                 )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _BACKOFF_MAX_SECONDS)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _BACKOFF_MAX_SECONDS)
 
     def handle_message(self, message: str | bytes) -> None:
         try:
@@ -109,17 +118,31 @@ class BinanceKlineIngester:
         """REST-fill 1m bars missed while disconnected (or ever)."""
         if not postgres_write_enabled():
             return
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        # The candle opening at the current minute is still forming; anything
+        # opening before it is closed. Filtering on open time (not position)
+        # is robust even when a page caps at 1000 rows.
+        current_minute_ms = (now_ms // 60_000) * 60_000
         for symbol in self._symbols:
             try:
                 last = latest_bar_timestamp(symbol, INTRADAY_INTERVAL)
-                start_ms = (
-                    int(last.timestamp() * 1000) + 60_000 if last is not None else None
-                )
-                raw = self._provider.get_klines(
-                    symbol, interval=INTRADAY_INTERVAL, start_ms=start_ms
-                )
-                # Last element may be the still-open candle; keep closed ones.
-                closed = raw[:-1] if raw else []
+                if last is not None:
+                    # Paginate the whole gap. A single 1000-candle request would
+                    # silently drop everything past ~16.7h and leave a PERMANENT
+                    # hole: the next reconnect advances latest_bar_timestamp past
+                    # the gap and never revisits it.
+                    start_ms = int(last.timestamp() * 1000) + 60_000
+                    raw = self._provider.get_klines_paginated(
+                        symbol, interval=INTRADAY_INTERVAL,
+                        start_ms=start_ms, end_ms=current_minute_ms,
+                    )
+                else:
+                    # Cold start: seed the most recent window; the deep historical
+                    # fill is a separate script's job, not the ingester's.
+                    raw = self._provider.get_klines(
+                        symbol, interval=INTRADAY_INTERVAL
+                    )
+                closed = [k for k in raw if k[0] < current_minute_ms]
                 if not closed:
                     continue
                 frame = _klines_to_frame(closed)
