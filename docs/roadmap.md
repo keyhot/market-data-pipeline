@@ -54,11 +54,15 @@ the project is never more than a week from a demoable state.
   24h soak.
 
 ### Sprint 12 — World Renderer v0
-- One room, one character, a handful of world-state variables — a PixiJS (or
-  Phaser) canvas page driven by `world_events` over WebSocket, loaded as a
-  Browser Source. World state = projection over the event log.
+- One room, two characters, a handful of world-state variables — a PixiJS
+  canvas page driven by `world_events` over **SSE** (`/stream/world/events`,
+  the transport the OBS overlays already use), loaded as a Browser Source.
+  World state = a deterministic projection over the event log (`world/state.py`).
 - First personality: one policy over the salience stream, with visible
-  reactions. The world already has ~2 months of history to display.
+  reactions. History comes from `scripts/backfill_world_events.py`, which
+  replays the salience rules over ~60 days of klines — the live log itself
+  only went back 3 days when Sprint 12 started, so backfilled events are
+  flagged `backfilled: true` to keep learned and witnessed history distinct.
 
 ### Sprint 13 — Director & Personalities
 - Director service: salience-driven scene switching, in-character LLM

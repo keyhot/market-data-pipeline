@@ -108,7 +108,7 @@ director, backed by Postgres):
 - Internal monitoring: Grafana straight on Postgres.
 - Stream overlays are the same pages, loaded as OBS Browser Sources — and the
   living-world renderer is just another such page (PixiJS/Phaser canvas
-  driven by the world event stream over WebSocket). Charts become objects
+  driven by the world event stream over SSE). Charts become objects
   *inside* the world rather than the product.
 
 ## Broadcast plane (L4)
