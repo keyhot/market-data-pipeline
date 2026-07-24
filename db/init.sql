@@ -10,7 +10,8 @@ CREATE TABLE price_bars (
     high          NUMERIC(18, 6),
     low           NUMERIC(18, 6),
     close         NUMERIC(18, 6),
-    volume        BIGINT,
+    volume        NUMERIC(28, 8),                -- fractional for crypto base-asset volume
+
     fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (symbol, bar_timestamp, interval)
 );

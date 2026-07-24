@@ -58,7 +58,9 @@ def upsert_price_bars(symbol: str, interval: str, bars: pd.DataFrame) -> int:
             _as_float(bar.get("High")),
             _as_float(bar.get("Low")),
             _as_float(bar.get("Close")),
-            _as_int(bar.get("Volume")),
+            # Float, not int: crypto base-asset volume is fractional and int()
+            # truncated it (sub-1-unit minutes became 0). Column is NUMERIC.
+            _as_float(bar.get("Volume")),
         )
         for ts, bar in bars.iterrows()
     ]
@@ -114,7 +116,8 @@ def get_price_bars(
             "high": _as_float(high),
             "low": _as_float(low),
             "close": _as_float(close),
-            "volume": volume,
+            # NUMERIC comes back as Decimal; coerce to float for JSON like OHLC.
+            "volume": _as_float(volume),
         }
         for ts, open_, high, low, close, volume in reversed(rows)
     ]
