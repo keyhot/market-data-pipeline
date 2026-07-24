@@ -68,10 +68,14 @@ not counted as the stream being down.
 
 ## The two inhabitants
 
-- **MODEL** — our own signal model. Its mood follows its win/loss record, and
-  it is currently losing more often than winning at the time of writing. The
-  room is deliberately not designed to look celebratory by default; a losing
-  model is honest, and it is content.
+- **MODEL** — our own signal model. Its mood follows its win/loss record, as
+  resolved by `world/resolver.py` and folded by `world/state.py`. The v0
+  model currently loses money after costs (`docs/model-plane.md`) even
+  though its walk-forward backtest beats a coin flip on raw direction; the
+  live win/loss record the room actually reacts to is whatever
+  `GET /world/state` or `GET /signals/{symbol}` report at the time you look.
+  The room is deliberately not designed to look celebratory by default; a
+  losing model is honest, and it is content.
 - **TRADER** — the freqtrade dry-run sidecar, mirrored over REST into
   `trader_*` events (`world/trader_events.py`). It is an independent
   inhabitant, not an executor of our signals: when its positions disagree
