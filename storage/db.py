@@ -1,4 +1,5 @@
 import os
+import threading
 
 from psycopg_pool import ConnectionPool
 
@@ -9,13 +10,20 @@ _DEFAULT_DATABASE_URL = (
 )
 
 _pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
 
 
 def get_pool() -> ConnectionPool:
     global _pool
+    # Double-checked lock: without it, two threads racing the first cold access
+    # (e.g. concurrent API requests before the pool is warmed) both build a pool
+    # with live connections, and the losing one is orphaned — leaking its
+    # connections and background threads.
     if _pool is None:
-        url = os.environ.get(DATABASE_URL_ENV, _DEFAULT_DATABASE_URL)
-        _pool = ConnectionPool(url, min_size=1, max_size=4, open=True)
+        with _pool_lock:
+            if _pool is None:
+                url = os.environ.get(DATABASE_URL_ENV, _DEFAULT_DATABASE_URL)
+                _pool = ConnectionPool(url, min_size=1, max_size=4, open=True)
     return _pool
 
 
