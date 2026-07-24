@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The World — Market Data Pipeline</title>
+  <style>
+    :root { color-scheme: dark; --bg: #131722; }
+    body { margin: 0; background: var(--bg); color: #d1d4dc;
+           font-family: system-ui, sans-serif; overflow: hidden; }
+    #room { width: 100vw; height: 100vh; }
+    #fallback { position: absolute; top: 1rem; left: 1rem; color: #787b86;
+                font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div id="room"></div>
+  <div id="fallback">Waking the world…</div>
+  <script src="https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js"
+          integrity="sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq"
+          crossorigin="anonymous"></script>
+  <script>
+    const SYMBOLS = __SYMBOLS__;
+    const fallback = document.getElementById("fallback");
+
+    // Moods the projection can emit -> room palette. Unknown moods stay grey
+    // rather than throwing, so a new salience rule degrades quietly on screen
+    // (the loud failure is the registry test in tests/unit/test_reactions.py).
+    const MOOD_COLOR = {
+      bullish: 0x26a69a, bearish: 0xef5350, panicked: 0xf2a900, calm: 0x4a90d9,
+      elated: 0x26a69a, dejected: 0xef5350, startled: 0xf2a900, anxious: 0xf2a900,
+      surprised: 0x9c6ade, alert: 0x4a90d9, focused: 0x5b9cf6, eager: 0x26a69a,
+      grim: 0xef5350, relieved: 0x26a69a, alarmed: 0xef5350, idle: 0x545862,
+      resigned: 0x787b86, neutral: 0x787b86,
+      decisive: 0x5b9cf6, weighing: 0x9c6ade, proud: 0x26a69a,
+    };
+    const color = (mood) => MOOD_COLOR[mood] ?? 0x787b86;
+
+    // Declared here, constructed in boot(): character() needs app.screen and
+    // the layer containers, neither of which exist until PIXI has initialised.
+    let app, layers = {}, world = null, model = null, trader = null;
+
+    async function boot() {
+      if (typeof PIXI === "undefined") {
+        fallback.textContent = "renderer unavailable — the world is still running";
+        return;
+      }
+      app = new PIXI.Application();
+      await app.init({ background: 0x131722, resizeTo: window, antialias: true });
+      document.getElementById("room").appendChild(app.canvas);
+      fallback.textContent = "";
+
+      layers.room = new PIXI.Container();
+      layers.chars = new PIXI.Container();
+      layers.props = new PIXI.Container();
+      app.stage.addChild(layers.room, layers.props, layers.chars);
+
+      drawRoom();
+      model = character("MODEL");
+      trader = character("TRADER");
+      positionCharacters();
+      await refresh();
+      subscribe();
+      setInterval(refresh, 60000);   // projection stays authoritative server-side
+    }
+
+    function label(text, x, y, size, tint) {
+      const t = new PIXI.Text({ text, style: {
+        fill: tint ?? 0xd1d4dc, fontFamily: "system-ui", fontSize: size,
+      }});
+      t.x = x; t.y = y;
+      return t;
+    }
+
+    function drawRoom() {
+      const floor = new PIXI.Graphics()
+        .rect(0, app.screen.height * 0.72, app.screen.width, 3)
+        .fill(0x2a2e39);
+      layers.room.addChild(floor);
+    }
+
+    // One inhabitant: a body whose colour is its mood and a label carrying the
+    // numbers. Procedural geometry only in v0 — no external assets.
+    function character(name) {
+      const container = new PIXI.Container();
+      container.y = app.screen.height * 0.72;
+      const body = new PIXI.Graphics().circle(0, -60, 44).fill(0x545862);
+      const nameTag = label(name, -40, 10, 18);
+      const stat = label("", -80, 34, 14, 0x787b86);
+      const moodTag = label("", -40, -140, 16, 0x787b86);
+      container.addChild(body, nameTag, stat, moodTag);
+      layers.chars.addChild(container);
+      return { container, body, stat, moodTag, baseY: container.y };
+    }
+
+    function positionCharacters() {
+      model.container.x = app.screen.width * 0.32;
+      trader.container.x = app.screen.width * 0.62;
+      model.baseY = trader.baseY = app.screen.height * 0.72;
+      model.container.y = trader.container.y = model.baseY;
+    }
+
+    function draw(state) {
+      positionCharacters();
+      const m = state.model ?? {};
+      const mood = m.reaction?.mood ?? "neutral";
+      model.body.tint = color(mood);
+      model.moodTag.text = mood;
+      const rate = m.hit_rate == null ? "—" : `${(m.hit_rate * 100).toFixed(1)}%`;
+      model.stat.text = `${m.wins ?? 0}W ${m.losses ?? 0}L · ${rate}`;
+
+      // The trader stays dormant until trader_* events exist, so the room is
+      // complete whether or not the freqtrade sidecar is running.
+      const traderState = state.trader ?? null;
+      trader.body.tint = traderState ? color(traderState.mood) : 0x2a2e39;
+      trader.moodTag.text = traderState ? traderState.mood : "";
+      trader.stat.text = traderState
+        ? `${traderState.open_trades} open · ${traderState.profit_pct}%`
+        : "asleep";
+
+      layers.props.removeChildren();
+      let y = 24;
+      for (const [symbol, data] of Object.entries(state.symbols ?? {})) {
+        if (!SYMBOLS.includes(symbol)) continue;
+        const height = 12 + Math.abs(data.pressure) * 14;
+        const pillar = new PIXI.Graphics()
+          .rect(app.screen.width - 220, y, 90, Math.min(height, 90))
+          .fill(color(data.mood));
+        layers.props.addChild(pillar, label(`${symbol} · ${data.mood}`,
+          app.screen.width - 220, y + 96, 14, 0x787b86));
+        y += 140;
+      }
+
+      const h = state.history ?? {};
+      layers.props.addChild(label(historyLine(h), 24, app.screen.height - 40, 14,
+        0x787b86));
+    }
+
+    function historyLine(h) {
+      if (!h.total_events) return "";
+      // "seen" is deliberate: these are folded over the served window, not the
+      // whole table. Overstating them would be the one thing this project
+      // refuses to do with its own numbers.
+      const parts = [`${h.total_events} events remembered`];
+      if (h.longest_streak) {
+        parts.push(`longest streak seen ${h.longest_streak.bars} bars`);
+      }
+      if (h.worst_loss) {
+        parts.push(
+          `worst loss seen ${(h.worst_loss.realized_return * 100).toFixed(2)}%`);
+      }
+      if (h.outages) parts.push(`${h.outages} outages`);
+      return parts.join(" · ");         /* set via .text: payloads are data */
+    }
+
+    // A live event nudges the room immediately; the next refresh reconciles it
+    // with the authoritative server-side projection.
+    function react(event) {
+      const target = event.event_type.startsWith("trader_") ? trader : model;
+      const intensity = event.severity >= 5 ? 1 : 0.5;
+      target.container.y = target.baseY - 18 * intensity;
+      setTimeout(() => { target.container.y = target.baseY; }, 400);
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/world/state");
+        if (!response.ok) return;
+        world = (await response.json()).data;
+        draw(world);
+      } catch (e) {
+        // A transient API blip must never blank the stream: keep the last frame.
+      }
+    }
+
+    function subscribe() {
+      const source = new EventSource("/stream/world/events");
+      source.onmessage = (message) => react(JSON.parse(message.data));
+    }
+
+    boot().catch(() => {
+      fallback.textContent = "renderer failed to start — the world is still running";
+    });
+  </script>
+</body>
+</html>

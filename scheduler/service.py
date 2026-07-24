@@ -12,6 +12,7 @@ from scheduler.watchlist import Watchlist, load_watchlist
 from storage.postgres_store import latest_success_times, record_ingestion_run
 from storage.writes import postgres_write_enabled
 from world.salience import salience_enabled
+from world.trader_events import trader_mirror_enabled
 
 SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
 
@@ -69,6 +70,13 @@ class SchedulerService:
                 self._add_job(
                     "resolver:signals",
                     jobs.run_resolver_job,
+                    (),
+                    watchlist.interval_seconds,
+                )
+            if trader_mirror_enabled():
+                self._add_job(
+                    "trader:mirror",
+                    jobs.run_trader_mirror_job,
                     (),
                     watchlist.interval_seconds,
                 )

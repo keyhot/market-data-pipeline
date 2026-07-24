@@ -353,6 +353,43 @@ def append_world_events(events: list[dict]) -> int:
     return _executemany(_WORLD_EVENTS_SQL, rows)
 
 
+_WORLD_EVENTS_BACKFILL_SQL = """
+    INSERT INTO world_events (occurred_at, event_type, symbol, severity, payload)
+    VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT DO NOTHING
+"""
+
+
+def append_world_events_backfill(events: list[dict]) -> int:
+    """Backfill-only writer: ON CONFLICT DO NOTHING against the natural-key
+    unique index, so replaying history is re-runnable. The live append path
+    (append_world_events) is deliberately left untouched — its 30-minute
+    cooldown is the live dedupe, and a surprise conflict there should surface
+    rather than be swallowed."""
+    import json as _json
+
+    rows = [
+        (
+            _as_datetime(e["occurred_at"]),
+            e["event_type"],
+            e.get("symbol", "").upper() or None,
+            float(e["severity"]),
+            _json.dumps(e.get("payload", {})),
+        )
+        for e in events
+    ]
+    if not rows:
+        return 0
+    # NOT _executemany(): that helper returns len(rows), which would report a
+    # re-run as having written everything and make the idempotence check
+    # meaningless. Here the actual affected count is the whole point.
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(_WORLD_EVENTS_BACKFILL_SQL, rows)
+            inserted = cur.rowcount
+    return max(inserted, 0)
+
+
 def get_world_events(
     limit: int = 50,
     event_type: str | None = None,

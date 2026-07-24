@@ -45,6 +45,8 @@ uvicorn api.main:app --reload
 | `GET /dashboard` | HTML watchlist table with latest closes, linking to each chart |
 | `GET /overlay/signals` | OBS-ready live signal strip (predictions, win/loss dots, hit rate) |
 | `GET /overlay/events` | OBS-ready live world-event feed |
+| `GET /world/state` | `world_events` folded into current world state (moods, tiers, reactions) |
+| `GET /world` | The Living World room: PixiJS canvas, SSE-updated (`/stream/world/events`) |
 
 Fetched data is cached in memory (TTL via `CACHE_TTL_SECONDS`) and persisted as
 timestamped CSVs under `data/raw/`.
@@ -166,6 +168,22 @@ the stream (backoff, dropped-frame detection), and every lifecycle transition â€
 `stream_started` / `stream_stopped` / `stream_dropped` â€” is an append-only world
 event (JSONL spool when Postgres is down). Soak measurement:
 `scripts/soak_report.py`. Full procedure: `docs/streaming-runbook.md`.
+
+## World renderer (Sprint 12)
+
+`GET /world/state` folds the `world_events` log into current world state
+(per-symbol mood, model win/loss record, the trader sidecar, history) via a
+pure projection (`world/state.py`, `world/reactions.py`); `GET /world` is the
+PixiJS Browser Source page that draws it, updated live over
+`GET /stream/world/events` (SSE). Give the room a past with:
+
+```bash
+poetry run python scripts/backfill_world_events.py --days 60
+```
+
+which replays the same salience rules over historical klines, flagging every
+event `backfilled: true` so learned history stays distinct from witnessed
+history. Full design and known limitations: `docs/world-renderer.md`.
 
 ## Tests
 

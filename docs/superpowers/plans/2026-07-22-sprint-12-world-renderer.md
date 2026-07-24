@@ -74,7 +74,7 @@ numbers. PixiJS is a 2D WebGL compositor built for exactly that shape.
 |---|---|---|
 | Dimensionality | 2D-native; scene is a display list | 3D scene graph; 2D means an orthographic camera and manual layout |
 | Text quality | First-class `Text`/`BitmapText`, crisp at fixed DPR | Needs `TextGeometry` (font loading) or DOM/CSS overlays; both are awkward |
-| CDN bundle (minified) | ~780 KB, single UMD `PIXI` global | Comparable, but a usable 2D setup needs extra loaders |
+| CDN bundle (minified) | ~780 KB, single `PIXI` global (IIFE, no module wrapper) | Comparable, but a usable 2D setup needs extra loaders |
 | 24/7 OBS CPU cost | Lower — no lighting, no depth pass, no per-frame matrix work we don't need | Higher for identical output |
 | Sprint 14 headroom | Many small interacting sprites is Pixi's core case | Would be fighting the abstraction |
 | Licence | MIT | MIT |
@@ -105,6 +105,15 @@ Both are MIT, so no attribution footer is required (unlike TradingView on
   sprite or texture assets. Art becomes a later addition behind the same
   projection and reaction layers.
 
+## Pinned artifact
+
+Copy these two values verbatim into the `<script>` tag; do not retype or
+re-derive them. Step 1's command regenerates the hash if the pin ever moves.
+
+- **URL:** `https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js`
+- **Integrity:** `sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq`
+- **Also required:** `crossorigin="anonymous"`
+
 ## How it's wired
 
 `GET /world/state` returns the projection; `api/templates/world.html` draws it
@@ -112,6 +121,10 @@ and applies deltas from `EventSource('/stream/world/events')`. The renderer
 never computes state — it only draws what `world/state.py` and
 `world/reactions.py` produced.
 ```
+
+**This section is the task's whole point** — the Interfaces block above promises
+this document *produces* the pinned URL and hash for Task 5 to copy. A version of
+this doc that names only the version number does not satisfy that contract.
 
 - [ ] **Step 3: Commit**
 
@@ -1008,6 +1021,13 @@ Expected: FAIL — `assert 404 == 200`.
       drawRoom();
       model = character("MODEL");
       trader = character("TRADER");
+      // Unconditionally, BEFORE the first fetch: character() sets only .y, so
+      // without this both characters sit stacked at x=0, half off-canvas. The
+      // call inside draw() is not enough — draw() is only reached on a
+      // successful refresh(), and /world/state legitimately 404s on an empty
+      // log (first boot). A broken room is worse than an empty one on a 24/7
+      // broadcast surface.
+      positionCharacters();
       await refresh();
       subscribe();
       setInterval(refresh, 60000);   // projection stays authoritative server-side
@@ -1127,7 +1147,12 @@ Expected: FAIL — `assert 404 == 200`.
       source.onmessage = (message) => react(JSON.parse(message.data));
     }
 
-    boot();
+    // A rejected boot() must say so. On a GPU-less or headless Browser Source
+    // app.init() can reject, and an unhandled rejection would leave "Waking the
+    // world…" on screen forever — neither a room nor an error.
+    boot().catch(() => {
+      fallback.textContent = "renderer failed to start — the world is still running";
+    });
   </script>
 </body>
 </html>
@@ -1197,6 +1222,32 @@ def test_history_records_worst_loss_and_longest_streak():
     assert history["worst_loss"]["realized_return"] == -0.08
     assert history["longest_streak"]["bars"] == 14
     assert history["total_events"] == 4
+
+
+def test_dropped_frames_is_degraded_not_downtime():
+    """dropped_frames = the stream degraded but stayed live; the watchdog
+    records it and never restarts. It must not book live airtime as downtime
+    (scripts/soak_report.py, CLAUDE.md). Truthfulness invariant."""
+    events = [
+        _event(1, "stream_started", 1.0, symbol=None),
+        _event(2, "stream_dropped", 5.0, {"reason": "dropped_frames"},
+               symbol=None, minute=10),
+        _event(3, "stream_started", 1.0, symbol=None, minute=40),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["downtime_seconds"] == 0
+    assert history["outages"] == 0
+
+
+def test_consecutive_drops_before_recovery_are_one_outage():
+    events = [
+        _event(1, "stream_dropped", 5.0, symbol=None),
+        _event(2, "stream_dropped", 5.0, symbol=None, minute=6),
+        _event(3, "stream_started", 1.0, symbol=None, minute=10),
+    ]
+    history = project_state(events, now=BASE)["history"]
+    assert history["outages"] == 1
+    assert history["downtime_seconds"] == 10 * 60
 
 
 def test_history_accumulates_downtime_across_outages():
@@ -1311,10 +1362,25 @@ and insert this block just before the `recent` handling at the end:
     # Downtime accrues between a stop/drop and the next start. An unclosed
     # outage stays open rather than being guessed at — the log is the record.
     if etype in ("stream_stopped", "stream_dropped"):
-        if new["_down_since"] is None:
-            new["_down_since"] = event["occurred_at"]
-        if etype == "stream_dropped":
-            history["outages"] += 1
+        # dropped_frames means the stream degraded but stayed LIVE — the
+        # watchdog records it and deliberately does not restart, so no
+        # stream_started follows. Booking that live span as downtime would
+        # fabricate an outage, which the truthfulness invariant forbids.
+        # Canonical handling: scripts/soak_report.py:23-30, CLAUDE.md
+        # ("dropped_frames = degraded, not downtime").
+        degraded = (
+            etype == "stream_dropped"
+            and payload.get("reason") == "dropped_frames"
+        )
+        if not degraded:
+            opening = new["_down_since"] is None
+            if opening:
+                new["_down_since"] = event["occurred_at"]
+            # One outage per downtime period opened by a drop, deduped —
+            # consecutive drops before recovery are one outage, matching
+            # soak_report.py's `if open_outage is None`.
+            if etype == "stream_dropped" and opening:
+                history["outages"] += 1
     elif etype == "stream_started" and new["_down_since"] is not None:
         down = _parse(new["_down_since"])
         history["downtime_seconds"] = round(
@@ -1802,6 +1868,10 @@ def main() -> int:
                    "types": sorted({e["event_type"] for e in events})},
         )
         if args.dry_run:
+            # The preview an operator runs before the real 60-day backfill must
+            # report a truthful count — accumulate candidates, don't skip past
+            # the counter.
+            total += len(events)
             continue
         total += append_world_events_backfill(events)
 
@@ -1950,10 +2020,10 @@ Dry-run, keyless, REST on. Note from `docs/freqtrade-sidecar-spike.md`: a short 
     "listen_port": 8080,
     "verbosity": "error",
     "enable_openapi": false,
-    "jwt_secret_key": "replace-with-a-long-random-string-at-least-32-chars",
+    "jwt_secret_key": "",
     "CORS_origins": [],
     "username": "worldwatcher",
-    "password": "replace-me"
+    "password": ""
   },
   "bot_name": "world-trader",
   "initial_state": "running",
@@ -1998,9 +2068,12 @@ In `docker-compose.yml`, after the `scheduler` service and before `volumes:`. No
       --config /freqtrade/user_data/config.json
       --strategy SampleStrategy
     environment:
-      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET}
+      # Fail closed: compose refuses to start the sidecar unless a real secret
+      # is supplied, so the trading API can never come up with a repo-known
+      # credential. config.json ships these values empty for the same reason.
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET:?FREQTRADE_JWT_SECRET is required}
       FREQTRADE__API_SERVER__USERNAME: ${FREQTRADE_USERNAME:-worldwatcher}
-      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_PASSWORD}
+      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_PASSWORD:?FREQTRADE_PASSWORD is required}
     volumes:
       - ./config/freqtrade:/freqtrade/user_data:ro
       - freqtrade_data:/freqtrade/user_data/data
@@ -2141,12 +2214,34 @@ def test_severity_grows_with_the_size_of_the_pnl_swing():
     assert large[0]["severity"] > small[0]["severity"]
 
 
-def test_first_observation_does_not_replay_history():
-    """An empty previous state means we've never looked — reporting every
-    already-open trade as newly opened would fabricate events."""
+def test_first_observation_seeds_a_flagged_baseline():
+    """An empty previous state means we've never looked. We can't attest we
+    witnessed these opens, so they're emitted flagged baseline:true (learned,
+    not witnessed) rather than silently — staying silent would deadlock the
+    pipeline and the trader character could never wake from a cold log."""
     events = diff_trader_state({}, {"open_trades": [_trade(1), _trade(2)],
                                     "profit_closed_percent": 3.0})
-    assert events == []
+    assert [e["event_type"] for e in events] == ["trader_opened", "trader_opened"]
+    assert all(e["payload"]["baseline"] is True for e in events)
+    assert {e["payload"]["trade_id"] for e in events} == {1, 2}
+
+
+def test_record_trader_events_wakes_from_a_cold_log(monkeypatch):
+    """The bug this closes: on a cold world_events log the trader must emit its
+    first event or the character can never wake. Drives the REAL _load_previous
+    (cold log -> {}) end to end — the coverage whose absence hid the deadlock."""
+    written = []
+    monkeypatch.setattr("world.trader_events.get_world_events",
+                        lambda limit=200, event_type=None: [])
+    monkeypatch.setattr(
+        "world.trader_events.append_world_events",
+        lambda events: written.extend(events) or len(events),
+    )
+    client = FakeClient({"open_trades": [_trade(1), _trade(2)]},
+                        {"profit_closed_percent": 0.0})
+    events = record_trader_events(client=client)
+    assert all(e["payload"]["baseline"] is True for e in events)
+    assert len(written) == 2  # persisted -> the next poll is no longer a cold start
 
 
 def test_record_trader_events_uses_the_injected_client(monkeypatch):
@@ -2247,8 +2342,10 @@ Add the moods to `MOOD_COLOR` in `api/templates/world.html`:
 Inside `HEADLINES`, after `stream_dropped`:
 
 ```javascript
-      trader_opened: (e) => `trader opened ${e.payload.pair}`,
-      trader_closed: (e) => `trader closed ${e.payload.pair} — ` +
+      trader_opened: (e) => e.payload.baseline
+        ? `trader already holding ${e.payload.pair ?? "a position"}`
+        : `trader opened ${e.payload.pair ?? "a position"}`,
+      trader_closed: (e) => `trader closed ${e.payload.pair ?? "a position"} — ` +
         `${e.payload.profit_pct?.toFixed(2)}%`,
       trader_milestone: (e) => `trader P&L now ${e.payload.profit_pct?.toFixed(2)}%`,
 ```
@@ -2328,16 +2425,29 @@ def _event(event_type: str, severity: float, payload: dict) -> dict:
 def diff_trader_state(previous: dict, current: dict) -> list[dict]:
     """Pure diff between the last observation and the current one.
 
-    An empty `previous` means we have never looked; emitting every already-open
-    trade as newly opened would fabricate history, so the first observation is
-    silent by design.
+    An empty `previous` means we have never looked. We cannot attest we
+    witnessed the currently-open trades open, so the first observation seeds a
+    baseline: each open trade is emitted flagged `baseline: true` — the same
+    "learned, not witnessed" honesty as backfilled market events. Staying
+    silent instead deadlocks the whole pipeline: nothing would ever be
+    persisted, so `_load_previous` would return `{}` forever and every poll
+    would look like the first, leaving the trader character permanently asleep.
     """
+    now_open = {t["trade_id"]: t for t in current.get("open_trades") or []}
+
     if not previous:
-        return []
+        return [
+            _event("trader_opened", 1.0, {
+                "trade_id": trade_id,
+                "pair": trade.get("pair"),
+                "baseline": True,
+            })
+            for trade_id, trade in sorted(now_open.items())
+        ]
 
     events: list[dict] = []
     was_open = set(previous.get("open_trade_ids") or [])
-    now_open = {t["trade_id"]: t for t in current.get("open_trades") or []}
+    open_pairs = previous.get("open_pairs") or {}
 
     for trade_id in sorted(set(now_open) - was_open):
         trade = now_open[trade_id]
@@ -2351,10 +2461,11 @@ def diff_trader_state(previous: dict, current: dict) -> list[dict]:
 
     for trade_id in sorted(was_open - set(now_open)):
         # Severity tracks how much the closed P&L moved: a scratch exit is
-        # routine, a large one is worth the room reacting to.
+        # routine, a large one is worth the room reacting to. The pair comes
+        # from the remembered open — the closed trade is gone from `current`.
         events.append(_event("trader_closed", 1.0 + swing / 2.0, {
             "trade_id": trade_id,
-            "pair": None,
+            "pair": open_pairs.get(trade_id),
             "profit_pct": round(closed_now, 4),
             "swing_pct": round(closed_now - closed_before, 4),
         }))
@@ -2385,21 +2496,23 @@ def _load_previous() -> dict:
         return {}
     rows.sort(key=lambda r: (r["occurred_at"], r.get("id") or 0), reverse=True)
 
-    open_ids: set[int] = set()
+    open_pairs: dict = {}
     profit = None
     for row in reversed(rows):  # oldest first
         payload = row.get("payload") or {}
+        trade_id = payload.get("trade_id")
         if row["event_type"] == "trader_opened":
-            open_ids.add(payload.get("trade_id"))
+            open_pairs[trade_id] = payload.get("pair")
         elif row["event_type"] == "trader_closed":
-            open_ids.discard(payload.get("trade_id"))
+            open_pairs.pop(trade_id, None)
             profit = payload.get("profit_pct", profit)
         elif row["event_type"] == "trader_milestone":
             profit = payload.get("profit_pct", profit)
-    if profit is None and not open_ids:
+    if profit is None and not open_pairs:
         return {}
     return {
-        "open_trade_ids": sorted(i for i in open_ids if i is not None),
+        "open_trade_ids": sorted(i for i in open_pairs if i is not None),
+        "open_pairs": {i: p for i, p in open_pairs.items() if i is not None},
         "profit_closed_percent": profit or 0.0,
     }
 

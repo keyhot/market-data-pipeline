@@ -45,7 +45,9 @@ from storage.writes import (
     write_news,
     write_price_bars,
 )
+from world.reactions import attach_reactions
 from world.salience import KNOWN_EVENT_TYPES
+from world.state import project_state
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
@@ -425,6 +427,21 @@ def world_events(
     )
 
 
+@app.get("/world/state", response_model=ApiResponse)
+def world_state(limit: int = Query(500, ge=1, le=2000)):
+    """The world_events log folded into what the room currently shows.
+    The renderer computes nothing — it draws this."""
+    try:
+        events = get_world_events(limit=limit)
+    except BaseAppException:
+        raise
+    except Exception as e:
+        raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
+    if not events:
+        raise NoDataFoundError("No world events recorded yet")
+    return ApiResponse(status=200, data=attach_reactions(project_state(events)))
+
+
 @app.get("/signals/{ticker_symbol}", response_model=ApiResponse)
 def signals(
     ticker_symbol: str,
@@ -505,6 +522,20 @@ def overlay_signals():
 def overlay_events():
     """OBS Browser Source feed (~480x1080): latest salient world events."""
     return HTMLResponse(_render_template("overlay_events.html", {}))
+
+
+@app.get("/world", response_class=HTMLResponse)
+def world_page():
+    """The Living World room — a Browser Source for the world-focus scene."""
+    symbols = [
+        spec.symbol.upper()
+        for spec in load_watchlist().tickers
+        if spec.market == "crypto" and _SYMBOL_PATTERN.fullmatch(spec.symbol.upper())
+    ]
+    deduped = list(dict.fromkeys(symbols))
+    return HTMLResponse(
+        _render_template("world.html", {"__SYMBOLS__": json.dumps(deduped)})
+    )
 
 
 _ALLOWED_CHART_INTERVALS = {"1d", "1m"}

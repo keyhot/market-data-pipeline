@@ -14,7 +14,11 @@ pytestmark = pytest.mark.skipif(not ping(), reason="Postgres unavailable")
 
 BARS_SYMBOL = "ZZTEST"
 BACKFILL_SYMBOL = "ZZBF"
-_TEST_SYMBOLS = [BARS_SYMBOL, BACKFILL_SYMBOL]
+# TESTUSDT: used only by test_live_append_path_under_the_natural_key_index
+# below; included here so the autouse cleanup fixture clears it too (a
+# leftover row would make that test non-rerunnable — see world_events cleanup
+# note there).
+_TEST_SYMBOLS = [BARS_SYMBOL, BACKFILL_SYMBOL, "TESTUSDT"]
 
 
 @pytest.fixture(autouse=True)
@@ -336,3 +340,27 @@ def test_signal_resolution_round_trip():
     # idempotence: a second run resolves nothing new for this symbol
     again = resolve_pending(now=signal_ts + timedelta(days=2))
     assert [r for r in again if r["symbol"] == BARS_SYMBOL] == []
+
+
+def test_live_append_path_under_the_natural_key_index():
+    """The live writer has no ON CONFLICT clause. Once uq_world_events_natural
+    exists, a genuine re-fire of the same (type, symbol, occurred_at) raises
+    instead of duplicating. Pinning the behaviour here means the world-memory
+    writer can never start throwing 503s in production unnoticed."""
+    from datetime import datetime, timezone
+
+    import psycopg
+    import pytest
+
+    from storage.postgres_store import append_world_events
+
+    event = {
+        "occurred_at": datetime(2026, 7, 22, 9, 0, tzinfo=timezone.utc),
+        "event_type": "big_move",
+        "symbol": "TESTUSDT",
+        "severity": 5.0,
+        "payload": {"sigmas": 5.0},
+    }
+    append_world_events([event])
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        append_world_events([event])

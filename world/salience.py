@@ -185,5 +185,9 @@ KNOWN_EVENT_TYPES = frozenset(
         "stream_started",
         "stream_stopped",
         "stream_dropped",
+        # trader inhabitant (Sprint 12) — severities in world/trader_events.py
+        "trader_opened",
+        "trader_closed",
+        "trader_milestone",
     }
 )

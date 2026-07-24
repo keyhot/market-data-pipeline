@@ -5,6 +5,7 @@ the MarketDataProvider seam keeps a future swap contained, and the websocket
 ingester must own reconnect/backfill logic either way.
 """
 
+import time
 from datetime import date, datetime, timezone
 
 import httpx
@@ -87,6 +88,34 @@ class BinanceProvider(MarketDataProvider):
                 f"Binance returned HTTP {response.status_code}", status_code=503
             )
         return response.json()
+
+    def get_klines_paginated(
+        self,
+        ticker_symbol: str,
+        interval: str,
+        start_ms: int,
+        end_ms: int,
+        sleep_seconds: float = 0.25,
+    ) -> list[list]:
+        """Walk the 1000-candle page limit to cover a long span. Used by the
+        Sprint 12 world backfill; the live paths still do single requests."""
+        collected: list[list] = []
+        cursor = start_ms
+        while cursor < end_ms:
+            page = self.get_klines(
+                ticker_symbol, interval, limit=MAX_KLINES_LIMIT, start_ms=cursor
+            )
+            if not page:
+                break
+            collected.extend(k for k in page if k[0] < end_ms)
+            next_cursor = page[-1][0] + 1
+            if next_cursor <= cursor:
+                break  # no forward progress: refuse to spin on the API
+            cursor = next_cursor
+            if len(page) < MAX_KLINES_LIMIT:
+                break
+            time.sleep(sleep_seconds)  # respect the weight limit over ~87 calls
+        return collected
 
     def get_events(self, ticker_symbol: str, event_type: str) -> pd.DataFrame:
         raise UnsupportedEventTypeError(

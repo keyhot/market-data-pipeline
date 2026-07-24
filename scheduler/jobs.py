@@ -121,6 +121,19 @@ def run_resolver_job() -> dict:
     return result
 
 
+def run_trader_mirror_job() -> dict:
+    """Mirror the freqtrade dry-run sidecar into trader_* world events."""
+    from world.trader_events import record_trader_events
+
+    events = record_trader_events()
+    result = {
+        "events": len(events),
+        "event_types": sorted({e["event_type"] for e in events}),
+    }
+    logger.info("Trader mirror complete", extra=result)
+    return result
+
+
 def run_inference_job(
     symbol: str, interval: str = "1m", market: str = "crypto"
 ) -> dict:
