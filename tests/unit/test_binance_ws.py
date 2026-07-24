@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+from ingestion.binance_provider import BinanceProvider
 from ingestion.binance_ws import (
     BinanceKlineIngester,
     crypto_watchlist_symbols,
@@ -75,37 +76,49 @@ def test_open_kline_and_garbage_ignored(mock_write):
 
 @patch("ingestion.binance_ws.write_price_bars")
 @patch("ingestion.binance_ws.latest_bar_timestamp")
-def test_backfill_requests_gap_since_last_bar(mock_latest, mock_write, monkeypatch):
+def test_backfill_paginates_the_whole_gap_and_excludes_forming_candle(
+    mock_latest, mock_write, monkeypatch
+):
+    """A gap wider than one 1000-candle page must be fully paginated — a single
+    request would leave a permanent hole. The still-forming current-minute
+    candle is excluded by open time, not by position."""
     monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "1")
-    last = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)
-    mock_latest.return_value = last
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    current_minute_ms = (now_ms // 60_000) * 60_000
+    gap_minutes = 1500  # > 1000, so pagination must loop
+    last_ms = current_minute_ms - gap_minutes * 60_000
+    mock_latest.return_value = datetime.fromtimestamp(last_ms / 1000, tz=timezone.utc)
 
-    class FakeProvider:
+    class FakeProvider(BinanceProvider):
         def __init__(self):
+            super().__init__()
             self.calls = []
 
-        def get_klines(self, symbol, interval, limit=1000, start_ms=None):
-            self.calls.append((symbol, interval, start_ms))
-            # two closed candles + the still-open one
-            return [
-                [KLINE_TS_MS, "1", "2", "0.5", "1.5", "10", 0, 0, 0, 0, 0, 0],
-                [KLINE_TS_MS + 60_000, "1", "2", "0.5", "1.6", "10", 0, 0, 0, 0, 0, 0],
-                [KLINE_TS_MS + 120_000, "1", "2", "0.5", "1.7", "10", 0, 0, 0, 0, 0, 0],
-            ]
+        def get_klines(self, ticker_symbol, interval, limit=1000, start_ms=None):
+            self.calls.append(start_ms)
+            base = start_ms if start_ms is not None else last_ms + 60_000
+            t = ((base + 59_999) // 60_000) * 60_000  # ceil to a minute boundary
+            out = []
+            # Binance returns closed candles plus the currently-forming one.
+            while t <= current_minute_ms and len(out) < limit:
+                out.append([t, "1", "2", "0.5", "1.5", "10", 0, 0, 0, 0, 0, 0])
+                t += 60_000
+            return out
 
     provider = FakeProvider()
     ingester = BinanceKlineIngester(["BTCUSDT"], provider=provider)
 
     ingester.backfill_gaps()
 
-    assert provider.calls == [
-        ("BTCUSDT", "1m", int(last.timestamp() * 1000) + 60_000)
-    ]
+    # Pagination issued more than one request (the whole gap, not just 1000),
+    # and the first request started exactly one minute after the last stored bar.
+    assert len(provider.calls) >= 2
+    assert provider.calls[0] == last_ms + 60_000
+    expected_closed = gap_minutes - 1  # every closed minute; forming one excluded
     (symbol, frame), kwargs = mock_write.call_args
     assert symbol == "BTCUSDT" and kwargs["interval"] == "1m"
-    # open candle excluded
-    assert len(frame) == 2
-    assert ingester.bars_written == 2
+    assert len(frame) == expected_closed
+    assert ingester.bars_written == expected_closed
 
 
 @patch("ingestion.binance_ws.write_price_bars")
