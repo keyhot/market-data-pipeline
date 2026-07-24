@@ -23,7 +23,7 @@ _TIER_CUTS: dict[str, tuple[float, float, float]] = {
     "volume_anomaly": (5.0, 7.0, 10.0),      # volume z-score; fires at 4.0
     "streak": (9.0, 12.0, 15.0),             # consecutive bars; fires at 7
     "signal_resolved": (0.6, 1.2, 1.8),      # confidence, doubled on a loss
-    "model_losing_streak": (1.34, 2.0, 3.0), # streak/3: 4 losses, 6, 9
+    "model_losing_streak": (1.34, 2.0, 3.0), # streak/3; tiers at 5, 6, 9 losses
     "stream_started": (2.0, 3.0, 4.0),
     "stream_stopped": (2.0, 3.0, 4.0),
     "stream_dropped": (2.0, 3.0, 4.0),
