@@ -33,7 +33,7 @@ def test_events_flow_through_projection_to_endpoint():
     assert data["event_count"] == 3
     assert data["stream"]["state"] == "live"
     assert data["model"]["losses"] == 1
-    assert data["symbols"]["BTCUSDT"]["mood"] in {"bearish", "panicked", "calm"}
+    assert data["symbols"]["BTCUSDT"]["mood"] == "bearish"
     assert data["history"]["worst_loss"]["realized_return"] == -0.04
     assert data["recent"][0]["reaction"]["mood"] == "dejected"
 
