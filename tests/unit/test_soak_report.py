@@ -58,3 +58,20 @@ def test_dropped_frames_reason_is_not_downtime():
     result = compute_uptime(events, *WINDOW)
     assert result["uptime_pct"] == 100.0
     assert result["outages"][0]["duration_seconds"] == 0
+
+
+def test_degraded_event_does_not_hide_a_real_outage_that_follows():
+    """A dropped_frames degradation must not block tracking of a real outage
+    that fires before the next stream_started — otherwise the real downtime is
+    silently deleted and uptime is overstated (a sacred number)."""
+    events = [
+        _ev(0, "stream_started"),
+        _ev(20, "stream_dropped", {"reason": "dropped_frames"}),  # degraded, live
+        _ev(30, "stream_dropped", {"reason": "obs_unreachable"}),  # real outage
+        _ev(42, "stream_started", {"recovery_seconds": 720}),
+    ]
+    result = compute_uptime(events, *WINDOW)
+    assert result["downtime_seconds"] == 720.0  # the real 30->42 outage, not 0
+    assert result["uptime_pct"] == 80.0
+    reasons = {o["reason"] for o in result["outages"]}
+    assert reasons == {"dropped_frames", "obs_unreachable"}
