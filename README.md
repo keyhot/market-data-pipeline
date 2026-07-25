@@ -71,7 +71,7 @@ for the watchlist's crypto symbols and writes each **closed** candle into
 Postgres (`interval='1m'`). On every (re)connect it REST-backfills the gap
 since the last stored 1m bar, so restarts never lose candles — all writes are
 idempotent upserts. TimescaleDB was evaluated and deferred with explicit
-adoption triggers (`docs/timescale-spike.md`).
+adoption triggers (project Obsidian vault → `Spikes/timescale-spike.md`).
 
 ## Postgres (L2 storage — primary as of Sprint 7)
 
@@ -118,7 +118,7 @@ existing `/bars/{symbol}` JSON endpoint. Charts update live: the page
 subscribes to `GET /stream/bars/{symbol}` (SSE) and appends bars as they are
 stored — try `GET /chart/BTCUSDT?interval=1m` with the websocket ingester
 running. Stack choice and constraints (CDN script, SRI-pinned version,
-attribution requirement) are in `docs/charting-stack-decision.md`.
+attribution requirement) are in the project Obsidian vault (`Docs/charting-stack-decision.md`).
 
 ## Model plane (Sprint 9)
 
@@ -128,8 +128,8 @@ no-lookahead guaranteed by tests), LightGBM direction baseline
 backtest with fees + slippage (`python -m model.backtest ...`), and one-shot
 inference writing idempotent rows to the `signals` table
 (`python -m model.predict ...`). Design rules and the honest (currently
-losing) backtest numbers: `docs/model-plane.md` and
-`docs/freqai-takeaways.md`.
+losing) backtest numbers: the project Obsidian vault (`Docs/model-plane.md`)
+and `docs/freqai-takeaways.md`.
 
 ## The accountability loop (Sprint 10)
 
@@ -139,7 +139,7 @@ scores each signal against realized bars (`world/resolver.py`), and
 outcomes land as `signal_resolved` world events — confident wrong calls
 score highest, and losing streaks trigger `model_losing_streak` events.
 `/overlay/signals` and `/overlay/events` render it all live, OBS-ready.
-Full design: `docs/accountability-loop.md`.
+Full design: project Obsidian vault → `Docs/accountability-loop.md`.
 
 ## World memory (Sprint 9)
 
@@ -167,7 +167,7 @@ Layout constants: `scripts/stream_scene.py`. The watchdog auto-recovers OBS and
 the stream (backoff, dropped-frame detection), and every lifecycle transition —
 `stream_started` / `stream_stopped` / `stream_dropped` — is an append-only world
 event (JSONL spool when Postgres is down). Soak measurement:
-`scripts/soak_report.py`. Full procedure: `docs/streaming-runbook.md`.
+`scripts/soak_report.py`. Full procedure: project Obsidian vault → `Docs/streaming-runbook.md`.
 
 ## World renderer (Sprint 12)
 
@@ -183,7 +183,7 @@ poetry run python scripts/backfill_world_events.py --days 60
 
 which replays the same salience rules over historical klines, flagging every
 event `backfilled: true` so learned history stays distinct from witnessed
-history. Full design and known limitations: `docs/world-renderer.md`.
+history. Full design and known limitations: project Obsidian vault → `Docs/world-renderer.md`.
 
 ## Tests
 

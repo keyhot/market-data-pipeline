@@ -10,7 +10,8 @@ time.
 
 **Nothing in application code may UPDATE or DELETE `world_events` rows.**
 Failures, embarrassments, and mistakes accumulate on purpose — "failure is
-content" and "the world remembers" (docs/architecture-vision.md). The only
+content" and "the world remembers" (see the project Obsidian vault →
+`Docs/architecture-vision.md`). The only
 sanctioned write is `storage/postgres_store.append_world_events`. The
 `signals` table is the single exception in the model/world storage: its
 `resolved_at`/`outcome` columns are updated once by the Sprint 10 resolver.
