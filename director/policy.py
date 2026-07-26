@@ -7,7 +7,7 @@ line rate, a home scene the director rests on and decays back to.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 @dataclass(frozen=True)
@@ -50,4 +50,34 @@ def tick(state, dir_state, now, config):
     return DirectorAction(
         scene=scene if scene != dir_state.current_scene else None,
         lines=lines,
+    )
+
+
+@dataclass
+class DirectorMetrics:
+    scene_switches: int = 0
+    switches_suppressed: int = 0
+    lines_spoken: int = 0
+    lines_suppressed: int = 0
+    tts_failures: int = 0
+
+
+def _count_within_window(times, now, window_seconds: int = 60) -> int:
+    cutoff = now - timedelta(seconds=window_seconds)
+    return sum(1 for t in times if t > cutoff)
+
+
+def within_switch_budget(dir_state, now, config) -> bool:
+    """Pure: fewer than max_switches_per_minute scene switches in the last 60s."""
+    return (
+        _count_within_window(dir_state.recent_switch_times, now)
+        < config.max_switches_per_minute
+    )
+
+
+def within_line_budget(dir_state, now, config) -> bool:
+    """Pure: fewer than max_lines_per_minute lines spoken in the last 60s."""
+    return (
+        _count_within_window(dir_state.recent_line_times, now)
+        < config.max_lines_per_minute
     )
