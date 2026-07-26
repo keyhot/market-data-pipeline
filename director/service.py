@@ -48,6 +48,14 @@ def run(fetch_state, obs_client, tts_runner, record_event,
             state = fetch_state()
             action = tick(state, dir_state, now, config)
             _apply(action, dir_state, now, obs_client, tts_runner, record_event)
+            # Advance past the events we've now reacted to, so lines aren't
+            # re-spoken every tick (the runner owns this mutable bookkeeping).
+            recent = state.get("recent") or []
+            if recent:
+                dir_state.last_seen_event_id = max(
+                    dir_state.last_seen_event_id or 0,
+                    max((e.get("id") or 0) for e in recent),
+                )
         except Exception as exc:  # a director hiccup must never take the stream down
             logger.warning("Director tick failed", extra={"error": str(exc)})
         time.sleep(sleep_seconds)
