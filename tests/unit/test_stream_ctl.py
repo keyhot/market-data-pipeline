@@ -18,6 +18,7 @@ class FakeClient:
         self._inputs = list(inputs)
         self._streaming = streaming
         self._skipped, self._total = skipped, total
+        self.current_program_scene = None
 
     def _log(self, name, *args):
         self.calls.append((name, *args))
@@ -47,6 +48,7 @@ class FakeClient:
 
     def set_current_program_scene(self, name):
         self._log("set_current_program_scene", name)
+        self.current_program_scene = name
 
     def start_stream(self):
         self._log("start_stream")
@@ -58,7 +60,8 @@ class FakeClient:
         return FakeResp(obs_version="32.1.2")
 
     def get_current_program_scene(self):
-        return FakeResp(current_program_scene_name="market-world-v1")
+        scene = self.current_program_scene or "chart-focus"
+        return FakeResp(current_program_scene_name=scene)
 
     def get_stream_status(self):
         return FakeResp(
@@ -79,17 +82,35 @@ def _creates(client):
     return [c for c in client.calls if c[0] in ("create_scene", "create_input")]
 
 
-def test_build_creates_scene_and_sources():
+def test_build_creates_all_scenes_and_sources():
     client = FakeClient()
     result = stream_ctl.build_scene(client)
-    assert result["scene"] == "market-world-v1"
+    assert result["scene"] == "chart-focus"  # rests on the home scene
+    assert result["scenes"] == ["chart-focus", "world-focus", "event-focus"]
     created = {c[1] for c in _creates(client)}
     assert {
-        "market-world-v1",
+        "chart-focus",
+        "world-focus",
+        "event-focus",
         "chart-btcusdt-1m",
-        "overlay-signals",
-        "overlay-events",
+        "world-room",
+        "event-feed",
     } <= created
+
+
+def test_build_single_spec_back_compat():
+    client = FakeClient()
+    from scripts import stream_scene
+
+    result = stream_ctl.build_scene(client, stream_scene.scenes_spec()[1])
+    assert result["scene"] == "world-focus"
+    assert client.current_program_scene == "world-focus"
+
+
+def test_switch_scene_sets_the_program_scene():
+    client = FakeClient()
+    stream_ctl.switch_scene(client, "world-focus")
+    assert client.current_program_scene == "world-focus"
 
 
 def test_build_is_idempotent():
@@ -126,7 +147,7 @@ def test_screenshot_targets_program_scene(tmp_path):
     path = stream_ctl.screenshot(client, tmp_path / "shot.png")
     call = client.calls[-1]
     assert call[0] == "save_source_screenshot"
-    assert call[1] == "market-world-v1" and call[2] == "png"
+    assert call[1] == "chart-focus" and call[2] == "png"
     assert str(path).endswith("shot.png")
 
 

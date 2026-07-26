@@ -1,19 +1,38 @@
-"""Scene v1 layout constants (Sprint 11): the stream's face, versioned and
-code-reviewed instead of hand-clicked in OBS.
+"""Scene layouts (Sprint 11 → multi-scene in Sprint 13): the stream's face,
+versioned and code-reviewed instead of hand-clicked in OBS.
 
-Geometry on a 1920x1080 canvas: live chart on top (1920x840), signals strip
-pinned to the bottom edge (1920x120 at y=960), world-event rail overlapping
-the chart's right edge (480x840). The 840-960 band stays empty on purpose —
-headroom for a future ticker without re-laying the scene out.
+Three scenes the director switches between on salience (Sprint 13), all on a
+1920x1080 canvas:
+
+- **chart-focus** (default / home): the composite — live chart on top
+  (1920x840), signals strip pinned to the bottom (1920x120 at y=960),
+  world-event rail on the chart's right edge (480x840). This is the calm home
+  the director rests on and decays back to.
+- **world-focus**: the /world room foregrounded (1920x960) with the signals
+  strip — for model/trader moments.
+- **event-focus**: the world-event feed large with a small chart and the strip
+  — for a burst of market events.
+
+All three reuse existing Browser Source pages — no new asset pipeline. Each
+scene carries its own uniquely-named browser sources: a handful of extra
+browser instances kept alive (shutdown=False) for instant switching and live
+SSE. Consolidating shared sources (one strip across scenes, scaled scene items)
+is a later perf pass; v0 favours self-contained, idempotent scenes. The audio
+bed, when configured, is one bed per scene (unique name) so audio is present in
+every scene — a single global bed is a go-live OBS-routing optimization.
 """
 
 import os
 
-SCENE_NAME = "market-world-v1"
 CANVAS = (1920, 1080)
 
-# 30fps is plenty for charts; shutdown=False keeps SSE connections alive
-# when the source is hidden; pages are already dark, so no custom CSS.
+SCENE_CHART = "chart-focus"
+SCENE_WORLD = "world-focus"
+SCENE_EVENT = "event-focus"
+SCENE_NAME = SCENE_CHART  # legacy alias: the default / home scene
+
+# 30fps is plenty for charts; shutdown=False keeps SSE connections alive when a
+# source is in a hidden scene; pages are already dark, so no custom CSS.
 _BROWSER_DEFAULTS = {"fps": 30, "shutdown": False, "restart_when_active": False}
 
 
@@ -21,57 +40,32 @@ def page_base() -> str:
     return os.environ.get("STREAM_PAGE_BASE", "http://localhost:8000").rstrip("/")
 
 
-def browser_sources() -> list[dict]:
-    base = page_base()
-    return [
-        {
-            "name": "chart-btcusdt-1m",
-            "kind": "browser_source",
-            "settings": {
-                "url": f"{base}/chart/BTCUSDT?interval=1m",
-                "width": 1920,
-                "height": 840,
-                **_BROWSER_DEFAULTS,
-            },
-            "x": 0,
-            "y": 0,
+def _browser(name: str, path: str, width: int, height: int, x: int, y: int) -> dict:
+    return {
+        "name": name,
+        "kind": "browser_source",
+        "settings": {
+            "url": f"{page_base()}{path}",
+            "width": width,
+            "height": height,
+            **_BROWSER_DEFAULTS,
         },
-        {
-            "name": "overlay-signals",
-            "kind": "browser_source",
-            "settings": {
-                "url": f"{base}/overlay/signals",
-                "width": 1920,
-                "height": 120,
-                **_BROWSER_DEFAULTS,
-            },
-            "x": 0,
-            "y": 960,
-        },
-        {
-            "name": "overlay-events",
-            "kind": "browser_source",
-            "settings": {
-                "url": f"{base}/overlay/events",
-                "width": 480,
-                "height": 840,
-                **_BROWSER_DEFAULTS,
-            },
-            "x": 1440,
-            "y": 0,
-        },
-    ]
+        "x": x,
+        "y": y,
+    }
 
 
-def audio_sources() -> list[dict]:
-    """VLC playlist looping over STREAM_AUDIO_DIR; absent when unset so the
-    scene builds cleanly before any audio exists."""
+def audio_sources(suffix: str = "") -> list[dict]:
+    """VLC playlist looping over STREAM_AUDIO_DIR; absent when unset so scenes
+    build cleanly before any audio exists. `suffix` keeps the input name unique
+    per scene (the home scene keeps the bare 'audio-bed' name)."""
     audio_dir = os.environ.get("STREAM_AUDIO_DIR")
     if not audio_dir:
         return []
+    name = "audio-bed" if not suffix else f"audio-bed-{suffix}"
     return [
         {
-            "name": "audio-bed",
+            "name": name,
             "kind": "vlc_source",
             "settings": {
                 "playlist": [{"value": audio_dir, "hidden": False, "selected": False}],
@@ -84,10 +78,55 @@ def audio_sources() -> list[dict]:
     ]
 
 
-def scene_spec() -> dict:
-    """Full scene description; source order is z-order, bottom to top."""
+def _chart_focus() -> dict:
+    """Default / home: the chart-forward composite (the legacy single scene)."""
     return {
-        "scene": SCENE_NAME,
+        "scene": SCENE_CHART,
         "canvas": CANVAS,
-        "sources": browser_sources() + audio_sources(),
+        "sources": [
+            _browser("chart-btcusdt-1m", "/chart/BTCUSDT?interval=1m", 1920, 840, 0, 0),
+            _browser("overlay-signals", "/overlay/signals", 1920, 120, 0, 960),
+            _browser("overlay-events", "/overlay/events", 480, 840, 1440, 0),
+            *audio_sources(),
+        ],
     }
+
+
+def _world_focus() -> dict:
+    """The living-world room foregrounded, with the signals strip."""
+    return {
+        "scene": SCENE_WORLD,
+        "canvas": CANVAS,
+        "sources": [
+            _browser("world-room", "/world", 1920, 960, 0, 0),
+            _browser("world-signals", "/overlay/signals", 1920, 120, 0, 960),
+            *audio_sources("world"),
+        ],
+    }
+
+
+def _event_focus() -> dict:
+    """The world-event feed large, with a small chart and the signals strip."""
+    return {
+        "scene": SCENE_EVENT,
+        "canvas": CANVAS,
+        "sources": [
+            _browser("event-feed", "/overlay/events", 960, 1080, 960, 0),
+            _browser("event-chart", "/chart/BTCUSDT?interval=1m", 960, 540, 0, 0),
+            _browser("event-signals", "/overlay/signals", 960, 120, 0, 960),
+            *audio_sources("event"),
+        ],
+    }
+
+
+def scenes_spec() -> list[dict]:
+    """All scenes the director switches between (Sprint 13). Order matters: the
+    first entry is the default / home scene. Source order within a scene is
+    z-order, bottom to top."""
+    return [_chart_focus(), _world_focus(), _event_focus()]
+
+
+def scene_spec() -> dict:
+    """Back-compat shim: single-scene callers (existing tests) get the default /
+    home scene."""
+    return scenes_spec()[0]

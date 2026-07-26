@@ -41,9 +41,25 @@ def make_client(timeout: float = 5.0):
 
 
 def build_scene(client, spec: dict | None = None) -> dict:
-    """Create or update the scene from SCENE_SPEC. Idempotent: existing
-    inputs get settings refreshed, never duplicated."""
-    spec = spec or stream_scene.scene_spec()
+    """Create or update scenes from the SCENE_SPEC. Idempotent: existing inputs
+    get settings refreshed, never duplicated. With an explicit ``spec``, builds
+    just that scene and rests on it (back-compat). With ``spec=None``, builds
+    every scene in ``scenes_spec()`` and rests on the first (home) scene — the
+    director needs all scenes present to switch between them."""
+    if spec is not None:
+        return _build_one(client, spec, set_current=True)
+    specs = stream_scene.scenes_spec()
+    created: list[str] = []
+    for one in specs:
+        created.extend(_build_one(client, one, set_current=False)["created"])
+    home = specs[0]["scene"]
+    client.set_current_program_scene(home)
+    return {"scene": home, "scenes": [s["scene"] for s in specs], "created": created}
+
+
+def _build_one(client, spec: dict, set_current: bool) -> dict:
+    """Build a single scene idempotently. Each scene owns uniquely-named inputs,
+    so an input lives in exactly one scene and get_scene_item_id always resolves."""
     created: list[str] = []
     scenes = {s["sceneName"] for s in client.get_scene_list().scenes}
     if spec["scene"] not in scenes:
@@ -64,8 +80,15 @@ def build_scene(client, spec: dict | None = None) -> dict:
             item_id,
             {"positionX": float(src["x"]), "positionY": float(src["y"])},
         )
-    client.set_current_program_scene(spec["scene"])
+    if set_current:
+        client.set_current_program_scene(spec["scene"])
     return {"scene": spec["scene"], "created": created}
+
+
+def switch_scene(client, scene_name: str) -> None:
+    """Set the active program scene. The director calls this to swell to a scene
+    on salience and decay back to the home scene; the CLI wraps it."""
+    client.set_current_program_scene(scene_name)
 
 
 def start_stream(client) -> None:
@@ -113,11 +136,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="OBS stream control")
     parser.add_argument(
         "command",
-        choices=["build", "start", "stop", "status", "screenshot", "configure-output"],
+        choices=[
+            "build",
+            "switch",
+            "start",
+            "stop",
+            "status",
+            "screenshot",
+            "configure-output",
+        ],
     )
     parser.add_argument(
         "--path", default="data/stream_screenshot.png", help="screenshot output path"
     )
+    parser.add_argument("--scene", help="scene name for the switch command")
     args = parser.parse_args(argv)
     try:
         client = make_client()
@@ -126,6 +158,12 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OBS_UNREACHABLE
     if args.command == "build":
         print(json.dumps(build_scene(client)))
+    elif args.command == "switch":
+        if not args.scene:
+            print("error: switch requires --scene", file=sys.stderr)
+            return 2
+        switch_scene(client, args.scene)
+        print(f"switched to {args.scene}")
     elif args.command == "start":
         start_stream(client)
         _record("stream_started", {"via": "stream_ctl"})
