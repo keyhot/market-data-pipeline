@@ -86,6 +86,12 @@ services:
       OBS_WS_URL: ${OBS_WS_URL:-ws://host.docker.internal:4455}
       OBS_WS_PASSWORD: ${OBS_WS_PASSWORD:-}
       STREAM_EVENT_SPOOL: /app/data/director_events.spool.jsonl
+      PIPER_BIN: ${PIPER_BIN:-piper}
+      PIPER_VOICE_DIR: /app/voices
+    volumes:
+      # Piper voice models (.onnx) live on the host — large, not committed. The
+      # director degrades to silence if the dir is empty or the binary absent.
+      - ./voices:/app/voices:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

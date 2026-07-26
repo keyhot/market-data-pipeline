@@ -118,7 +118,7 @@ def main() -> int:
     run(
         fetch_state=lambda: _fetch_world_state(state_url),
         obs_client=obs_client,
-        tts_runner=_noop,    # Task 6 wires Piper
+        tts_runner=_noop,    # tts.synthesize() ready; OBS media playback is go-live
         record_event=_noop,  # Task 7 wires director/events
     )
     return 0
