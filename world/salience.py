@@ -189,5 +189,8 @@ KNOWN_EVENT_TYPES = frozenset(
         "trader_opened",
         "trader_closed",
         "trader_milestone",
+        # director actions (Sprint 13) — severities in director/events.py
+        "scene_switched",
+        "commentary_spoken",
     }
 )

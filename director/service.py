@@ -66,16 +66,13 @@ def _apply(action, dir_state, now, obs_client, tts_runner, record_event) -> None
     this is the only place with side effects. Task 6 wires real TTS, Task 7
     replaces the inline event dicts with director/events builders + safety rails
     land in Task 8."""
+    from director.events import build_commentary_spoken, build_scene_switched
     from scripts import stream_ctl
 
     events = []
     if action.scene and action.scene != dir_state.current_scene:
         stream_ctl.switch_scene(obs_client, action.scene)
-        events.append({
-            "event_type": "scene_switched", "severity": 1.0,
-            "occurred_at": now, "symbol": None,
-            "payload": {"scene": action.scene, "from": dir_state.current_scene},
-        })
+        events.append(build_scene_switched(action.scene, dir_state.current_scene, now))
         dir_state.current_scene = action.scene
         dir_state.last_switch = now
         dir_state.recent_switch_times.append(now)
@@ -86,14 +83,18 @@ def _apply(action, dir_state, now, obs_client, tts_runner, record_event) -> None
         dir_state.recent_lines_by_character.setdefault(
             line.get("character", ""), []
         ).append(line.get("text", ""))
-        events.append({
-            "event_type": "commentary_spoken", "severity": 1.0,
-            "occurred_at": now, "symbol": line.get("symbol"),
-            "payload": {"character": line.get("character"),
-                        "text": line.get("text"),
-                        "event_id": line.get("event_id")},
-        })
-    if events and record_event is not None:
+        events.append(
+            build_commentary_spoken(
+                line.get("character"),
+                line.get("text"),
+                event_id=line.get("event_id"),
+                symbol=line.get("symbol"),
+                occurred_at=now,
+            )
+        )
+    # Always call the recorder (even with no events) so it drains the spool
+    # backlog every tick — flush-on-tick, not only when the director acts.
+    if record_event is not None:
         record_event(events)
 
 
@@ -112,14 +113,16 @@ def main() -> int:
         logger.error("Director cannot reach OBS: %s", exc)
         return 2
 
+    from director.events import record_director_events
+
     def _noop(*_args, **_kwargs):
         return None
 
     run(
         fetch_state=lambda: _fetch_world_state(state_url),
         obs_client=obs_client,
-        tts_runner=_noop,    # tts.synthesize() ready; OBS media playback is go-live
-        record_event=_noop,  # Task 7 wires director/events
+        tts_runner=_noop,  # tts.synthesize() ready; OBS media playback is go-live
+        record_event=record_director_events,
     )
     return 0
 

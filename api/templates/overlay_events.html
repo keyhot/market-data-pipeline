@@ -55,6 +55,8 @@
       trader_closed: (e) => `trader closed ${e.payload.pair ?? "a position"} — ` +
         `${e.payload.profit_pct?.toFixed(2)}%`,
       trader_milestone: (e) => `trader P&L now ${e.payload.profit_pct?.toFixed(2)}%`,
+      scene_switched: (e) => `— now showing ${e.payload.scene ?? "the world"} —`,
+      commentary_spoken: (e) => `${e.payload.character ?? "someone"}: ${e.payload.text ?? ""}`,
     };
 
     function headline(e) {
