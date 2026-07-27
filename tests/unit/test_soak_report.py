@@ -84,6 +84,22 @@ def test_unrecovered_outage_runs_to_window_end():
     assert result["uptime_pct"] == pytest.approx(83.33, abs=0.01)
 
 
+def test_stream_stopped_counts_as_downtime_until_restart():
+    # KI-008: the watchdog now records an unexpected live->inactive transition as
+    # stream_stopped. That span is downtime just like a drop — otherwise the
+    # soak report would overstate uptime (state.py already counts it; this keeps
+    # the two reports honest together).
+    events = [
+        _ev(0, "stream_started"),
+        _ev(10, "stream_stopped", {"reason": "output_inactive"}),
+        _ev(25, "stream_started", {"recovery_seconds": 900}),
+    ]
+    result = compute_uptime(events, *WINDOW)
+    assert result["downtime_seconds"] == 900.0
+    assert result["uptime_pct"] == 75.0
+    assert [o["reason"] for o in result["outages"]] == ["output_inactive"]
+
+
 def test_dropped_frames_reason_is_not_downtime():
     # dropped_frames means degraded, not down — the stream stayed live
     events = [

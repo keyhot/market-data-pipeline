@@ -27,8 +27,16 @@ def compute_uptime(
         occurred = datetime.fromisoformat(event["occurred_at"])
         etype = event["event_type"]
         payload = event.get("payload") or {}
-        if etype == "stream_dropped":
-            degraded = payload.get("reason") == "dropped_frames"
+        if etype in ("stream_dropped", "stream_stopped"):
+            # A stop or a non-degraded drop opens downtime until the next start.
+            # dropped_frames is the one "down" event that isn't downtime — the
+            # stream stayed live but impaired. Since KI-008 the watchdog records
+            # unexpected inactivity as stream_stopped, so it lands here too and
+            # is counted, matching world/state.py's downtime accrual.
+            degraded = (
+                etype == "stream_dropped"
+                and payload.get("reason") == "dropped_frames"
+            )
             if degraded:
                 # Degraded = live-but-impaired, zero downtime. Record and move
                 # on — leaving it sitting in open_outage would block a real
