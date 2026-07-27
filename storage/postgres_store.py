@@ -347,7 +347,10 @@ def append_world_events(events: list[dict]) -> int:
         (
             _as_datetime(e["occurred_at"]),
             e["event_type"],
-            e.get("symbol", "").upper() or None,
+            # `or ""` (not the .get default): symbol-less events set the key to
+            # None explicitly (scene_switched, stream_*), so .get returns None and
+            # None.upper() would crash — one such row fails the whole batch.
+            (e.get("symbol") or "").upper() or None,
             float(e["severity"]),
             _json.dumps(e.get("payload", {})),
         )
@@ -375,7 +378,7 @@ def append_world_events_backfill(events: list[dict]) -> int:
         (
             _as_datetime(e["occurred_at"]),
             e["event_type"],
-            e.get("symbol", "").upper() or None,
+            (e.get("symbol") or "").upper() or None,  # symbol may be explicit None
             float(e["severity"]),
             _json.dumps(e.get("payload", {})),
         )
