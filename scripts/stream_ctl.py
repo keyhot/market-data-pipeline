@@ -123,11 +123,18 @@ def screenshot(client, path, width: int = 1920, height: int = 1080) -> str:
 
 
 def configure_output(client) -> None:
-    """Point OBS at the platform ingest. The key comes from the environment
-    and never touches the repo."""
+    """Point OBS at the platform ingest and pin the encoder bitrate. The key
+    comes from the environment and never touches the repo."""
     key = os.environ.get("OBS_STREAM_KEY")
     if not key:
         raise ValueError("OBS_STREAM_KEY is not set (see .env.example)")
+    # Pin the Simple-mode encoder bitrate (KI-009). Without this OBS inherits the
+    # profile default — it was 6000 and YouTube rejected the stream. 2200 kbps is
+    # a safe ceiling for the free 720p/900p tiers; override via OBS_STREAM_BITRATE.
+    # Advanced output mode uses a different parameter path (the runbook pins
+    # Simple mode); best-effort here rather than probing the mode.
+    bitrate = os.environ.get("OBS_STREAM_BITRATE", "2200")
+    client.set_profile_parameter("SimpleOutput", "VBitrate", str(bitrate))
     server = os.environ.get("OBS_STREAM_SERVER", "rtmp://a.rtmp.youtube.com/live2")
     client.set_stream_service_settings("rtmp_custom", {"server": server, "key": key})
 

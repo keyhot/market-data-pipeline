@@ -77,6 +77,9 @@ class FakeClient:
     def set_stream_service_settings(self, ss_type, ss_settings):
         self._log("set_stream_service_settings", ss_type, ss_settings)
 
+    def set_profile_parameter(self, category, name, value):
+        self._log("set_profile_parameter", category, name, value)
+
 
 def _creates(client):
     return [c for c in client.calls if c[0] in ("create_scene", "create_input")]
@@ -165,6 +168,25 @@ def test_configure_output_sets_service(monkeypatch):
     call = client.calls[-1]
     assert call[0] == "set_stream_service_settings"
     assert call[2] == {"server": "rtmp://example/live", "key": "sekrit"}
+
+
+def test_configure_output_pins_encoder_bitrate(monkeypatch):
+    # KI-009: without this, OBS keeps the profile's default bitrate (was 6000,
+    # which YouTube rejected). configure_output must pin the Simple-mode encoder
+    # bitrate, defaulting to a safe 2200.
+    monkeypatch.setenv("OBS_STREAM_KEY", "sekrit")
+    monkeypatch.delenv("OBS_STREAM_BITRATE", raising=False)
+    client = FakeClient()
+    stream_ctl.configure_output(client)
+    assert ("set_profile_parameter", "SimpleOutput", "VBitrate", "2200") in client.calls
+
+
+def test_configure_output_bitrate_from_env(monkeypatch):
+    monkeypatch.setenv("OBS_STREAM_KEY", "sekrit")
+    monkeypatch.setenv("OBS_STREAM_BITRATE", "3500")
+    client = FakeClient()
+    stream_ctl.configure_output(client)
+    assert ("set_profile_parameter", "SimpleOutput", "VBitrate", "3500") in client.calls
 
 
 def test_cli_exit_code_when_obs_unreachable(monkeypatch):
