@@ -45,6 +45,7 @@ from storage.writes import (
     write_news,
     write_price_bars,
 )
+from world import visuals
 from world.reactions import attach_reactions
 from world.salience import KNOWN_EVENT_TYPES
 from world.state import project_state
@@ -107,9 +108,21 @@ def _validated_symbol(raw: str) -> str:
     return symbol
 
 
+# The shared visual identity (world/visuals.py) reaches every page from one
+# place: the palette vars, the calm->dramatic tier ramp, and the mood->colour
+# map the canvas reads. Injecting them here means a page can never drift from
+# the source of truth, and no caller can forget to pass them.
+_THEME_REPLACEMENTS = {
+    "__THEME_VARS__": visuals.css_variables(),
+    "__TIER_STYLES__": visuals.tier_styles_css(),
+    "__MOOD_COLORS_JSON__": json.dumps(visuals.MOOD_COLORS),
+}
+
+
 def _render_template(name: str, replacements: dict[str, str]) -> str:
     html = (_TEMPLATES_DIR / name).read_text()
-    for placeholder, value in replacements.items():
+    # Page-specific replacements win over theme defaults if a key collides.
+    for placeholder, value in {**_THEME_REPLACEMENTS, **replacements}.items():
         html = html.replace(placeholder, value)
     return html
 

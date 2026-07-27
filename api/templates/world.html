@@ -4,15 +4,25 @@
   <meta charset="utf-8">
   <title>The World — Market Data Pipeline</title>
   <style>
-    :root { color-scheme: dark; --bg: #131722; }
-    body { margin: 0; background: var(--bg); color: #d1d4dc;
+    :root { color-scheme: dark; }
+    __THEME_VARS__
+    body { margin: 0; background: var(--bg); color: var(--fg);
            font-family: system-ui, sans-serif; overflow: hidden; }
     #room { width: 100vw; height: 100vh; }
-    #fallback { position: absolute; top: 1rem; left: 1rem; color: #787b86;
+    #fallback { position: absolute; top: 3rem; left: 1rem; color: var(--neutral);
                 font-size: 0.85rem; }
+    /* Newcomer legibility: an always-present line naming what this is. */
+    #banner { position: absolute; top: 0; left: 0; right: 0; z-index: 2;
+              padding: 0.55rem 1rem; background: rgba(19, 23, 34, 0.72);
+              color: var(--fg); font-size: 0.9rem; letter-spacing: 0.01em;
+              pointer-events: none; }
+    #banner-syms { color: var(--accent); font-weight: 600; }
+    #banner .tag { color: var(--neutral); }
   </style>
 </head>
 <body>
+  <div id="banner"><span id="banner-syms"></span><span class="tag">a model
+    trades live, and the world remembers when it's wrong</span></div>
   <div id="room"></div>
   <div id="fallback">Waking the world…</div>
   <script src="https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js"
@@ -22,18 +32,30 @@
     const SYMBOLS = __SYMBOLS__;
     const fallback = document.getElementById("fallback");
 
-    // Moods the projection can emit -> room palette. Unknown moods stay grey
-    // rather than throwing, so a new salience rule degrades quietly on screen
-    // (the loud failure is the registry test in tests/unit/test_reactions.py).
-    const MOOD_COLOR = {
-      bullish: 0x26a69a, bearish: 0xef5350, panicked: 0xf2a900, calm: 0x4a90d9,
-      elated: 0x26a69a, dejected: 0xef5350, startled: 0xf2a900, anxious: 0xf2a900,
-      surprised: 0x9c6ade, alert: 0x4a90d9, focused: 0x5b9cf6, eager: 0x26a69a,
-      grim: 0xef5350, relieved: 0x26a69a, alarmed: 0xef5350, idle: 0x545862,
-      resigned: 0x787b86, neutral: 0x787b86,
-      decisive: 0x5b9cf6, weighing: 0x9c6ade, proud: 0x26a69a,
+    // Name the room for a newcomer: the symbols in play + the one-line premise.
+    document.getElementById("banner-syms").textContent =
+      SYMBOLS.map((s) => s.replace(/USDT$/, "")).join(" · ") + " — ";
+
+    // The mood -> colour map is injected from world/visuals.MOOD_COLORS (hex
+    // strings) so this canvas and the DOM overlays share ONE palette; drift
+    // between them was the old failure. Unknown moods stay grey rather than
+    // throwing, so a new salience rule degrades quietly on screen.
+    const MOOD_COLOR = __MOOD_COLORS_JSON__;
+    const NEUTRAL = 0x787b86;
+    const color = (mood) => {
+      const hex = MOOD_COLOR[mood];
+      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
     };
-    const color = (mood) => MOOD_COLOR[mood] ?? 0x787b86;
+
+    // Shared severity -> tier bands (mirror the overlay + world/state tiers) so
+    // the "swell" reads the same on every surface: tier 0 barely stirs, tier 3
+    // leaps. This is the calm-that-swells register in motion.
+    function tierOf(severity) {
+      if (severity >= 8) return 3;
+      if (severity >= 5) return 2;
+      if (severity >= 2) return 1;
+      return 0;
+    }
 
     // Declared here, constructed in boot(): character() needs app.screen and
     // the layer containers, neither of which exist until PIXI has initialised.
@@ -153,12 +175,18 @@
     }
 
     // A live event nudges the room immediately; the next refresh reconciles it
-    // with the authoritative server-side projection.
+    // with the authoritative server-side projection. The nudge scales with the
+    // event's tier, so a calm event barely stirs and a tier-3 event visibly
+    // swells (then settles back — never sticky-amped).
     function react(event) {
       const target = event.event_type.startsWith("trader_") ? trader : model;
-      const intensity = event.severity >= 5 ? 1 : 0.5;
-      target.container.y = target.baseY - 18 * intensity;
-      setTimeout(() => { target.container.y = target.baseY; }, 400);
+      const tier = tierOf(event.severity);
+      target.container.y = target.baseY - (6 + tier * 8);
+      target.container.scale.set(1 + tier * 0.05);
+      setTimeout(() => {
+        target.container.y = target.baseY;
+        target.container.scale.set(1);
+      }, 500);
     }
 
     async function refresh() {

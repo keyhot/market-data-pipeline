@@ -4,21 +4,22 @@
   <meta charset="utf-8">
   <title>Signals — Market Data Pipeline</title>
   <style>
-    :root { color-scheme: dark; --bg: #131722; }
-    body { margin: 0; background: var(--bg); color: #d1d4dc;
+    :root { color-scheme: dark; }
+    __THEME_VARS__
+    body { margin: 0; background: var(--bg); color: var(--fg);
            font-family: system-ui, sans-serif; overflow: hidden; }
     #strip { display: flex; gap: 2rem; align-items: center;
              height: 120px; padding: 0 1.5rem; }
     .cell { display: flex; flex-direction: column; gap: 0.3rem; min-width: 260px; }
     .row1 { display: flex; align-items: baseline; gap: 0.6rem; }
     .sym { font-weight: 700; font-size: 1.1rem; }
-    .dir-up { color: #26a69a; } .dir-down { color: #ef5350; }
-    .prob { color: #787b86; font-size: 0.9rem; }
+    .dir-up { color: var(--up); } .dir-down { color: var(--down); }
+    .prob { color: var(--neutral); font-size: 0.9rem; }
     .dots { display: flex; gap: 4px; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: #363a45; }
-    .dot.win { background: #26a69a; } .dot.loss { background: #ef5350; }
-    .stats { color: #787b86; font-size: 0.8rem; }
-    .note { position: fixed; right: 1rem; bottom: 0.3rem; color: #50535e;
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+    .dot.win { background: var(--up); } .dot.loss { background: var(--down); }
+    .stats { color: var(--neutral); font-size: 0.8rem; }
+    .note { position: fixed; right: 1rem; bottom: 0.3rem; color: var(--muted);
             font-size: 0.65rem; }
   </style>
 </head>

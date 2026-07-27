@@ -42,3 +42,10 @@ class FreqtradeUnreachableError(BaseAppException):
         self, message: str = "freqtrade sidecar unreachable", status_code: int = 503
     ):
         super().__init__(message, status_code)
+
+
+class DirectorUnreachableError(BaseAppException):
+    def __init__(
+        self, message: str = "director service unreachable", status_code: int = 503
+    ):
+        super().__init__(message, status_code)

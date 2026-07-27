@@ -67,6 +67,37 @@ services:
       retries: 5
       start_period: 20s
 
+  director:
+    build: .
+    container_name: market-data-director
+    restart: unless-stopped
+    # Salience-driven scene switching + commentary (Sprint 13). Opt-in, like
+    # freqtrade: `docker compose --profile director up`. Kept out of the default
+    # stack because it hard-depends on OBS, which runs on the HOST (not compose)
+    # — so it reaches OBS via the docker host gateway and OBS must have its
+    # websocket server enabled. Alternative: run director/service.py directly on
+    # the host, the way the Sprint 11 watchdog runs as a systemd user unit.
+    profiles: ["director"]
+    command: python director/service.py
+    environment:
+      DIRECTOR_ENABLED: ${DIRECTOR_ENABLED:-1}
+      DIRECTOR_STATE_URL: http://api:8000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-market_data}@postgres:5432/${POSTGRES_DB:-market_data}
+      OBS_WS_URL: ${OBS_WS_URL:-ws://host.docker.internal:4455}
+      OBS_WS_PASSWORD: ${OBS_WS_PASSWORD:-}
+      STREAM_EVENT_SPOOL: /app/data/director_events.spool.jsonl
+      PIPER_BIN: ${PIPER_BIN:-piper}
+      PIPER_VOICE_DIR: /app/voices
+    volumes:
+      # Piper voice models (.onnx) live on the host — large, not committed. The
+      # director degrades to silence if the dir is empty or the binary absent.
+      - ./voices:/app/voices:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      api:
+        condition: service_healthy
+
   freqtrade:
     image: freqtradeorg/freqtrade:stable
     container_name: market-data-freqtrade

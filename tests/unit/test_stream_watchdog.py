@@ -41,14 +41,22 @@ def test_obs_recovery_rebuilds_scene_then_streaming_records_started():
     assert state.obs_up and state.streaming
 
 
-def test_stream_stopped_underneath_us_restarts_and_records():
+def test_stream_stopped_underneath_us_records_stopped_and_restarts():
+    # KI-008: an unexpected live->inactive transition is recorded as a truthful
+    # stream_stopped (world shows "down"/idle, not "dropped — recovering"),
+    # exactly once, while the watchdog still tries to bring the stream back.
     state = WatchdogState(obs_up=True, streaming=True)
     probe = {"reachable": True, "streaming": False, "dropped_ratio": 0.0}
     state, actions = tick(probe, state, CFG, now=1000.0)
     records = _actions_of(actions, "record")
-    assert records and records[0][1] == "stream_dropped"
+    assert [r[1] for r in records] == ["stream_stopped"]
+    assert records[0][2]["reason"] == "output_inactive"
     assert ("start_stream",) in actions
     assert state.streaming is False
+    # Once per transition: a second still-inactive tick records nothing new
+    # (the world isn't told "stopped" over and over).
+    _, again = tick(probe, state, CFG, now=1030.0)
+    assert _actions_of(again, "record") == []
 
 
 def test_dropped_frames_records_event_but_never_restarts():

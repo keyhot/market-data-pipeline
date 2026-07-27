@@ -90,7 +90,12 @@ def tick(
         return state, actions
 
     if state.streaming:
-        actions.append(("record", "stream_dropped", {"reason": "stream_inactive"}))
+        # KI-008: an unexpected live->inactive transition (a stop on the
+        # platform/OBS side the watchdog didn't issue) is recorded as a truthful
+        # stream_stopped — so /world shows "down"/idle instead of "dropped —
+        # recovering" — exactly once per transition. We still attempt a restart
+        # below; if it comes back the next tick records stream_started.
+        actions.append(("record", "stream_stopped", {"reason": "output_inactive"}))
         state.down_since = now
         state.streaming = False
     if _restart_allowed(state, config, now):

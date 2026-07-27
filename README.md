@@ -185,6 +185,36 @@ which replays the same salience rules over historical klines, flagging every
 event `backfilled: true` so learned history stays distinct from witnessed
 history. Full design and known limitations: project Obsidian vault → `Docs/world-renderer.md`.
 
+## Director & personalities (Sprint 13)
+
+The stream directs itself. The `director/` package is a pure `tick()` state
+machine + thin runner (same shape as the watchdog — all logic tested with no OBS,
+clock, or DB), shipped as an opt-in `director` compose service (`DIRECTOR_ENABLED`):
+
+- **Salience-driven scene switching** over three scenes (`chart-focus` home /
+  `world-focus` / `event-focus`) via `switch_scene` on the `stream_ctl` seam.
+  `choose_scene` is keyed on severity **tier** with a mutation-checked minimum
+  **dwell** so a burst can't flap the scene.
+- **Deterministic phrase-bank commentary** — per character, per event, per tier
+  (`director/phrases.py`), RNG-injected, anti-repetition tracked, numbers quoted
+  straight from the event payload. **No LLM, no API cost** (deferral + economics:
+  vault `Spikes/llm-commentary-spike.md`).
+- **Personalities as threshold policies** (optimist / statistician / anxious):
+  same event stream, different reaction tiers and `reacts_to` sets.
+- **Local Piper TTS**, one voice per personality, via an injected subprocess
+  runner — degrades to silence (and a metric) if Piper fails.
+- The director's own actions are append-only world events: **`scene_switched`**
+  and **`commentary_spoken`** (registered in `KNOWN_EVENT_TYPES` + all reaction
+  registries, spooled to JSONL when Postgres is down). `soak_report.py` reports
+  director activity alongside uptime.
+- **Safety rails / the brake:** per-minute switch + line budgets (mutation-checked)
+  and a `DIRECTOR_MUTED=1` global mute — no redeploy needed.
+
+A shared visual identity (`world/visuals.py`) gives `/world` and both overlays one
+palette and a monotonic calm→dramatic **tier ramp** (injected via
+`_render_template`), so live events *swell* on the SSE path and decay back to calm.
+Full design: project Obsidian vault → `Docs/director.md`.
+
 ## Tests
 
 ```bash

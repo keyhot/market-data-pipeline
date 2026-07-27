@@ -24,6 +24,9 @@ REACTIONS: dict[str, tuple[str, str]] = {
     "trader_opened": ("decisive", "step"),
     "trader_closed": ("weighing", "turn"),
     "trader_milestone": ("proud", "cheer"),
+    # director actions (Sprint 13) — the room acknowledges the camera + voice
+    "scene_switched": ("attentive", "pan"),
+    "commentary_spoken": ("speaking", "talk"),
 }
 
 # Types whose meaning genuinely flips on payload content.

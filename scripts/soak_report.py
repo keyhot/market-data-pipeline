@@ -4,7 +4,14 @@ test — same truth-over-vanity rule as the backtest.
 """
 
 import argparse
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# Runnable as a plain script (KI-007): `python scripts/soak_report.py` puts
+# scripts/ — not the repo root — on sys.path, so `storage` won't import without
+# this. Mirrors scripts/stream_ctl.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def compute_uptime(
@@ -20,8 +27,16 @@ def compute_uptime(
         occurred = datetime.fromisoformat(event["occurred_at"])
         etype = event["event_type"]
         payload = event.get("payload") or {}
-        if etype == "stream_dropped":
-            degraded = payload.get("reason") == "dropped_frames"
+        if etype in ("stream_dropped", "stream_stopped"):
+            # A stop or a non-degraded drop opens downtime until the next start.
+            # dropped_frames is the one "down" event that isn't downtime — the
+            # stream stayed live but impaired. Since KI-008 the watchdog records
+            # unexpected inactivity as stream_stopped, so it lands here too and
+            # is counted, matching world/state.py's downtime accrual.
+            degraded = (
+                etype == "stream_dropped"
+                and payload.get("reason") == "dropped_frames"
+            )
             if degraded:
                 # Degraded = live-but-impaired, zero downtime. Record and move
                 # on — leaving it sitting in open_outage would block a real
@@ -64,6 +79,26 @@ def compute_uptime(
     }
 
 
+def compute_director_activity(events: list[dict], window_hours: float) -> dict:
+    """Count director actions (scene_switched / commentary_spoken) into per-hour
+    rates from the world_events log. Ignores non-director events. Suppressed
+    lines are in-process only and never reach the log, so they aren't reported."""
+    lines = [e for e in events if e["event_type"] == "commentary_spoken"]
+    switches = [e for e in events if e["event_type"] == "scene_switched"]
+    by_character: dict[str, int] = {}
+    for event in lines:
+        who = (event.get("payload") or {}).get("character", "unknown")
+        by_character[who] = by_character.get(who, 0) + 1
+    hours = window_hours or 1.0
+    return {
+        "lines": len(lines),
+        "switches": len(switches),
+        "lines_per_hour": round(len(lines) / hours, 2),
+        "switches_per_hour": round(len(switches) / hours, 2),
+        "by_character": by_character,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stream soak report")
     parser.add_argument("--hours", type=float, default=24.0)
@@ -73,12 +108,10 @@ def main() -> None:
 
     window_end = datetime.now(timezone.utc)
     window_start = window_end - timedelta(hours=args.hours)
-    events = [
-        e
-        for e in get_world_events(limit=10_000, since=window_start)
-        if e["event_type"].startswith("stream_")
-    ]
-    report = compute_uptime(events, window_start, window_end)
+    all_events = get_world_events(limit=10_000, since=window_start)
+    stream_events = [e for e in all_events if e["event_type"].startswith("stream_")]
+    report = compute_uptime(stream_events, window_start, window_end)
+    activity = compute_director_activity(all_events, args.hours)
     print(f"# Soak report — {window_end.date()}\n")
     print(f"- Window: {window_start.isoformat()} → {window_end.isoformat()}")
     print(
@@ -90,9 +123,17 @@ def main() -> None:
         print("| start | duration (s) | reason |")
         print("|---|---|---|")
         for o in report["outages"]:
-            print(
-                f"| {o['start']} | {o['duration_seconds']:.0f} | {o['reason']} |"
-            )
+            print(f"| {o['start']} | {o['duration_seconds']:.0f} | {o['reason']} |")
+    print("\n## Director activity\n")
+    print(f"- Lines spoken: {activity['lines']} ({activity['lines_per_hour']}/h)")
+    print(
+        f"- Scene switches: {activity['switches']} ({activity['switches_per_hour']}/h)"
+    )
+    if activity["by_character"]:
+        print("\n| character | lines |")
+        print("|---|---|")
+        for who, count in sorted(activity["by_character"].items()):
+            print(f"| {who} | {count} |")
 
 
 if __name__ == "__main__":
