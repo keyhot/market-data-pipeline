@@ -4,7 +4,14 @@ test — same truth-over-vanity rule as the backtest.
 """
 
 import argparse
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# Runnable as a plain script (KI-007): `python scripts/soak_report.py` puts
+# scripts/ — not the repo root — on sys.path, so `storage` won't import without
+# this. Mirrors scripts/stream_ctl.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def compute_uptime(

@@ -1,11 +1,46 @@
 """Uptime math over stream_* world events — the log built this sprint IS the
 measurement tool."""
 
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from scripts.soak_report import compute_director_activity, compute_uptime
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_soak_report_runs_as_the_documented_script(tmp_path):
+    """KI-007: running `scripts/soak_report.py` must put the repo root on
+    sys.path so `storage` imports. Execute the module's top level exactly as a
+    script does — its sys.path insert runs — but skip main() (and thus the DB)
+    via run_name, then prove `storage` is now importable.
+
+    Run from a *neutral* cwd with empty PYTHONPATH: otherwise `python -c` puts
+    cwd (the repo root) on the path as sys.path[0] and `storage` imports for the
+    wrong reason. From tmp_path, only soak_report's own insert can add the repo
+    root — run_path adds scripts/, never the repo root — so this stays RED
+    without the fix (proven: a no-op script in its place raises ModuleNotFound)."""
+    env = {**os.environ, "PYTHONPATH": ""}
+    script = _REPO_ROOT / "scripts" / "soak_report.py"
+    probe = (
+        "import runpy; "
+        f"runpy.run_path({str(script)!r}, run_name='_probe'); "
+        "import storage.postgres_store  # importable only if repo root was added"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _ev(minute, event_type, payload=None):
