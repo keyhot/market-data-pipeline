@@ -1,3 +1,4 @@
+import re
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -52,3 +53,19 @@ def test_overlay_events_renders():
     assert response.status_code == 200
     assert "/stream/world/events" in response.text
     assert "textContent" in response.text  # XSS-safe rendering marker
+
+
+def test_overlay_events_carries_shared_theme_and_tier_swell():
+    body = client.get("/overlay/events").text
+    assert "--bg: #131722" in body       # shared palette reached the overlay
+    assert ".tier-3" in body             # the shared swell ramp is injected
+    # The swell fires on the live SSE path, not just initial paint.
+    assert "tier-${tierOf(e.severity)}" in body
+    assert not re.search(r"__[A-Z_]+__", body)  # every placeholder substituted
+
+
+def test_overlay_signals_uses_shared_palette_vars():
+    with patch("api.main.load_watchlist", return_value=_watchlist()):
+        body = client.get("/overlay/signals").text
+    assert "--bg: #131722" in body
+    assert "var(--up)" in body and "var(--down)" in body

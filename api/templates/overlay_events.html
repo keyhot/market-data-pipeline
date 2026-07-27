@@ -4,20 +4,25 @@
   <meta charset="utf-8">
   <title>World Events — Market Data Pipeline</title>
   <style>
-    :root { color-scheme: dark; --bg: #131722; }
-    body { margin: 0; background: var(--bg); color: #d1d4dc;
+    :root { color-scheme: dark; }
+    __THEME_VARS__
+    __TIER_STYLES__
+    body { margin: 0; background: var(--bg); color: var(--fg);
            font-family: system-ui, sans-serif; overflow: hidden; }
     #feed { display: flex; flex-direction: column; gap: 0.5rem;
             padding: 1rem; max-width: 480px; }
     .event { display: flex; gap: 0.6rem; align-items: flex-start;
              padding: 0.5rem 0.7rem; background: #1e222d; border-radius: 6px;
-             border-left: 4px solid #363a45; }
-    .event.sev-low { border-left-color: #4a90d9; }
-    .event.sev-med { border-left-color: #f2a900; }
-    .event.sev-high { border-left-color: #ef5350; }
+             border-left: 4px solid var(--muted); }
+    /* The border carries the severity tier (category); the injected .tier-*
+       ramp carries the swell (glow/scale/opacity/weight, eased). */
+    .event.tier-0 { border-left-color: var(--neutral); }
+    .event.tier-1 { border-left-color: var(--accent); }
+    .event.tier-2 { border-left-color: var(--accent); }
+    .event.tier-3 { border-left-color: var(--down); }
     .body { display: flex; flex-direction: column; gap: 0.1rem; }
     .headline { font-size: 0.9rem; }
-    .meta { color: #787b86; font-size: 0.72rem; }
+    .meta { color: var(--neutral); font-size: 0.72rem; }
     .event.fresh { animation: pop 0.6s ease-out; }
     @keyframes pop { from { transform: translateY(-6px); opacity: 0; } }
   </style>
@@ -28,11 +33,14 @@
     const feed = document.getElementById("feed");
     const MAX_ROWS = 20;
 
-    // Severity → visual weight; thresholds documented in docs/world-memory.md.
-    function sevClass(severity) {
-      if (severity >= 5) return "sev-high";
-      if (severity >= 2) return "sev-med";
-      return "sev-low";
+    // Severity -> tier (0 calm .. 3 dramatic), matching the world canvas and
+    // world/state bands. The tier class drives both the border (category) and
+    // the shared .tier-* swell ramp (glow/scale/opacity/weight).
+    function tierOf(severity) {
+      if (severity >= 8) return 3;
+      if (severity >= 5) return 2;
+      if (severity >= 2) return 1;
+      return 0;
     }
 
     const HEADLINES = {
@@ -74,7 +82,7 @@
 
     function addEvent(e, fresh) {
       const row = document.createElement("div");
-      row.className = `event ${sevClass(e.severity)}` + (fresh ? " fresh" : "");
+      row.className = `event tier tier-${tierOf(e.severity)}` + (fresh ? " fresh" : "");
       const body = document.createElement("div");
       body.className = "body";
       const head = document.createElement("div");
