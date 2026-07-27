@@ -116,6 +116,32 @@ def test_apply_caps_lines_and_counts_suppressed():
     assert m.lines_spoken == 1 and m.lines_suppressed == 1
 
 
+def test_multiple_lines_in_a_tick_get_distinct_timestamps():
+    # Several characters react to the same (symbol, event) in one tick. They
+    # share event_type + symbol, so if they also shared occurred_at the rows
+    # would collide on world_events' natural-key unique index
+    # (uq_world_events_natural) and the whole batch would fail to persist —
+    # observed live 2026-07-27 as "Postgres unreachable" spooling. Distinct
+    # sub-timestamps keep genuinely-separate utterances apart.
+    cfg = DirectorConfig()
+    ds = _ds(last_switch=BASE)
+    m = DirectorMetrics()
+    lines = [
+        {"character": "statistician", "text": "a", "voice": "v",
+         "event_id": 9, "symbol": "ETHUSDT"},
+        {"character": "anxious", "text": "b", "voice": "v",
+         "event_id": 9, "symbol": "ETHUSDT"},
+    ]
+    recorded = []
+    _apply(DirectorAction(lines=lines), ds, BASE, _FakeObs(),
+           lambda *a: True, recorded.extend, cfg, m)
+    commentary = [e for e in recorded if e["event_type"] == "commentary_spoken"]
+    assert len(commentary) == 2
+    natural_keys = {(e["event_type"], e["occurred_at"], e["symbol"])
+                    for e in commentary}
+    assert len(natural_keys) == 2, "same natural key collides on the unique index"
+
+
 def test_tts_failure_is_counted_but_line_still_recorded():
     cfg = DirectorConfig()
     ds = _ds(last_switch=BASE)

@@ -9,7 +9,7 @@ import os
 import sys
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -117,7 +117,7 @@ def _apply(
             metrics.scene_switches += 1
         else:
             metrics.switches_suppressed += 1
-    for line in action.lines:
+    for i, line in enumerate(action.lines):
         if not within_line_budget(dir_state, now, config):
             metrics.lines_suppressed += 1
             continue
@@ -137,7 +137,12 @@ def _apply(
                 line.get("text"),
                 event_id=line.get("event_id"),
                 symbol=line.get("symbol"),
-                occurred_at=now,
+                # Several characters can speak about the same (symbol, event) in
+                # one tick; without distinct sub-timestamps they'd share
+                # (event_type, occurred_at, symbol) and collide on
+                # uq_world_events_natural, failing the whole batch. They are
+                # genuinely separate utterances, so order them microseconds apart.
+                occurred_at=now + timedelta(microseconds=i),
             )
         )
         metrics.lines_spoken += 1
