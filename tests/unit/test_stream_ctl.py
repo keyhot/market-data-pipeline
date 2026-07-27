@@ -95,7 +95,7 @@ def test_build_creates_all_scenes_and_sources():
         "chart-focus",
         "world-focus",
         "event-focus",
-        "chart-btcusdt-1m",
+        "charts-1m",
         "world-room",
         "event-feed",
     } <= created

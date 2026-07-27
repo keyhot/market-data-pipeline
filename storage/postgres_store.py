@@ -276,6 +276,30 @@ def get_all_signal_accuracy(symbols: list[str], interval: str = "1m") -> list[di
     return [get_signal_accuracy(symbol, interval) for symbol in symbols]
 
 
+def get_model_accuracy(
+    symbols: list[str], interval: str = "1m", window: int = 100
+) -> dict:
+    """The model's combined track record over the last `window` resolved signals
+    **per symbol**, summed — the same last-N-resolved basis as the overlay strip's
+    get_signal_accuracy, so the /world room and the strips show ONE honest number
+    (KI-012: the room previously folded signal_resolved events over a mixed
+    event-window, disagreeing with the strips)."""
+    per = {s.upper(): get_signal_accuracy(s, interval, window) for s in symbols}
+    wins = sum(a["wins"] for a in per.values())
+    resolved = sum(a["resolved"] for a in per.values())
+    return {
+        "window": window,
+        "resolved": resolved,
+        "wins": wins,
+        "losses": resolved - wins,
+        "hit_rate": wins / resolved if resolved else None,
+        "per_symbol": {
+            s: {"resolved": a["resolved"], "wins": a["wins"], "hit_rate": a["hit_rate"]}
+            for s, a in per.items()
+        },
+    }
+
+
 def get_unresolved_signals(limit: int = 500) -> list[dict]:
     """Pending signals, oldest first — the resolver's work queue."""
     with get_pool().connection() as conn:

@@ -127,8 +127,12 @@
       const mood = m.reaction?.mood ?? "neutral";
       model.body.tint = color(mood);
       model.moodTag.text = mood;
-      const rate = m.hit_rate == null ? "—" : `${(m.hit_rate * 100).toFixed(1)}%`;
-      model.stat.text = `${m.wins ?? 0}W ${m.losses ?? 0}L · ${rate}`;
+      // KI-012: show the same last-N-resolved record as the overlay strips
+      // (m.accuracy), labelled with its window, so the room and strips agree.
+      const acc = m.accuracy ?? {};
+      const rate = acc.hit_rate == null ? "—" : `${(acc.hit_rate * 100).toFixed(1)}%`;
+      model.stat.text =
+        `${acc.wins ?? 0}W ${acc.losses ?? 0}L · ${rate} · last ${acc.window ?? 0}`;
 
       // The trader stays dormant until trader_* events exist, so the room is
       // complete whether or not the freqtrade sidecar is running.

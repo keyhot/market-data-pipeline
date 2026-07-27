@@ -32,6 +32,7 @@ from storage.postgres_store import (
     BAR_INTERVAL,
     get_corporate_events,
     get_latest_closes,
+    get_model_accuracy,
     get_news_items,
     get_price_bars,
     get_signal_accuracy,
@@ -452,7 +453,20 @@ def world_state(limit: int = Query(500, ge=1, le=2000)):
         raise BaseAppException(f"Postgres unavailable: {e}", status_code=503)
     if not events:
         raise NoDataFoundError("No world events recorded yet")
-    return ApiResponse(status=200, data=attach_reactions(project_state(events)))
+    state = attach_reactions(project_state(events))
+    # KI-012: the model's on-screen accuracy comes from the SAME last-N-resolved
+    # basis as the overlay strips (not the event-window fold), so the room and the
+    # strips agree. Enrichment — never let it break the state.
+    try:
+        predict_symbols = [
+            spec.symbol.upper()
+            for spec in load_watchlist().tickers
+            if spec.predict and _SYMBOL_PATTERN.fullmatch(spec.symbol.upper())
+        ]
+        state["model"]["accuracy"] = get_model_accuracy(predict_symbols)
+    except Exception:
+        logger.warning("Could not attach model accuracy to /world/state")
+    return ApiResponse(status=200, data=state)
 
 
 @app.get("/signals/{ticker_symbol}", response_model=ApiResponse)
@@ -562,6 +576,26 @@ def chart(ticker_symbol: str, interval: str = BAR_INTERVAL):
     return HTMLResponse(
         _render_template(
             "chart.html", {"__SYMBOL__": symbol, "__INTERVAL__": interval}
+        )
+    )
+
+
+@app.get("/charts", response_class=HTMLResponse)
+def charts(interval: str = BAR_INTERVAL):
+    """Multi-symbol chart page (chart-focus scene): one candlestick panel per
+    watchlist `predict` symbol — BTC *and* ETH — each with prediction markers."""
+    if interval not in _ALLOWED_CHART_INTERVALS:
+        raise BaseAppException(f"Invalid interval: {interval!r}", status_code=400)
+    symbols = [
+        spec.symbol.upper()
+        for spec in load_watchlist().tickers
+        if spec.predict and _SYMBOL_PATTERN.fullmatch(spec.symbol.upper())
+    ]
+    deduped = list(dict.fromkeys(symbols))
+    return HTMLResponse(
+        _render_template(
+            "charts.html",
+            {"__SYMBOLS__": json.dumps(deduped), "__INTERVAL__": interval},
         )
     )
 

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Charts — Market Data Pipeline</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #131722; color: #d1d4dc;
+           font-family: system-ui, sans-serif; overflow: hidden; }
+    #grid { display: grid; height: 100vh; gap: 6px; padding: 6px; box-sizing: border-box;
+            grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+    .panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+    .title { padding: 0.2rem 0.5rem; font-size: 1rem; font-weight: 600; color: #d1d4dc; }
+    .chart { flex: 1; min-height: 0; }
+  </style>
+</head>
+<body>
+  <div id="grid"></div>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"
+          integrity="sha384-OK7vELvjHdhUFi31JYioPIcRHTROLdcDa6ZsNWgvgLaKj+9JqhU0Ad8g4wz3CXjA"
+          crossorigin="anonymous"></script>
+  <script>
+    const SYMBOLS = __SYMBOLS__;
+    const INTERVAL = "__INTERVAL__";
+    const _OUTCOME_COLOR = { win: "#26a69a", loss: "#ef5350" };
+
+    function barTime(ts) {
+      return INTERVAL === "1d" ? ts.slice(0, 10) : Math.floor(Date.parse(ts) / 1000);
+    }
+    function toCandle(bar) {
+      return { time: barTime(bar.timestamp),
+               open: bar.open, high: bar.high, low: bar.low, close: bar.close };
+    }
+
+    // The model's calls on each panel: ▲/▼ by direction, grey pending → green
+    // win / red loss once resolved. Enrichment — never breaks the chart.
+    async function drawSignalMarkers(symbol, series) {
+      try {
+        const r = await fetch(`/signals/${symbol}?limit=200&interval=${INTERVAL}`);
+        if (!r.ok) return;
+        const signals = (await r.json()).data.signals;
+        const markers = signals.map((s) => ({
+          time: barTime(s.signal_timestamp),
+          position: s.direction === "up" ? "belowBar" : "aboveBar",
+          shape: s.direction === "up" ? "arrowUp" : "arrowDown",
+          color: _OUTCOME_COLOR[s.outcome] || "#787b86",
+          text: `p=${s.probability.toFixed(2)}`,
+        }));
+        markers.sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
+        series.setMarkers(markers);
+      } catch (e) { /* the chart stands without markers */ }
+    }
+
+    async function buildPanel(symbol) {
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = symbol;          /* textContent: data, never markup */
+      const chartEl = document.createElement("div");
+      chartEl.className = "chart";
+      panel.append(title, chartEl);
+      document.getElementById("grid").appendChild(panel);
+
+      const r = await fetch(`/bars/${symbol}?limit=250&interval=${INTERVAL}`);
+      if (!r.ok) { title.textContent = `${symbol} — no bars`; return; }
+      const { data } = await r.json();
+      const chart = LightweightCharts.createChart(chartEl, {
+        layout: { background: { color: "#131722" }, textColor: "#d1d4dc" },
+        grid: { vertLines: { color: "#1e222d" }, horzLines: { color: "#1e222d" } },
+        autoSize: true, timeScale: { timeVisible: INTERVAL !== "1d" },
+      });
+      const series = chart.addCandlestickSeries();
+      series.setData(data.bars.map(toCandle));
+      chart.timeScale().fitContent();
+      drawSignalMarkers(symbol, series);
+
+      const es = new EventSource(`/stream/bars/${symbol}?interval=${INTERVAL}`);
+      es.onmessage = (e) => {
+        series.update(toCandle(JSON.parse(e.data)));
+        drawSignalMarkers(symbol, series);
+      };
+    }
+
+    SYMBOLS.forEach(buildPanel);
+  </script>
+</body>
+</html>

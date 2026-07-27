@@ -20,6 +20,40 @@ def test_chart_page_serves_html_with_symbol():
     assert "__INTERVAL__" not in response.text
 
 
+def test_chart_page_renders_prediction_markers():
+    # B11: the model's calls are drawn ON the chart at their bar, colored by
+    # outcome — the track record made visible, not just a p= number.
+    body = client.get("/chart/BTCUSDT?interval=1m").text
+    assert "/signals/" in body        # pulls the model's calls
+    assert "setMarkers" in body       # draws them on the candlestick series
+    assert "arrowUp" in body and "arrowDown" in body
+
+
+def _predict_watchlist(symbols=("BTCUSDT", "ETHUSDT")):
+    return Watchlist(
+        interval_seconds=300,
+        tickers=tuple(
+            TickerJobSpec(s, "1d", market="crypto", predict=True) for s in symbols
+        ),
+        events=(),
+    )
+
+
+def test_charts_page_renders_all_predict_symbols_with_markers():
+    # B13: the stream charts BTC AND ETH (every predict symbol), each panel with
+    # its own prediction markers.
+    with patch("api.main.load_watchlist", return_value=_predict_watchlist()):
+        body = client.get("/charts?interval=1m").text
+    assert "BTCUSDT" in body and "ETHUSDT" in body
+    assert "setMarkers" in body
+    assert "__SYMBOLS__" not in body and "__INTERVAL__" not in body
+
+
+def test_charts_page_rejects_bad_interval():
+    resp = client.get("/charts?interval=5m")
+    assert resp.status_code == 400
+
+
 def test_chart_page_rejects_injection_attempts():
     assert client.get("/chart/%3Cscript%3E").status_code == 400
     assert client.get("/chart/AAPL%22%3E").status_code == 400

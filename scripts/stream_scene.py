@@ -84,7 +84,7 @@ def _chart_focus() -> dict:
         "scene": SCENE_CHART,
         "canvas": CANVAS,
         "sources": [
-            _browser("chart-btcusdt-1m", "/chart/BTCUSDT?interval=1m", 1920, 840, 0, 0),
+            _browser("charts-1m", "/charts?interval=1m", 1920, 840, 0, 0),
             _browser("overlay-signals", "/overlay/signals", 1920, 120, 0, 960),
             _browser("overlay-events", "/overlay/events", 480, 840, 1440, 0),
             *audio_sources(),

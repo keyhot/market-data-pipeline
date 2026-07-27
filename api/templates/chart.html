@@ -50,6 +50,28 @@
       };
     }
 
+    // The model's calls, drawn on the chart at the bar they were made: ▲/▼ by
+    // direction, grey while pending → green (win) / red (loss) once resolved 15
+    // bars later. Markers are enrichment — never let a failure break the chart.
+    const _OUTCOME_COLOR = { win: "#26a69a", loss: "#ef5350" };
+    async function drawSignalMarkers(series) {
+      try {
+        const r = await fetch(`/signals/${SYMBOL}?limit=200&interval=${INTERVAL}`);
+        if (!r.ok) return;
+        const signals = (await r.json()).data.signals;
+        const markers = signals.map((s) => ({
+          time: barTime(s.signal_timestamp),
+          position: s.direction === "up" ? "belowBar" : "aboveBar",
+          shape: s.direction === "up" ? "arrowUp" : "arrowDown",
+          color: _OUTCOME_COLOR[s.outcome] || "#787b86",   // pending -> grey
+          text: `p=${s.probability.toFixed(2)}`,
+        }));
+        // Lightweight Charts requires markers sorted ascending by time.
+        markers.sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
+        series.setMarkers(markers);
+      } catch (e) { /* markers are enrichment; the chart stands without them */ }
+    }
+
     function watchLive(series) {
       const source = new EventSource(
         `/stream/bars/${SYMBOL}?interval=${INTERVAL}`
@@ -59,6 +81,7 @@
         series.update(toCandle(bar));
         status.textContent =
           `Live · last ${INTERVAL} bar ${bar.timestamp} close ${bar.close}`;
+        drawSignalMarkers(series);   // recolor as calls resolve, same cadence
       };
       source.onerror = () => {
         status.textContent = "Live stream reconnecting…";
@@ -94,6 +117,7 @@
       series.setData(candles);
       chart.timeScale().fitContent();
       status.textContent = `${data.count} ${INTERVAL} bars from Postgres`;
+      drawSignalMarkers(series);
       watchLive(series);
     }
 
