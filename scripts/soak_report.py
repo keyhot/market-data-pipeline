@@ -64,6 +64,26 @@ def compute_uptime(
     }
 
 
+def compute_director_activity(events: list[dict], window_hours: float) -> dict:
+    """Count director actions (scene_switched / commentary_spoken) into per-hour
+    rates from the world_events log. Ignores non-director events. Suppressed
+    lines are in-process only and never reach the log, so they aren't reported."""
+    lines = [e for e in events if e["event_type"] == "commentary_spoken"]
+    switches = [e for e in events if e["event_type"] == "scene_switched"]
+    by_character: dict[str, int] = {}
+    for event in lines:
+        who = (event.get("payload") or {}).get("character", "unknown")
+        by_character[who] = by_character.get(who, 0) + 1
+    hours = window_hours or 1.0
+    return {
+        "lines": len(lines),
+        "switches": len(switches),
+        "lines_per_hour": round(len(lines) / hours, 2),
+        "switches_per_hour": round(len(switches) / hours, 2),
+        "by_character": by_character,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stream soak report")
     parser.add_argument("--hours", type=float, default=24.0)
@@ -73,12 +93,10 @@ def main() -> None:
 
     window_end = datetime.now(timezone.utc)
     window_start = window_end - timedelta(hours=args.hours)
-    events = [
-        e
-        for e in get_world_events(limit=10_000, since=window_start)
-        if e["event_type"].startswith("stream_")
-    ]
-    report = compute_uptime(events, window_start, window_end)
+    all_events = get_world_events(limit=10_000, since=window_start)
+    stream_events = [e for e in all_events if e["event_type"].startswith("stream_")]
+    report = compute_uptime(stream_events, window_start, window_end)
+    activity = compute_director_activity(all_events, args.hours)
     print(f"# Soak report — {window_end.date()}\n")
     print(f"- Window: {window_start.isoformat()} → {window_end.isoformat()}")
     print(
@@ -90,9 +108,17 @@ def main() -> None:
         print("| start | duration (s) | reason |")
         print("|---|---|---|")
         for o in report["outages"]:
-            print(
-                f"| {o['start']} | {o['duration_seconds']:.0f} | {o['reason']} |"
-            )
+            print(f"| {o['start']} | {o['duration_seconds']:.0f} | {o['reason']} |")
+    print("\n## Director activity\n")
+    print(f"- Lines spoken: {activity['lines']} ({activity['lines_per_hour']}/h)")
+    print(
+        f"- Scene switches: {activity['switches']} ({activity['switches_per_hour']}/h)"
+    )
+    if activity["by_character"]:
+        print("\n| character | lines |")
+        print("|---|---|")
+        for who, count in sorted(activity["by_character"].items()):
+            print(f"| {who} | {count} |")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from scripts.soak_report import compute_uptime
+from scripts.soak_report import compute_director_activity, compute_uptime
 
 
 def _ev(minute, event_type, payload=None):
@@ -75,3 +75,23 @@ def test_degraded_event_does_not_hide_a_real_outage_that_follows():
     assert result["uptime_pct"] == 80.0
     reasons = {o["reason"] for o in result["outages"]}
     assert reasons == {"dropped_frames", "obs_unreachable"}
+
+
+def test_director_activity_counts_and_rates():
+    events = [
+        _ev(5, "scene_switched", {"scene": "world-focus"}),
+        _ev(10, "commentary_spoken", {"character": "optimist", "text": "!"}),
+        _ev(20, "commentary_spoken", {"character": "optimist", "text": "!!"}),
+        _ev(30, "commentary_spoken", {"character": "anxious", "text": "?"}),
+    ]
+    a = compute_director_activity(events, window_hours=1.0)
+    assert a["switches"] == 1 and a["lines"] == 3
+    assert a["lines_per_hour"] == 3.0 and a["switches_per_hour"] == 1.0
+    assert a["by_character"] == {"optimist": 2, "anxious": 1}
+
+
+def test_director_activity_ignores_non_director_events():
+    events = [_ev(1, "big_move", {}), _ev(2, "stream_started", {})]
+    a = compute_director_activity(events, window_hours=2.0)
+    assert a["lines"] == 0 and a["switches"] == 0
+    assert a["by_character"] == {}
