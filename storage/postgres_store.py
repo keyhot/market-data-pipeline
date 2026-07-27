@@ -277,13 +277,14 @@ def get_all_signal_accuracy(symbols: list[str], interval: str = "1m") -> list[di
 
 
 def get_model_accuracy(
-    symbols: list[str], interval: str = "1m", window: int = 100
+    symbols: list[str], interval: str = "1m", window: int = 50
 ) -> dict:
     """The model's combined track record over the last `window` resolved signals
-    **per symbol**, summed — the same last-N-resolved basis as the overlay strip's
-    get_signal_accuracy, so the /world room and the strips show ONE honest number
-    (KI-012: the room previously folded signal_resolved events over a mixed
-    event-window, disagreeing with the strips)."""
+    **per symbol**, summed. `window` defaults to 50 to match the overlay strip's
+    get_signal_accuracy default, so the /world room's per-symbol numbers are
+    IDENTICAL to the strips and the combined is a clean aggregate — one honest
+    record on screen (KI-012: the room previously folded signal_resolved events
+    over a mixed event-window, showing a third, disagreeing number)."""
     per = {s.upper(): get_signal_accuracy(s, interval, window) for s in symbols}
     wins = sum(a["wins"] for a in per.values())
     resolved = sum(a["resolved"] for a in per.values())

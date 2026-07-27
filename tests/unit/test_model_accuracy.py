@@ -6,16 +6,16 @@ resolved signals PER SYMBOL, summed, matching the strip's get_signal_accuracy.""
 import storage.postgres_store as ps
 
 
-def test_model_accuracy_is_per_symbol_sum(monkeypatch):
+def test_model_accuracy_is_per_symbol_sum_at_the_strip_window(monkeypatch):
     fake = {"BTCUSDT": {"resolved": 50, "wins": 28, "hit_rate": 0.56},
             "ETHUSDT": {"resolved": 50, "wins": 25, "hit_rate": 0.50}}
     monkeypatch.setattr(ps, "get_signal_accuracy",
-                        lambda s, interval="1m", window=100: fake[s])
-    acc = ps.get_model_accuracy(["BTCUSDT", "ETHUSDT"], window=100)
+                        lambda s, interval="1m", window=50: fake[s])
+    acc = ps.get_model_accuracy(["BTCUSDT", "ETHUSDT"])   # default window
+    assert acc["window"] == 50          # must match the strip's default (KI-012)
     assert acc["resolved"] == 100
     assert acc["wins"] == 53 and acc["losses"] == 47
     assert acc["hit_rate"] == 0.53
-    assert acc["window"] == 100
     assert set(acc["per_symbol"]) == {"BTCUSDT", "ETHUSDT"}
 
 
