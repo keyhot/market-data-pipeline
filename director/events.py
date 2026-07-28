@@ -55,22 +55,62 @@ def build_commentary_spoken(
 def record_director_events(events, spool_path=None) -> None:
     """Append director events; flush any spooled backlog first. On DB failure,
     spool the events to JSONL so a Postgres outage never loses them. Safe to
-    call with an empty list — it just drains the backlog (flush-on-tick)."""
+    call with an empty list — it just drains the backlog (flush-on-tick).
+
+    KI-011 — the flush and the fresh-event append are isolated: a poison row
+    in the spool cannot block a fresh event from being persisted on the same
+    tick (the original single-try bundling did exactly that, and the warning
+    it logged mislabeled every failure as a Postgres outage)."""
     spool_path = spool_path or _default_spool()
     events = events or []
+
+    # Flush the spool first, isolated. A flush failure must NEVER block the
+    # fresh-event append — that was the whole KI-011 bug. The exception type
+    # is the diagnostic; "Postgres unreachable" was misleading for any failure.
+    flushed = _flush_spool_isolated(spool_path)
+    if flushed:
+        logger.info("Director event spool flushed", extra={"count": flushed})
+
+    if not events:
+        return
+
     try:
-        flushed = _flush_spool(spool_path)
-        if events:
-            append_world_events(events)
-        if flushed:
-            logger.info("Director event spool flushed", extra={"count": flushed})
+        append_world_events(events)
     except Exception:
-        if events:
-            _spool(events, spool_path)
-            logger.warning(
-                "Postgres unreachable — director events spooled",
-                extra={"count": len(events), "spool": str(spool_path)},
-            )
+        _spool(events, spool_path)
+        logger.warning(
+            "director_event_append_failed",
+            extra={
+                "event_types": [e["event_type"] for e in events],
+                "error_type": type(_last_exc()),
+                "error_message": str(_last_exc()),
+                "spool": str(spool_path),
+            },
+            exc_info=True,
+        )
+
+
+def _flush_spool_isolated(spool_path: Path) -> int:
+    """Try to drain the spool; on any failure, log the truth and return 0.
+    Never raises — the caller relies on this to NOT block the fresh append."""
+    try:
+        return _flush_spool(spool_path)
+    except Exception:
+        logger.warning(
+            "director_event_spool_flush_failed",
+            extra={
+                "error_type": type(_last_exc()),
+                "error_message": str(_last_exc()),
+                "spool": str(spool_path),
+            },
+            exc_info=True,
+        )
+        return 0
+
+
+def _last_exc() -> BaseException:
+    import sys
+    return sys.exc_info()[1] or RuntimeError("unknown")
 
 
 def _flush_spool(spool_path: Path) -> int:
