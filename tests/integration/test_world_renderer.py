@@ -50,12 +50,24 @@ def test_endpoint_state_matches_the_pure_projection():
     the un-enriched projection would fail on a difference that isn't leaked
     API-layer logic.
     """
-    with patch("api.main.get_world_events", return_value=_log()):
+    # KI-012: the endpoint additionally attaches `model.accuracy` from the
+    # signals table — a DB-derived enrichment the pure event projection cannot
+    # produce (it comes from resolved signals, not the append-only event fold).
+    # Patch it to a sentinel so this test stays Postgres-free (per the module
+    # docstring) and deterministic: we assert the endpoint attached exactly what
+    # `get_model_accuracy` returned, then exclude it from the equality. The
+    # invariant this test guards — that no *event-projection* logic leaks into
+    # the API layer — still holds.
+    accuracy = {"window": 50, "resolved": 0, "wins": 0, "losses": 0,
+                "hit_rate": None, "per_symbol": {}}
+    with patch("api.main.get_world_events", return_value=_log()), \
+            patch("api.main.get_model_accuracy", return_value=accuracy):
         served = client.get("/world/state").json()["data"]
     direct = attach_reactions(project_state(_log()))
 
     served.pop("generated_at")
     direct.pop("generated_at")
+    assert served["model"].pop("accuracy", None) == accuracy
     for key in ("event_count", "symbols", "model", "stream", "history"):
         assert served[key] == direct[key]
 
