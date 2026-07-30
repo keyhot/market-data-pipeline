@@ -1,225 +1,220 @@
-# Market Data Pipeline
+# Bitcoin Room
 
-**Automated market data ingestion, processing, and visualization platform.**  
-Designed with modular architecture to allow future microservices and streaming integration.
+A 24/7 livestream where real Bitcoin and Ethereum market data drives a small, persistent
+world. Two inhabitants share a room and watch the candles. When the market moves, the room
+notices. When it doesn't, the room doesn't either — you can leave it on the way you'd leave
+a fireplace on.
 
-## Quickstart
+The inhabitant whose job is to predict the market is, right now, losing. Its walk-forward
+backtest returned **−39.8%** against **+1%** buy-and-hold, and after costs it loses money.
+That number is published deliberately and is not quietly retuned. The goal is a model that
+wins; this is version zero, and version zero's record stays in the log forever either way.
 
-One command boots the whole stack — Postgres, API, and the scheduler/ingester
-(copy `.env.example` to `.env` first):
+## What you're looking at
 
-```bash
-docker compose up -d --build
+A persistent room, rendered in PixiJS, with two inhabitants:
+
+- **MODEL** — a LightGBM classifier that issues directional calls. Every prediction is
+  written down *before* the outcome is known and resolved afterwards.
+- **TRADER** — an independent freqtrade dry-run sidecar that takes its own positions. It is
+  not an executor of MODEL's calls, so when the two disagree the disagreement is real. It's
+  an opt-in service; when it isn't running, TRADER renders as dormant and the room is still
+  complete.
+
+Around them: a candlestick chart, a live signal strip, and a scrolling world-event feed.
+
+The register is a calm baseline that swells when the market does, then decays back. A
+director picks scenes and writes commentary from deterministic phrase banks keyed to event
+severity — **no LLM, no API cost**. The phrases match the events, the events come from the
+data, and the data is real.
+
+## Why the track record is public
+
+Most "AI trading" content is survivorship: the profitable runs get shown and the losing ones
+get quietly retrained into something else. You never see the version that lost, so you can't
+tell whether anything was actually learned.
+
+Here the opposite is enforced structurally. Predictions are recorded before their outcome and
+resolved against realized bars afterwards. Wins and losses both land permanently in
+`world_events`, which is **append-only** — application code never updates or deletes a row
+([`docs/world-memory.md`](docs/world-memory.md)). Nothing resets between streams.
+
+**The goal is a model that makes money.** The append-only log isn't a commitment to keep
+losing — it's what makes getting better mean something. Every version is measured against a
+record that can't be quietly edited afterwards, so when a later model does beat costs, the
+improvement is a verifiable step from a published starting point rather than a claim. And if
+a change makes things worse, that's in the log too.
+
+The room reacts to whatever the record currently says. Right now that means a model in a
+losing stretch, and the world is honest about it.
+
+Downtime is treated the same way. When the stream drops, the watchdog writes the outage
+into the log rather than erasing it — and it distinguishes *degraded* from *down*, so the
+uptime report can't overstate itself.
+
+## Architecture
+
+```
+  Binance websocket (1m klines)  +  Yahoo Finance (equities)
+                    │
+                    ▼
+            Postgres  ──►  price_bars, signals, news, corporate events
+                    │
+                    ▼
+            Salience engine        deterministic rules: volatility spikes,
+                    │              gaps, streaks, volume anomalies
+                    ▼
+         world_events (append-only)  ◄── the world's memory
+                    │
+      ┌─────────────┼──────────────────────┬─────────────────────┐
+      ▼             ▼                      ▼                     ▼
+  LightGBM     project_state()         Director            Watchdog
+  prediction   (pure fold)          scene + phrase       outages → events
+      │             │                      │                     │
+      └─► resolver ─┘                      ▼                     │
+          win/loss                  PixiJS room  /world          │
+                                    overlays, charts             │
+                                           │                     │
+                                           ▼                     │
+                                  OBS (driven over websocket) ◄──┘
+                                           │
+                                           ▼
+                                        stream
 ```
 
-The API lands on `http://localhost:8000` (see `API_PORT`), the scheduler
-container ingests the watchlist, and the websocket ingester streams live
-crypto 1m bars into Postgres. `./scripts/smoke_test.sh` boots and verifies
-the stack end to end.
+`world_events` is the single source of truth. Everything the viewer sees is a projection
+over it — `project_state()` is a pure fold whose determinism and chunk-invariance are
+property-tested, so refreshing the page restores the same world rather than a similar one.
 
-For local development outside Docker:
+**Adding a data provider** means implementing `MarketDataProvider` from
+`ingestion/providers.py` and injecting it into the fetchers. Binance slotted in beside
+Yahoo Finance without touching the API or storage layers.
+
+## Running it
+
+Copy `.env.example` to `.env` first, then:
+
+```bash
+docker compose up -d --build        # Postgres + API + scheduler/ingester
+./scripts/smoke_test.sh             # boots the stack and verifies it end to end
+```
+
+The API lands on `http://localhost:8000`. Open `/world` for the room, `/charts` for the
+candlestick grid, `/dashboard` for the watchlist.
+
+For development outside Docker:
 
 ```bash
 poetry install
-uvicorn api.main:app --reload
+poetry run uvicorn api.main:app --reload
 ```
 
-## Endpoints
-
-| Endpoint | Description |
-|---|---|
-| `GET /health` | Liveness check |
-| `GET /metrics` | Per-route request counts, latency, and status codes |
-| `GET /ticker/{symbol}/{range}` | Fetch OHLCV history for one symbol (e.g. `AAPL/5d`) |
-| `GET /tickers/{range}?symbols=A,B,C` | Concurrent batch fetch for up to 10 symbols |
-| `GET /events/{symbol}/{type}` | Dividends, splits, or actions, with optional `start`/`end` filters |
-| `GET /news/{symbol}` | Latest news with `limit` and `since` filters |
-| `GET /bars/{symbol}` | Stored price bars from Postgres, oldest first (`interval`, `limit` params) |
-| `GET /stream/bars/{symbol}` | Server-Sent Events: bars stored after connect (`interval`, `poll_seconds`) |
-| `GET /stored/events/{symbol}/{type}` | Stored corporate events from Postgres (`limit` 1-1000; `actions` returns all types) |
-| `GET /stored/news/{symbol}` | Stored news from Postgres (`limit` 1-100) |
-| `GET /world/events` | Stored world events (`limit`, `event_type`, `symbol`, `since`) |
-| `GET /signals/{symbol}` | Model signals with outcomes + rolling accuracy |
-| `GET /stream/world/events` | Server-Sent Events: world events stored after connect |
-| `GET /chart/{symbol}` | HTML candlestick page for one symbol |
-| `GET /dashboard` | HTML watchlist table with latest closes, linking to each chart |
-| `GET /overlay/signals` | OBS-ready live signal strip (predictions, win/loss dots, hit rate) |
-| `GET /overlay/events` | OBS-ready live world-event feed |
-| `GET /world/state` | `world_events` folded into current world state (moods, tiers, reactions) |
-| `GET /world` | The Living World room: PixiJS canvas, SSE-updated (`/stream/world/events`) |
-
-Fetched data is cached in memory (TTL via `CACHE_TTL_SECONDS`) and persisted as
-timestamped CSVs under `data/raw/`.
-
-## Continuous ingestion
-
-Set `SCHEDULER_ENABLED=true` to run background fetches for everything in
-`config/watchlist.yaml` on an interval. Skip-logic seeds last-success times
-from the `ingestion_runs` table in Postgres, so restarts don't re-fetch fresh
-data. Scheduler health shows up on `/health` and `/metrics`.
-
-Watchlist entries take an optional `market: crypto` (default `equity`).
-Equity jobs skip outside regular US market hours (Mon–Fri 9:30–16:00 ET);
-crypto jobs run 24/7 against Binance.
-
-## Live crypto data (Sprint 8)
-
-Crypto symbols are served by `ingestion/binance_provider.py` (public Binance
-REST, no API key) behind the same `MarketDataProvider` abstraction. With
-`WS_INGEST_ENABLED=true`, `ingestion/binance_ws.py` streams Binance 1m klines
-for the watchlist's crypto symbols and writes each **closed** candle into
-Postgres (`interval='1m'`). On every (re)connect it REST-backfills the gap
-since the last stored 1m bar, so restarts never lose candles — all writes are
-idempotent upserts. TimescaleDB was evaluated and deferred with explicit
-adoption triggers (project Obsidian vault → `Spikes/timescale-spike.md`).
-
-## Postgres (L2 storage — primary as of Sprint 7)
-
-`docker compose up -d` starts a local Postgres 16 (copy `.env.example` to
-`.env` first) and applies `db/init.sql` on first boot. The schema design
-lives in `docs/postgres-schema-spike.md`.
-
-Writes go through the idempotent upserts in `storage/postgres_store.py`
-(connection pool in `storage/db.py`, configured via `DATABASE_URL`). Replay
-the existing CSV snapshots into Postgres with:
-
-```bash
-python scripts/backfill_postgres.py
-```
-
-The script is rerunnable — a second run changes no row counts. Before
-flipping storage defaults in a new environment, verify the two stores agree:
-
-```bash
-python scripts/check_parity.py
-```
-
-Postgres is now the source of truth: every uncached fetch (API endpoints and
-scheduler jobs) writes to Postgres first, and a write failure raises a 503
-(`StorageWriteError`) rather than being swallowed. CSV snapshots are a
-separate, independently toggleable copy. `/health` reports Postgres
-connectivity, `/metrics` exposes write counts (`postgres_writes`), scheduler
-runs are recorded in the `ingestion_runs` table, and `GET /bars/{symbol}`
-serves the stored bars.
-
-| Env var | Default | Meaning |
-| --- | --- | --- |
-| `POSTGRES_WRITE_ENABLED` | on | Postgres is the source of truth; uncached fetches fail with 503 if the write fails. Set to `0` only for offline dev. |
-| `CSV_WRITE_ENABLED` | on | Also snapshot fetches to `data/raw/*.csv`. Set to `0` to run Postgres-only. |
-| `SCHEDULER_ENABLED` | off | Background watchlist ingestion. Skip-logic now reads the `ingestion_runs` table (the old `data/scheduler_state.json` is gone). |
-| `WS_INGEST_ENABLED` | off | Binance websocket 1m-kline ingester for the watchlist's crypto symbols. |
-
-## First charts (L3)
-
-`GET /chart/{symbol}` renders a candlestick page for one symbol and
-`GET /dashboard` lists the watchlist with latest closes, linking to each
-chart. Both are server-rendered HTML from `api/templates/`, fed by the
-existing `/bars/{symbol}` JSON endpoint. Charts update live: the page
-subscribes to `GET /stream/bars/{symbol}` (SSE) and appends bars as they are
-stored — try `GET /chart/BTCUSDT?interval=1m` with the websocket ingester
-running. Stack choice and constraints (CDN script, SRI-pinned version,
-attribution requirement) are in the project Obsidian vault (`Docs/charting-stack-decision.md`).
-
-## Model plane (Sprint 9)
-
-The first trade predictor: shared feature pipeline (`model/features.py`,
-no-lookahead guaranteed by tests), LightGBM direction baseline
-(`python -m model.train --symbol BTCUSDT --interval 1m`), walk-forward
-backtest with fees + slippage (`python -m model.backtest ...`), and one-shot
-inference writing idempotent rows to the `signals` table
-(`python -m model.predict ...`). Design rules and the honest (currently
-losing) backtest numbers: the project Obsidian vault (`Docs/model-plane.md`)
-and `docs/freqai-takeaways.md`.
-
-## The accountability loop (Sprint 10)
-
-Every prediction becomes a public, resolved world event: the scheduler runs
-model inference on a cadence (watchlist `predict: true`), the resolver
-scores each signal against realized bars (`world/resolver.py`), and
-outcomes land as `signal_resolved` world events — confident wrong calls
-score highest, and losing streaks trigger `model_losing_streak` events.
-`/overlay/signals` and `/overlay/events` render it all live, OBS-ready.
-Full design: project Obsidian vault → `Docs/accountability-loop.md`.
-
-## World memory (Sprint 9)
-
-The Living World's memory started recording: deterministic salience rules
-(`world/salience.py` — volatility spikes, gaps, streaks, volume anomalies)
-turn the live bar stream into append-only `world_events` rows via scheduler
-jobs (flag `SALIENCE_ENABLED`, default on). Nothing ever updates or deletes
-a world event — see `docs/world-memory.md`. Nightly backups:
-`scripts/backup_postgres.sh` (cron 03:10, 14-day retention, restore drill in
-the script header).
-
-## Streaming (Sprint 11)
-
-The stream is code-controlled from day one. Cold start to live:
-
-```bash
-docker compose up -d                                  # the pages ARE the scene
-poetry run python scripts/stream_ctl.py build         # scene from SCENE_SPEC (idempotent)
-poetry run python scripts/stream_ctl.py configure-output  # RTMP from OBS_STREAM_KEY in .env
-poetry run python scripts/stream_ctl.py start         # records a stream_started world event
-poetry run python scripts/stream_watchdog.py          # or the systemd user service
-```
-
-Layout constants: `scripts/stream_scene.py`. The watchdog auto-recovers OBS and
-the stream (backoff, dropped-frame detection), and every lifecycle transition —
-`stream_started` / `stream_stopped` / `stream_dropped` — is an append-only world
-event (JSONL spool when Postgres is down). Soak measurement:
-`scripts/soak_report.py`. Full procedure: project Obsidian vault → `Docs/streaming-runbook.md`.
-
-## World renderer (Sprint 12)
-
-`GET /world/state` folds the `world_events` log into current world state
-(per-symbol mood, model win/loss record, the trader sidecar, history) via a
-pure projection (`world/state.py`, `world/reactions.py`); `GET /world` is the
-PixiJS Browser Source page that draws it, updated live over
-`GET /stream/world/events` (SSE). Give the room a past with:
+Give the room a past — replays the same salience rules over historical klines, flagging
+each event `backfilled: true` so learned history stays distinct from witnessed history:
 
 ```bash
 poetry run python scripts/backfill_world_events.py --days 60
 ```
 
-which replays the same salience rules over historical klines, flagging every
-event `backfilled: true` so learned history stays distinct from witnessed
-history. Full design and known limitations: project Obsidian vault → `Docs/world-renderer.md`.
-
-## Director & personalities (Sprint 13)
-
-The stream directs itself. The `director/` package is a pure `tick()` state
-machine + thin runner (same shape as the watchdog — all logic tested with no OBS,
-clock, or DB), shipped as an opt-in `director` compose service (`DIRECTOR_ENABLED`):
-
-- **Salience-driven scene switching** over three scenes (`chart-focus` home /
-  `world-focus` / `event-focus`) via `switch_scene` on the `stream_ctl` seam.
-  `choose_scene` is keyed on severity **tier** with a mutation-checked minimum
-  **dwell** so a burst can't flap the scene.
-- **Deterministic phrase-bank commentary** — per character, per event, per tier
-  (`director/phrases.py`), RNG-injected, anti-repetition tracked, numbers quoted
-  straight from the event payload. **No LLM, no API cost** (deferral + economics:
-  vault `Spikes/llm-commentary-spike.md`).
-- **Personalities as threshold policies** (optimist / statistician / anxious):
-  same event stream, different reaction tiers and `reacts_to` sets.
-- **Local Piper TTS**, one voice per personality, via an injected subprocess
-  runner — degrades to silence (and a metric) if Piper fails.
-- The director's own actions are append-only world events: **`scene_switched`**
-  and **`commentary_spoken`** (registered in `KNOWN_EVENT_TYPES` + all reaction
-  registries, spooled to JSONL when Postgres is down). `soak_report.py` reports
-  director activity alongside uptime.
-- **Safety rails / the brake:** per-minute switch + line budgets (mutation-checked)
-  and a `DIRECTOR_MUTED=1` global mute — no redeploy needed.
-
-A shared visual identity (`world/visuals.py`) gives `/world` and both overlays one
-palette and a monotonic calm→dramatic **tier ramp** (injected via
-`_render_template`), so live events *swell* on the SSE path and decay back to calm.
-Full design: project Obsidian vault → `Docs/director.md`.
-
-## Tests
+### The model
 
 ```bash
-pytest
+python -m model.train    --symbol BTCUSDT --interval 1m   # LightGBM baseline
+python -m model.backtest --symbol BTCUSDT --interval 1m   # walk-forward, fees + slippage
+python -m model.predict  --symbol BTCUSDT --interval 1m   # one-shot signal write
 ```
 
-Integration tests in `tests/integration/` need the docker-compose Postgres
-and auto-skip when it's unreachable.
+The feature pipeline is shared between training and inference and is property-tested for
+no-lookahead. The backtest applies a purge gap and real costs, and the test suite includes
+an oracle leak detector.
+
+### The stream
+
+```bash
+poetry run python scripts/stream_ctl.py build              # scene from SCENE_SPEC, idempotent
+poetry run python scripts/stream_ctl.py configure-output   # RTMP from OBS_STREAM_KEY
+poetry run python scripts/stream_ctl.py start              # records a stream_started event
+poetry run python scripts/stream_watchdog.py               # or the systemd unit
+```
+
+Layout constants live in `scripts/stream_scene.py`; every source is a browser source, so
+**the pages are the scene**. `scripts/soak_report.py` computes uptime from the recorded
+events.
+
+## Endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /health` | Liveness, including Postgres connectivity |
+| `GET /metrics` | Per-route request counts, latency, status codes, write counters |
+| `GET /ticker/{symbol}/{range}` | OHLCV history for one symbol |
+| `GET /tickers/{range}?symbols=A,B,C` | Concurrent batch fetch, up to 10 symbols |
+| `GET /events/{symbol}/{type}` | Dividends, splits, actions |
+| `GET /news/{symbol}` | Latest news |
+| `GET /bars/{symbol}` | Stored price bars from Postgres |
+| `GET /stream/bars/{symbol}` | SSE: bars stored after connect |
+| `GET /stored/events/{symbol}/{type}`, `GET /stored/news/{symbol}` | Stored events and news |
+| `GET /world/events` | Stored world events (`limit`, `event_type`, `symbol`, `since`) |
+| `GET /world/state` | The log folded into current state — moods, tiers, reactions |
+| `GET /stream/world/events` | SSE: world events stored after connect |
+| `GET /signals/{symbol}` | Model signals with outcomes and rolling accuracy |
+| `GET /world` | The room: PixiJS canvas, SSE-updated |
+| `GET /chart/{symbol}`, `GET /charts`, `GET /dashboard` | Candlestick pages and watchlist |
+| `GET /overlay/signals`, `GET /overlay/events` | OBS browser sources |
+
+## Configuration
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `POSTGRES_WRITE_ENABLED` | on | Postgres is the source of truth; an uncached fetch fails with 503 if the write fails. Set `0` only for offline dev. |
+| `CSV_WRITE_ENABLED` | on | Also snapshot fetches to `data/raw/*.csv`. |
+| `SCHEDULER_ENABLED` | off | Background watchlist ingestion; skip-logic reads the `ingestion_runs` table. |
+| `WS_INGEST_ENABLED` | off | Binance websocket 1m-kline ingester for crypto symbols. |
+| `SALIENCE_ENABLED` | on | Turn the bar stream into world events. |
+| `DIRECTOR_ENABLED` | off | Scene switching and commentary. |
+| `DIRECTOR_MUTED` | off | Global mute — suppressed lines are counted, never logged. |
+
+Watchlist entries take an optional `market: crypto` (default `equity`). Equity jobs skip
+outside Mon–Fri 9:30–16:00 ET; crypto jobs run 24/7. Crypto uses public Binance REST and
+websocket endpoints — no API key. Every write is an idempotent upsert, and the ingester
+REST-backfills the gap since the last stored bar on each reconnect, so restarts never lose
+candles.
+
+## Testing
+
+```bash
+poetry run pytest
+```
+
+439 tests, written test-first, including property-based tests on the state projection and
+mutation checks on the watchdog backoff and the director's rate limits. **No test touches
+the network** — providers, the OBS client, and the store are all injected seams. Integration
+tests under `tests/integration/` need the compose Postgres and auto-skip without it.
+
+> Use `poetry run pytest`, not bare `pytest` — the latter resolves to the Anaconda base
+> environment and is missing dependencies.
+
+## What's not done yet
+
+Being candid:
+
+- **The 24-hour soak has not run.** The stream has gone live and the watchdog has recovered
+  real failures, but the system has never been left unattended for a full day. Every uptime
+  claim here is a design property, not a measured record.
+- **The stream is silent.** Piper TTS is wired in behind an injected runner and degrades to
+  silence when the binary is absent — which it currently is. No music bed either.
+- **There is no clip pipeline.** The world produces small moments worth cutting — a streak
+  resolving, a volatility spike decaying — and nothing turns them into shorts.
+- **The model doesn't win yet.** In walk-forward backtest, version zero called direction
+  correctly 55.6% of the time and still returned −39.8%: round-trip costs of roughly 0.22%
+  exceed the per-trade edge at 15-bar holds on 1-minute data. The live resolved record has
+  so far run below the backtest. Trading less often — a higher threshold, a longer horizon,
+  or a coarser interval — is the first lever; a model that clears its own fees is on the
+  roadmap, and the starting point is published so the progress is checkable.
+
+## Where the design docs live
+
+Planning, design records, and spikes live in an Obsidian vault outside this repo. Three
+code-coupled docs stay here: [`docs/world-memory.md`](docs/world-memory.md) (the append-only
+contract), [`docs/postgres-schema-spike.md`](docs/postgres-schema-spike.md), and
+[`docs/freqai-takeaways.md`](docs/freqai-takeaways.md).
