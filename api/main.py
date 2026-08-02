@@ -460,6 +460,7 @@ def world_state(limit: int = Query(500, ge=1, le=2000)):
     # KI-012: the model's on-screen accuracy comes from the SAME last-N-resolved
     # basis as the overlay strips (not the event-window fold), so the room and the
     # strips agree. Enrichment — never let it break the state.
+    predict_symbols: list[str] = []
     try:
         predict_symbols = [
             spec.symbol.upper()
@@ -469,6 +470,20 @@ def world_state(limit: int = Query(500, ge=1, le=2000)):
         state["model"]["accuracy"] = get_model_accuracy(predict_symbols)
     except Exception:
         logger.warning("Could not attach model accuracy to /world/state")
+    # B9: the always-on now-band needs a price. It rides along here rather than
+    # the page fetching /bars per symbol — every extra request is another
+    # long-lived connection in a browser process that already exhausted its
+    # per-origin limit once (KI-013). Enrichment: a failure costs one line in
+    # the band, never the room.
+    prices: dict[str, float] = {}
+    try:
+        for symbol in predict_symbols:
+            bars = get_price_bars(symbol, interval="1m", limit=1)
+            if bars:
+                prices[symbol] = bars[-1]["close"]
+    except Exception:
+        logger.warning("Could not attach prices to /world/state")
+    state["prices"] = prices
     return ApiResponse(status=200, data=state)
 
 

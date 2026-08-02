@@ -71,3 +71,34 @@ def test_world_state_is_stable_across_identical_calls():
     first.pop("generated_at")
     second.pop("generated_at")
     assert first == second
+
+
+def test_world_state_carries_latest_prices_for_the_now_band(monkeypatch):
+    """B9: the always-on band shows a price, and the room already fetches
+    /world/state — carrying prices here keeps it to ONE request rather than a
+    second per symbol. Each of those would be another long-lived connection in
+    a browser process that already hit its per-origin limit once (KI-013)."""
+    import api.main as main
+
+    monkeypatch.setattr(
+        main, "get_price_bars",
+        lambda symbol, interval="1m", limit=1: [{"close": 118432.5}],
+    )
+    with patch("api.main.get_world_events", return_value=[_event(1)]):
+        body = client.get("/world/state").json()
+    assert body["data"]["prices"]["BTCUSDT"] == 118432.5
+
+
+def test_world_state_survives_a_price_lookup_failure(monkeypatch):
+    """Enrichment must never break the room: no prices is a missing line in the
+    band, not a 503 and a dead stream."""
+    import api.main as main
+
+    def boom(symbol, interval="1m", limit=1):
+        raise RuntimeError("pg down")
+
+    monkeypatch.setattr(main, "get_price_bars", boom)
+    with patch("api.main.get_world_events", return_value=[_event(1)]):
+        response = client.get("/world/state")
+    assert response.status_code == 200
+    assert response.json()["data"]["prices"] == {}

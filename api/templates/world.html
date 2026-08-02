@@ -36,6 +36,21 @@
     .bubble .who { display: block; font-size: 0.72rem; letter-spacing: 0.08em;
                    text-transform: uppercase; margin-bottom: 0.15rem; }
     .bubble .said { color: var(--fg); }
+
+    /* B9 — the always-on band. A newcomer arriving mid-calm sees no events at
+       all, so the room has to answer "what is this and how is it going?"
+       without waiting for one to fire. Bottom-pinned, quiet, permanent. */
+    #nowband { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+               display: flex; align-items: baseline; gap: 1.75rem;
+               padding: 0.5rem 1.25rem;
+               background: linear-gradient(to top, rgba(19,23,34,0.92), rgba(19,23,34,0));
+               font-size: 0.95rem; pointer-events: none; }
+    #nowband .sym { color: var(--fg); font-weight: 600; letter-spacing: 0.02em; }
+    #nowband .px { color: var(--fg); font-variant-numeric: tabular-nums; }
+    #nowband .mood { color: var(--neutral); }
+    #nowband .record { margin-left: auto; color: var(--neutral);
+                       font-variant-numeric: tabular-nums; }
+    #nowband .record b { color: var(--fg); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -43,6 +58,7 @@
     trades live, and the world remembers when it's wrong</span></div>
   <div id="room"></div>
   <div id="speech"></div>
+  <div id="nowband"></div>
   <div id="fallback">Waking the world…</div>
   <script src="https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js"
           integrity="sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq"
@@ -176,8 +192,11 @@
       }
 
       const h = state.history ?? {};
-      layers.props.addChild(label(historyLine(h), 24, app.screen.height - 40, 14,
+      // Sits above the now-band (B9), which owns the bottom strip of the page.
+      layers.props.addChild(label(historyLine(h), 24, app.screen.height - 86, 14,
         0x787b86));
+
+      renderNowBand(state);
     }
 
     function historyLine(h) {
@@ -195,6 +214,56 @@
       }
       if (h.outages) parts.push(`${h.outages} outages`);
       return parts.join(" · ");         /* set via .text: payloads are data */
+    }
+
+    // --- B9: the always-on now-band ---------------------------------------
+    // Everything a newcomer needs in one glance, with no event required:
+    // what's being traded, at what price, how the market feels, and — the
+    // point of the whole project — how the model is actually doing.
+    const nowband = document.getElementById("nowband");
+
+    function formatPrice(value) {
+      if (value == null) return "—";
+      // Crypto spans 4 orders of magnitude; keep it readable at both ends.
+      const digits = value >= 1000 ? 0 : value >= 1 ? 2 : 6;
+      return value.toLocaleString("en-US", { minimumFractionDigits: digits,
+                                             maximumFractionDigits: digits });
+    }
+
+    function bandCell(className, text, tint) {
+      const span = document.createElement("span");
+      span.className = className;
+      span.textContent = text;          // payload data, never markup
+      if (tint) span.style.color = tint;
+      return span;
+    }
+
+    function renderNowBand(state) {
+      const prices = state.prices ?? {};
+      const symbols = state.symbols ?? {};
+      nowband.textContent = "";
+      for (const symbol of SYMBOLS) {
+        const group = document.createElement("span");
+        const mood = symbols[symbol]?.mood ?? "quiet";
+        group.appendChild(bandCell("sym", symbol.replace(/USDT$/, "")));
+        group.appendChild(document.createTextNode(" "));
+        group.appendChild(bandCell("px", formatPrice(prices[symbol])));
+        group.appendChild(document.createTextNode(" · "));
+        group.appendChild(bandCell("mood", mood, MOOD_COLOR[mood]));
+        nowband.appendChild(group);
+      }
+      // The honest record, on the same last-N basis as the strips (KI-012).
+      const acc = state.model?.accuracy ?? {};
+      const record = document.createElement("span");
+      record.className = "record";
+      const rate = acc.hit_rate == null
+        ? "—" : `${(acc.hit_rate * 100).toFixed(1)}%`;
+      record.appendChild(document.createTextNode("model "));
+      const bold = document.createElement("b");
+      bold.textContent = `${acc.wins ?? 0}W ${acc.losses ?? 0}L · ${rate}`;
+      record.appendChild(bold);
+      record.appendChild(document.createTextNode(` over last ${acc.window ?? 0}`));
+      nowband.appendChild(record);
     }
 
     // --- B5: on-screen commentary -----------------------------------------

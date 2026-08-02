@@ -92,3 +92,27 @@ def test_speech_bubble_text_is_set_as_textcontent():
     body = client.get("/world").text
     assert "innerHTML" not in body
     assert "textContent" in body
+
+
+# --- B9: always-on now-band (read the whole state in ~2s, no event needed) ---
+
+
+def test_now_band_is_present_and_always_on():
+    """A newcomer arriving during a calm stretch sees no events at all. The
+    band is the answer: price, the model's record, and a one-word mood, on
+    screen permanently rather than only when something fires."""
+    body = client.get("/world").text
+    assert 'id="nowband"' in body
+    assert "renderNowBand(" in body
+
+
+def test_now_band_reads_prices_and_accuracy_from_state():
+    body = client.get("/world").text
+    assert "state.prices" in body
+    assert "accuracy" in body
+
+
+def test_now_band_has_no_placeholder_or_markup_leak():
+    body = client.get("/world").text
+    assert not re.search(r"__[A-Z_]+__", body)
+    assert "innerHTML" not in body
