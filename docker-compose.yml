@@ -98,6 +98,40 @@ services:
       api:
         condition: service_healthy
 
+  broadcast:
+    build: .
+    container_name: market-data-broadcast
+    restart: unless-stopped
+    # YouTube broadcast autonomy (Sprint 14). Opt-in, like the director:
+    # `docker compose --profile broadcast up`. Host-run is the primary path
+    # (stream-broadcast.service) since it also probes OBS on the host; this
+    # profile exists so the manager can run wherever the rest of the stack does.
+    # Fail-closed: with no YOUTUBE_OAUTH_* it exits 2 and restart brings it back
+    # once the secret is present — it never boots half-configured.
+    profiles: ["broadcast"]
+    command: python broadcast/service.py
+    environment:
+      BROADCAST_ENABLED: ${BROADCAST_ENABLED:-1}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-market_data}@postgres:5432/${POSTGRES_DB:-market_data}
+      OBS_WS_URL: ${OBS_WS_URL:-ws://host.docker.internal:4455}
+      OBS_WS_PASSWORD: ${OBS_WS_PASSWORD:-}
+      BROADCAST_EVENT_SPOOL: /app/data/broadcast_events.spool.jsonl
+      # Empty defaults, never a repo-known value — same gate as freqtrade's.
+      YOUTUBE_OAUTH_CLIENT_ID: ${YOUTUBE_OAUTH_CLIENT_ID:-}
+      YOUTUBE_OAUTH_CLIENT_SECRET: ${YOUTUBE_OAUTH_CLIENT_SECRET:-}
+      YOUTUBE_OAUTH_REFRESH_TOKEN: ${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
+      BROADCAST_STREAM_TITLE: ${BROADCAST_STREAM_TITLE:-Market World}
+      BROADCAST_TITLE: ${BROADCAST_TITLE:-Market World — live}
+      BROADCAST_PRIVACY: ${BROADCAST_PRIVACY:-public}
+      BROADCAST_GRACE_SECONDS: ${BROADCAST_GRACE_SECONDS:-30}
+      BROADCAST_CREATE_BACKOFF_SECONDS: ${BROADCAST_CREATE_BACKOFF_SECONDS:-120}
+      BROADCAST_POLL_SECONDS: ${BROADCAST_POLL_SECONDS:-30}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      api:
+        condition: service_healthy
+
   freqtrade:
     image: freqtradeorg/freqtrade:stable
     container_name: market-data-freqtrade

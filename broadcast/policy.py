@@ -49,6 +49,12 @@ class BroadcastConfig:
 
     grace_seconds: int = 30
     create_backoff_seconds: int = 120
+    # `stream_title` must match the persistent ingest key's title in YouTube
+    # Studio — that's how the manager finds the stream to bind to, and reusing
+    # the existing key is what keeps the OBS side untouched.
+    stream_title: str = "Market World"
+    broadcast_title: str = "Market World — live"
+    privacy: str = "public"
 
 
 @dataclass
@@ -72,6 +78,32 @@ def _backoff_ok(state: BroadcastState, config: BroadcastConfig, now: datetime) -
     return now - state.last_create_at >= timedelta(
         seconds=config.create_backoff_seconds
     )
+
+
+def select_broadcast(broadcasts: list[dict], current_id: str | None) -> dict | None:
+    """Pick the one broadcast `tick` reasons about out of the account's list.
+
+    Order matters, and both rules exist to stop a specific failure:
+
+    1. **Ours by id, whatever its lifecycle.** Including `complete` — dropping
+       a completed broadcast here would hide the `broadcast_ended` transition,
+       and the uptime fold would then count it live to the end of the window,
+       overstating public uptime. An ending is never silently discarded.
+    2. **Otherwise the first healthy one.** A cold start must not adopt a
+       leftover `complete` broadcast: `tick` would read it as unhealthy and
+       create a replacement every backoff window, burning the daily quota the
+       backoff exists to protect.
+
+    Returns None when nothing is usable — `tick` then creates one.
+    """
+    if current_id is not None:
+        for broadcast in broadcasts:
+            if broadcast.get("id") == current_id:
+                return broadcast
+    for broadcast in broadcasts:
+        if broadcast.get("lifecycle") in _HEALTHY_LIFECYCLES:
+            return broadcast
+    return None
 
 
 def _stream_active(yt_state: dict) -> bool:
@@ -150,11 +182,16 @@ def tick(
             actions.append(
                 ("record", "broadcast_ended", {"broadcast_id": broadcast_id})
             )
-        # A fresh non-null lifecycle (after None) = just created. We emit
-        # this only when we *didn't* already ask the runner to create one
-        # this tick (i.e. YouTube already had a usable broadcast we hadn't
-        # seen before — uncommon but possible on first boot after A4).
-        elif state.current_lifecycle is None and healthy and broadcast_id is not None:
+        # A usable broadcast appearing where there wasn't one = just created.
+        # `complete` counts as "wasn't one" alongside None: after a broadcast
+        # ends, the state carries `complete`, and gating only on None would
+        # record broadcast_created exactly once in the manager's lifetime —
+        # every self-heal after the first would go unrecorded.
+        elif (
+            state.current_lifecycle in (None, "complete")
+            and healthy
+            and broadcast_id is not None
+        ):
             actions.append(
                 ("record", "broadcast_created", {"broadcast_id": broadcast_id})
             )
