@@ -57,6 +57,24 @@ def test_newcomer_banner_is_present():
     assert "trades live, and the world remembers when it's wrong" in body
 
 
+def test_canvas_preserves_its_drawing_buffer_for_obs_capture():
+    """KI-013. Pixi 8 is WebGL-only and defaults to preserveDrawingBuffer:false,
+    which discards the drawing buffer once the frame is composited. The page
+    still looks right in a browser tab (the compositor holds the layer), but
+    anything reading the canvas outside the render frame — which is what OBS's
+    off-screen browser source does — gets an unreadable buffer, so the room
+    freezes on the stream at whatever frame OBS captured first.
+
+    Measured A/B in headless Chrome under software GL (2026-08-02): default →
+    readback is opaque black (0,0,0,255) everywhere; with the flag → the exact
+    background #131722 and the drawn shape colours. Corroboration: the charts
+    (Canvas2D, always readable) and the DOM overlays never froze on stream —
+    the room was the only WebGL surface.
+    """
+    body = client.get("/world").text
+    assert "preserveDrawingBuffer: true" in body
+
+
 def test_live_event_swell_keys_on_tier():
     # The swell must fire on live SSE events, not just the initial paint: react()
     # scales the nudge by the event's tier. Pin the hook so a refactor can't

@@ -67,7 +67,19 @@
         return;
       }
       app = new PIXI.Application();
-      await app.init({ background: 0x131722, resizeTo: window, antialias: true });
+      await app.init({
+        background: 0x131722, resizeTo: window, antialias: true,
+        // KI-013 — the reason the room froze on stream. Pixi 8 is WebGL-only
+        // and defaults this to false, which discards the drawing buffer as
+        // soon as the frame is composited. A browser tab still looks right
+        // (the compositor keeps the layer), but anything reading the canvas
+        // *outside* the render frame — OBS's off-screen browser source — gets
+        // an unreadable buffer, so the stream stayed frozen on whichever frame
+        // OBS captured first. Measured: without it a canvas readback is opaque
+        // black everywhere; with it, the real pixels. The charts (Canvas2D) and
+        // the DOM overlays never froze — the room was the only WebGL surface.
+        preserveDrawingBuffer: true,
+      });
       document.getElementById("room").appendChild(app.canvas);
       fallback.textContent = "";
 
