@@ -116,3 +116,23 @@ def test_now_band_has_no_placeholder_or_markup_leak():
     body = client.get("/world").text
     assert not re.search(r"__[A-Z_]+__", body)
     assert "innerHTML" not in body
+
+
+# --- B6: continuous ambient (calm must still move) ---
+
+
+def test_ambient_runs_every_frame_not_only_on_events():
+    """A 55-minute calm stretch used to be a near-frozen frame — the room only
+    moved when an event fired. The ambient loop rides the PIXI ticker so calm
+    reads alive-but-quiet."""
+    body = client.get("/world").text
+    assert "app.ticker.add(" in body
+    assert "startAmbient(" in body
+
+
+def test_ambient_amplitude_is_driven_by_market_state():
+    """Motion has to be *data*, not decoration: pressure sets the colour
+    temperature and agitation sets the drift, so what a viewer sees moving is
+    the market moving."""
+    body = client.get("/world").text
+    assert "pressure" in body and "agitation" in body

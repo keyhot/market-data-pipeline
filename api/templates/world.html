@@ -115,6 +115,7 @@
       model = character("MODEL");
       trader = character("TRADER");
       positionCharacters();
+      startAmbient();
       await refresh();
       subscribe();
       setInterval(refresh, 60000);   // projection stays authoritative server-side
@@ -197,6 +198,7 @@
         0x787b86));
 
       renderNowBand(state);
+      readAmbient(state);
     }
 
     function historyLine(h) {
@@ -214,6 +216,78 @@
       }
       if (h.outages) parts.push(`${h.outages} outages`);
       return parts.join(" · ");         /* set via .text: payloads are data */
+    }
+
+    // --- B6: continuous market-reactive ambient ----------------------------
+    // A calm market used to mean a near-frozen frame for the best part of an
+    // hour: the room only moved when an event fired. This is the *continuous*
+    // half of calm-that-swells — every frame carries a little motion, and its
+    // amplitude is market data rather than decoration. Pressure sets the
+    // background's colour temperature, agitation sets the drift, and both stay
+    // deliberately low-amplitude so quiet reads quiet.
+    const ambient = { pressure: 0, agitation: 0, tier: 0, t: 0, drift: [] };
+    const DRIFT_COUNT = 26;          // cheap enough for OBS's software renderer
+    const BASE_BG = [0x13, 0x17, 0x22];
+    const WARM_BG = [0x24, 0x18, 0x1c];   // stress: pressure negative
+    const COOL_BG = [0x11, 0x1d, 0x28];   // ease: pressure positive
+
+    function readAmbient(state) {
+      const symbols = Object.values(state.symbols ?? {});
+      if (!symbols.length) return;
+      const mean = (pick) =>
+        symbols.reduce((sum, s) => sum + (pick(s) ?? 0), 0) / symbols.length;
+      ambient.pressure = mean((s) => s.pressure);
+      ambient.agitation = mean((s) => s.agitation);
+      ambient.tier = Math.max(...symbols.map((s) => s.tier ?? 0), 0);
+    }
+
+    function mixChannel(from, to, amount) {
+      return Math.round(from + (to - from) * amount);
+    }
+
+    function startAmbient() {
+      for (let i = 0; i < DRIFT_COUNT; i++) {
+        const dot = new PIXI.Graphics().circle(0, 0, 1.6).fill(0x9aa4b2);
+        dot.x = Math.random() * app.screen.width;
+        dot.y = Math.random() * app.screen.height;
+        dot.alpha = 0;
+        // Each mote keeps its own speed so the field never pulses in lockstep.
+        dot.speed = 4 + Math.random() * 10;
+        layers.room.addChild(dot);
+        ambient.drift.push(dot);
+      }
+
+      app.ticker.add((ticker) => {
+        const dt = ticker.deltaMS / 1000;
+        ambient.t += dt;
+
+        // Colour temperature: warm as selling pressure builds, cool as it eases.
+        const lean = Math.max(-1, Math.min(1, ambient.pressure / 3));
+        const target = lean < 0 ? WARM_BG : COOL_BG;
+        const amount = Math.abs(lean) * 0.85;
+        app.renderer.background.color =
+          (mixChannel(BASE_BG[0], target[0], amount) << 16) +
+          (mixChannel(BASE_BG[1], target[1], amount) << 8) +
+          mixChannel(BASE_BG[2], target[2], amount);
+
+        // Room-wide sway: slow, sub-pixel at rest, a visible breath under load.
+        const swayAmp = 1.5 + ambient.tier * 2.2;
+        layers.chars.x = Math.sin(ambient.t * 0.21) * swayAmp;
+        layers.chars.y = Math.cos(ambient.t * 0.17) * swayAmp * 0.5;
+        layers.props.x = Math.sin(ambient.t * 0.13) * swayAmp * 0.4;
+
+        // Drift: density and speed track agitation, so a quiet market has a
+        // barely-there field and a busy one visibly stirs.
+        const energy = Math.max(0, Math.min(1, ambient.agitation / 6));
+        for (const dot of ambient.drift) {
+          dot.y -= dot.speed * energy * dt * 3;
+          dot.alpha = 0.05 + energy * 0.28;
+          if (dot.y < -4) {
+            dot.y = app.screen.height + 4;
+            dot.x = Math.random() * app.screen.width;
+          }
+        }
+      });
     }
 
     // --- B9: the always-on now-band ---------------------------------------
