@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from scripts.soak_report import (
+    _broadcast_events_for_window,
     compute_broadcast_uptime,
     compute_director_activity,
     compute_uptime,
@@ -190,6 +191,50 @@ def test_no_broadcast_events_reports_zero_not_full():
     result = compute_broadcast_uptime([], *WINDOW)
     assert result["live_seconds"] == 0
     assert result["uptime_pct"] == 0.0
+
+
+def test_zero_uptime_is_flagged_unmeasured_when_nothing_was_observed():
+    """0% has two very different causes: the broadcast really wasn't public,
+    or nothing is writing broadcast_* events (broadcast_manager not running,
+    OAuth missing). Reporting the second as 'encoder up, stream not watchable'
+    is a diagnosis the data doesn't support — and a warning that cries wolf
+    gets ignored by the time it's real."""
+    assert compute_broadcast_uptime([], *WINDOW)["measured"] is False
+    observed = compute_broadcast_uptime([_ev(10, "broadcast_ended")], *WINDOW)
+    assert observed["measured"] is True  # events seen; genuinely 0% live
+    assert observed["uptime_pct"] == 0.0
+
+
+def test_broadcast_events_for_window_supplies_the_prior_live_event():
+    """The helper that keeps the acceptance number from inverting: the last
+    live/ended BEFORE the window has to reach the fold."""
+    window_start, window_end = WINDOW
+    prior_live = _ev_at(window_start - timedelta(days=3), "broadcast_live")
+
+    def fetch(limit=50, event_type=None):
+        return {"broadcast_live": [prior_live], "broadcast_ended": []}[event_type]
+
+    events = _broadcast_events_for_window(
+        fetch, [_ev(5, "stream_started")], window_start
+    )
+    assert [e["event_type"] for e in events] == ["broadcast_live"]
+    assert compute_broadcast_uptime(events, window_start, window_end)["uptime_pct"] == (
+        100.0
+    )
+
+
+def test_broadcast_events_for_window_ignores_events_inside_the_window_as_prior():
+    """`fetch` is newest-first and unfiltered by time, so its newest row may be
+    INSIDE the window — it's already in the window events and must not be
+    double-counted as prior state."""
+    window_start, _ = WINDOW
+    inside = _ev(20, "broadcast_live")
+
+    def fetch(limit=50, event_type=None):
+        return {"broadcast_live": [inside], "broadcast_ended": []}[event_type]
+
+    events = _broadcast_events_for_window(fetch, [inside], window_start)
+    assert events == [inside]  # once, not twice
 
 
 def test_broadcast_restart_sums_both_live_spans():

@@ -129,6 +129,11 @@ def compute_broadcast_uptime(
     return {
         "uptime_pct": uptime_pct,
         "live_seconds": live_seconds,
+        # 0% has two causes that must not be conflated: the broadcast really
+        # wasn't public, or nothing is writing broadcast_* events at all
+        # (manager not running, OAuth missing). Only the first is a stream
+        # failure; reporting the second as one is a claim the data can't make.
+        "measured": bool(ordered),
         "spans": [
             {
                 "start": s["start"].isoformat(),
@@ -207,10 +212,16 @@ def main() -> None:
         f"- **Uptime: {report['uptime_pct']}%** "
         f"({report['downtime_seconds']:.0f}s down)"
     )
-    print(
-        f"- **Public-broadcast uptime: {broadcast['uptime_pct']}%** "
-        f"({broadcast['live_seconds']:.0f}s live on YouTube)"
-    )
+    if broadcast["measured"]:
+        print(
+            f"- **Public-broadcast uptime: {broadcast['uptime_pct']}%** "
+            f"({broadcast['live_seconds']:.0f}s live on YouTube)"
+        )
+    else:
+        print(
+            "- Public-broadcast uptime: **not measured** — no broadcast_* events "
+            "in the window (is broadcast_manager running?)"
+        )
     print(f"- Outages: {len(report['outages'])}\n")
     if report["outages"]:
         print("| start | duration (s) | reason |")
@@ -221,8 +232,11 @@ def main() -> None:
     # encoder pushing", public uptime is "could anyone watch". A gap between
     # them is the 2026-07-27 failure mode, so it gets called out rather than
     # left for the reader to spot.
+    # Gated on `measured`: with no broadcast events at all this would fire on
+    # every report (including before the manager exists), and a warning that
+    # cries wolf is ignored by the time it's real.
     gap = report["uptime_pct"] - broadcast["uptime_pct"]
-    if gap > 1.0:
+    if broadcast["measured"] and gap > 1.0:
         print(
             f"\n> ⚠️ OBS was pushing {gap:.2f} percentage points longer than the "
             f"broadcast was public — encoder up, stream not watchable."
