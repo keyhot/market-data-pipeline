@@ -11,6 +11,7 @@ import pytest
 
 from scripts.soak_report import (
     _broadcast_events_for_window,
+    _fetch_report_events,
     compute_broadcast_uptime,
     compute_director_activity,
     compute_uptime,
@@ -247,6 +248,35 @@ def test_broadcast_restart_sums_both_live_spans():
     result = compute_broadcast_uptime(events, *WINDOW)
     assert result["live_seconds"] == (15 + 10) * 60
     assert len(result["spans"]) == 2
+
+
+def test_report_fetch_is_per_type_so_a_busy_window_cant_drop_rows():
+    """KI-014: one `since` query capped at N returns the NEWEST N, so a busy
+    24h window silently loses the oldest in-window rows — the stream_started
+    that opened it, or an early broadcast_live. Both understate uptime on the
+    report that is Sprint 11's acceptance evidence. Fetch per type instead."""
+    asked = []
+
+    def fetch(limit=50, event_type=None, since=None):
+        asked.append(event_type)
+        return [_ev(1, event_type)] if event_type == "stream_started" else []
+
+    events, truncated = _fetch_report_events(fetch, WINDOW[0])
+    assert "stream_started" in asked and "broadcast_live" in asked
+    assert "commentary_spoken" in asked  # director activity shares the fetch
+    assert [e["event_type"] for e in events] == ["stream_started"]
+    assert truncated == []
+
+
+def test_report_fetch_reports_truncation_instead_of_a_quiet_number():
+    """If a type does hit the cap the report must say so — a silently
+    understated uptime is worse than a loud 'this number is incomplete'."""
+
+    def fetch(limit=50, event_type=None, since=None):
+        return [_ev(1, event_type)] * limit if event_type == "commentary_spoken" else []
+
+    _, truncated = _fetch_report_events(fetch, WINDOW[0], per_type_limit=50)
+    assert truncated == ["commentary_spoken"]
 
 
 def test_director_activity_counts_and_rates():

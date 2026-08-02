@@ -165,6 +165,39 @@ def compute_director_activity(events: list[dict], window_hours: float) -> dict:
     }
 
 
+def _report_event_types() -> list[str]:
+    """The types the report actually folds — sourced from the registries that
+    own them, so adding a stream/broadcast/director event can't leave the
+    report silently blind to it."""
+    from broadcast.events import BROADCAST_EVENT_TYPES
+    from director.events import DIRECTOR_EVENT_TYPES
+    from world.stream_events import STREAM_EVENT_TYPES
+
+    return sorted(STREAM_EVENT_TYPES | BROADCAST_EVENT_TYPES | DIRECTOR_EVENT_TYPES)
+
+
+def _fetch_report_events(fetch, window_start, per_type_limit: int = 5000) -> tuple:
+    """Fetch the report's events **per type** (KI-014).
+
+    One `since` query capped at N returns the *newest* N, so a busy window
+    silently drops its oldest rows — the `stream_started` that opened it, or an
+    early `broadcast_live`. Both understate uptime, on the report that is
+    Sprint 11's acceptance evidence, with no sign anything was lost. Per-type
+    queries keep each fold's own events well inside the cap, and hitting it is
+    reported rather than swallowed.
+
+    Returns `(events, truncated_types)`.
+    """
+    events: list[dict] = []
+    truncated: list[str] = []
+    for event_type in _report_event_types():
+        rows = fetch(limit=per_type_limit, event_type=event_type, since=window_start)
+        if len(rows) >= per_type_limit:
+            truncated.append(event_type)
+        events.extend(rows)
+    return events, truncated
+
+
 def _broadcast_events_for_window(
     fetch, window_events: list[dict], window_start
 ) -> list:
@@ -198,7 +231,7 @@ def main() -> None:
 
     window_end = datetime.now(timezone.utc)
     window_start = window_end - timedelta(hours=args.hours)
-    all_events = get_world_events(limit=10_000, since=window_start)
+    all_events, truncated = _fetch_report_events(get_world_events, window_start)
     stream_events = [e for e in all_events if e["event_type"].startswith("stream_")]
     report = compute_uptime(stream_events, window_start, window_end)
     broadcast_events = _broadcast_events_for_window(
@@ -208,6 +241,13 @@ def main() -> None:
     activity = compute_director_activity(all_events, args.hours)
     print(f"# Soak report — {window_end.date()}\n")
     print(f"- Window: {window_start.isoformat()} → {window_end.isoformat()}")
+    if truncated:
+        # Say it loudly: an understated uptime read as a real failure is worse
+        # than an admittedly incomplete one (KI-014).
+        print(
+            f"- ⚠️ **Incomplete data** — hit the per-type row cap for "
+            f"{', '.join(truncated)}; the numbers below understate uptime."
+        )
     print(
         f"- **Uptime: {report['uptime_pct']}%** "
         f"({report['downtime_seconds']:.0f}s down)"
