@@ -23,8 +23,32 @@ every scene — a single global bed is a go-live OBS-routing optimization.
 """
 
 import os
+from urllib.parse import urlparse
 
 CANVAS = (1920, 1080)
+
+# KI-013. Every browser source lives in ONE shared obs-browser process, so they
+# share one Chromium network stack — and Chromium allows at most **6 concurrent
+# HTTP/1.1 connections per origin**. Each page holds one open forever for its
+# SSE stream, and with `shutdown: False` every scene's sources stay alive at
+# once. Eight sources on `http://localhost:8000` exhausted the budget, and the
+# 7th+ request — `/world/state` — queued forever: the room rendered its boot
+# frame and never drew any data. Measured on 2026-08-02: exactly 6 ESTAB
+# connections from the obs-browser pid, and parking the other sources on
+# about:blank made the room render completely with nothing else changed.
+#
+# Loopback is a /8, so every 127.x.y.z is the same server but a *different
+# origin* to Chromium — one connection pool each. Sharding across them is the
+# minimal fix that keeps `shutdown: False` (instant scene switches, no reload
+# flicker mid-stream).
+_SHARD_HOSTS = (
+    "127.0.0.1", "127.0.0.2", "127.0.0.3", "127.0.0.4",
+    "127.0.0.5", "127.0.0.6", "127.0.0.7", "127.0.0.8",
+    "127.0.0.9", "127.0.0.10", "127.0.0.11", "127.0.0.12",
+)
+# Only loopback can be sharded this way; a real host (compose's `api`, a remote
+# box) has one address and must be left alone.
+_SHARDABLE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 SCENE_CHART = "chart-focus"
 SCENE_WORLD = "world-focus"
@@ -119,11 +143,45 @@ def _event_focus() -> dict:
     }
 
 
+def _shard_hosts_available() -> bool:
+    return urlparse(page_base()).hostname in _SHARDABLE_HOSTS
+
+
+def _shard_url(url: str, index: int) -> str:
+    """Rewrite `url`'s loopback host to the shard for `index` (KI-013)."""
+    parsed = urlparse(url)
+    if parsed.hostname not in _SHARDABLE_HOSTS:
+        return url
+    host = _SHARD_HOSTS[index % len(_SHARD_HOSTS)]
+    port = f":{parsed.port}" if parsed.port else ""
+    rest = url.split(parsed.netloc, 1)[1] if parsed.netloc in url else ""
+    return f"{parsed.scheme}://{host}{port}{rest}"
+
+
+def assign_connection_shards(scenes: list[dict]) -> list[dict]:
+    """Give every browser source its own origin so each gets its own Chromium
+    connection pool (KI-013).
+
+    Assignment is by position across all scenes, so it's deterministic and
+    collision-free — two sources sharing a shard would share the 6-connection
+    budget, which is the bug. `test_every_browser_source_gets_its_own_origin`
+    fails the moment there are more sources than shards.
+    """
+    index = 0
+    for scene in scenes:
+        for source in scene["sources"]:
+            if source["kind"] != "browser_source":
+                continue
+            source["settings"]["url"] = _shard_url(source["settings"]["url"], index)
+            index += 1
+    return scenes
+
+
 def scenes_spec() -> list[dict]:
     """All scenes the director switches between (Sprint 13). Order matters: the
     first entry is the default / home scene. Source order within a scene is
     z-order, bottom to top."""
-    return [_chart_focus(), _world_focus(), _event_focus()]
+    return assign_connection_shards([_chart_focus(), _world_focus(), _event_focus()])
 
 
 def scene_spec() -> dict:

@@ -57,6 +57,49 @@ def test_browser_sources_keep_sse_alive():
             assert src["settings"]["fps"] == 30
 
 
+def test_every_browser_source_gets_its_own_origin():
+    """KI-013, the invariant that would have caught it. All browser sources run
+    in ONE obs-browser process sharing one Chromium network stack, which allows
+    6 concurrent HTTP/1.1 connections **per origin**. Every page holds one open
+    forever for SSE, and `shutdown: False` keeps all scenes' sources alive at
+    once — so eight sources on a single origin starved `/world/state` forever
+    and the room never drew any data.
+
+    One origin per source keeps every page's SSE + fetches inside its own
+    budget. If this fails, someone added a source without extending
+    `_SHARD_HOSTS` — extend it rather than doubling up.
+    """
+    origins = []
+    for scene in stream_scene.scenes_spec():
+        for src in scene["sources"]:
+            if src["kind"] != "browser_source":
+                continue
+            parsed = urlparse(src["settings"]["url"])
+            origins.append((f"{parsed.scheme}://{parsed.netloc}", src["name"]))
+    by_origin: dict[str, list[str]] = {}
+    for origin, name in origins:
+        by_origin.setdefault(origin, []).append(name)
+    shared = {o: names for o, names in by_origin.items() if len(names) > 1}
+    assert not shared, (
+        f"browser sources sharing a 6-connection pool: {shared}. "
+        f"Chromium allows 6 concurrent connections per origin and each page "
+        f"holds one open for SSE — extend _SHARD_HOSTS."
+    )
+
+
+def test_non_loopback_page_base_is_left_alone(monkeypatch):
+    """Sharding is a loopback trick (127/8 is all the same server). A real host
+    has one address, so rewriting it would point every source at nothing."""
+    monkeypatch.setenv("STREAM_PAGE_BASE", "http://api:8000")
+    urls = [
+        src["settings"]["url"]
+        for scene in stream_scene.scenes_spec()
+        for src in scene["sources"]
+        if src["kind"] == "browser_source"
+    ]
+    assert urls and all(url.startswith("http://api:8000") for url in urls)
+
+
 def test_scenes_spec_has_three_named_scenes():
     names = [s["scene"] for s in stream_scene.scenes_spec()]
     assert names == ["chart-focus", "world-focus", "event-focus"]
