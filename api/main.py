@@ -117,6 +117,9 @@ _THEME_REPLACEMENTS = {
     "__THEME_VARS__": visuals.css_variables(),
     "__TIER_STYLES__": visuals.tier_styles_css(),
     "__MOOD_COLORS_JSON__": json.dumps(visuals.MOOD_COLORS),
+    # B5: one accent per speaking character, from the same palette module, so
+    # a speech bubble can never drift from the room's colours.
+    "__CHARACTER_COLORS_JSON__": json.dumps(visuals.CHARACTER_COLORS),
 }
 
 

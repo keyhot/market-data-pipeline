@@ -66,3 +66,28 @@ def test_tier_styles_css_defines_a_class_per_tier_with_a_transition():
     for tier in range(4):
         assert f".tier-{tier}" in css
     assert "transition:" in css  # the swell must ease, never flash
+
+
+def test_every_personality_has_a_character_colour():
+    """B5: a speaking character with no accent renders in the default text
+    colour and becomes indistinguishable from the others on stream. Registry
+    invariant, same as the reactions one — adding a personality without a
+    colour fails here rather than showing up as a grey bubble at 3am."""
+    from director.personalities import PERSONALITIES
+    from world.visuals import CHARACTER_COLORS
+
+    speakers = {p.phrase_character for p in PERSONALITIES}
+    missing = sorted(speakers - set(CHARACTER_COLORS))
+    assert missing == [], f"personalities with no character colour: {missing}"
+
+
+def test_character_colours_are_distinguishable_from_each_other():
+    from world.visuals import CHARACTER_COLORS
+
+    assert len(set(CHARACTER_COLORS.values())) == len(CHARACTER_COLORS)
+
+
+def test_character_color_falls_back_for_unknown_speaker():
+    from world.visuals import character_color
+
+    assert character_color("nobody").startswith("#")

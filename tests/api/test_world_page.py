@@ -63,3 +63,32 @@ def test_live_event_swell_keys_on_tier():
     # silently flatten the room back to a constant nudge.
     body = client.get("/world").text
     assert "tierOf(event.severity)" in body
+
+
+# --- B5: on-screen commentary (the stream is silent, so lines must be READ) ---
+
+
+def test_commentary_renders_as_on_screen_speech():
+    """TTS is a deferred ops step, so `commentary_spoken` is currently invisible
+    to a viewer — the personalities don't exist on screen at all. The SSE path
+    must route those events to a bubble, not just to the room's nudge."""
+    body = client.get("/world").text
+    assert "commentary_spoken" in body
+    assert "speak(" in body or "renderBubble(" in body
+
+
+def test_speech_bubbles_use_the_shared_character_palette():
+    from world.visuals import CHARACTER_COLORS
+
+    body = client.get("/world").text
+    assert "__CHARACTER_COLORS_JSON__" not in body     # substituted
+    for hex_colour in CHARACTER_COLORS.values():
+        assert hex_colour in body
+
+
+def test_speech_bubble_text_is_set_as_textcontent():
+    """Commentary payloads are data and reach the page over SSE; innerHTML
+    would make a crafted payload markup on a 24/7 public stream."""
+    body = client.get("/world").text
+    assert "innerHTML" not in body
+    assert "textContent" in body

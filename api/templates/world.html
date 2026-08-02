@@ -18,12 +18,31 @@
               pointer-events: none; }
     #banner-syms { color: var(--accent); font-weight: 600; }
     #banner .tag { color: var(--neutral); }
+
+    /* B5 — the stream has no audio, so a spoken line only exists if it can be
+       READ. Bubbles sit above the floor line, left of the room, and stack
+       upward so the newest is nearest the characters. DOM rather than canvas
+       text: it is the surface OBS is most reliable with, and it stays crisp
+       at any bitrate. */
+    #speech { position: absolute; left: 3.5rem; bottom: 21rem; z-index: 3;
+              display: flex; flex-direction: column-reverse; gap: 0.5rem;
+              max-width: 34rem; pointer-events: none; }
+    .bubble { background: rgba(19, 23, 34, 0.9); border-left: 3px solid var(--neutral);
+              border-radius: 0.35rem; padding: 0.5rem 0.75rem;
+              font-size: 1.05rem; line-height: 1.35;
+              opacity: 0; transform: translateY(6px);
+              transition: opacity 320ms ease, transform 320ms ease; }
+    .bubble.in { opacity: 1; transform: translateY(0); }
+    .bubble .who { display: block; font-size: 0.72rem; letter-spacing: 0.08em;
+                   text-transform: uppercase; margin-bottom: 0.15rem; }
+    .bubble .said { color: var(--fg); }
   </style>
 </head>
 <body>
   <div id="banner"><span id="banner-syms"></span><span class="tag">a model
     trades live, and the world remembers when it's wrong</span></div>
   <div id="room"></div>
+  <div id="speech"></div>
   <div id="fallback">Waking the world…</div>
   <script src="https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js"
           integrity="sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq"
@@ -178,11 +197,61 @@
       return parts.join(" · ");         /* set via .text: payloads are data */
     }
 
+    // --- B5: on-screen commentary -----------------------------------------
+    // The director speaks through Piper, but TTS is a deferred ops step and the
+    // stream is silent — so a line that isn't drawn may as well not exist. One
+    // bubble per line: who said it, in their own accent colour, and what they
+    // said, quoted verbatim from the payload.
+    const CHARACTER_COLOR = __CHARACTER_COLORS_JSON__;
+    const speech = document.getElementById("speech");
+    const BUBBLE_MAX = 3;          // more than this and the room becomes a chat log
+    const BUBBLE_HOLD_MS = 7000;   // long enough to read a full line aloud
+
+    function speak(event) {
+      const payload = event.payload ?? {};
+      const text = payload.text;
+      if (!text) return;
+      const who = payload.character ?? "someone";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.style.borderLeftColor = CHARACTER_COLOR[who] ?? "var(--fg)";
+
+      const name = document.createElement("span");
+      name.className = "who";
+      name.style.color = CHARACTER_COLOR[who] ?? "var(--fg)";
+      // textContent only — payloads are data, never markup, on a public stream.
+      name.textContent = who;
+
+      const said = document.createElement("span");
+      said.className = "said";
+      said.textContent = text;
+
+      bubble.appendChild(name);
+      bubble.appendChild(said);
+      speech.appendChild(bubble);
+      // Next frame, so the transition actually runs instead of snapping in.
+      requestAnimationFrame(() => bubble.classList.add("in"));
+
+      while (speech.children.length > BUBBLE_MAX) {
+        speech.removeChild(speech.firstChild);
+      }
+      setTimeout(() => {
+        bubble.classList.remove("in");
+        setTimeout(() => bubble.remove(), 400);
+      }, BUBBLE_HOLD_MS);
+    }
+
     // A live event nudges the room immediately; the next refresh reconciles it
     // with the authoritative server-side projection. The nudge scales with the
     // event's tier, so a calm event barely stirs and a tier-3 event visibly
     // swells (then settles back — never sticky-amped).
     function react(event) {
+      // A spoken line is the director talking about an event, not an event the
+      // room reacts to physically — it gets a bubble instead of a nudge.
+      if (event.event_type === "commentary_spoken") {
+        speak(event);
+        return;
+      }
       const target = event.event_type.startsWith("trader_") ? trader : model;
       const tier = tierOf(event.severity);
       target.container.y = target.baseY - (6 + tier * 8);

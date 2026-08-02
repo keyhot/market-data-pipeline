@@ -72,6 +72,24 @@ def mood_color(mood: str) -> str:
     return MOOD_COLORS.get(mood, PALETTE["neutral"])
 
 
+# One accent per speaking character, so a viewer learns "teal = the optimist"
+# without reading the name every time (Sprint 14, B5). Each colour is drawn
+# from that personality's own emotional register in MOOD_COLORS above, so the
+# bubbles can't drift away from the palette the room already uses. Completeness
+# against director.personalities is test-enforced, mirroring the reactions
+# registry invariant.
+CHARACTER_COLORS: dict[str, str] = {
+    "optimist": MOOD_COLORS["relieved"],       # teal — the upside voice
+    "statistician": MOOD_COLORS["focused"],    # indigo — the cool one
+    "anxious": MOOD_COLORS["anxious"],         # warm orange — the worrier
+}
+
+
+def character_color(character: str) -> str:
+    """Accent hex for a speaking character; unknown speakers stay renderable."""
+    return CHARACTER_COLORS.get(character, PALETTE["fg"])
+
+
 # Monotonic calm->dramatic ramp, indexed by severity tier 0-3. Every dimension
 # rises with the tier so the escalation reads on every axis at once: bigger,
 # brighter halo, more opaque, heavier text.
