@@ -211,9 +211,13 @@ def _broadcast_events_for_window(
     """
     prior = []
     for event_type in ("broadcast_live", "broadcast_ended"):
+        # The limit has to clear everything of this type *inside* the window,
+        # or the prior event is pushed off the newest-first page and the
+        # window's opening span is lost — KI-014's shape, one function over.
+        # 500 is far past any plausible 24h recreate count.
         earlier = [
             e
-            for e in fetch(limit=50, event_type=event_type)  # newest first
+            for e in fetch(limit=500, event_type=event_type)  # newest first
             if datetime.fromisoformat(e["occurred_at"]) < window_start
         ]
         if earlier:
