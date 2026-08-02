@@ -25,8 +25,13 @@ class FakeYouTubeClient:
         self.calls = []
         self._next_id = 1
 
-    def list_broadcasts(self):
-        self.calls.append(("list_broadcasts",))
+    def list_broadcasts(self, broadcast_id=None, max_pages=5):
+        # Mirrors the real client's contract, including the id lookup — a fake
+        # that's laxer than the thing it stands in for is how this project's
+        # seam bugs stayed green.
+        self.calls.append(("list_broadcasts", broadcast_id))
+        if broadcast_id is not None:
+            return [b for b in self.broadcasts if b["id"] == broadcast_id]
         return list(self.broadcasts)
 
     def find_stream(self, title):
@@ -157,6 +162,31 @@ def test_create_failure_is_swallowed_and_the_loop_survives():
         [("create_and_bind",)], state, Broken(), lambda e: None, CFG, BASE
     )
     assert state.current_broadcast_id is None  # nothing false recorded
+
+
+def test_quiet_tick_still_reaches_the_recorder_so_the_spool_drains():
+    """A healthy live broadcast produces ZERO actions on essentially every
+    tick — that's the steady state the manager exists to maintain. If the
+    recorder is only called when there are actions, a broadcast_live spooled
+    during a Postgres blip sits there until the next action-producing tick,
+    which may be the broadcast's *end* days later. The report would then say
+    'not measured' while the stream was public — the lying number again, one
+    layer up."""
+    calls = []
+    live = {
+        "broadcast": {"id": "b1", "lifecycle": "live", "bound_stream_id": "s1"},
+        "stream": {"id": "s1", "status": "active"},
+    }
+    state = BroadcastState("b1", "live", None, BASE)
+    service.tick_once(
+        live,
+        True,
+        state,
+        CFG,
+        BASE,
+        lambda actions, st, now: calls.append(actions),
+    )
+    assert calls == [[]], "the applier must run on a quiet tick (flush-on-tick)"
 
 
 def test_run_ticks_then_stops_and_never_raises_on_api_failure():

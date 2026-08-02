@@ -84,24 +84,79 @@ def test_inactive_stream_maps_to_a_non_active_status():
     assert mapped["health"] is None  # absent healthStatus must not raise
 
 
-def test_broadcasts_are_listed_unfiltered_by_type():
-    """`broadcastType="persistent"` cannot see the broadcasts we create —
-    insert_broadcast sets a scheduledStartTime, which makes them *event*
-    broadcasts, and the API docs define event and persistent as distinct
-    categories. Filtering to persistent would make every created broadcast
-    invisible on the next tick: select_broadcast returns None, tick reads
-    unhealthy, and the manager creates a fresh orphan every backoff window
-    until the daily quota is gone. `mine=True` is what scopes the list."""
-    import inspect
+class _Request:
+    def __init__(self, payload):
+        self._payload = payload
 
-    from broadcast import youtube_client
+    def execute(self):
+        return self._payload
 
-    source = inspect.getsource(youtube_client.YouTubeLiveClient.list_broadcasts)
-    code = "\n".join(
-        line for line in source.splitlines() if not line.strip().startswith("#")
+
+class _FakeBroadcastsApi:
+    """Mimics `youtube.liveBroadcasts()` — records the kwargs the client sends
+    and serves pages keyed by pageToken."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def list(self, **kwargs):
+        self.calls.append(kwargs)
+        index = int(kwargs.get("pageToken") or 0)
+        return _Request(self.pages[index])
+
+
+def _client_with(api):
+    """A YouTubeLiveClient wired to a fake API — bypasses __init__ so no OAuth,
+    no googleapiclient, no network, while still exercising the real methods
+    (the seam is exactly where this project's bugs have hidden)."""
+    from broadcast.youtube_client import YouTubeLiveClient
+
+    client = object.__new__(YouTubeLiveClient)
+    client._yt = type("Yt", (), {"liveBroadcasts": lambda self: api})()
+    return client
+
+
+def test_known_broadcast_is_fetched_by_id_not_scanned():
+    """Once we know our broadcast, ask for it by id. Scanning `mine=True` for
+    it forever would put it at the mercy of the channel's completed-broadcast
+    history: no ordering is guaranteed, so as history grows past one page our
+    live broadcast falls off the list, select_broadcast returns None, tick
+    reads unhealthy, and we orphan a new broadcast every backoff window."""
+    api = _FakeBroadcastsApi(
+        [{"items": [{"id": "b1", "status": {"lifeCycleStatus": "live"}}]}]
     )
-    assert 'broadcastType="persistent"' not in code
-    assert "mine=True" in code
+    result = _client_with(api).list_broadcasts(broadcast_id="b1")
+    assert [b["id"] for b in result] == ["b1"]
+    assert api.calls[0]["id"] == "b1"
+    assert "mine" not in api.calls[0]  # id and mine are mutually exclusive
+
+
+def test_cold_start_scan_is_type_unfiltered_and_paginates():
+    """`broadcastType="persistent"` cannot see the broadcasts we create — they
+    carry a scheduledStartTime, making them *event* broadcasts, a distinct API
+    category. And one page isn't the whole story once history accumulates."""
+    api = _FakeBroadcastsApi(
+        [
+            {
+                "items": [{"id": "old", "status": {"lifeCycleStatus": "complete"}}],
+                "nextPageToken": "1",
+            },
+            {"items": [{"id": "b1", "status": {"lifeCycleStatus": "live"}}]},
+        ]
+    )
+    result = _client_with(api).list_broadcasts()
+    assert [b["id"] for b in result] == ["old", "b1"]
+    assert api.calls[0]["mine"] is True
+    assert api.calls[0]["broadcastType"] == "all"
+    assert api.calls[1]["pageToken"] == "1"
+
+
+def test_cold_start_scan_is_bounded():
+    """A nextPageToken that never ends must not spin forever burning quota."""
+    api = _FakeBroadcastsApi([{"items": [], "nextPageToken": "0"}])
+    _client_with(api).list_broadcasts(max_pages=3)
+    assert len(api.calls) == 3
 
 
 def test_mapped_broadcast_carries_lifecycle_and_binding():

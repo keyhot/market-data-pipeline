@@ -93,25 +93,54 @@ class YouTubeLiveClient:
 
         self._yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
 
-    def list_broadcasts(self) -> list[dict]:
-        # NOT broadcastType="persistent": the broadcasts we create carry a
-        # scheduledStartTime, which makes them *event* broadcasts, and the API
-        # treats event and persistent as distinct categories. Filtering to
-        # persistent would hide every broadcast we create — the next tick would
-        # see none, read unhealthy, and create another one each backoff window
-        # until the daily quota was gone. `mine=True` is the real scoping, and
-        # `select_broadcast` narrows to the one bound to our ingest stream.
-        resp = (
-            self._yt.liveBroadcasts()
-            .list(
-                part="id,status,contentDetails",
-                broadcastType="all",
-                mine=True,
-                maxResults=50,
+    def list_broadcasts(
+        self, broadcast_id: str | None = None, max_pages: int = 5
+    ) -> list[dict]:
+        """The broadcasts `select_broadcast` chooses from.
+
+        Two shapes, because the steady state and the cold start have different
+        risks:
+
+        * **`broadcast_id` known → exact lookup.** Immune to how much
+          completed history the channel has accumulated. `id` and `mine` are
+          mutually exclusive filters, so this is the whole query.
+        * **Cold start → scan `mine=True`, paginated.** NOT
+          `broadcastType="persistent"`: the broadcasts we create carry a
+          `scheduledStartTime`, making them *event* broadcasts, and the API
+          treats event and persistent as distinct categories — a persistent
+          filter would hide every broadcast we create. And one page is not
+          enough: the API guarantees no ordering, so as completed broadcasts
+          pile up our live one can fall off page 1. Either miss has the same
+          ending — tick reads unhealthy and orphans a new broadcast every
+          backoff window until the daily quota is gone. Bounded by `max_pages`
+          so a repeating token can't spin.
+        """
+        part = "id,status,contentDetails"
+        if broadcast_id is not None:
+            resp = (
+                self._yt.liveBroadcasts().list(part=part, id=broadcast_id).execute()
             )
-            .execute()
-        )
-        return [map_broadcast(item) for item in resp.get("items", [])]
+            return [map_broadcast(item) for item in resp.get("items", [])]
+
+        items: list[dict] = []
+        page_token = None
+        for _ in range(max_pages):
+            resp = (
+                self._yt.liveBroadcasts()
+                .list(
+                    part=part,
+                    broadcastType="all",
+                    mine=True,
+                    maxResults=50,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+            items.extend(resp.get("items", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return [map_broadcast(item) for item in items]
 
     def find_stream(self, title: str) -> dict | None:
         resp = (

@@ -78,8 +78,10 @@ def fetch_yt_state(client, state: BroadcastState, config: BroadcastConfig) -> di
             config.stream_title,
         )
     return {
+        # Pass the id we know: an exact lookup can't be crowded out by the
+        # channel's completed-broadcast history the way a scan can.
         "broadcast": select_broadcast(
-            client.list_broadcasts(),
+            client.list_broadcasts(broadcast_id=state.current_broadcast_id),
             state.current_broadcast_id,
             stream_id=stream["id"] if stream else None,
         ),
@@ -143,8 +145,12 @@ def tick_once(yt_state, obs_streaming, state, config, now, apply_actions) -> Non
     """One decision + application, sharing the state the runner owns."""
     new_state, actions = tick(yt_state, obs_streaming, state, config, now)
     _adopt(state, new_state)
-    if actions:
-        apply_actions(actions, state, now)
+    # Unconditionally, even with no actions: a healthy live broadcast is quiet
+    # on essentially every tick, and `apply` is what drains the event spool. A
+    # `if actions:` guard here would strand a spooled broadcast_live until the
+    # next action — possibly the broadcast's end, days later — and the uptime
+    # report would say "not measured" while the stream was public.
+    apply_actions(actions, state, now)
 
 
 def _adopt(state: BroadcastState, new_state: BroadcastState) -> None:
