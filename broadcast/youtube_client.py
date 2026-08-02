@@ -47,6 +47,35 @@ def credentials_from_env() -> Credentials:
     )
 
 
+def map_stream(item: dict) -> dict:
+    """API `liveStreams` resource -> the plain dict `policy.tick` consumes.
+
+    `status` is deliberately the *stream* status (`status.streamStatus`:
+    active / created / error / inactive / ready) because that is the field
+    `policy._stream_active` compares against `"active"` — the seam and the
+    policy must agree on this shape or the manager silently never acts.
+    """
+    status = item.get("status", {})
+    return {
+        "id": item["id"],
+        "title": item.get("snippet", {}).get("title"),
+        "status": status.get("streamStatus"),
+        # Health is reporting-only (good/ok/bad/noData) — never a gate, so a
+        # "bad" ingest health can't stop us from taking the broadcast public.
+        "health": (status.get("healthStatus") or {}).get("status"),
+    }
+
+
+def map_broadcast(item: dict) -> dict:
+    """API `liveBroadcasts` resource -> the plain dict `policy.tick` consumes."""
+    return {
+        "id": item["id"],
+        "lifecycle": item["status"]["lifeCycleStatus"],
+        "privacy": item["status"].get("privacyStatus"),
+        "bound_stream_id": item.get("contentDetails", {}).get("boundStreamId"),
+    }
+
+
 class YouTubeLiveClient:
     """Thin wrapper over YouTube Data API v3 `liveStreams` / `liveBroadcasts`.
 
@@ -75,17 +104,7 @@ class YouTubeLiveClient:
             )
             .execute()
         )
-        return [
-            {
-                "id": item["id"],
-                "lifecycle": item["status"]["lifeCycleStatus"],
-                "privacy": item["status"]["privacyStatus"],
-                "bound_stream_id": item.get("contentDetails", {}).get(
-                    "boundStreamId"
-                ),
-            }
-            for item in resp.get("items", [])
-        ]
+        return [map_broadcast(item) for item in resp.get("items", [])]
 
     def find_stream(self, title: str) -> dict | None:
         resp = (
@@ -95,7 +114,7 @@ class YouTubeLiveClient:
         )
         for item in resp.get("items", []):
             if item.get("snippet", {}).get("title") == title:
-                return {"id": item["id"], "title": title}
+                return map_stream(item)
         return None
 
     def insert_broadcast(self, title: str, privacy: str = "public") -> dict:
