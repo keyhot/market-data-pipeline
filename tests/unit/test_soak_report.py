@@ -4,12 +4,16 @@ measurement tool."""
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from scripts.soak_report import compute_director_activity, compute_uptime
+from scripts.soak_report import (
+    compute_broadcast_uptime,
+    compute_director_activity,
+    compute_uptime,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -126,6 +130,78 @@ def test_degraded_event_does_not_hide_a_real_outage_that_follows():
     assert result["uptime_pct"] == 80.0
     reasons = {o["reason"] for o in result["outages"]}
     assert reasons == {"dropped_frames", "obs_unreachable"}
+
+
+def _ev_at(when: datetime, event_type, payload=None):
+    """An event at an arbitrary instant — `_ev` can only place events inside the
+    report window's hour, and public-broadcast uptime turns on events *outside*
+    it."""
+    return {
+        "occurred_at": when.isoformat(),
+        "event_type": event_type,
+        "payload": payload or {},
+    }
+
+
+def test_broadcast_uptime_counts_live_to_ended():
+    events = [_ev(10, "broadcast_live"), _ev(40, "broadcast_ended")]
+    result = compute_broadcast_uptime(events, *WINDOW)
+    assert result["live_seconds"] == 30 * 60
+    assert result["uptime_pct"] == 50.0
+
+
+def test_broadcast_live_to_window_end_when_unclosed():
+    result = compute_broadcast_uptime([_ev(30, "broadcast_live")], *WINDOW)
+    assert result["live_seconds"] == 30 * 60  # still live -> runs to window_end
+    assert result["uptime_pct"] == 50.0
+
+
+def test_broadcast_live_before_the_window_covers_the_whole_window():
+    """The sprint's own design decision is ONE long-lived broadcast
+    (enableAutoStop=false), so during a 24h soak the `broadcast_live` that took
+    the stream public can sit days behind window_start and NOTHING lands inside
+    the window. A fold that only sees in-window events reports 0% public uptime
+    next to ~100% OBS uptime — the exact inversion of the truth this report
+    exists to tell, and the number that closes Sprint 11."""
+    window_start, window_end = WINDOW
+    events = [_ev_at(window_start - timedelta(days=2), "broadcast_live")]
+    result = compute_broadcast_uptime(events, window_start, window_end)
+    assert result["live_seconds"] == 60 * 60
+    assert result["uptime_pct"] == 100.0
+
+
+def test_broadcast_ended_before_the_window_is_not_uptime():
+    """The mirror of the case above: a broadcast that ended before the window
+    must not leak live time into it."""
+    window_start, window_end = WINDOW
+    events = [
+        _ev_at(window_start - timedelta(hours=3), "broadcast_live"),
+        _ev_at(window_start - timedelta(hours=1), "broadcast_ended"),
+    ]
+    result = compute_broadcast_uptime(events, window_start, window_end)
+    assert result["live_seconds"] == 0
+    assert result["uptime_pct"] == 0.0
+
+
+def test_no_broadcast_events_reports_zero_not_full():
+    """Opposite default from compute_uptime on purpose: OBS downtime is proved
+    by events, public uptime is proved by events. No evidence of being live is
+    not evidence of being live — truthfulness over a flattering number."""
+    result = compute_broadcast_uptime([], *WINDOW)
+    assert result["live_seconds"] == 0
+    assert result["uptime_pct"] == 0.0
+
+
+def test_broadcast_restart_sums_both_live_spans():
+    events = [
+        _ev(0, "broadcast_live"),
+        _ev(15, "broadcast_ended"),
+        _ev(45, "broadcast_created"),  # created is not live time
+        _ev(50, "broadcast_live"),
+    ]
+    result = compute_broadcast_uptime(events, *WINDOW)
+    assert result["live_seconds"] == (15 + 10) * 60
+    assert len(result["spans"]) == 2
 
 
 def test_director_activity_counts_and_rates():

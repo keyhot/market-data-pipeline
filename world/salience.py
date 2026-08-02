@@ -192,5 +192,11 @@ KNOWN_EVENT_TYPES = frozenset(
         # director actions (Sprint 13) — severities in director/events.py
         "scene_switched",
         "commentary_spoken",
+        # YouTube broadcast lifecycle (Sprint 14) — severities in
+        # broadcast/events.py; these are what "the stream was actually public"
+        # is measured from (scripts/soak_report.compute_broadcast_uptime).
+        "broadcast_created",
+        "broadcast_live",
+        "broadcast_ended",
     }
 )

@@ -48,6 +48,9 @@ PHRASES: dict[str, dict[str, dict[int, list[str]]]] = {
         "trader_opened": {0: ["The trader's in on {symbol} — bold move!"]},
         "trader_closed": {0: ["Position closed. On to the next one."]},
         "trader_milestone": {0: ["Milestone reached — look at that go!"]},
+        "broadcast_created": {},  # plumbing, not an occasion
+        "broadcast_live": {0: ["We're public — hello, YouTube!"]},
+        "broadcast_ended": {0: ["Broadcast wrapped. We'll be right back up."]},
     },
     "statistician": {
         "big_move": {
@@ -72,6 +75,11 @@ PHRASES: dict[str, dict[str, dict[int, list[str]]]] = {
         "trader_opened": {},
         "trader_closed": {2: ["Trade closed — one more realized data point."]},
         "trader_milestone": {},
+        "broadcast_created": {},
+        "broadcast_live": {},
+        # Public uptime is a measured number; the statistician is the one who
+        # would notice it moving.
+        "broadcast_ended": {1: ["Broadcast ended. Public uptime stops accruing."]},
     },
     "anxious": {
         "big_move": {2: ["A {sigmas:.0f}σ lurch on {symbol}. I don't like it."]},
@@ -106,5 +114,8 @@ PHRASES: dict[str, dict[str, dict[int, list[str]]]] = {
         },
         "trader_closed": {1: ["Position closed. Was that the right call?"]},
         "trader_milestone": {},
+        "broadcast_created": {},
+        "broadcast_live": {},
+        "broadcast_ended": {1: ["The broadcast ended… can anyone still see us?"]},
     },
 }

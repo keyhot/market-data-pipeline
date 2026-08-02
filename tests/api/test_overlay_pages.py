@@ -64,6 +64,22 @@ def test_overlay_events_carries_shared_theme_and_tier_swell():
     assert not re.search(r"__[A-Z_]+__", body)  # every placeholder substituted
 
 
+def test_every_known_event_type_has_an_overlay_headline():
+    """The JS HEADLINES map has a silent fallback, so a new salience rule
+    renders as raw `market broadcast_live` on a live 24/7 stream and no test
+    notices. Same registry invariant world/reactions.py is held to, on the
+    other side of the SSE boundary."""
+    from world.salience import KNOWN_EVENT_TYPES
+
+    body = client.get("/overlay/events").text
+    missing = sorted(
+        etype
+        for etype in KNOWN_EVENT_TYPES
+        if not re.search(rf"\b{etype}:\s*\(e\)", body)
+    )
+    assert missing == [], f"event types with no overlay headline: {missing}"
+
+
 def test_overlay_signals_uses_shared_palette_vars():
     with patch("api.main.load_watchlist", return_value=_watchlist()):
         body = client.get("/overlay/signals").text

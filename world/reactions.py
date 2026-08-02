@@ -27,6 +27,11 @@ REACTIONS: dict[str, tuple[str, str]] = {
     # director actions (Sprint 13) — the room acknowledges the camera + voice
     "scene_switched": ("attentive", "pan"),
     "commentary_spoken": ("speaking", "talk"),
+    # broadcast lifecycle (Sprint 14) — "are we public?" is the stream's own
+    # heartbeat, so it reads like the stream_* pair it parallels.
+    "broadcast_created": ("attentive", "pan"),
+    "broadcast_live": ("relieved", "wave"),
+    "broadcast_ended": ("idle", "sleep"),
 }
 
 # Types whose meaning genuinely flips on payload content.
