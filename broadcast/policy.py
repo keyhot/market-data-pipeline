@@ -80,19 +80,25 @@ def _backoff_ok(state: BroadcastState, config: BroadcastConfig, now: datetime) -
     )
 
 
-def select_broadcast(broadcasts: list[dict], current_id: str | None) -> dict | None:
+def select_broadcast(
+    broadcasts: list[dict], current_id: str | None, stream_id: str | None = None
+) -> dict | None:
     """Pick the one broadcast `tick` reasons about out of the account's list.
 
-    Order matters, and both rules exist to stop a specific failure:
+    Order matters, and every rule exists to stop a specific failure:
 
     1. **Ours by id, whatever its lifecycle.** Including `complete` — dropping
        a completed broadcast here would hide the `broadcast_ended` transition,
        and the uptime fold would then count it live to the end of the window,
        overstating public uptime. An ending is never silently discarded.
-    2. **Otherwise the first healthy one.** A cold start must not adopt a
-       leftover `complete` broadcast: `tick` would read it as unhealthy and
-       create a replacement every backoff window, burning the daily quota the
-       backoff exists to protect.
+    2. **Otherwise the first healthy one bound to `stream_id`.** The client
+       lists *all* of the channel's broadcasts (a `persistent` filter can't see
+       the ones we create), so the binding to our ingest stream is what makes a
+       broadcast ours — without that check a cold start could adopt, and then
+       transition live, a broadcast belonging to some unrelated stream.
+    3. A leftover `complete` broadcast is never adopted: `tick` would read it
+       as unhealthy and create a replacement every backoff window, burning the
+       daily quota the backoff exists to protect.
 
     Returns None when nothing is usable — `tick` then creates one.
     """
@@ -101,8 +107,11 @@ def select_broadcast(broadcasts: list[dict], current_id: str | None) -> dict | N
             if broadcast.get("id") == current_id:
                 return broadcast
     for broadcast in broadcasts:
-        if broadcast.get("lifecycle") in _HEALTHY_LIFECYCLES:
-            return broadcast
+        if broadcast.get("lifecycle") not in _HEALTHY_LIFECYCLES:
+            continue
+        if stream_id is not None and broadcast.get("bound_stream_id") != stream_id:
+            continue
+        return broadcast
     return None
 
 

@@ -57,10 +57,39 @@ def _state():
 
 
 def test_fetch_state_shapes_the_dict_tick_expects():
-    client = FakeYouTubeClient(broadcasts=[{"id": "b1", "lifecycle": "live"}])
+    client = FakeYouTubeClient(
+        broadcasts=[{"id": "b1", "lifecycle": "live", "bound_stream_id": "s1"}]
+    )
     state = service.fetch_yt_state(client, _state(), CFG)
     assert state["broadcast"]["id"] == "b1"
     assert state["stream"]["status"] == "active"
+
+
+def test_missing_stream_title_is_logged_loudly(caplog):
+    """A wrong BROADCAST_STREAM_TITLE is the likeliest setup mistake, and its
+    symptom is total silence: find_stream returns None, _stream_active is
+    False, tick never acts, and the 'no liveStream titled' error inside
+    _create_and_bind is never reached. Name the title we looked for."""
+    import logging
+
+    class NoStream(FakeYouTubeClient):
+        def find_stream(self, title):
+            return None
+
+    with caplog.at_level(logging.WARNING, logger="broadcast.service"):
+        state = service.fetch_yt_state(NoStream(), _state(), CFG)
+    assert state["stream"] is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(CFG.stream_title in m for m in messages), (
+        f"no diagnostic naming the title; got {messages}"
+    )
+
+
+def test_fetch_state_only_adopts_a_broadcast_bound_to_our_stream():
+    client = FakeYouTubeClient(
+        broadcasts=[{"id": "x", "lifecycle": "ready", "bound_stream_id": "other"}]
+    )
+    assert service.fetch_yt_state(client, _state(), CFG)["broadcast"] is None
 
 
 def test_apply_creates_binds_and_adopts_the_new_broadcast_id():

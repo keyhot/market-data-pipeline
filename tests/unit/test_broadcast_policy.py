@@ -159,6 +159,18 @@ def test_select_returns_none_when_nothing_is_usable():
     assert select_broadcast([], None) is None
 
 
+def test_select_requires_our_stream_binding_when_one_is_known():
+    """The client lists ALL of the channel's broadcasts (a `persistent` filter
+    can't see the ones we create — they carry a scheduledStartTime). So a
+    healthy broadcast bound to some *other* stream must not be adopted: we'd
+    transition a stranger's broadcast live. Ours is the one bound to our
+    ingest stream."""
+    theirs = {"id": "x", "lifecycle": "ready", "bound_stream_id": "other"}
+    ours = {"id": "b1", "lifecycle": "ready", "bound_stream_id": "s1"}
+    assert select_broadcast([theirs, ours], None, stream_id="s1") == ours
+    assert select_broadcast([theirs], None, stream_id="s1") is None
+
+
 def test_tick_is_pure_no_side_effects():
     """Same inputs → same actions; caller's state unchanged after the call."""
     yt = {"broadcast": None, "stream": STREAM_ACTIVE}

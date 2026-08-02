@@ -65,11 +65,25 @@ def fetch_yt_state(client, state: BroadcastState, config: BroadcastConfig) -> di
     """One YouTube snapshot in the shape `tick` reasons about. Two reads per
     tick (list_broadcasts + find_stream) — well inside the free 10k/day quota
     at a 30s cadence."""
+    stream = client.find_stream(config.stream_title)
+    if stream is None:
+        # Loudly, every tick: a wrong BROADCAST_STREAM_TITLE is the likeliest
+        # setup mistake and its natural symptom is total silence — no stream
+        # means `_stream_active` is False, so `tick` never asks for anything
+        # and no error is ever raised. Name what we looked for.
+        logger.warning(
+            "No YouTube liveStream titled %r — check BROADCAST_STREAM_TITLE "
+            "against YouTube Studio → Go Live → Stream settings. The manager "
+            "cannot bind or go live until it matches.",
+            config.stream_title,
+        )
     return {
         "broadcast": select_broadcast(
-            client.list_broadcasts(), state.current_broadcast_id
+            client.list_broadcasts(),
+            state.current_broadcast_id,
+            stream_id=stream["id"] if stream else None,
         ),
-        "stream": client.find_stream(config.stream_title),
+        "stream": stream,
     }
 
 

@@ -94,13 +94,20 @@ class YouTubeLiveClient:
         self._yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
 
     def list_broadcasts(self) -> list[dict]:
+        # NOT broadcastType="persistent": the broadcasts we create carry a
+        # scheduledStartTime, which makes them *event* broadcasts, and the API
+        # treats event and persistent as distinct categories. Filtering to
+        # persistent would hide every broadcast we create — the next tick would
+        # see none, read unhealthy, and create another one each backoff window
+        # until the daily quota was gone. `mine=True` is the real scoping, and
+        # `select_broadcast` narrows to the one bound to our ingest stream.
         resp = (
             self._yt.liveBroadcasts()
             .list(
                 part="id,status,contentDetails",
-                broadcastType="persistent",
+                broadcastType="all",
                 mine=True,
-                maxResults=10,
+                maxResults=50,
             )
             .execute()
         )

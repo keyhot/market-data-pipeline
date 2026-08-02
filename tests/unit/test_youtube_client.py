@@ -84,6 +84,26 @@ def test_inactive_stream_maps_to_a_non_active_status():
     assert mapped["health"] is None  # absent healthStatus must not raise
 
 
+def test_broadcasts_are_listed_unfiltered_by_type():
+    """`broadcastType="persistent"` cannot see the broadcasts we create —
+    insert_broadcast sets a scheduledStartTime, which makes them *event*
+    broadcasts, and the API docs define event and persistent as distinct
+    categories. Filtering to persistent would make every created broadcast
+    invisible on the next tick: select_broadcast returns None, tick reads
+    unhealthy, and the manager creates a fresh orphan every backoff window
+    until the daily quota is gone. `mine=True` is what scopes the list."""
+    import inspect
+
+    from broadcast import youtube_client
+
+    source = inspect.getsource(youtube_client.YouTubeLiveClient.list_broadcasts)
+    code = "\n".join(
+        line for line in source.splitlines() if not line.strip().startswith("#")
+    )
+    assert 'broadcastType="persistent"' not in code
+    assert "mine=True" in code
+
+
 def test_mapped_broadcast_carries_lifecycle_and_binding():
     mapped = map_broadcast(
         {
