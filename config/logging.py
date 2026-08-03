@@ -1,5 +1,6 @@
 import logging
 import logging.config
+import re
 import time
 from pathlib import Path
 
@@ -15,12 +16,45 @@ sensitive_keys = (
 
 
 # mask sensitive data in record.msg
+# KI-016: masking used to apply only to dict/list payloads, so a *formatted
+# string* carrying a secret walked straight through — obsws_python logs
+# `password='...'` in its connect line, and it landed verbatim in the journal
+# every 30 seconds. Third-party libraries will keep doing this, so the filter
+# now redacts the shape rather than trusting every dependency.
+_SECRET_HINTS = ("password", "passwd", "token", "secret", "key")
+_SECRET_IN_TEXT = re.compile(
+    r"(?i)\b(password|passwd|token|secret|api[_-]?key)\b(\s*[=:]\s*)"
+    r"('[^']*'|\"[^\"]*\"|\S+)"
+)
+
+
 class SensitiveDataFilter(logging.Filter):
     sensitive_keys = sensitive_keys
 
     def filter(self, record):
         if isinstance(record.msg, (dict, list, tuple)):
             record.msg = sanitize(record.msg)
+            return True
+        # Cheap gate first. `record.getMessage()` formats msg % args eagerly,
+        # and this filter runs on every record the logger admits — doing that
+        # unconditionally under DEBUG made the test suite crawl. The *key* is
+        # always in the format string even when the value arrives via args, so
+        # scanning it is both sufficient and nearly free.
+        if not isinstance(record.msg, str):
+            return True
+        lowered = record.msg.lower()
+        if not any(hint in lowered for hint in _SECRET_HINTS):
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True  # never let masking break logging itself
+        redacted = _SECRET_IN_TEXT.sub(r"\1\2******", message)
+        if redacted != message:
+            # Only rewrite records that actually carried a secret; args are
+            # folded in because the value may have arrived through them.
+            record.msg = redacted
+            record.args = ()
         return True
 
 
@@ -93,6 +127,16 @@ def init_logging(log_level: str = "DEBUG") -> logging.Logger:
                 "handlers": ["console", "file"],
                 "level": log_level,
                 "propagate": False,
+            },
+            # KI-016: obsws_python logs its connection parameters — including
+            # the websocket password — at INFO, and dumps full request/response
+            # payloads at DEBUG. Neither tells us anything the watchdog and
+            # director don't already log themselves, and both reached the
+            # journal in cleartext every 30s. The redaction filter is the
+            # safety net; not emitting it is the fix.
+            "obsws_python": {
+                "level": "WARNING",
+                "propagate": True,
             },
         },
     }
