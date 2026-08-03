@@ -31,6 +31,15 @@ class WatchdogConfig:
     # Max one restart attempt per cooldown window — no flapping.
     restart_cooldown_seconds: float = 300.0
     obs_command: tuple = ("obs", "--startstreaming", "--minimize-to-tray")
+    # KI-015: how long to wait for a relaunched OBS to answer its websocket
+    # before calling the attempt failed. OBS takes a few seconds to boot and
+    # load a scene collection full of browser sources.
+    relaunch_verify_seconds: float = 25.0
+    relaunch_poll_seconds: float = 2.0
+    # Consecutive failed relaunches before the world log is told *why* the
+    # stream isn't coming back. Once per streak — silence was the bug, spam
+    # is not the fix.
+    escalate_after_failed_relaunches: int = 3
 
 
 @dataclass
@@ -40,6 +49,7 @@ class WatchdogState:
     last_restart_at: float | None = None
     down_since: float | None = None
     dropped_flagged: bool = False
+    failed_relaunches: int = 0
 
 
 def tick(
@@ -113,6 +123,109 @@ def _restart_allowed(
     )
 
 
+def note_relaunch_result(
+    state: WatchdogState, ok: bool, config: WatchdogConfig
+) -> list[tuple]:
+    """Fold a relaunch outcome into the state (KI-015). Pure.
+
+    The watchdog used to fire a `Popen` and assume it worked. On 2026-08-02 it
+    logged "OBS unreachable — relaunching" every 5 minutes for hours while no
+    OBS process ever appeared, and nothing said so anywhere a report could see:
+    a soak would have recorded a permanent outage with no cause. A streak of
+    failures now reaches the world log exactly once.
+    """
+    if ok:
+        state.failed_relaunches = 0
+        return []
+    state.failed_relaunches += 1
+    if state.failed_relaunches == config.escalate_after_failed_relaunches:
+        return [
+            (
+                "record",
+                "stream_dropped",
+                {
+                    "reason": "obs_relaunch_failing",
+                    "attempts": state.failed_relaunches,
+                },
+            )
+        ]
+    return []
+
+
+def _obs_pids() -> list[int]:
+    result = subprocess.run(
+        ["pgrep", "-x", "obs"], capture_output=True, text=True, check=False
+    )
+    return [int(pid) for pid in result.stdout.split() if pid.isdigit()]
+
+
+def _terminate(pid: int) -> None:
+    import os
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # already gone — that's the outcome we wanted
+    except PermissionError:
+        logger.warning("Cannot signal OBS process", extra={"pid": pid})
+
+
+def clear_wedged_obs(config: WatchdogConfig, list_pids=None, kill=None) -> int:
+    """Terminate any OBS still running while its websocket is unreachable.
+
+    This only runs on the relaunch path, which by definition means OBS is not
+    answering. A half-dead instance holds the single-instance lock, so every
+    relaunch silently no-ops against it — the watchdog kept "relaunching" into
+    a wall. Clearing it first is what makes the retry mean anything.
+    """
+    list_pids = list_pids or _obs_pids
+    kill = kill or _terminate
+    pids = list_pids()
+    for pid in pids:
+        logger.warning("Clearing unresponsive OBS before relaunch",
+                       extra={"pid": pid})
+        kill(pid)
+    return len(pids)
+
+
+def relaunch_obs(
+    config: WatchdogConfig, launch=None, probe=None, sleep=None, clear=None
+) -> bool:
+    """Relaunch OBS and **verify** it actually came up. Returns success.
+
+    `Popen` returning is not evidence OBS started — that assumption is KI-015.
+    Seams are injected so the whole path is tested without OBS or subprocess.
+    """
+    launch = launch or _launch_obs
+    probe = probe or probe_obs
+    sleep = sleep or time.sleep
+    clear = clear or clear_wedged_obs
+
+    clear(config)
+    logger.warning("OBS unreachable — relaunching")
+    launch(list(config.obs_command))
+
+    waited = 0.0
+    while waited < config.relaunch_verify_seconds:
+        sleep(config.relaunch_poll_seconds)
+        waited += config.relaunch_poll_seconds
+        if probe().get("reachable"):
+            logger.info("OBS relaunch verified", extra={"seconds": waited})
+            return True
+    logger.error(
+        "OBS did not come up after relaunch",
+        extra={"waited_seconds": waited},
+    )
+    return False
+
+
+def _launch_obs(command: list[str]) -> None:
+    subprocess.Popen(
+        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+
 def probe_obs() -> dict:
     try:
         client = stream_ctl.make_client()
@@ -126,19 +239,22 @@ def probe_obs() -> dict:
     }
 
 
-def execute_actions(actions: list[tuple], config: WatchdogConfig) -> None:
+def execute_actions(
+    actions: list[tuple], config: WatchdogConfig, state: WatchdogState | None = None
+) -> list[tuple]:
+    """Perform decided actions. Returns any follow-up actions produced by their
+    *outcomes* — today only the KI-015 relaunch escalation, which the caller
+    executes in turn."""
+    followups: list[tuple] = []
     for action in actions:
         kind = action[0]
         try:
             if kind == "record":
                 record_stream_event(action[1], action[2])
             elif kind == "relaunch_obs":
-                logger.warning("OBS unreachable — relaunching")
-                subprocess.Popen(
-                    list(config.obs_command),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                ok = relaunch_obs(config)
+                if state is not None:
+                    followups.extend(note_relaunch_result(state, ok, config))
             elif kind == "rebuild_scene":
                 stream_ctl.build_scene(stream_ctl.make_client())
                 logger.info("Scene rebuilt after OBS recovery")
@@ -147,6 +263,7 @@ def execute_actions(actions: list[tuple], config: WatchdogConfig) -> None:
                 logger.warning("Stream inactive — StartStream issued")
         except Exception:
             logger.exception("Watchdog action failed", extra={"action": kind})
+    return followups
 
 
 def main() -> None:
@@ -158,7 +275,9 @@ def main() -> None:
     )
     while True:
         state, actions = tick(probe_obs(), state, config, now=time.time())
-        execute_actions(actions, config)
+        followups = execute_actions(actions, config, state)
+        if followups:
+            execute_actions(followups, config, state)
         time.sleep(config.poll_seconds)
 
 

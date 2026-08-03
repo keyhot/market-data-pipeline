@@ -84,3 +84,88 @@ def test_cold_start_not_streaming_starts_stream():
     state, actions = tick(probe, state, CFG, now=1000.0)
     assert ("start_stream",) in actions
     assert _actions_of(actions, "record") == []  # nothing died; nothing to record
+
+
+# --- KI-015: a relaunch that produces no OBS must be noticed ---
+
+from scripts.stream_watchdog import (  # noqa: E402
+    clear_wedged_obs,
+    note_relaunch_result,
+    relaunch_obs,
+)
+
+
+def test_successful_relaunch_clears_the_failure_streak():
+    state = WatchdogState(failed_relaunches=2)
+    assert note_relaunch_result(state, True, WatchdogConfig()) == []
+    assert state.failed_relaunches == 0
+
+
+def test_repeated_failed_relaunches_escalate_exactly_once():
+    """KI-015: the watchdog logged 'OBS unreachable — relaunching' every 5
+    minutes for hours while no OBS ever appeared, and nothing in the world log
+    said so — the soak report would show a permanent outage with no cause.
+    Escalate once per streak: silence is the bug, spam is not the fix."""
+    config = WatchdogConfig(escalate_after_failed_relaunches=3)
+    state = WatchdogState()
+    assert note_relaunch_result(state, False, config) == []   # 1
+    assert note_relaunch_result(state, False, config) == []   # 2
+    escalation = note_relaunch_result(state, False, config)   # 3 -> escalate
+    assert escalation == [
+        ("record", "stream_dropped",
+         {"reason": "obs_relaunch_failing", "attempts": 3}),
+    ]
+    assert note_relaunch_result(state, False, config) == []   # 4, no repeat
+
+
+def test_relaunch_reports_failure_when_obs_never_answers():
+    """The whole bug: Popen returning is not evidence OBS started."""
+    launched = []
+    ok = relaunch_obs(
+        WatchdogConfig(relaunch_verify_seconds=3, relaunch_poll_seconds=1),
+        launch=lambda cmd: launched.append(cmd),
+        probe=lambda: {"reachable": False},
+        sleep=lambda _s: None,
+        clear=lambda config, **kw: 0,
+    )
+    assert ok is False
+    assert launched, "it should still have attempted the launch"
+
+
+def test_relaunch_reports_success_once_obs_answers():
+    answers = iter([{"reachable": False}, {"reachable": True}])
+    ok = relaunch_obs(
+        WatchdogConfig(relaunch_verify_seconds=10, relaunch_poll_seconds=1),
+        launch=lambda cmd: None,
+        probe=lambda: next(answers),
+        sleep=lambda _s: None,
+        clear=lambda config, **kw: 0,
+    )
+    assert ok is True
+
+
+def test_relaunch_clears_a_wedged_obs_before_launching():
+    """A previous OBS that is running but not answering makes every relaunch a
+    no-op — OBS refuses to start a second instance. Clearing has to happen
+    before the launch, not after."""
+    order = []
+    relaunch_obs(
+        WatchdogConfig(relaunch_verify_seconds=1, relaunch_poll_seconds=1),
+        launch=lambda cmd: order.append("launch"),
+        probe=lambda: {"reachable": True},
+        sleep=lambda _s: None,
+        clear=lambda config, **kw: order.append("clear") or 1,
+    )
+    assert order[:2] == ["clear", "launch"]
+
+
+def test_clear_wedged_obs_terminates_only_what_is_there():
+    killed = []
+    assert clear_wedged_obs(
+        WatchdogConfig(), list_pids=lambda: [], kill=killed.append
+    ) == 0
+    assert killed == []
+    assert clear_wedged_obs(
+        WatchdogConfig(), list_pids=lambda: [4242, 4243], kill=killed.append
+    ) == 2
+    assert killed == [4242, 4243]
