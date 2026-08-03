@@ -136,3 +136,52 @@ def test_ambient_amplitude_is_driven_by_market_state():
     the market moving."""
     body = client.get("/world").text
     assert "pressure" in body and "agitation" in body
+
+
+# --- B1: procedural characters, faces, and the named animations made real ---
+
+
+def test_every_registry_animation_is_implemented_by_the_renderer():
+    """reactions.py has named animations since Sprint 12 (jolt/shake/hop/…),
+    but they were only strings — the room nudged everything identically. Each
+    name now has a behaviour, and this is the invariant that keeps it true: a
+    new reaction whose animation isn't implemented would stand still on a
+    stream nobody is watching at 3am."""
+    from world.reactions import ANIMATIONS
+
+    body = client.get("/world").text
+    missing = sorted(a for a in ANIMATIONS if not re.search(rf"\b{a}:\s*\(c", body))
+    assert missing == [], f"animations with no renderer implementation: {missing}"
+
+
+def test_every_registry_mood_has_a_face():
+    """Same invariant one layer over: a mood with no expression is a blank
+    stare, and the fallback should be a deliberate choice, not an accident."""
+    from world.reactions import MOODS
+
+    body = client.get("/world").text
+    missing = sorted(m for m in MOODS if not re.search(rf"\b{m}:\s*\{{", body))
+    assert missing == [], f"moods with no face: {missing}"
+
+
+def test_reaction_registry_is_injected_rather_than_reinvented():
+    """The canvas must not keep its own copy of what an event means — drift
+    between the room and the overlays is exactly what world/visuals.py exists
+    to prevent."""
+    body = client.get("/world").text
+    assert "__REACTIONS_JSON__" not in body
+    assert '"signal_resolved"' in body and '"model_losing_streak"' in body
+    assert "reactionFor(" in body
+
+
+def test_characters_have_a_face_not_just_a_tinted_circle():
+    body = client.get("/world").text
+    for part in ("eyeL", "eyeR", "mouth", "browL", "setExpression("):
+        assert part in body, part
+
+
+def test_prototype_gallery_is_available_for_evaluation():
+    """B1 ships options, not a final look — the gallery is the human-eval gate."""
+    body = client.get("/world").text
+    assert "drawGallery(" in body
+    assert 'gallery' in body and '"orb"' in body and '"figure"' in body

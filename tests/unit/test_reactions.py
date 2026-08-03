@@ -68,3 +68,35 @@ def test_attach_reactions_enriches_recent_without_mutating_input():
     assert enriched["recent"][0]["reaction"]["mood"] == "dejected"
     assert "reaction" not in state["recent"][0]
     assert enriched["model"]["reaction"]["animation"] == "slump"
+
+
+# --- B1: the animation vocabulary the renderer must implement ---
+
+
+def test_animations_covers_every_animation_the_registry_can_emit():
+    """B1 makes the named animations real. The renderer implements one
+    behaviour per name, so this set is the contract between reactions.py and
+    the canvas — a reaction whose animation isn't here would render as standing
+    still, on a stream nobody is watching at 3am."""
+    from world.reactions import ANIMATIONS
+
+    emitted = set()
+    for event_type in KNOWN_EVENT_TYPES:
+        for tier in range(4):
+            for payload in ({}, {"outcome": "win"}, {"outcome": "loss"},
+                            {"direction": "up"}, {"direction": "down"}):
+                emitted.add(reaction_for(event_type, tier, payload)["animation"])
+    emitted.add(reaction_for("some_future_rule", 0)["animation"])  # fallback
+    assert emitted <= ANIMATIONS, f"animations with no entry: {emitted - ANIMATIONS}"
+
+
+def test_moods_covers_every_mood_the_registry_can_emit():
+    from world.reactions import MOODS
+
+    emitted = set()
+    for event_type in KNOWN_EVENT_TYPES:
+        for payload in ({}, {"outcome": "win"}, {"outcome": "loss"},
+                        {"direction": "up"}, {"direction": "down"}):
+            emitted.add(reaction_for(event_type, 1, payload)["mood"])
+    emitted.add(reaction_for("some_future_rule", 0)["mood"])
+    assert emitted <= MOODS, f"moods with no entry: {emitted - MOODS}"

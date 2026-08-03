@@ -116,9 +116,41 @@
       trader = character("TRADER");
       positionCharacters();
       startAmbient();
+
+      // B1 evaluation gate: `?gallery=1` lays out both styles against every
+      // mood so the options can be compared in one screenshot. Aesthetics is
+      // the thing no assertion grades, so it needs to be *lookable*.
+      if (new URLSearchParams(location.search).get("gallery") === "1") {
+        drawGallery();
+        return;
+      }
+
       await refresh();
       subscribe();
       setInterval(refresh, 60000);   // projection stays authoritative server-side
+    }
+
+    function drawGallery() {
+      model.container.visible = false;
+      trader.container.visible = false;
+      const moods = Object.keys(FACE);
+      const perRow = 12;
+      const bandsPerStyle = Math.ceil(moods.length / perRow);
+      ["orb", "figure"].forEach((style, row) => {
+        moods.forEach((mood, i) => {
+          const col = i % perRow;
+          const band = Math.floor(i / perRow);
+          const sample = character(mood.slice(0, 9), style);
+          sample.container.x = 110 + col * 150;
+          sample.container.y = 200 + (row * bandsPerStyle + band) * 240;
+          sample.baseX = sample.container.x;
+          sample.baseY = sample.container.y;
+          sample.headBaseY = sample.head.y;
+          setExpression(sample, mood);
+          sample.moodTag.text = mood;
+          sample.stat.text = style;
+        });
+      });
     }
 
     function label(text, x, y, size, tint) {
@@ -136,18 +168,231 @@
       layers.room.addChild(floor);
     }
 
-    // One inhabitant: a body whose colour is its mood and a label carrying the
-    // numbers. Procedural geometry only in v0 — no external assets.
-    function character(name) {
+    // --- B1: procedural characters ----------------------------------------
+    // The inhabitants were colour-swatch circles: the room had a mood but no
+    // face, and reactions.py's named animations (jolt/shake/hop/…) existed only
+    // as strings. Both are real now. Procedural geometry only — no external
+    // assets, so the CSP/SRI rule holds and there is no asset pipeline.
+    const REACTIONS = __REACTIONS_JSON__;
+    const STYLE = new URLSearchParams(location.search).get("style") || "figure";
+
+    // Expression as two axes rather than 19 hand-drawn faces: valence bends
+    // the mouth, arousal opens the eyes and lifts the brows. Every mood the
+    // reactions registry can emit has an entry (page test enforces it); an
+    // unknown one lands on neutral rather than a blank stare.
+    const FACE = {
+      elated:    { valence:  1.0, arousal: 0.9 },
+      relieved:  { valence:  0.7, arousal: 0.2 },
+      proud:     { valence:  0.8, arousal: 0.5 },
+      eager:     { valence:  0.7, arousal: 0.8 },
+      decisive:  { valence:  0.4, arousal: 0.7 },
+      focused:   { valence:  0.0, arousal: 0.6 },
+      attentive: { valence:  0.1, arousal: 0.5 },
+      speaking:  { valence:  0.2, arousal: 0.5 },
+      weighing:  { valence: -0.1, arousal: 0.3 },
+      idle:      { valence:  0.0, arousal: 0.0 },
+      neutral:   { valence:  0.0, arousal: 0.3 },
+      surprised: { valence:  0.2, arousal: 1.0 },
+      startled:  { valence: -0.2, arousal: 1.0 },
+      alert:     { valence:  0.0, arousal: 0.9 },
+      anxious:   { valence: -0.5, arousal: 0.8 },
+      alarmed:   { valence: -0.7, arousal: 1.0 },
+      resigned:  { valence: -0.4, arousal: 0.1 },
+      dejected:  { valence: -0.9, arousal: 0.2 },
+      grim:      { valence: -0.8, arousal: 0.4 },
+      calm:      { valence:  0.1, arousal: 0.2 },
+      bullish:   { valence:  0.8, arousal: 0.6 },
+      bearish:   { valence: -0.8, arousal: 0.6 },
+      panicked:  { valence: -1.0, arousal: 1.0 },
+    };
+
+    function faceFor(mood) {
+      return FACE[mood] ?? FACE.neutral;
+    }
+
+    // One inhabitant: a body whose colour is its mood, a face that reads at a
+    // glance, and a label carrying the numbers.
+    function character(name, style) {
+      style = style || STYLE;
       const container = new PIXI.Container();
       container.y = app.screen.height * 0.72;
-      const body = new PIXI.Graphics().circle(0, -60, 44).fill(0x545862);
+
+      const body = new PIXI.Graphics();
+      const head = new PIXI.Container();
+      const skull = new PIXI.Graphics();
+      const eyeL = new PIXI.Graphics();
+      const eyeR = new PIXI.Graphics();
+      const mouth = new PIXI.Graphics();
+      const browL = new PIXI.Graphics();
+      const browR = new PIXI.Graphics();
+      const armL = new PIXI.Graphics();
+      const armR = new PIXI.Graphics();
+
+      if (style === "orb") {
+        // Minimal: one soft body, the face sits directly on it.
+        body.circle(0, -60, 46).fill(0x545862);
+        head.y = -66;
+      } else {
+        // Figure: a capsule body with a head above it and two simple arms, so
+        // posture (lean, slump, shrug) has something to read against.
+        body.roundRect(-30, -70, 60, 76, 24).fill(0x545862);
+        armL.roundRect(-8, -2, 16, 40, 8).fill(0x545862);
+        armR.roundRect(-8, -2, 16, 40, 8).fill(0x545862);
+        armL.x = -30; armL.y = -56; armL.pivot.set(0, 0);
+        armR.x = 30;  armR.y = -56; armR.pivot.set(0, 0);
+        skull.circle(0, 0, 27).fill(0x545862);
+        head.y = -98;
+      }
+      head.addChild(skull, browL, browR, eyeL, eyeR, mouth);
+
       const nameTag = label(name, -40, 10, 18);
       const stat = label("", -80, 34, 14, 0x787b86);
-      const moodTag = label("", -40, -140, 16, 0x787b86);
-      container.addChild(body, nameTag, stat, moodTag);
+      const moodTag = label("", -40, -160, 16, 0x787b86);
+      container.addChild(body, armL, armR, head, nameTag, stat, moodTag);
       layers.chars.addChild(container);
-      return { container, body, stat, moodTag, baseY: container.y };
+
+      const char = {
+        container, body, head, skull, eyeL, eyeR, mouth, browL, browR,
+        armL, armR, style, stat, moodTag,
+        baseY: container.y, mood: "neutral", anim: null, phase: 0,
+      };
+      setExpression(char, "neutral");
+      return char;
+    }
+
+    // Faces are redrawn rather than tweened: a handful of primitives per mood
+    // change is far cheaper than keeping a rig, and OBS renders in software.
+    function setExpression(char, mood) {
+      char.mood = mood;
+      const { valence, arousal } = faceFor(mood);
+      const tint = color(mood);
+      const open = 2.2 + arousal * 4.2;            // eyelid opening
+      const eyeY = char.style === "orb" ? -4 : -4;
+      const dx = char.style === "orb" ? 15 : 10;
+
+      for (const [eye, side] of [[char.eyeL, -1], [char.eyeR, 1]]) {
+        eye.clear();
+        if (arousal < 0.08) {
+          // Nearly asleep: a closed lid line reads better than a tiny dot.
+          eye.roundRect(side * dx - 5, eyeY, 10, 2, 1).fill(0xd1d4dc);
+        } else {
+          eye.ellipse(side * dx, eyeY, 3.4, open / 2).fill(0xd1d4dc);
+        }
+      }
+      for (const [brow, side] of [[char.browL, -1], [char.browR, 1]]) {
+        brow.clear();
+        // Worry raises the INNER brow (y grows downward). Positive moods stay
+        // level — angling them the other way reads as anger, which is how the
+        // first pass made every happy face look stern.
+        const worry = valence < 0 ? -valence : 0;
+        const lift = arousal * 3;
+        const inner = eyeY - 9 - lift - worry * 4;
+        const outer = eyeY - 9 - lift + worry * 3;
+        brow.moveTo(side * (dx - 7), inner)
+            .lineTo(side * (dx + 7), outer)
+            .stroke({ width: 2, color: 0x9aa4b2 });
+      }
+      char.mouth.clear();
+      const curve = valence * 7;
+      const width = 9 + arousal * 3;
+      char.mouth
+        .moveTo(-width, 10)
+        .quadraticCurveTo(0, 10 + curve, width, 10)
+        .stroke({ width: 2.5, color: 0xd1d4dc });
+
+      char.body.tint = tint;
+      if (char.skull) char.skull.tint = tint;
+      char.armL.tint = tint;
+      char.armR.tint = tint;
+    }
+
+    // Each named animation from reactions.py, made real. `phase` runs 0->1;
+    // every one returns to rest so nothing is ever left sticky-amped.
+    const ANIM = {
+      idle:    (c, p) => { c.container.y = c.baseY + Math.sin(p * Math.PI * 2) * 2; },
+      jolt:    (c, p, a) => { c.container.y = c.baseY - Math.sin(p * Math.PI) * 26 * a;
+                              c.container.scale.set(1 + Math.sin(p * Math.PI) * 0.08 * a); },
+      shake:   (c, p, a) => { c.container.x = c.baseX + Math.sin(p * 42) * 9 * a * (1 - p); },
+      hop:     (c, p, a) => { const j = Math.sin(p * Math.PI);
+                              c.container.y = c.baseY - j * 40 * a;
+                              c.container.scale.set(1 + j * 0.05 * a, 1 - j * 0.05 * a); },
+      pulse:   (c, p, a) => { c.container.scale.set(1 + Math.sin(p * Math.PI * 2) * 0.11 * a); },
+      lean:    (c, p, a) => { c.container.rotation = Math.sin(p * Math.PI) * 0.16 * a; },
+      shrug:   (c, p, a) => { const u = Math.sin(p * Math.PI);
+                              c.armL.rotation = -u * 0.9 * a; c.armR.rotation = u * 0.9 * a;
+                              c.container.y = c.baseY - u * 6 * a; },
+      slump:   (c, p, a) => { const u = Math.sin(p * Math.PI);
+                              c.container.y = c.baseY + u * 12 * a;
+                              c.head.y = c.headBaseY + u * 9 * a;
+                              c.container.scale.set(1, 1 - u * 0.06 * a); },
+      cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2));
+                              c.container.y = c.baseY - u * 30 * a;
+                              c.armL.rotation = -u * 2.2; c.armR.rotation = u * 2.2; },
+      wave:    (c, p, a) => { c.armR.rotation = 1.4 + Math.sin(p * Math.PI * 6) * 0.5 * a; },
+      sleep:   (c, p) => { const b = Math.sin(p * Math.PI * 2) * 0.02;
+                           c.container.scale.set(1 + b, 1 - b); },
+      flicker: (c, p) => { c.container.alpha = p % 0.25 < 0.125 ? 0.35 : 1; },
+      step:    (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 26 * a; },
+      turn:    (c, p) => { c.container.scale.x = Math.cos(p * Math.PI * 2); },
+      pan:     (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 10 * a; },
+      talk:    (c, p) => { const o = Math.abs(Math.sin(p * Math.PI * 8));
+                           c.mouth.scale.y = 1 + o * 1.6; },
+    };
+
+    function playAnimation(char, animation, tier) {
+      if (!ANIM[animation]) animation = "idle";
+      char.anim = animation;
+      char.phase = 0;
+      // Tier scales amplitude, not choice: the same reaction reads bigger when
+      // the event is bigger — calm that swells, on the character itself.
+      char.amp = 0.6 + Math.max(0, Math.min(tier, 3)) * 0.25;
+      char.duration = (ANIM_DURATION[animation] ?? 0.9);
+    }
+
+    const ANIM_DURATION = {
+      sleep: 4.0, idle: 3.2, talk: 1.6, wave: 1.4, flicker: 1.0, cheer: 1.2,
+    };
+
+    function restCharacter(char) {
+      char.container.y = char.baseY;
+      char.container.x = char.baseX;
+      char.container.rotation = 0;
+      char.container.alpha = 1;
+      char.container.scale.set(1, 1);
+      char.armL.rotation = 0;
+      char.armR.rotation = 0;
+      char.mouth.scale.y = 1;
+      if (char.headBaseY != null) char.head.y = char.headBaseY;
+    }
+
+    function advanceCharacters(dt) {
+      for (const char of [model, trader]) {
+        if (!char) continue;
+        if (!char.anim) {           // at rest, breathe so nobody is a statue
+          ANIM.idle(char, (ambient.t / 3.2) % 1, 1);
+          continue;
+        }
+        char.phase += dt / char.duration;
+        if (char.phase >= 1) {
+          char.anim = null;
+          restCharacter(char);
+          continue;
+        }
+        ANIM[char.anim](char, char.phase, char.amp ?? 1);
+      }
+    }
+
+    // Mirrors world/reactions.reaction_for so the canvas and the server agree
+    // on what an event means — the registry itself is injected above.
+    function reactionFor(event) {
+      let entry = REACTIONS.base[event.event_type] ?? REACTIONS.fallback;
+      const payload = event.payload ?? {};
+      if (event.event_type === "signal_resolved" && REACTIONS.outcomes[payload.outcome]) {
+        entry = REACTIONS.outcomes[payload.outcome];
+      } else if (event.event_type === "streak" && REACTIONS.directions[payload.direction]) {
+        entry = REACTIONS.directions[payload.direction];
+      }
+      return entry;
     }
 
     function positionCharacters() {
@@ -155,13 +400,19 @@
       trader.container.x = app.screen.width * 0.62;
       model.baseY = trader.baseY = app.screen.height * 0.72;
       model.container.y = trader.container.y = model.baseY;
+      // Animations displace from a remembered rest pose, so it has to be
+      // recorded here — a resize must not leave a character drifting.
+      for (const char of [model, trader]) {
+        char.baseX = char.container.x;
+        char.headBaseY = char.head.y;
+      }
     }
 
     function draw(state) {
       positionCharacters();
       const m = state.model ?? {};
       const mood = m.reaction?.mood ?? "neutral";
-      model.body.tint = color(mood);
+      setExpression(model, mood);
       model.moodTag.text = mood;
       // KI-012: show the same last-N-resolved record as the overlay strips
       // (m.accuracy), labelled with its window, so the room and strips agree.
@@ -173,7 +424,8 @@
       // The trader stays dormant until trader_* events exist, so the room is
       // complete whether or not the freqtrade sidecar is running.
       const traderState = state.trader ?? null;
-      trader.body.tint = traderState ? color(traderState.mood) : 0x2a2e39;
+      // No sidecar running means asleep, not dead: a closed-eye idle face.
+      setExpression(trader, traderState ? traderState.mood : "idle");
       trader.moodTag.text = traderState ? traderState.mood : "";
       trader.stat.text = traderState
         ? `${traderState.open_trades} open · ${traderState.profit_pct}%`
@@ -275,6 +527,9 @@
         layers.chars.x = Math.sin(ambient.t * 0.21) * swayAmp;
         layers.chars.y = Math.cos(ambient.t * 0.17) * swayAmp * 0.5;
         layers.props.x = Math.sin(ambient.t * 0.13) * swayAmp * 0.4;
+
+        // Characters: run any in-flight reaction animation, or breathe.
+        advanceCharacters(dt);
 
         // Drift: density and speed track agitation, so a quiet market has a
         // barely-there field and a busy one visibly stirs.
@@ -397,12 +652,12 @@
       }
       const target = event.event_type.startsWith("trader_") ? trader : model;
       const tier = tierOf(event.severity);
-      target.container.y = target.baseY - (6 + tier * 8);
-      target.container.scale.set(1 + tier * 0.05);
-      setTimeout(() => {
-        target.container.y = target.baseY;
-        target.container.scale.set(1);
-      }, 500);
+      // B1: the reaction registry decides the face and the movement; the tier
+      // only decides how big it reads.
+      const reaction = reactionFor(event);
+      setExpression(target, reaction.mood);
+      target.moodTag.text = reaction.mood;
+      playAnimation(target, reaction.animation, tier);
     }
 
     async function refresh() {

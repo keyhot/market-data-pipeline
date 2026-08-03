@@ -45,6 +45,32 @@ _STREAK_DIRECTIONS = {
 }
 
 
+# Every animation name the registry can emit (Sprint 14, B1). The renderer
+# implements one behaviour per name; this set is what the page is held to, so a
+# new reaction can't silently fall back to standing still on a 24/7 stream.
+ANIMATIONS: frozenset[str] = frozenset(
+    animation
+    for _mood, animation in (
+        *REACTIONS.values(),
+        *_SIGNAL_OUTCOMES.values(),
+        *_STREAK_DIRECTIONS.values(),
+        _FALLBACK,
+    )
+)
+
+# Likewise for moods: the face has an expression per mood, and the fallback
+# keeps an unknown mood renderable rather than blank.
+MOODS: frozenset[str] = frozenset(
+    mood
+    for mood, _animation in (
+        *REACTIONS.values(),
+        *_SIGNAL_OUTCOMES.values(),
+        *_STREAK_DIRECTIONS.values(),
+        _FALLBACK,
+    )
+)
+
+
 def reaction_for(event_type: str, tier: int, payload: dict | None = None) -> dict:
     """Mood/animation descriptor for one event at one severity tier."""
     payload = payload or {}

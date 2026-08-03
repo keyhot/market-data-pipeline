@@ -46,7 +46,7 @@ from storage.writes import (
     write_news,
     write_price_bars,
 )
-from world import visuals
+from world import reactions, visuals
 from world.reactions import attach_reactions
 from world.salience import KNOWN_EVENT_TYPES
 from world.state import project_state
@@ -120,6 +120,30 @@ _THEME_REPLACEMENTS = {
     # B5: one accent per speaking character, from the same palette module, so
     # a speech bubble can never drift from the room's colours.
     "__CHARACTER_COLORS_JSON__": json.dumps(visuals.CHARACTER_COLORS),
+    # B1: the reaction registry itself reaches the canvas, so "what happened"
+    # maps to a face and a named animation from ONE source of truth. The
+    # renderer must not re-invent this mapping — drift between the room and the
+    # overlays was the failure world/visuals.py exists to prevent.
+    "__REACTIONS_JSON__": json.dumps(
+        {
+            "base": {
+                event_type: {"mood": mood, "animation": animation}
+                for event_type, (mood, animation) in reactions.REACTIONS.items()
+            },
+            "outcomes": {
+                outcome: {"mood": mood, "animation": animation}
+                for outcome, (mood, animation) in reactions._SIGNAL_OUTCOMES.items()
+            },
+            "directions": {
+                direction: {"mood": mood, "animation": animation}
+                for direction, (mood, animation) in reactions._STREAK_DIRECTIONS.items()
+            },
+            "fallback": {
+                "mood": reactions._FALLBACK[0],
+                "animation": reactions._FALLBACK[1],
+            },
+        }
+    ),
 }
 
 
