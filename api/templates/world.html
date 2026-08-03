@@ -133,16 +133,15 @@
     function drawGallery() {
       model.container.visible = false;
       trader.container.visible = false;
-      const moods = Object.keys(FACE);
-      const perRow = 12;
-      const bandsPerStyle = Math.ceil(moods.length / perRow);
-      ["orb", "figure"].forEach((style, row) => {
-        moods.forEach((mood, i) => {
-          const col = i % perRow;
-          const band = Math.floor(i / perRow);
-          const sample = character(mood.slice(0, 9), style);
-          sample.container.x = 110 + col * 150;
-          sample.container.y = 200 + (row * bandsPerStyle + band) * 240;
+      // A representative spread rather than all 23 moods: four styles compared
+      // across the emotional range they actually have to carry.
+      const moods = ["elated", "focused", "anxious", "dejected", "idle",
+                     "startled", "bullish", "bearish"];
+      STYLES.forEach((style, row) => {
+        moods.forEach((mood, col) => {
+          const sample = character(mood, style);
+          sample.container.x = 150 + col * 225;
+          sample.container.y = 300 + row * 320;
           sample.baseX = sample.container.x;
           sample.baseY = sample.container.y;
           sample.headBaseY = sample.head.y;
@@ -174,7 +173,12 @@
     // as strings. Both are real now. Procedural geometry only — no external
     // assets, so the CSP/SRI rule holds and there is no asset pipeline.
     const REACTIONS = __REACTIONS_JSON__;
-    const STYLE = new URLSearchParams(location.search).get("style") || "figure";
+    // The bodies are built from the market's own glyphs rather than from
+    // anatomy. This world is made of price data; its inhabitants should be
+    // too — and a candle or a bar cluster still reads at 120px on a stream,
+    // where limbs turn to mush. The face is identical across all of them.
+    const STYLES = ["candle", "bars", "monolith", "orb"];
+    const STYLE = new URLSearchParams(location.search).get("style") || "candle";
 
     // Expression as two axes rather than 19 hand-drawn faces: valence bends
     // the mouth, arousal opens the eyes and lifts the brows. Every mood the
@@ -210,10 +214,57 @@
       return FACE[mood] ?? FACE.neutral;
     }
 
+    // Each body is a market glyph. `accents` are the parts that can move
+    // independently of the mass — wicks, bars — which is what gives these
+    // silhouettes something to act with in place of limbs.
+    const BODIES = {
+      // A candlestick: real body between two wicks. The project's own glyph,
+      // and the one that reads most instantly as "this thing is the market".
+      candle(body, accents) {
+        body.roundRect(-27, -104, 54, 84, 8).fill(0x545862);
+        // Wick thick enough to read as a neck at stream distance, and short
+        // enough that the head sits ON the candle rather than floating over it.
+        const wickTop = new PIXI.Graphics().roundRect(-3.5, -130, 7, 30, 3.5)
+          .fill(0x545862);
+        const wickLow = new PIXI.Graphics().roundRect(-3.5, -22, 7, 26, 3.5)
+          .fill(0x545862);
+        accents.push(wickTop, wickLow);
+        return -142;
+      },
+      // A cluster of bars — volume, an equaliser, a heartbeat. The most
+      // animatable body: the bars themselves can jump, ripple and settle.
+      bars(body, accents) {
+        const heights = [54, 86, 68, 96, 60];
+        heights.forEach((h, i) => {
+          const bar = new PIXI.Graphics()
+            .roundRect(-6, -h, 12, h, 4).fill(0x545862);
+          bar.x = -36 + i * 18;
+          bar.restHeight = h;
+          accents.push(bar);
+        });
+        return -138;
+      },
+      // A weighted column — deliberate, unhurried, hard to topple. The calm
+      // end of the register; a piece that looks like it is thinking.
+      monolith(body, accents) {
+        body.roundRect(-26, -104, 52, 78, 20).fill(0x545862);
+        const base = new PIXI.Graphics()
+          .roundRect(-38, -30, 76, 30, 14).fill(0x545862);
+        accents.push(base);
+        return -134;
+      },
+      // The original: face on a single disc, no body. Kept as the baseline the
+      // others are judged against.
+      orb(body) {
+        body.circle(0, -60, 46).fill(0x545862);
+        return -66;
+      },
+    };
+
     // One inhabitant: a body whose colour is its mood, a face that reads at a
     // glance, and a label carrying the numbers.
     function character(name, style) {
-      style = style || STYLE;
+      style = BODIES[style] ? style : STYLE;
       const container = new PIXI.Container();
       container.y = app.screen.height * 0.72;
 
@@ -225,39 +276,47 @@
       const mouth = new PIXI.Graphics();
       const browL = new PIXI.Graphics();
       const browR = new PIXI.Graphics();
-      const armL = new PIXI.Graphics();
-      const armR = new PIXI.Graphics();
+      const accents = [];
 
-      if (style === "orb") {
-        // Minimal: one soft body, the face sits directly on it.
-        body.circle(0, -60, 46).fill(0x545862);
-        head.y = -66;
-      } else {
-        // Figure: a capsule body with a head above it and two simple arms, so
-        // posture (lean, slump, shrug) has something to read against.
-        body.roundRect(-30, -70, 60, 76, 24).fill(0x545862);
-        armL.roundRect(-8, -2, 16, 40, 8).fill(0x545862);
-        armR.roundRect(-8, -2, 16, 40, 8).fill(0x545862);
-        armL.x = -30; armL.y = -56; armL.pivot.set(0, 0);
-        armR.x = 30;  armR.y = -56; armR.pivot.set(0, 0);
-        skull.circle(0, 0, 27).fill(0x545862);
-        head.y = -98;
-      }
+      const headY = BODIES[style](body, accents);
+      // The orb *is* the face; every other body carries a head above it.
+      if (style !== "orb") skull.circle(0, 0, 28).fill(0x545862);
+      head.y = headY;
       head.addChild(skull, browL, browR, eyeL, eyeR, mouth);
 
-      const nameTag = label(name, -40, 10, 18);
-      const stat = label("", -80, 34, 14, 0x787b86);
-      const moodTag = label("", -40, -160, 16, 0x787b86);
-      container.addChild(body, armL, armR, head, nameTag, stat, moodTag);
+      const nameTag = label(name, -40, 22, 18);
+      const stat = label("", -80, 46, 14, 0x787b86);
+      const moodTag = label("", -40, headY - 56, 16, 0x787b86);
+      // Accents go behind the mass, so a wick reads as emerging from it.
+      container.addChild(...accents, body, head, nameTag, stat, moodTag);
       layers.chars.addChild(container);
 
       const char = {
         container, body, head, skull, eyeL, eyeR, mouth, browL, browR,
-        armL, armR, style, stat, moodTag,
+        accents, style, stat, moodTag,
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
       };
       setExpression(char, "neutral");
       return char;
+    }
+
+    // Limb-less bodies still need a gesture. Accents are the hands: wicks
+    // flick, bars ripple, the base shifts its weight.
+    function gesture(char, amount, stagger) {
+      char.accents.forEach((accent, i) => {
+        const offset = stagger ? Math.sin(amount * Math.PI * 2 + i * 0.9) : 1;
+        accent.rotation = amount * 0.35 * (i % 2 ? 1 : -1) * (stagger ? offset : 1);
+        if (accent.restHeight) {
+          accent.scale.y = 1 + Math.abs(amount) * 0.55 * (stagger ? offset : 1);
+        }
+      });
+    }
+
+    function restAccents(char) {
+      for (const accent of char.accents) {
+        accent.rotation = 0;
+        accent.scale.set(1, 1);
+      }
     }
 
     // Faces are redrawn rather than tweened: a handful of primitives per mood
@@ -302,8 +361,7 @@
 
       char.body.tint = tint;
       if (char.skull) char.skull.tint = tint;
-      char.armL.tint = tint;
-      char.armR.tint = tint;
+      for (const accent of char.accents) accent.tint = tint;
     }
 
     // Each named animation from reactions.py, made real. `phase` runs 0->1;
@@ -319,16 +377,17 @@
       pulse:   (c, p, a) => { c.container.scale.set(1 + Math.sin(p * Math.PI * 2) * 0.11 * a); },
       lean:    (c, p, a) => { c.container.rotation = Math.sin(p * Math.PI) * 0.16 * a; },
       shrug:   (c, p, a) => { const u = Math.sin(p * Math.PI);
-                              c.armL.rotation = -u * 0.9 * a; c.armR.rotation = u * 0.9 * a;
+                              gesture(c, u * a, false);
                               c.container.y = c.baseY - u * 6 * a; },
       slump:   (c, p, a) => { const u = Math.sin(p * Math.PI);
                               c.container.y = c.baseY + u * 12 * a;
-                              c.head.y = c.headBaseY + u * 9 * a;
-                              c.container.scale.set(1, 1 - u * 0.06 * a); },
+                              c.head.y = c.headBaseY + u * 10 * a;
+                              c.container.scale.set(1, 1 - u * 0.07 * a); },
       cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2));
                               c.container.y = c.baseY - u * 30 * a;
-                              c.armL.rotation = -u * 2.2; c.armR.rotation = u * 2.2; },
-      wave:    (c, p, a) => { c.armR.rotation = 1.4 + Math.sin(p * Math.PI * 6) * 0.5 * a; },
+                              gesture(c, u * a, true); },
+      wave:    (c, p, a) => { gesture(c, Math.sin(p * Math.PI * 6) * 0.6 * a, false);
+                              c.head.rotation = Math.sin(p * Math.PI * 6) * 0.10 * a; },
       sleep:   (c, p) => { const b = Math.sin(p * Math.PI * 2) * 0.02;
                            c.container.scale.set(1 + b, 1 - b); },
       flicker: (c, p) => { c.container.alpha = p % 0.25 < 0.125 ? 0.35 : 1; },
@@ -336,7 +395,8 @@
       turn:    (c, p) => { c.container.scale.x = Math.cos(p * Math.PI * 2); },
       pan:     (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 10 * a; },
       talk:    (c, p) => { const o = Math.abs(Math.sin(p * Math.PI * 8));
-                           c.mouth.scale.y = 1 + o * 1.6; },
+                           c.mouth.scale.y = 1 + o * 1.6;
+                           gesture(c, o * 0.25, true); },
     };
 
     function playAnimation(char, animation, tier) {
@@ -359,9 +419,9 @@
       char.container.rotation = 0;
       char.container.alpha = 1;
       char.container.scale.set(1, 1);
-      char.armL.rotation = 0;
-      char.armR.rotation = 0;
+      char.head.rotation = 0;
       char.mouth.scale.y = 1;
+      restAccents(char);
       if (char.headBaseY != null) char.head.y = char.headBaseY;
     }
 

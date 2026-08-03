@@ -180,8 +180,29 @@ def test_characters_have_a_face_not_just_a_tinted_circle():
         assert part in body, part
 
 
+def test_every_offered_style_has_a_body_builder():
+    """The styles list is what the gallery renders and what ?style= accepts —
+    an entry with no builder would silently fall back and quietly misrepresent
+    the option being evaluated."""
+    body = client.get("/world").text
+    styles = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
+    names = re.findall(r'"([a-z]+)"', styles)
+    assert len(names) >= 3, names
+    for name in names:
+        assert re.search(rf"\b{name}\(body", body), f"{name} has no body builder"
+
+
+def test_limbless_bodies_still_have_a_gesture():
+    """These bodies are market glyphs, not anatomy, so the arm-driven
+    animations (shrug/wave/cheer) need something else to move — otherwise
+    three of the sixteen would render as nothing at all."""
+    body = client.get("/world").text
+    assert "function gesture(" in body
+    assert "accents" in body
+
+
 def test_prototype_gallery_is_available_for_evaluation():
     """B1 ships options, not a final look — the gallery is the human-eval gate."""
     body = client.get("/world").text
     assert "drawGallery(" in body
-    assert 'gallery' in body and '"orb"' in body and '"figure"' in body
+    assert "gallery" in body and "STYLES" in body
