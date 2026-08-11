@@ -6,9 +6,13 @@ OBS, no clock, and no DB. Compose restart policies already self-heal the
 api/scheduler containers; this covers the host-side pieces compose can't.
 """
 
+import codecs
 import logging
+import os
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +44,11 @@ class WatchdogConfig:
     # stream isn't coming back. Once per streak — silence was the bug, spam
     # is not the fix.
     escalate_after_failed_relaunches: int = 3
+    # KI-017: how long to wait for a terminated OBS to really be gone before
+    # escalating to SIGKILL. Launching while one is still shutting down makes
+    # OBS pop a modal "already running" dialog that waits for a human.
+    obs_terminate_grace_seconds: float = 10.0
+    obs_terminate_poll_seconds: float = 1.0
 
 
 @dataclass
@@ -152,40 +161,88 @@ def note_relaunch_result(
     return []
 
 
-def _obs_pids() -> list[int]:
+def _obs_processes() -> list[tuple[int, str]]:
+    """(pid, state) for every process named `obs`. State matters: a zombie
+    still matches a name lookup but no signal can clear it (KI-017)."""
     result = subprocess.run(
-        ["pgrep", "-x", "obs"], capture_output=True, text=True, check=False
+        ["ps", "-C", "obs", "-o", "pid=,stat="],
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    return [int(pid) for pid in result.stdout.split() if pid.isdigit()]
+    procs: list[tuple[int, str]] = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0].isdigit():
+            procs.append((int(fields[0]), fields[1]))
+    return procs
 
 
-def _terminate(pid: int) -> None:
-    import os
-    import signal
+def live_obs_pids(processes: list[tuple[int, str]]) -> list[int]:
+    """Drop zombies. Pure.
 
+    A defunct OBS is already dead — it holds no single-instance lock and
+    cannot be terminated. Signalling it accomplishes nothing, and counting it
+    made the watchdog report it was clearing a wedged OBS every 5 minutes when
+    it was really looking at the corpse of the OBS it had just failed to start.
+    """
+    return [pid for pid, state in processes if not state.startswith("Z")]
+
+
+def _terminate(pid: int, sig: int = signal.SIGTERM) -> None:
     try:
-        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, sig)
     except ProcessLookupError:
         pass  # already gone — that's the outcome we wanted
     except PermissionError:
         logger.warning("Cannot signal OBS process", extra={"pid": pid})
 
 
-def clear_wedged_obs(config: WatchdogConfig, list_pids=None, kill=None) -> int:
-    """Terminate any OBS still running while its websocket is unreachable.
+def clear_wedged_obs(
+    config: WatchdogConfig, list_procs=None, kill=None, sleep=None
+) -> int:
+    """Terminate any OBS still running while its websocket is unreachable, and
+    **wait until it is really gone**.
 
     This only runs on the relaunch path, which by definition means OBS is not
     answering. A half-dead instance holds the single-instance lock, so every
     relaunch silently no-ops against it — the watchdog kept "relaunching" into
     a wall. Clearing it first is what makes the retry mean anything.
+
+    KI-017: signalling is not the same as gone. OBS's single-instance check is
+    a **modal dialog** ("OBS is already running… Launch Anyway / Cancel"), so
+    launching into a still-shutting-down instance doesn't fail — it stops and
+    waits for a human, which on an unattended 24/7 stream means forever. A
+    wedged OBS is also the process most likely to ignore SIGTERM, so escalate.
     """
-    list_pids = list_pids or _obs_pids
+    list_procs = list_procs or _obs_processes
     kill = kill or _terminate
-    pids = list_pids()
+    sleep = sleep or time.sleep
+
+    pids = live_obs_pids(list_procs())
+    if not pids:
+        return 0
+
     for pid in pids:
         logger.warning("Clearing unresponsive OBS before relaunch",
                        extra={"pid": pid})
-        kill(pid)
+        kill(pid, signal.SIGTERM)
+
+    waited = 0.0
+    while waited < config.obs_terminate_grace_seconds:
+        sleep(config.obs_terminate_poll_seconds)
+        waited += config.obs_terminate_poll_seconds
+        if not live_obs_pids(list_procs()):
+            return len(pids)
+
+    for pid in live_obs_pids(list_procs()):
+        logger.error(
+            "OBS ignored SIGTERM — killing it, or the relaunch stalls on the "
+            "'already running' dialog",
+            extra={"pid": pid, "waited_seconds": waited},
+        )
+        kill(pid, signal.SIGKILL)
+    sleep(config.obs_terminate_poll_seconds)
     return len(pids)
 
 
@@ -204,7 +261,7 @@ def relaunch_obs(
 
     clear(config)
     logger.warning("OBS unreachable — relaunching")
-    launch(list(config.obs_command))
+    launched = launch(list(config.obs_command))
 
     waited = 0.0
     while waited < config.relaunch_verify_seconds:
@@ -213,6 +270,17 @@ def relaunch_obs(
         if probe().get("reachable"):
             logger.info("OBS relaunch verified", extra={"seconds": waited})
             return True
+        # KI-017: a process that is already dead will never answer. Waiting out
+        # the window turned a diagnosable crash into a blind "did not come up"
+        # — for 12 hours. Its own stderr names the cause.
+        exit_code = launched.poll() if launched is not None else None
+        if exit_code is not None:
+            logger.error(
+                "OBS exited immediately after launch: %s",
+                launched.stderr_tail() or "(no output captured)",
+                extra={"exit_code": exit_code, "seconds": waited},
+            )
+            return False
     logger.error(
         "OBS did not come up after relaunch",
         extra={"waited_seconds": waited},
@@ -220,10 +288,132 @@ def relaunch_obs(
     return False
 
 
-def _launch_obs(command: list[str]) -> None:
-    subprocess.Popen(
-        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+# KI-017: what OBS needs to open a window. Without these Qt cannot initialize
+# a platform plugin and OBS exits before it writes even its own log file.
+DISPLAY_VARS = (
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "DBUS_SESSION_BUS_ADDRESS",
+)
+
+
+def _unquote(value: str) -> str:
+    """Undo the shell quoting `systemctl show-environment` applies."""
+    if value.startswith("$'") and value.endswith("'") and len(value) >= 3:
+        return codecs.decode(value[2:-1], "unicode_escape")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def parse_manager_environment(text: str) -> dict[str, str]:
+    """Parse `systemctl --user show-environment` output. Pure.
+
+    Values needing quotes come back quoted (this machine reports
+    `QT_IM_MODULES=$'wayland;ibus'`), so a naive split would hand OBS a
+    literally-quoted value.
+    """
+    env: dict[str, str] = {}
+    for line in text.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name and not name.startswith(" "):
+            env[name.strip()] = _unquote(value)
+    return env
+
+
+def _manager_environment() -> dict[str, str]:
+    """The graphical session's environment, read at launch time.
+
+    Deliberately *not* taken from our own environment or pinned in the unit
+    file: a logout/login mints a new WAYLAND_DISPLAY, and the watchdog is a
+    long-lived service that would otherwise keep launching OBS at a display
+    that no longer exists.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Cannot read the session environment",
+                       extra={"error_type": type(exc).__name__})
+        return {}
+    return parse_manager_environment(result.stdout)
+
+
+def desktop_env(base, session: dict[str, str]) -> dict[str, str]:
+    """The environment OBS is launched with (KI-017). Pure.
+
+    `Popen` hands the child the *watchdog's* environment. The watchdog is a
+    systemd user service that started before the graphical session exported
+    WAYLAND_DISPLAY/DISPLAY/XAUTHORITY, so every OBS it launched had no display
+    to open a window on. It died instantly, 266 times over 12 hours, and
+    because the launcher sent stderr to DEVNULL the reason was never recorded.
+    """
+    env = dict(base)
+    for name in DISPLAY_VARS:
+        value = session.get(name)
+        if value:
+            env[name] = value
+    return env
+
+
+class LaunchedObs:
+    """A launched OBS we can actually ask about — exit status and its own
+    stderr. `Popen` returning is not evidence OBS started (KI-015); a handle
+    that answers `poll()` is how we find out *why* it didn't (KI-017)."""
+
+    def __init__(self, process, stderr_path: str | None = None):
+        self.process = process
+        self.stderr_path = stderr_path
+
+    def poll(self):
+        return self.process.poll()
+
+    def stderr_tail(self, limit: int = 800) -> str:
+        if not self.stderr_path:
+            return ""
+        try:
+            with open(self.stderr_path, errors="replace") as handle:
+                return handle.read()[-limit:].strip()
+        except OSError:
+            return ""
+
+
+def _launch_obs(command: list[str], popen=None, read_manager_env=None):
+    """Launch OBS with a usable display, keeping its stderr (KI-017).
+
+    stderr goes to a file rather than a PIPE nobody drains — a full pipe
+    buffer would block OBS itself.
+    """
+    popen = popen or subprocess.Popen
+    read_manager_env = read_manager_env or _manager_environment
+
+    env = desktop_env(os.environ, read_manager_env())
+    if not env.get("WAYLAND_DISPLAY") and not env.get("DISPLAY"):
+        logger.error(
+            "No display in the session environment — OBS cannot start. "
+            "Is the graphical session up?"
+        )
+
+    try:
+        handle = tempfile.NamedTemporaryFile(
+            prefix="obs-launch-", suffix=".log", delete=False
+        )
+        stderr_path = handle.name
+    except OSError:
+        handle, stderr_path = subprocess.DEVNULL, None
+
+    process = popen(
+        command, stdout=subprocess.DEVNULL, stderr=handle, env=env
     )
+    return LaunchedObs(process, stderr_path)
 
 
 def probe_obs() -> dict:

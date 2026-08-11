@@ -1,5 +1,8 @@
 """Watchdog state machine — pure tick() function, no OBS, no clock, no DB."""
 
+import logging
+import signal
+
 from scripts.stream_watchdog import WatchdogConfig, WatchdogState, tick
 
 CFG = WatchdogConfig()
@@ -162,10 +165,182 @@ def test_relaunch_clears_a_wedged_obs_before_launching():
 def test_clear_wedged_obs_terminates_only_what_is_there():
     killed = []
     assert clear_wedged_obs(
-        WatchdogConfig(), list_pids=lambda: [], kill=killed.append
+        WatchdogConfig(), list_procs=lambda: [], kill=_recorder(killed)
     ) == 0
     assert killed == []
+    # gone after the first poll
+    procs = iter([[(4242, "Sl"), (4243, "Sl")], []])
     assert clear_wedged_obs(
-        WatchdogConfig(), list_pids=lambda: [4242, 4243], kill=killed.append
+        WatchdogConfig(),
+        list_procs=lambda: next(procs, []),
+        kill=_recorder(killed),
+        sleep=lambda _s: None,
     ) == 2
-    assert killed == [4242, 4243]
+    assert [pid for pid, _sig in killed] == [4242, 4243]
+
+
+# --- KI-017: the relaunched OBS inherits an environment with no display ---
+
+from scripts.stream_watchdog import (  # noqa: E402
+    DISPLAY_VARS,
+    _launch_obs,
+    desktop_env,
+    live_obs_pids,
+    parse_manager_environment,
+)
+
+
+def test_desktop_env_supplies_the_session_display():
+    """KI-017, the whole bug. `Popen` hands OBS the watchdog's own environment.
+    The watchdog is a user service started before the graphical session
+    exported WAYLAND_DISPLAY/DISPLAY/XAUTHORITY, so every OBS it launched had
+    no display to open a window on: Qt failed to init a platform plugin and the
+    process died before it could even write an OBS log. 266 silent attempts."""
+    watchdog_env = {"HOME": "/home/keyhot", "XDG_RUNTIME_DIR": "/run/user/1000"}
+    session = {
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+        "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.XZXKT3",
+    }
+    env = desktop_env(watchdog_env, session)
+    assert env["WAYLAND_DISPLAY"] == "wayland-0"
+    assert env["DISPLAY"] == ":0"
+    assert env["XAUTHORITY"].endswith(".mutter-Xwaylandauth.XZXKT3")
+    assert env["HOME"] == "/home/keyhot", "must not drop the inherited env"
+
+
+def test_desktop_env_keeps_inherited_values_when_the_session_is_silent():
+    base = {"DISPLAY": ":0", "HOME": "/home/keyhot"}
+    env = desktop_env(base, {})
+    assert env["DISPLAY"] == ":0"
+
+
+def test_manager_environment_unquotes_shell_quoted_values():
+    """`systemctl --user show-environment` shell-quotes values that need it —
+    this machine really does report `QT_IM_MODULES=$'wayland;ibus'`. A naive
+    split hands OBS a literally-quoted value."""
+    parsed = parse_manager_environment(
+        "WAYLAND_DISPLAY=wayland-0\n"
+        "QT_IM_MODULES=$'wayland;ibus'\n"
+        "XAUTHORITY='/run/user/1000/.mutter Xwaylandauth'\n"
+        "DISPLAY=:0\n"
+    )
+    assert parsed["WAYLAND_DISPLAY"] == "wayland-0"
+    assert parsed["QT_IM_MODULES"] == "wayland;ibus"
+    assert parsed["XAUTHORITY"] == "/run/user/1000/.mutter Xwaylandauth"
+    assert parsed["DISPLAY"] == ":0"
+
+
+def test_launch_passes_a_display_env_to_the_process():
+    """The seam that was never exercised: the whole suite passed while the real
+    launcher handed OBS an environment it could not start in."""
+    calls = {}
+
+    def fake_popen(command, **kwargs):
+        calls["command"] = command
+        calls["env"] = kwargs.get("env")
+        return object()
+
+    _launch_obs(
+        ["obs", "--startstreaming"],
+        popen=fake_popen,
+        read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"},
+    )
+    assert calls["command"] == ["obs", "--startstreaming"]
+    assert calls["env"] is not None, "must not inherit the watchdog's env blindly"
+    assert calls["env"]["WAYLAND_DISPLAY"] == "wayland-0"
+
+
+def test_display_vars_cover_what_qt_needs():
+    for name in ("WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR"):
+        assert name in DISPLAY_VARS
+
+
+class _DeadProcess:
+    """A launched OBS that exited immediately — KI-017's actual signature."""
+
+    def poll(self):
+        return 1
+
+    def stderr_tail(self, limit=800):
+        return 'qt.qpa.xcb: could not connect to display'
+
+
+def test_relaunch_fails_fast_and_reports_why_when_obs_exits_immediately(caplog):
+    """Waiting the full verify window for a process that is already dead turned
+    a diagnosable crash into a blind 'did not come up' — for 12 hours."""
+    slept = []
+    with caplog.at_level(logging.ERROR):
+        ok = relaunch_obs(
+            WatchdogConfig(relaunch_verify_seconds=25, relaunch_poll_seconds=1),
+            launch=lambda cmd: _DeadProcess(),
+            probe=lambda: {"reachable": False},
+            sleep=slept.append,
+            clear=lambda config, **kw: 0,
+        )
+    assert ok is False
+    assert len(slept) < 5, "must not wait out the window on a dead process"
+    assert "could not connect to display" in caplog.text, (
+        "OBS's own error is the diagnosis — it must reach the journal"
+    )
+
+
+def test_live_obs_pids_skips_zombies():
+    """A zombie still matches `pgrep -x obs`, so the watchdog kept logging
+    'Clearing unresponsive OBS' at a corpse that no signal can clear."""
+    assert live_obs_pids([(844453, "Z"), (850210, "Sl")]) == [850210]
+    assert live_obs_pids([(844453, "Z+")]) == []
+
+
+def test_clear_wedged_obs_does_not_signal_a_zombie():
+    killed = []
+    procs = iter([[(844453, "Z"), (850210, "Sl")], [(844453, "Z")]])
+    cleared = clear_wedged_obs(
+        WatchdogConfig(),
+        list_procs=lambda: next(procs, []),
+        kill=_recorder(killed),
+        sleep=lambda _s: None,
+    )
+    assert [pid for pid, _sig in killed] == [850210]
+    assert cleared == 1
+
+
+# --- KI-017: launching into a still-shutting-down OBS stalls on a modal ---
+
+
+def _recorder(sink):
+    return lambda pid, sig: sink.append((pid, sig))
+
+
+def test_clear_waits_for_the_old_obs_to_actually_exit():
+    """OBS's single-instance check is a MODAL DIALOG ('OBS is already
+    running… Launch Anyway / Cancel'), not an instant exit. SIGTERM then
+    launching immediately races the old instance's shutdown, and the new one
+    stops dead waiting for a human — on an unattended 24/7 stream, forever."""
+    killed, slept = [], []
+    # alive, alive, then finally gone
+    procs = iter([[(4242, "Sl")], [(4242, "Sl")], [(4242, "Sl")], []])
+    cleared = clear_wedged_obs(
+        WatchdogConfig(obs_terminate_grace_seconds=10, obs_terminate_poll_seconds=1),
+        list_procs=lambda: next(procs, []),
+        kill=_recorder(killed),
+        sleep=slept.append,
+    )
+    assert cleared == 1
+    assert slept, "must poll until the process is really gone"
+    assert [sig for _pid, sig in killed] == [signal.SIGTERM]
+
+
+def test_clear_escalates_to_sigkill_when_obs_ignores_sigterm():
+    """A wedged OBS is exactly the case this function exists for, and a wedged
+    process is the one most likely to ignore SIGTERM. Without escalation the
+    launch proceeds into the modal dialog anyway."""
+    killed = []
+    cleared = clear_wedged_obs(
+        WatchdogConfig(obs_terminate_grace_seconds=3, obs_terminate_poll_seconds=1),
+        list_procs=lambda: [(4242, "Sl")],  # never dies
+        kill=_recorder(killed),
+        sleep=lambda _s: None,
+    )
+    assert cleared == 1
+    assert (4242, signal.SIGKILL) in killed, "SIGKILL cannot be ignored"
