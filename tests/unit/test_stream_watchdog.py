@@ -331,6 +331,85 @@ def test_clear_waits_for_the_old_obs_to_actually_exit():
     assert [sig for _pid, sig in killed] == [signal.SIGTERM]
 
 
+def test_launch_clears_the_crash_sentinel_first(tmp_path):
+    """OBS writes `.sentinel` at startup and removes it on a CLEAN exit. Left
+    behind, the next launch shows a modal 'OBS Studio Crash Detected — Run in
+    Safe Mode?' and waits for a human. Safe Mode disables WebSockets, so even
+    the wrong answer removes the control plane entirely.
+
+    Every unclean exit leaves it: the SIGKILL escalation above, a host reboot,
+    and the soak's deliberate kill-OBS recovery drill. Without this the
+    watchdog can never bring OBS back from the exact failure it exists for."""
+    sentinel = tmp_path / ".sentinel"
+    sentinel.mkdir()
+    (sentinel / "run_ec84d699-2c48-4c0a-bfdd-9b35f467d3fb").write_text("")
+    (sentinel / "run_867edf19-0d00-4085-924c-b9bcf70642b9").write_text("")
+    order = []
+
+    def fake_popen(command, **kwargs):
+        order.append("launch")
+        return object()
+
+    _launch_obs(
+        ["obs"],
+        popen=fake_popen,
+        read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0"},
+        sentinel_path=str(sentinel),
+    )
+    assert list(sentinel.glob("run_*")) == [], (
+        "stale run markers are what trigger the crash prompt"
+    )
+    assert sentinel.is_dir(), "OBS owns the directory — only its markers go"
+    assert order == ["launch"]
+
+
+def test_launch_leaves_unknown_files_in_the_sentinel_dir_alone(tmp_path):
+    """Only OBS's own run markers are ours to remove."""
+    sentinel = tmp_path / ".sentinel"
+    sentinel.mkdir()
+    (sentinel / "run_abc").write_text("")
+    (sentinel / "something-else").write_text("keep me")
+    _launch_obs(
+        ["obs"],
+        popen=lambda command, **kw: object(),
+        read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0"},
+        sentinel_path=str(sentinel),
+    )
+    assert (sentinel / "something-else").exists()
+
+
+def test_launch_clears_a_plain_file_sentinel(tmp_path):
+    """Older OBS layouts use a single file rather than a directory."""
+    sentinel = tmp_path / ".sentinel"
+    sentinel.write_text("")
+    _launch_obs(
+        ["obs"],
+        popen=lambda command, **kw: object(),
+        read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0"},
+        sentinel_path=str(sentinel),
+    )
+    assert not sentinel.exists()
+
+
+def test_launch_survives_a_missing_sentinel(tmp_path):
+    """A clean previous exit leaves no sentinel — that is the normal case."""
+    _launch_obs(
+        ["obs"],
+        popen=lambda command, **kw: object(),
+        read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0"},
+        sentinel_path=str(tmp_path / "absent"),
+    )
+
+
+def test_obs_command_suppresses_startup_dialogs():
+    """Any modal on the startup path is a permanent stall for an unattended
+    stream, not a slow start."""
+    assert "--disable-missing-files-check" in WatchdogConfig().obs_command
+    assert "--safe-mode" not in WatchdogConfig().obs_command, (
+        "safe mode disables the websocket the whole control plane needs"
+    )
+
+
 def test_clear_escalates_to_sigkill_when_obs_ignores_sigterm():
     """A wedged OBS is exactly the case this function exists for, and a wedged
     process is the one most likely to ignore SIGTERM. Without escalation the

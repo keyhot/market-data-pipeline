@@ -34,7 +34,15 @@ class WatchdogConfig:
     dropped_ratio_threshold: float = 0.05
     # Max one restart attempt per cooldown window — no flapping.
     restart_cooldown_seconds: float = 300.0
-    obs_command: tuple = ("obs", "--startstreaming", "--minimize-to-tray")
+    # KI-017: every modal on the startup path is a permanent stall for an
+    # unattended stream. `--disable-missing-files-check` suppresses one of
+    # them; the crash prompt is a file, not a flag (see clear_crash_sentinel).
+    obs_command: tuple = (
+        "obs",
+        "--startstreaming",
+        "--minimize-to-tray",
+        "--disable-missing-files-check",
+    )
     # KI-015: how long to wait for a relaunched OBS to answer its websocket
     # before calling the attempt failed. OBS takes a few seconds to boot and
     # load a scene collection full of browser sources.
@@ -386,7 +394,57 @@ class LaunchedObs:
             return ""
 
 
-def _launch_obs(command: list[str], popen=None, read_manager_env=None):
+OBS_SENTINEL = "~/.config/obs-studio/.sentinel"
+
+
+def clear_crash_sentinel(path: str) -> bool:
+    """Remove OBS's improper-shutdown marker before launching (KI-017).
+
+    OBS writes `.sentinel` at startup and removes it on a *clean* exit. Left
+    behind, the next launch shows a modal "OBS Studio Crash Detected — Run in
+    Safe Mode?" and waits for a human; Safe Mode disables WebSockets, so even
+    the wrong answer would remove the control plane.
+
+    Every unclean exit leaves it: the SIGKILL escalation on the relaunch path,
+    a host reboot, and the soak's deliberate kill-OBS recovery drill. Without
+    clearing it the watchdog cannot recover from the exact class of failure it
+    exists to handle. The crash signal isn't lost — it moves to this log.
+
+    On OBS 32 `.sentinel` is a *directory* holding one empty `run_<uuid>` per
+    instance, removed by that instance on a clean exit; older layouts use a
+    single file. Only OBS's own markers are removed, never the directory.
+    """
+    target = os.path.expanduser(path)
+    cleared = 0
+    try:
+        if os.path.isdir(target):
+            for name in os.listdir(target):
+                if name.startswith("run_"):
+                    os.remove(os.path.join(target, name))
+                    cleared += 1
+        else:
+            os.remove(target)
+            cleared = 1
+    except FileNotFoundError:
+        return False  # clean shutdown last time — the normal case
+    except OSError as exc:
+        logger.warning("Could not clear the OBS crash sentinel",
+                       extra={"error_type": type(exc).__name__,
+                              "path": target})
+        return False
+    if not cleared:
+        return False
+    logger.warning(
+        "Cleared OBS's crash sentinel — the last shutdown was unclean, and it "
+        "would otherwise stall the relaunch on the Safe Mode prompt",
+        extra={"markers": cleared},
+    )
+    return True
+
+
+def _launch_obs(
+    command: list[str], popen=None, read_manager_env=None, sentinel_path=None
+):
     """Launch OBS with a usable display, keeping its stderr (KI-017).
 
     stderr goes to a file rather than a PIPE nobody drains — a full pipe
@@ -394,6 +452,8 @@ def _launch_obs(command: list[str], popen=None, read_manager_env=None):
     """
     popen = popen or subprocess.Popen
     read_manager_env = read_manager_env or _manager_environment
+
+    clear_crash_sentinel(sentinel_path or OBS_SENTINEL)
 
     env = desktop_env(os.environ, read_manager_env())
     if not env.get("WAYLAND_DISPLAY") and not env.get("DISPLAY"):
