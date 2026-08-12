@@ -53,6 +53,9 @@ _SHARDABLE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 SCENE_CHART = "chart-focus"
 SCENE_WORLD = "world-focus"
 SCENE_EVENT = "event-focus"
+# B10: the graceful-degradation surface. Not a scene the director can choose —
+# only the watchdog switches to it, and only while the stream is genuinely down.
+SCENE_STANDBY = "standby"
 SCENE_NAME = SCENE_CHART  # legacy alias: the default / home scene
 
 # 30fps is plenty for charts; shutdown=False keeps SSE connections alive when a
@@ -143,6 +146,24 @@ def _event_focus() -> dict:
     }
 
 
+def _standby() -> dict:
+    """B10: what a viewer sees instead of a frozen or black frame.
+
+    One full-canvas card — anything smaller would leave the dead scene visible
+    around its edges. The page itself makes no network requests, so it keeps
+    animating through exactly the outage it exists for.
+    """
+    return {
+        "scene": SCENE_STANDBY,
+        "canvas": CANVAS,
+        "sources": [
+            _browser("standby-card", "/standby?state=reconnecting",
+                     CANVAS[0], CANVAS[1], 0, 0),
+            *audio_sources("standby"),
+        ],
+    }
+
+
 def _shard_hosts_available() -> bool:
     return urlparse(page_base()).hostname in _SHARDABLE_HOSTS
 
@@ -178,10 +199,15 @@ def assign_connection_shards(scenes: list[dict]) -> list[dict]:
 
 
 def scenes_spec() -> list[dict]:
-    """All scenes the director switches between (Sprint 13). Order matters: the
-    first entry is the default / home scene. Source order within a scene is
-    z-order, bottom to top."""
-    return assign_connection_shards([_chart_focus(), _world_focus(), _event_focus()])
+    """All scenes the stream can be on. Order matters: the first entry is the
+    default / home scene. Source order within a scene is z-order, bottom to top.
+
+    The director switches between the first three on salience (Sprint 13);
+    `standby` is last and deliberately outside its vocabulary — only the
+    watchdog selects it, and only while the stream is genuinely down (B10)."""
+    return assign_connection_shards(
+        [_chart_focus(), _world_focus(), _event_focus(), _standby()]
+    )
 
 
 def scene_spec() -> dict:

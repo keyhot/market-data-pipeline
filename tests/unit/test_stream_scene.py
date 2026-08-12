@@ -100,9 +100,32 @@ def test_non_loopback_page_base_is_left_alone(monkeypatch):
     assert urls and all(url.startswith("http://api:8000") for url in urls)
 
 
-def test_scenes_spec_has_three_named_scenes():
+def test_scenes_spec_has_the_named_scenes():
     names = [s["scene"] for s in stream_scene.scenes_spec()]
-    assert names == ["chart-focus", "world-focus", "event-focus"]
+    assert names == ["chart-focus", "world-focus", "event-focus", "standby"]
+
+
+def test_home_scene_is_still_first():
+    """`build_scene` rests on scenes_spec()[0] and the director decays to it —
+    standby must never become the resting scene."""
+    assert stream_scene.scenes_spec()[0]["scene"] == stream_scene.SCENE_CHART
+    assert stream_scene.SCENE_NAME == stream_scene.SCENE_CHART
+
+
+def test_standby_scene_is_a_single_full_canvas_card(monkeypatch):
+    """B10: the surface a viewer sees instead of a frozen frame. One source
+    covering the whole canvas — anything smaller shows the dead scene behind
+    it."""
+    monkeypatch.delenv("STREAM_AUDIO_DIR", raising=False)
+    standby = next(
+        s for s in stream_scene.scenes_spec()
+        if s["scene"] == stream_scene.SCENE_STANDBY
+    )
+    browser = [s for s in standby["sources"] if s["kind"] == "browser_source"]
+    assert len(browser) == 1
+    settings = browser[0]["settings"]
+    assert (settings["width"], settings["height"]) == stream_scene.CANVAS
+    assert (browser[0]["x"], browser[0]["y"]) == (0, 0)
 
 
 def test_scene_spec_shim_returns_the_first_scene():

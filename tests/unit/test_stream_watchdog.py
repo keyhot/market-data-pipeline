@@ -89,6 +89,67 @@ def test_cold_start_not_streaming_starts_stream():
     assert _actions_of(actions, "record") == []  # nothing died; nothing to record
 
 
+# --- B10: standby card instead of a frozen frame ---
+
+from scripts.stream_scene import SCENE_CHART, SCENE_STANDBY  # noqa: E402
+
+
+def _switches(actions):
+    return [a for a in actions if a[0] == "switch_scene"]
+
+
+def test_stream_going_inactive_shows_the_standby_card():
+    """A viewer must never sit looking at a frozen frame while the watchdog
+    restarts the output."""
+    state = WatchdogState(obs_up=True, streaming=True)
+    _s, actions = tick({"reachable": True, "streaming": False}, state, CFG, now=100.0)
+    assert ("switch_scene", SCENE_STANDBY) in actions
+    assert state.on_standby is True
+
+
+def test_standby_is_sent_once_not_every_tick():
+    """The director owns the scene while the stream is healthy. A watchdog that
+    re-asserts a scene every tick would fight it for control."""
+    state = WatchdogState(obs_up=True, streaming=True)
+    _s, first = tick({"reachable": True, "streaming": False}, state, CFG, now=100.0)
+    _s, second = tick({"reachable": True, "streaming": False}, state, CFG, now=130.0)
+    assert len(_switches(first)) == 1
+    assert _switches(second) == []
+
+
+def test_recovery_hands_the_scene_back_exactly_once():
+    state = WatchdogState(obs_up=True, streaming=True)
+    tick({"reachable": True, "streaming": False}, state, CFG, now=100.0)
+    _s, recovered = tick({"reachable": True, "streaming": True}, state, CFG, now=160.0)
+    assert ("switch_scene", SCENE_CHART) in recovered
+    assert state.on_standby is False
+    # and from here the director is in charge again
+    _s, healthy = tick({"reachable": True, "streaming": True}, state, CFG, now=190.0)
+    assert _switches(healthy) == []
+
+
+def test_dropped_frames_never_shows_standby():
+    """Degraded is not down — the stream is live and watchable, and swapping to
+    a 'reconnecting' card would be a lie (same rule as soak_report's uptime)."""
+    state = WatchdogState(obs_up=True, streaming=True)
+    _s, actions = tick(
+        {"reachable": True, "streaming": True, "dropped_ratio": 0.5},
+        state,
+        CFG,
+        now=100.0,
+    )
+    assert _switches(actions) == []
+    assert state.on_standby is False
+
+
+def test_unreachable_obs_asks_for_no_scene_switch():
+    """There is nothing to switch: the switch would be issued at an OBS that
+    isn't answering, and every action in that tick would fail."""
+    state = WatchdogState(obs_up=True, streaming=True)
+    _s, actions = tick({"reachable": False}, state, CFG, now=100.0)
+    assert _switches(actions) == []
+
+
 # --- KI-015: a relaunch that produces no OBS must be noticed ---
 
 from scripts.stream_watchdog import (  # noqa: E402

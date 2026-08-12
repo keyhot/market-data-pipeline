@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.logging import init_logging  # noqa: E402
-from scripts import stream_ctl  # noqa: E402
+from scripts import stream_ctl, stream_scene  # noqa: E402
 from world.stream_events import record_stream_event  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,11 @@ class WatchdogState:
     down_since: float | None = None
     dropped_flagged: bool = False
     failed_relaunches: int = 0
+    # B10: is the standby card currently on air? Switching is done on
+    # *transitions* only — the director owns the scene while the stream is
+    # healthy, and a watchdog that re-asserted a scene every tick would fight
+    # it for control.
+    on_standby: bool = False
 
 
 def tick(
@@ -98,6 +103,10 @@ def tick(
                 state.down_since = None
             actions.append(("record", "stream_started", payload))
         state.streaming = True
+        if state.on_standby:
+            # Back on air: hand the scene back to the director, once.
+            actions.append(("switch_scene", stream_scene.SCENE_CHART))
+            state.on_standby = False
         ratio = probe.get("dropped_ratio", 0.0)
         if ratio >= config.dropped_ratio_threshold:
             if not state.dropped_flagged:
@@ -125,6 +134,14 @@ def tick(
         actions.append(("record", "stream_stopped", {"reason": "output_inactive"}))
         state.down_since = now
         state.streaming = False
+    # B10: OBS is answering but the output is not live, so put the standby card
+    # up rather than leaving a frozen frame on screen while we restart. Note
+    # this is deliberately outside the `state.streaming` branch above: a
+    # watchdog that starts up into an already-dead stream must show the card
+    # too, not only on the live->dead transition.
+    if not state.on_standby:
+        actions.append(("switch_scene", stream_scene.SCENE_STANDBY))
+        state.on_standby = True
     if _restart_allowed(state, config, now):
         actions.append(("start_stream",))
         state.last_restart_at = now
@@ -511,6 +528,9 @@ def execute_actions(
             elif kind == "start_stream":
                 stream_ctl.start_stream(stream_ctl.make_client())
                 logger.warning("Stream inactive — StartStream issued")
+            elif kind == "switch_scene":
+                stream_ctl.switch_scene(stream_ctl.make_client(), action[1])
+                logger.info("Scene switched", extra={"scene": action[1]})
         except Exception:
             logger.exception("Watchdog action failed", extra={"action": kind})
     return followups

@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import re
 import time
@@ -591,6 +592,41 @@ def overlay_signals():
 def overlay_events():
     """OBS Browser Source feed (~480x1080): latest salient world events."""
     return HTMLResponse(_render_template("overlay_events.html", {}))
+
+
+# B10. What a viewer sees instead of a frozen or black frame while the watchdog
+# brings the stream back. Copy only — the card is otherwise identical in every
+# state, so a switch between them never reads as a different channel.
+_STANDBY_COPY = {
+    "reconnecting": (
+        "Reconnecting",
+        "The stream dropped and is coming back on its own",
+    ),
+    "starting": ("Starting soon", "Warming up the market feeds"),
+    "shortly": ("Back shortly", "Taking a moment to sort something out"),
+}
+_STANDBY_DEFAULT = "reconnecting"
+
+
+@app.get("/standby", response_class=HTMLResponse)
+def standby_page(state: str = _STANDBY_DEFAULT):
+    """Procedural standby card for the `standby` OBS scene (B10).
+
+    Unknown states fall back rather than erroring: this page is the surface
+    shown *because* something already went wrong, so it must never be the thing
+    that breaks. The state is escaped, never trusted — it reaches the DOM as
+    text through a template substitution, the same rule as every other page.
+    """
+    headline, subline = _STANDBY_COPY.get(state, _STANDBY_COPY[_STANDBY_DEFAULT])
+    if state not in _STANDBY_COPY:
+        logger.warning("Unknown standby state requested", extra={"state": state})
+    return HTMLResponse(
+        _render_template(
+            "standby.html",
+            {"__HEADLINE__": html.escape(headline),
+             "__SUBLINE__": html.escape(subline)},
+        )
+    )
 
 
 @app.get("/world", response_class=HTMLResponse)

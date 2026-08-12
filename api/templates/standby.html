@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Standing by</title>
+<style>
+  :root { color-scheme: dark; }
+  /* css_variables() emits its own complete `:root { … }` block — nesting it
+     inside another rule makes every var resolve to nothing (the page renders
+     inverted, with no error). Keep this at top level. */
+  __THEME_VARS__
+
+  /* B10. This page is the fallback surface: it must keep working when the
+     things it stands in for are broken. No fetch, no SSE, no timers that
+     depend on data — everything below is CSS on a static document, so once
+     OBS has it loaded the card animates through the entire outage. */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+
+  /* Slow breathing wash, the same calm-that-swells register as the room —
+     kept low-amplitude because OBS renders this in software. */
+  .room {
+    position: relative;
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 2.2rem;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% 45%,
+                      rgba(74, 144, 217, 0.10), transparent 70%),
+      var(--bg);
+    animation: breathe 9s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%, 100% { opacity: .88 } 50% { opacity: 1 } }
+
+  /* Vignette so the card has depth rather than reading as a flat colour fill. */
+  .room::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 80% 70% at 50% 50%,
+                                transparent 55%, rgba(0, 0, 0, 0.55));
+  }
+
+  .mark { position: relative; width: 132px; height: 132px; }
+  .ring {
+    position: absolute; inset: 0;
+    border: 2px solid var(--muted);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 2.8s linear infinite;
+  }
+  .ring.inner {
+    inset: 22px;
+    border-color: var(--muted);
+    border-bottom-color: #4a90d9;
+    animation: spin 4.6s linear infinite reverse;
+  }
+  @keyframes spin { to { transform: rotate(360deg) } }
+
+  /* The pulse reads as a heartbeat: the system is alive, just not on air. */
+  .pulse {
+    position: absolute; inset: 46px;
+    border-radius: 50%;
+    background: #4a90d9;
+    animation: pulse 2.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(.72); opacity: .35 }
+    50%      { transform: scale(1);   opacity: .75 }
+  }
+
+  h1 {
+    font-size: 3.4rem; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .sub {
+    font-size: 1.35rem; color: var(--fg); opacity: .72;
+    letter-spacing: .02em; max-width: 46ch; text-align: center;
+    line-height: 1.5;
+  }
+  .dots::after {
+    content: ""; animation: dots 2.4s steps(4, end) infinite;
+  }
+  @keyframes dots {
+    0%   { content: "" }
+    25%  { content: "." }
+    50%  { content: ".." }
+    75%  { content: "..." }
+  }
+
+  .foot {
+    position: absolute; bottom: 3.2rem;
+    font-size: 1rem; color: var(--muted); letter-spacing: .16em;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+  <div class="room">
+    <div class="mark">
+      <div class="ring"></div>
+      <div class="ring inner"></div>
+      <div class="pulse"></div>
+    </div>
+    <h1>__HEADLINE__</h1>
+    <p class="sub">__SUBLINE__<span class="dots"></span></p>
+    <div class="foot">Market Data Pipeline · Live</div>
+  </div>
+</body>
+</html>

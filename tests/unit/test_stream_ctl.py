@@ -89,7 +89,11 @@ def test_build_creates_all_scenes_and_sources():
     client = FakeClient()
     result = stream_ctl.build_scene(client)
     assert result["scene"] == "chart-focus"  # rests on the home scene
-    assert result["scenes"] == ["chart-focus", "world-focus", "event-focus"]
+    # standby (B10) is built like any other scene so it is ready the moment the
+    # watchdog needs it — but it is never the scene we rest on.
+    assert result["scenes"] == [
+        "chart-focus", "world-focus", "event-focus", "standby",
+    ]
     created = {c[1] for c in _creates(client)}
     assert {
         "chart-focus",
