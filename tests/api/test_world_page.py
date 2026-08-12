@@ -206,3 +206,39 @@ def test_prototype_gallery_is_available_for_evaluation():
     body = client.get("/world").text
     assert "drawGallery(" in body
     assert "gallery" in body and "STYLES" in body
+
+
+def test_model_and_trader_are_cast_with_different_bodies():
+    """The B1 pick: the model is a machine built from the market's own glyphs,
+    the trader is a person. Casting them both from one style would throw that
+    contrast away — and it is the contrast that lets a newcomer tell which of
+    the two just reacted, before reading a single label."""
+    body = client.get("/world").text
+    cast = re.search(r"const CAST = \{(.*?)\}", body, re.S).group(1)
+    assigned = dict(re.findall(r'(\w+):\s*"(\w+)"', cast))
+    assert assigned == {"MODEL": "bars", "TRADER": "figure"}, assigned
+    assert len(set(assigned.values())) == len(assigned), "the cast shares a body"
+    for style in assigned.values():
+        assert re.search(rf"\b{style}\(body", body), f"{style} has no body builder"
+
+
+def test_the_figures_arms_read_apart_from_its_torso():
+    """v1's figure was dropped partly because the arms were the same tint as the
+    body: they only existed once shrug/wave/cheer fired, and a resting trader
+    read as a capsule. Shading them apart is what makes the arms visible at
+    rest, which is 99% of the airtime."""
+    body = client.get("/world").text
+    assert "function shade(" in body
+    assert "shadeFactor" in body
+
+
+def test_gallery_fits_every_style_on_one_screen():
+    """At a fixed row pitch the fifth style lands below the canvas — and an
+    option nobody can see is an option nobody evaluates, which is the whole job
+    of the gate."""
+    body = client.get("/world").text
+    gallery = re.search(
+        r"function drawGallery\(\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "STYLES.length" in gallery, "row pitch ignores how many styles there are"
+    assert "app.screen.height" in gallery, "row pitch ignores the canvas height"

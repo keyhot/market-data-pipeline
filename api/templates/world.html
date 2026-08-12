@@ -133,15 +133,26 @@
     function drawGallery() {
       model.container.visible = false;
       trader.container.visible = false;
-      // A representative spread rather than all 23 moods: four styles compared
+      layers.room.visible = false;   // the floor line is scenery, not a specimen
+      // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
       const moods = ["elated", "focused", "anxious", "dejected", "idle",
                      "startled", "bullish", "bearish"];
+      // Derive the pitch instead of hard-coding it: at a fixed one, adding the
+      // fifth style pushed it off the bottom of the canvas, and an option that
+      // can't be seen is an option that never gets evaluated.
+      const top = 56;                                    // clear the banner
+      const rowH = (app.screen.height - top) / STYLES.length;
+      const colW = app.screen.width / moods.length;
+      // A sample is ~200 units tall above its feet (the mood tag) and ~60
+      // below (name + style), so 300 per row leaves a margin at any height.
+      const fit = Math.min(1, rowH / 300, colW / 200);
       STYLES.forEach((style, row) => {
         moods.forEach((mood, col) => {
           const sample = character(mood, style);
-          sample.container.x = 150 + col * 225;
-          sample.container.y = 300 + row * 320;
+          sample.container.scale.set(fit);
+          sample.container.x = colW * (col + 0.5);
+          sample.container.y = top + rowH * row + 200 * fit;
           sample.baseX = sample.container.x;
           sample.baseY = sample.container.y;
           sample.headBaseY = sample.head.y;
@@ -177,8 +188,20 @@
     // anatomy. This world is made of price data; its inhabitants should be
     // too — and a candle or a bar cluster still reads at 120px on a stream,
     // where limbs turn to mush. The face is identical across all of them.
-    const STYLES = ["candle", "bars", "monolith", "orb"];
-    const STYLE = new URLSearchParams(location.search).get("style") || "candle";
+    const STYLES = ["bars", "figure", "candle", "monolith", "orb"];
+    // The pick (2026-08-12). Not one style for everyone: the MODEL is a machine
+    // built out of the market's own glyphs, the TRADER is a person. Two events
+    // land on two silhouettes you can tell apart at a glance and across the
+    // room — which is what makes "they disagreed" legible without labels.
+    const CAST = { MODEL: "bars", TRADER: "figure" };
+    // `?style=` overrides the whole cast — it exists for evaluation, so it has
+    // to be able to put everyone in the same body for comparison.
+    const STYLE_OVERRIDE = new URLSearchParams(location.search).get("style");
+
+    function styleFor(name) {
+      const style = STYLE_OVERRIDE || CAST[name];
+      return BODIES[style] ? style : "bars";
+    }
 
     // Expression as two axes rather than 19 hand-drawn faces: valence bends
     // the mouth, arousal opens the eyes and lifts the brows. Every mood the
@@ -253,6 +276,27 @@
         accents.push(base);
         return -134;
       },
+      // A person: torso, two legs, two arms. The one body here that is NOT a
+      // market glyph, and that is the point — the trader is the human in the
+      // room, so he doesn't get to be made of candles.
+      figure(body, accents) {
+        body.roundRect(-13, -48, 11, 48, 5).fill(0x545862);   // legs, with a
+        body.roundRect(2, -48, 11, 48, 5).fill(0x545862);      // gap between
+        body.roundRect(-27, -116, 54, 78, 20).fill(0x545862); // torso
+        for (const side of [-1, 1]) {
+          const arm = new PIXI.Graphics().roundRect(-7, -5, 14, 56, 7)
+            .fill(0x545862);
+          arm.x = side * 31; arm.y = -108;   // pivot at the shoulder
+          // v1's arms were the torso's exact colour, so a resting figure read
+          // as a capsule and the arms only appeared mid-animation. A lighter
+          // shade separates them from both the body and the dark room.
+          arm.shadeFactor = 1.35;
+          accents.push(arm);
+        }
+        // The head overlaps the torso rather than resting on it: a hairline gap
+        // at this size reads as a floating head, not as a neck.
+        return -140;
+      },
       // The original: face on a single disc, no body. Kept as the baseline the
       // others are judged against.
       orb(body) {
@@ -264,7 +308,7 @@
     // One inhabitant: a body whose colour is its mood, a face that reads at a
     // glance, and a label carrying the numbers.
     function character(name, style) {
-      style = BODIES[style] ? style : STYLE;
+      style = BODIES[style] ? style : styleFor(name);
       const container = new PIXI.Container();
       container.y = app.screen.height * 0.72;
 
@@ -319,6 +363,16 @@
       }
     }
 
+    // Lighten or darken a mood colour without leaving its hue. Accents that
+    // sit ON the body (arms) need to be a different value from it, or they
+    // vanish into the mass at stream distance.
+    function shade(tint, factor) {
+      const clamp = (v) => Math.max(0, Math.min(255, Math.round(v * factor)));
+      return (clamp((tint >> 16) & 0xff) << 16)
+           | (clamp((tint >> 8) & 0xff) << 8)
+           | clamp(tint & 0xff);
+    }
+
     // Faces are redrawn rather than tweened: a handful of primitives per mood
     // change is far cheaper than keeping a rig, and OBS renders in software.
     function setExpression(char, mood) {
@@ -361,7 +415,9 @@
 
       char.body.tint = tint;
       if (char.skull) char.skull.tint = tint;
-      for (const accent of char.accents) accent.tint = tint;
+      for (const accent of char.accents) {
+        accent.tint = accent.shadeFactor ? shade(tint, accent.shadeFactor) : tint;
+      }
     }
 
     // Each named animation from reactions.py, made real. `phase` runs 0->1;
