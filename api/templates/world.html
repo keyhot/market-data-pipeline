@@ -144,15 +144,15 @@
       const top = 56;                                    // clear the banner
       const rowH = (app.screen.height - top) / STYLES.length;
       const colW = app.screen.width / moods.length;
-      // A sample is ~200 units tall above its feet (the mood tag) and ~60
-      // below (name + style), so 300 per row leaves a margin at any height.
-      const fit = Math.min(1, rowH / 300, colW / 200);
+      // A sample is ~220 units tall above its feet (the mood tag) and ~60
+      // below (name + style), so 320 per row leaves a margin at any height.
+      const fit = Math.min(1, rowH / 320, colW / 200);
       STYLES.forEach((style, row) => {
         moods.forEach((mood, col) => {
           const sample = character(mood, style);
           sample.container.scale.set(fit);
           sample.container.x = colW * (col + 0.5);
-          sample.container.y = top + rowH * row + 200 * fit;
+          sample.container.y = top + rowH * row + 220 * fit;
           sample.baseX = sample.container.x;
           sample.baseY = sample.container.y;
           sample.headBaseY = sample.head.y;
@@ -171,11 +171,22 @@
       return t;
     }
 
+    let floorLine;
+
     function drawRoom() {
-      const floor = new PIXI.Graphics()
+      floorLine = new PIXI.Graphics();
+      layers.room.addChild(floorLine);
+      layoutRoom();
+    }
+
+    // The renderer follows the window (`resizeTo`), and the characters are
+    // re-placed on every draw — so a floor drawn once at boot drifts off them
+    // and they end up standing through it. Same expression, same moment.
+    function layoutRoom() {
+      if (!floorLine) return;
+      floorLine.clear()
         .rect(0, app.screen.height * 0.72, app.screen.width, 3)
         .fill(0x2a2e39);
-      layers.room.addChild(floor);
     }
 
     // --- B1: procedural characters ----------------------------------------
@@ -265,6 +276,10 @@
           bar.restHeight = h;
           accents.push(bar);
         });
+        // A static stem, so the head isn't left hovering over the cluster the
+        // way it was. It can't be one of the bars: those ripple, and a neck
+        // that stretches would pull the face off the body.
+        body.roundRect(-4, -118, 8, 58, 4).fill(0x545862);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
@@ -280,13 +295,17 @@
       // market glyph, and that is the point — the trader is the human in the
       // room, so he doesn't get to be made of candles.
       figure(body, accents) {
-        body.roundRect(-13, -48, 11, 48, 5).fill(0x545862);   // legs, with a
-        body.roundRect(2, -48, 11, 48, 5).fill(0x545862);      // gap between
-        body.roundRect(-27, -116, 54, 78, 20).fill(0x545862); // torso
+        body.roundRect(-17, -56, 14, 56, 6).fill(0x545862);   // legs, with a
+        body.roundRect(3, -56, 14, 56, 6).fill(0x545862);      // gap between
+        // Waist under a broader chest. The taper is what reads as a person —
+        // one capsule reads as a pill — and the wider shoulders are what stop
+        // the head (28px, shared with every other body) looking oversized.
+        body.roundRect(-26, -86, 52, 40, 14).fill(0x545862);
+        body.roundRect(-33, -128, 66, 54, 18).fill(0x545862);
         for (const side of [-1, 1]) {
-          const arm = new PIXI.Graphics().roundRect(-7, -5, 14, 56, 7)
+          const arm = new PIXI.Graphics().roundRect(-7, -5, 14, 66, 7)
             .fill(0x545862);
-          arm.x = side * 31; arm.y = -108;   // pivot at the shoulder
+          arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
           // v1's arms were the torso's exact colour, so a resting figure read
           // as a capsule and the arms only appeared mid-animation. A lighter
           // shade separates them from both the body and the dark room.
@@ -295,7 +314,7 @@
         }
         // The head overlaps the torso rather than resting on it: a hairline gap
         // at this size reads as a floating head, not as a neck.
-        return -140;
+        return -152;
       },
       // The original: face on a single disc, no body. Kept as the baseline the
       // others are judged against.
@@ -512,6 +531,7 @@
     }
 
     function positionCharacters() {
+      layoutRoom();
       model.container.x = app.screen.width * 0.32;
       trader.container.x = app.screen.width * 0.62;
       model.baseY = trader.baseY = app.screen.height * 0.72;

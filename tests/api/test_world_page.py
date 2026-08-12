@@ -232,6 +232,17 @@ def test_the_figures_arms_read_apart_from_its_torso():
     assert "shadeFactor" in body
 
 
+def test_the_floor_is_laid_out_with_the_characters_not_only_at_boot():
+    """The renderer follows the window and `positionCharacters` runs on every
+    draw, so a floor drawn once at boot drifts off its inhabitants and they end
+    up standing through it — which is exactly what a resize produced."""
+    body = client.get("/world").text
+    layout = re.search(
+        r"function positionCharacters\(\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "layoutRoom(" in layout, "the floor is never re-placed after boot"
+
+
 def test_gallery_fits_every_style_on_one_screen():
     """At a fixed row pitch the fifth style lands below the canvas — and an
     option nobody can see is an option nobody evaluates, which is the whole job
