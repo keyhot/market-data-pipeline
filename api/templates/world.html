@@ -85,11 +85,15 @@
     // Shared severity -> tier bands (mirror the overlay + world/state tiers) so
     // the "swell" reads the same on every surface: tier 0 barely stirs, tier 3
     // leaps. This is the calm-that-swells register in motion.
-    function tierOf(severity) {
-      if (severity >= 8) return 3;
-      if (severity >= 5) return 2;
-      if (severity >= 2) return 1;
-      return 0;
+    // The tier scale is the server's, injected — never restated here. Severity
+    // is rule-specific: 1.6 is tier 2 for a `signal_resolved` and tier 0 for a
+    // `big_move`. An absolute 2/5/8 scale in this file quietly pinned the most
+    // frequent event in the world to tier 0, so the room never swelled for it.
+    const TIER_CUTS = __TIER_CUTS_JSON__;
+
+    function tierOf(eventType, severity) {
+      const cuts = TIER_CUTS.cuts[eventType] ?? TIER_CUTS.generic;
+      return cuts.reduce((tier, cut) => tier + (severity >= cut ? 1 : 0), 0);
     }
 
     // Declared here, constructed in boot(): character() needs app.screen and
@@ -1096,7 +1100,7 @@
         return;
       }
       const target = event.event_type.startsWith("trader_") ? trader : model;
-      const tier = tierOf(event.severity);
+      const tier = tierOf(event.event_type, event.severity);
       // B1: the reaction registry decides the face and the movement; the tier
       // only decides how big it reads.
       const reaction = reactionFor(event);

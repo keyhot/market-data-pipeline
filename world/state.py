@@ -36,6 +36,20 @@ _DECAY = 0.9
 _DIRECTIONLESS = frozenset({"volatility_spike", "volume_anomaly", "gap_open"})
 
 
+GENERIC_TIER_CUTS = _GENERIC_CUTS
+
+
+def tier_cuts() -> dict[str, tuple[float, float, float]]:
+    """The per-rule thresholds, for surfaces that compute a tier themselves.
+
+    The renderer and the events rail both need one, and severities are
+    rule-specific — a 1.6 ``signal_resolved`` is tier 2 where a 1.6 ``big_move``
+    is tier 0. A page carrying its own absolute scale silently pinned the most
+    frequent event in the world to tier 0, so the scale is injected from here.
+    """
+    return dict(_TIER_CUTS)
+
+
 def severity_tier(event_type: str, severity: float) -> int:
     """Map a rule-specific severity onto the shared 0..3 scale."""
     cuts = _TIER_CUTS.get(event_type, _GENERIC_CUTS)

@@ -2,6 +2,7 @@
 silently break a 24/7 browser source: substitution, the SRI pin, and the
 textContent-only rule that keeps event payloads from becoming markup."""
 
+import json
 import re
 
 from fastapi.testclient import TestClient
@@ -62,7 +63,7 @@ def test_live_event_swell_keys_on_tier():
     # scales the nudge by the event's tier. Pin the hook so a refactor can't
     # silently flatten the room back to a constant nudge.
     body = client.get("/world").text
-    assert "tierOf(event.severity)" in body
+    assert "tierOf(event.event_type, event.severity)" in body
 
 
 # --- B5: on-screen commentary (the stream is silent, so lines must be READ) ---
@@ -313,6 +314,29 @@ def test_the_animation_sheet_loops_every_animation_through_the_real_player():
         r"function advanceCharacters\(dt\) \{(.*?)\n    \}", body, re.S
     ).group(1)
     assert "loopAnim" in advance, "the sheet is not driven by the real player"
+
+
+def test_the_tier_scale_is_injected_rather_than_reinvented():
+    """The canvas and the events rail each decide how big an event reads, and
+    both did it on an absolute 2/5/8 scale while the server normalises PER RULE.
+    `signal_resolved` cuts at 0.6/1.2/1.8 — so the room's single most frequent
+    event has always rendered at tier 0: minimum amplitude, no swell, no tier
+    colour. Exactly the drift a restated reaction registry would cause, and the
+    same fix — the scale comes from `world.state`."""
+    from world.state import GENERIC_TIER_CUTS, tier_cuts
+
+    for path in ("/world", "/overlay/events"):
+        body = client.get(path).text
+        assert "__TIER_CUTS_JSON__" not in body, path
+        assert "severity >= 8" not in body, f"{path} still keeps its own scale"
+        found = re.search(r"const TIER_CUTS = (\{.*?\});", body, re.S)
+        assert found, f"{path} has no injected tier scale"
+        cuts = json.loads(found.group(1))
+        assert cuts["cuts"]["signal_resolved"] == list(tier_cuts()["signal_resolved"])
+        assert cuts["generic"] == list(GENERIC_TIER_CUTS), path
+        assert "tierOf(e.event_type" in body or "tierOf(event.event_type" in body, (
+            f"{path} computes a tier without saying which rule it came from"
+        )
 
 
 def test_characters_have_idle_behaviour_between_events():

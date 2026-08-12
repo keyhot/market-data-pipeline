@@ -50,7 +50,7 @@ from storage.writes import (
 from world import reactions, visuals
 from world.reactions import attach_reactions
 from world.salience import KNOWN_EVENT_TYPES
-from world.state import project_state
+from world.state import GENERIC_TIER_CUTS, project_state, tier_cuts
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
@@ -118,6 +118,15 @@ _THEME_REPLACEMENTS = {
     "__THEME_VARS__": visuals.css_variables(),
     "__TIER_STYLES__": visuals.tier_styles_css(),
     "__MOOD_COLORS_JSON__": json.dumps(visuals.MOOD_COLORS),
+    # The 0..3 tier scale, from world.state. Severities are rule-specific, so a
+    # page that hard-codes absolute cuts disagrees with the server about how
+    # big an event is — which is how every `signal_resolved` came out tier 0.
+    "__TIER_CUTS_JSON__": json.dumps(
+        {
+            "cuts": {k: list(v) for k, v in tier_cuts().items()},
+            "generic": list(GENERIC_TIER_CUTS),
+        }
+    ),
     # B5: one accent per speaking character, from the same palette module, so
     # a speech bubble can never drift from the room's colours.
     "__CHARACTER_COLORS_JSON__": json.dumps(visuals.CHARACTER_COLORS),

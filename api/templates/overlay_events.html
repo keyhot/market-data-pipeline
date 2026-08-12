@@ -36,11 +36,15 @@
     // Severity -> tier (0 calm .. 3 dramatic), matching the world canvas and
     // world/state bands. The tier class drives both the border (category) and
     // the shared .tier-* swell ramp (glow/scale/opacity/weight).
-    function tierOf(severity) {
-      if (severity >= 8) return 3;
-      if (severity >= 5) return 2;
-      if (severity >= 2) return 1;
-      return 0;
+    // Injected from world.state, never restated: severity is rule-specific, so
+    // an absolute scale here disagreed with the server about how big an event
+    // is and rendered every `signal_resolved` as tier 0 — the rail's most
+    // common row, permanently in its calmest colour.
+    const TIER_CUTS = __TIER_CUTS_JSON__;
+
+    function tierOf(eventType, severity) {
+      const cuts = TIER_CUTS.cuts[eventType] ?? TIER_CUTS.generic;
+      return cuts.reduce((tier, cut) => tier + (severity >= cut ? 1 : 0), 0);
     }
 
     const HEADLINES = {
@@ -85,7 +89,8 @@
 
     function addEvent(e, fresh) {
       const row = document.createElement("div");
-      row.className = `event tier tier-${tierOf(e.severity)}` + (fresh ? " fresh" : "");
+      row.className =
+        `event tier tier-${tierOf(e.event_type, e.severity)}` + (fresh ? " fresh" : "");
       const body = document.createElement("div");
       body.className = "body";
       const head = document.createElement("div");

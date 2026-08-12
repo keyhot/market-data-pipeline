@@ -60,7 +60,7 @@ def test_overlay_events_carries_shared_theme_and_tier_swell():
     assert "--bg: #131722" in body       # shared palette reached the overlay
     assert ".tier-3" in body             # the shared swell ramp is injected
     # The swell fires on the live SSE path, not just initial paint.
-    assert "tier-${tierOf(e.severity)}" in body
+    assert "tier-${tierOf(e.event_type, e.severity)}" in body
     assert not re.search(r"__[A-Z_]+__", body)  # every placeholder substituted
 
 
