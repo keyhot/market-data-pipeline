@@ -232,6 +232,46 @@ def test_the_figures_arms_read_apart_from_its_torso():
     assert "shadeFactor" in body
 
 
+def test_every_style_declares_which_face_it_wears():
+    """A machine and a person shouldn't wear the same face — that's half of
+    what makes MODEL and TRADER tell apart. A style missing from the registry
+    would silently inherit a face rather than be given one."""
+    body = client.get("/world").text
+    listed = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
+    styles = re.findall(r'"([a-z]+)"', listed)
+    kinds = dict(re.findall(r"(\w+): \"(machine|human)\"", body))
+    assert set(styles) == set(kinds), f"styles {styles} vs faces {sorted(kinds)}"
+    assert set(kinds.values()) == {"machine", "human"}, kinds
+
+
+def test_the_cast_is_scaled_by_its_layer_not_by_each_character():
+    """Half the named animations set `container.scale` themselves (jolt, hop,
+    pulse, sleep, turn), so a per-character base scale gets clobbered the first
+    time one fires. The layer carries it; the gallery, which lays itself out,
+    puts it back."""
+    body = client.get("/world").text
+    layout = re.search(
+        r"function positionCharacters\(\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "layers.chars.scale" in layout
+    gallery = re.search(
+        r"function drawGallery\(\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "layers.chars.scale" in gallery, "the gallery inherits the cast scale"
+
+
+def test_a_dormant_character_does_not_sink_into_the_background():
+    """The trader stays dormant until freqtrade events exist, and his dormant
+    tint is nearly the background — he disappeared in the wide shot. A
+    luminance floor keeps him present without pretending he's active."""
+    body = client.get("/world").text
+    assert "function liftDark(" in body
+    expression = re.search(
+        r"function setExpression\(char, mood\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "liftDark(" in expression, "the floor is defined but never applied"
+
+
 def test_the_floor_is_laid_out_with_the_characters_not_only_at_boot():
     """The renderer follows the window and `positionCharacters` runs on every
     draw, so a floor drawn once at boot drifts off its inhabitants and they end

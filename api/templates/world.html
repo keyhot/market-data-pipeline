@@ -134,6 +134,7 @@
       model.container.visible = false;
       trader.container.visible = false;
       layers.room.visible = false;   // the floor line is scenery, not a specimen
+      layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
       const moods = ["elated", "focused", "anxious", "dejected", "idle",
@@ -185,7 +186,7 @@
     function layoutRoom() {
       if (!floorLine) return;
       floorLine.clear()
-        .rect(0, app.screen.height * 0.72, app.screen.width, 3)
+        .rect(0, app.screen.height * GROUND, app.screen.width, 3)
         .fill(0x2a2e39);
     }
 
@@ -208,6 +209,16 @@
     // `?style=` overrides the whole cast — it exists for evaluation, so it has
     // to be able to put everyone in the same body for comparison.
     const STYLE_OVERRIDE = new URLSearchParams(location.search).get("style");
+
+    // Where the floor is, and how big the cast stands on it. Both were spelled
+    // 0.72 in three places, which is how the floor and its inhabitants came
+    // apart in the first place.
+    const GROUND = 0.66;
+    // The pair read as two small icons on a wide dark plane — about a quarter
+    // of the frame, which on a phone-sized YouTube window is nothing. The
+    // LAYER carries the scale, not the characters: half the named animations
+    // set `container.scale` themselves and would clobber a per-character one.
+    const CAST_SCALE = 1.35;
 
     function styleFor(name) {
       const style = STYLE_OVERRIDE || CAST[name];
@@ -279,7 +290,7 @@
         // A static stem, so the head isn't left hovering over the cluster the
         // way it was. It can't be one of the bars: those ripple, and a neck
         // that stretches would pull the face off the body.
-        body.roundRect(-4, -118, 8, 58, 4).fill(0x545862);
+        body.roundRect(-6, -118, 12, 58, 6).fill(0x545862);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
@@ -295,17 +306,22 @@
       // market glyph, and that is the point — the trader is the human in the
       // room, so he doesn't get to be made of candles.
       figure(body, accents) {
-        body.roundRect(-17, -56, 14, 56, 6).fill(0x545862);   // legs, with a
-        body.roundRect(3, -56, 14, 56, 6).fill(0x545862);      // gap between
+        // The gap has to be wide enough to survive the stream: at 6 units the
+        // two legs merged into one column and he read as a pedestal.
+        body.roundRect(-19, -56, 13, 56, 6).fill(0x545862);
+        body.roundRect(6, -56, 13, 56, 6).fill(0x545862);
         // Waist under a broader chest. The taper is what reads as a person —
         // one capsule reads as a pill — and the wider shoulders are what stop
         // the head (28px, shared with every other body) looking oversized.
         body.roundRect(-26, -86, 52, 40, 14).fill(0x545862);
-        body.roundRect(-33, -128, 66, 54, 18).fill(0x545862);
+        body.roundRect(-33, -128, 66, 54, 22).fill(0x545862);
         for (const side of [-1, 1]) {
           const arm = new PIXI.Graphics().roundRect(-7, -5, 14, 66, 7)
             .fill(0x545862);
           arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
+          // Not quite straight and not quite matching: dead-symmetrical arms
+          // read as a mannequin, and the asymmetry costs two numbers.
+          arm.restRotation = side < 0 ? -0.05 : 0.09;
           // v1's arms were the torso's exact colour, so a resting figure read
           // as a capsule and the arms only appeared mid-animation. A lighter
           // shade separates them from both the body and the dark room.
@@ -324,12 +340,21 @@
       },
     };
 
+    // A machine and a person shouldn't wear the same face. The bodies built
+    // out of market glyphs get a readout — visor, LED eyes, a stepped mouth,
+    // and no brows, because a brow is a muscle. The figure keeps the human
+    // one, and so does the orb, which is a face and nothing else.
+    const FACE_KIND = {
+      bars: "machine", candle: "machine", monolith: "machine",
+      figure: "human", orb: "human",
+    };
+
     // One inhabitant: a body whose colour is its mood, a face that reads at a
     // glance, and a label carrying the numbers.
     function character(name, style) {
       style = BODIES[style] ? style : styleFor(name);
       const container = new PIXI.Container();
-      container.y = app.screen.height * 0.72;
+      container.y = app.screen.height * GROUND;
 
       const body = new PIXI.Graphics();
       const head = new PIXI.Container();
@@ -339,13 +364,14 @@
       const mouth = new PIXI.Graphics();
       const browL = new PIXI.Graphics();
       const browR = new PIXI.Graphics();
+      const visor = new PIXI.Graphics();
       const accents = [];
 
       const headY = BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
       if (style !== "orb") skull.circle(0, 0, 28).fill(0x545862);
       head.y = headY;
-      head.addChild(skull, browL, browR, eyeL, eyeR, mouth);
+      head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
 
       const nameTag = label(name, -40, 22, 18);
       const stat = label("", -80, 46, 14, 0x787b86);
@@ -355,11 +381,12 @@
       layers.chars.addChild(container);
 
       const char = {
-        container, body, head, skull, eyeL, eyeR, mouth, browL, browR,
-        accents, style, stat, moodTag,
+        container, body, head, skull, eyeL, eyeR, mouth, browL, browR, visor,
+        accents, style, stat, moodTag, faceKind: FACE_KIND[style] ?? "human",
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
       };
       setExpression(char, "neutral");
+      restAccents(char);   // arms hang from their resting angle, not from zero
       return char;
     }
 
@@ -368,7 +395,8 @@
     function gesture(char, amount, stagger) {
       char.accents.forEach((accent, i) => {
         const offset = stagger ? Math.sin(amount * Math.PI * 2 + i * 0.9) : 1;
-        accent.rotation = amount * 0.35 * (i % 2 ? 1 : -1) * (stagger ? offset : 1);
+        accent.rotation = (accent.restRotation ?? 0)
+          + amount * 0.35 * (i % 2 ? 1 : -1) * (stagger ? offset : 1);
         if (accent.restHeight) {
           accent.scale.y = 1 + Math.abs(amount) * 0.55 * (stagger ? offset : 1);
         }
@@ -377,7 +405,9 @@
 
     function restAccents(char) {
       for (const accent of char.accents) {
-        accent.rotation = 0;
+        // Rest is not necessarily zero: dead-straight symmetrical arms read as
+        // a mannequin, so the figure's hang at a slight, uneven angle.
+        accent.rotation = accent.restRotation ?? 0;
         accent.scale.set(1, 1);
       }
     }
@@ -392,12 +422,55 @@
            | clamp(tint & 0xff);
     }
 
+    // Nothing in this room should sink into the background. The trader stays
+    // dormant until freqtrade events exist, and his dormant colour is nearly
+    // the wall — so put a floor under the luminance. This is a rendering
+    // decision, not a mood one: the palette is untouched, and a dim character
+    // stays dim, it just doesn't disappear.
+    function liftDark(tint, floor) {
+      const r = (tint >> 16) & 0xff, g = (tint >> 8) & 0xff, b = tint & 0xff;
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      return lum >= floor ? tint : shade(tint, floor / Math.max(lum, 0.05));
+    }
+
     // Faces are redrawn rather than tweened: a handful of primitives per mood
     // change is far cheaper than keeping a rig, and OBS renders in software.
     function setExpression(char, mood) {
       char.mood = mood;
       const { valence, arousal } = faceFor(mood);
-      const tint = color(mood);
+      const tint = liftDark(color(mood), 0.3);
+      char.visor.clear();
+      if (char.faceKind === "machine") {
+        machineFace(char, valence, arousal, tint);
+      } else {
+        humanFace(char, valence, arousal);
+      }
+      applyTint(char, tint);
+    }
+
+    // A readout, not an expression: the same two axes, computed. Arousal lights
+    // more of the LED; valence steps the mouth. No brows — a brow is a muscle.
+    function machineFace(char, valence, arousal, tint) {
+      // 0.14, not 0.35: the skull is a 0x545862 fill *tinted*, so it already
+      // renders at roughly a third of the mood colour — a 0.35 visor came out
+      // the same value as the head and was invisible on the real page.
+      char.visor.roundRect(-21, -16, 42, 23, 8).fill(shade(tint, 0.14));
+      const lit = 2 + arousal * 5;
+      for (const [eye, side] of [[char.eyeL, -1], [char.eyeR, 1]]) {
+        eye.clear();
+        eye.roundRect(side * 10 - 6, -5 - lit / 2, 12, lit, 1.5).fill(0xd1d4dc);
+      }
+      char.browL.clear();
+      char.browR.clear();
+      const w = 10 + arousal * 3;
+      const step = valence * 6;
+      char.mouth.clear()
+        .moveTo(-w, 12).lineTo(-w / 3, 12 + step)
+        .lineTo(w / 3, 12 + step).lineTo(w, 12)
+        .stroke({ width: 2.5, color: 0xd1d4dc });
+    }
+
+    function humanFace(char, valence, arousal) {
       const open = 2.2 + arousal * 4.2;            // eyelid opening
       const eyeY = char.style === "orb" ? -4 : -4;
       const dx = char.style === "orb" ? 15 : 10;
@@ -431,7 +504,9 @@
         .moveTo(-width, 10)
         .quadraticCurveTo(0, 10 + curve, width, 10)
         .stroke({ width: 2.5, color: 0xd1d4dc });
+    }
 
+    function applyTint(char, tint) {
       char.body.tint = tint;
       if (char.skull) char.skull.tint = tint;
       for (const accent of char.accents) {
@@ -532,9 +607,12 @@
 
     function positionCharacters() {
       layoutRoom();
-      model.container.x = app.screen.width * 0.32;
-      trader.container.x = app.screen.width * 0.62;
-      model.baseY = trader.baseY = app.screen.height * 0.72;
+      layers.chars.scale.set(CAST_SCALE);
+      // Positions are therefore in layer space, which the scale then maps back
+      // onto the screen fractions they're written as.
+      model.container.x = app.screen.width * 0.32 / CAST_SCALE;
+      trader.container.x = app.screen.width * 0.62 / CAST_SCALE;
+      model.baseY = trader.baseY = app.screen.height * GROUND / CAST_SCALE;
       model.container.y = trader.container.y = model.baseY;
       // Animations displace from a remembered rest pose, so it has to be
       // recorded here — a resize must not leave a character drifting.
