@@ -444,10 +444,16 @@
       container.addChild(...accents, body, head, nameTag, stat, moodTag);
       layers.chars.addChild(container);
 
+      // Seeded off the name, so MODEL and TRADER don't blink in unison — two
+      // characters sharing a timer read as one animation on two puppets.
+      let seed = 0;
+      for (const ch of name) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+
       const char = {
         container, body, head, skull, eyeL, eyeR, mouth, browL, browR, visor,
         accents, style, stat, moodTag, faceKind: FACE_KIND[style] ?? "human",
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
+        rand: rng32(seed || 1),
       };
       setExpression(char, "neutral");
       restAccents(char);   // arms hang from their resting angle, not from zero
@@ -509,6 +515,10 @@
     function setExpression(char, mood) {
       char.mood = mood;
       const { valence, arousal } = faceFor(mood);
+      // Remembered so a blink can redraw the eyes alone and put them back
+      // exactly as the mood had them.
+      char.face = { valence, arousal };
+      char.blinkClosed = false;
       const tint = liftDark(color(mood), 0.3);
       char.visor.clear();
       if (char.faceKind === "machine") {
@@ -526,11 +536,7 @@
       // renders at roughly a third of the mood colour — a 0.35 visor came out
       // the same value as the head and was invisible on the real page.
       char.visor.roundRect(-21, -16, 42, 23, 8).fill(shade(tint, 0.14));
-      const lit = 2 + arousal * 5;
-      for (const [eye, side] of [[char.eyeL, -1], [char.eyeR, 1]]) {
-        eye.clear();
-        eye.roundRect(side * 10 - 6, -5 - lit / 2, 12, lit, 1.5).fill(0xd1d4dc);
-      }
+      machineEyes(char, arousal);
       char.browL.clear();
       char.browR.clear();
       const w = 10 + arousal * 3;
@@ -541,11 +547,20 @@
         .stroke({ width: 2.5, color: 0xd1d4dc });
     }
 
-    function humanFace(char, valence, arousal) {
-      const open = 2.2 + arousal * 4.2;            // eyelid opening
-      const eyeY = char.style === "orb" ? -4 : -4;
-      const dx = char.style === "orb" ? 15 : 10;
+    // Eyes are drawn on their own so a blink can close them without disturbing
+    // the mood: `arousal` is passed in rather than read, and a blink passes 0.
+    function machineEyes(char, arousal) {
+      const lit = 2 + arousal * 5;
+      for (const [eye, side] of [[char.eyeL, -1], [char.eyeR, 1]]) {
+        eye.clear();
+        eye.roundRect(side * 10 - 6, -5 - lit / 2, 12, lit, 1.5).fill(0xd1d4dc);
+      }
+    }
 
+    function humanEyes(char, arousal) {
+      const open = 2.2 + arousal * 4.2;            // eyelid opening
+      const eyeY = -4;
+      const dx = char.style === "orb" ? 15 : 10;
       for (const [eye, side] of [[char.eyeL, -1], [char.eyeR, 1]]) {
         eye.clear();
         if (arousal < 0.08) {
@@ -555,6 +570,17 @@
           eye.ellipse(side * dx, eyeY, 3.4, open / 2).fill(0xd1d4dc);
         }
       }
+    }
+
+    function drawEyes(char, arousal) {
+      if (char.faceKind === "machine") machineEyes(char, arousal);
+      else humanEyes(char, arousal);
+    }
+
+    function humanFace(char, valence, arousal) {
+      const eyeY = -4;
+      const dx = char.style === "orb" ? 15 : 10;
+      humanEyes(char, arousal);
       for (const [brow, side] of [[char.browL, -1], [char.browR, 1]]) {
         brow.clear();
         // Worry raises the INNER brow (y grows downward). Positive moods stay
@@ -636,6 +662,9 @@
 
     function playAnimation(char, animation, tier) {
       if (!ANIM[animation]) animation = "idle";
+      // A reaction takes the body back off idle: a half-finished weight shift
+      // left under an animation is a character reacting from a crooked stance.
+      resetIdle(char);
       char.anim = animation;
       char.phase = 0;
       // Tier scales amplitude, not choice: the same reaction reads bigger when
@@ -654,10 +683,114 @@
       char.container.rotation = 0;
       char.container.alpha = 1;
       char.container.scale.set(1, 1);
-      char.head.rotation = 0;
+      setGaze(char, 0, 0, 0);
       char.mouth.scale.y = 1;
       restAccents(char);
       if (char.headBaseY != null) char.head.y = char.headBaseY;
+    }
+
+    // --- B7: idle life, and attention -------------------------------------
+    // Seeded, not ad-hoc: the eval gate for calm is one quiet frame compared
+    // against another, and unseeded drift makes two calm frames incomparable.
+    // The director already treats RNG as something you inject; so does the room.
+    function rng32(seed) {
+      let s = seed >>> 0;
+      return () => {
+        s = (s + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // Each behaviour owns exactly one property and eases 0->1->0, so two can
+    // overlap the way they do in life (you shift your weight while looking
+    // somewhere) without fighting over the same transform.
+    const IDLE_ACTIONS = {
+      blink: {
+        every: [2.4, 6.5], dur: 0.16,
+        run: (c, u) => setBlink(c, u > 0.45),
+      },
+      glance: {
+        every: [5.0, 13.0], dur: 1.8,
+        run: (c, u, dir) => setGaze(c, dir * 2.5 * u, dir * 0.05 * u, 0),
+      },
+      shift: {
+        every: [7.0, 17.0], dur: 2.6,
+        run: (c, u, dir) => { c.container.x = c.baseX + dir * 3 * u; },
+      },
+    };
+
+    // Looking is done with the eyes, not by sliding the skull sideways: a head
+    // that translates reads as a part coming loose, on the machine especially,
+    // where it sits on a visible stem. The head only rotates.
+    function setGaze(char, dx, rot, headShift) {
+      char.eyeL.x = char.eyeR.x = dx;
+      char.head.rotation = rot;
+      char.head.x = headShift;
+    }
+
+    function setBlink(char, closed) {
+      if (char.blinkClosed === closed || !char.face) return;   // edges only
+      char.blinkClosed = closed;
+      drawEyes(char, closed ? 0 : char.face.arousal);
+    }
+
+    // Hoisted: this runs per character per frame, and OBS renders in software.
+    const IDLE_ENTRIES = Object.entries(IDLE_ACTIONS);
+
+    function idleTick(char, dt) {
+      char.idle ??= {};
+      for (const [name, spec] of IDLE_ENTRIES) {
+        const st = (char.idle[name] ??= { wait: spec.every[0] * char.rand(), t: 0 });
+        if (!st.active) {
+          st.wait -= dt;
+          if (st.wait > 0) continue;
+          st.active = true;
+          st.t = 0;
+          st.dir = char.rand() < 0.5 ? -1 : 1;
+        }
+        st.t += dt;
+        const done = st.t >= spec.dur;
+        spec.run(char, done ? 0 : Math.sin((st.t / spec.dur) * Math.PI), st.dir);
+        if (done) {
+          st.active = false;
+          const [lo, hi] = spec.every;
+          st.wait = lo + char.rand() * (hi - lo);
+        }
+      }
+    }
+
+    // "Disagreement is the content" — but the trader is a dry-run sidecar that
+    // stays dormant until its own events exist, so handing it a reaction to an
+    // event it had no part in would be inventing activity, which is the one
+    // thing this room must never do. It looks. It does not act: no mood, no
+    // animation, no numbers. The delay is what makes it read as *noticing*.
+    function lookAt(observer, subject, delay) {
+      if (!observer || !subject || observer === subject || observer.anim) return;
+      observer.watch = {
+        t: -delay, dur: 2.8,
+        dir: Math.sign(subject.container.x - observer.container.x) || 1,
+      };
+    }
+
+    function watchTick(char, dt) {
+      const w = char.watch;
+      if (!w) return;
+      w.t += dt;
+      if (w.t < 0) return;                       // still the stagger
+      const u = Math.sin(Math.min(w.t / w.dur, 1) * Math.PI);
+      // A deliberate look is bigger than an idle glance and does carry the
+      // head a little — that difference is what makes it read as directed.
+      setGaze(char, w.dir * 4 * u, w.dir * 0.12 * u, w.dir * 3 * u);
+      if (w.t >= w.dur) { char.watch = null; setGaze(char, 0, 0, 0); }
+    }
+
+    function resetIdle(char) {
+      setGaze(char, 0, 0, 0);
+      char.watch = null;
+      setBlink(char, false);
+      for (const st of Object.values(char.idle ?? {})) st.active = false;
     }
 
     // The two inhabitants, plus whatever an eval surface has added. A list
@@ -676,6 +809,8 @@
         }
         if (!char.anim) {           // at rest, breathe so nobody is a statue
           ANIM.idle(char, (ambient.t / 3.2) % 1, 1);
+          idleTick(char, dt);
+          watchTick(char, dt);      // last: a deliberate look outranks a glance
           continue;
         }
         char.phase += dt / char.duration;
@@ -968,6 +1103,10 @@
       setExpression(target, reaction.mood);
       target.moodTag.text = reaction.mood;
       playAnimation(target, reaction.animation, tier);
+      // B7: the one who didn't act notices the one who did. Only from tier 1 —
+      // at tier 0 the pair would spend the day turning to look at each other,
+      // and a glance that happens constantly stops meaning anything.
+      if (tier >= 1) lookAt(target === model ? trader : model, target, 0.25);
     }
 
     async function refresh() {

@@ -315,6 +315,50 @@ def test_the_animation_sheet_loops_every_animation_through_the_real_player():
     assert "loopAnim" in advance, "the sheet is not driven by the real player"
 
 
+def test_characters_have_idle_behaviour_between_events():
+    """A calm stretch is most of the airtime and it looked like two statues
+    sharing a 2px bob. Blink, glance and weight-shift run only on the branch
+    where no reaction is playing, so idle life can never fight an animation."""
+    body = client.get("/world").text
+    assert "function idleTick(" in body
+    actions = re.search(r"const IDLE_ACTIONS = \{(.*?)\n    \};", body, re.S).group(1)
+    for action in ("blink:", "glance:", "shift:"):
+        assert action in actions, action
+    advance = re.search(
+        r"function advanceCharacters\(dt\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "idleTick(" in advance
+
+
+def test_idle_timing_is_seeded_rather_than_ad_hoc_randomness():
+    """The eval gate for calm is one quiet frame compared against another, and
+    unseeded idle drift makes two calm frames incomparable. The director
+    already treats RNG as a thing you inject; so does the room."""
+    body = client.get("/world").text
+    assert "function rng32(" in body
+    idle = re.search(
+        r"function idleTick\(char, dt\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "Math.random" not in idle, "idle timing must not be ad-hoc random"
+    assert "char.rand(" in idle
+
+
+def test_the_observer_glances_without_claiming_to_have_acted():
+    """'Disagreement is the content' — but the trader is a dry-run sidecar that
+    stays dormant until its own events exist, so giving it a reaction to an
+    event it had no part in would be inventing activity, which is the one thing
+    this room must never do. It looks. It does not act."""
+    body = client.get("/world").text
+    react = re.search(r"function react\(event\) \{(.*?)\n    \}", body, re.S).group(1)
+    assert "lookAt(" in react
+    look = re.search(
+        r"function lookAt\(observer, subject, delay\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "setExpression" not in look, "a glance must not restate the observer's mood"
+    assert "playAnimation" not in look, "a glance is attention, not action"
+    assert "stat" not in look, "a glance must not touch the observer's numbers"
+
+
 def test_the_floor_is_laid_out_with_the_characters_not_only_at_boot():
     """The renderer follows the window and `positionCharacters` runs on every
     draw, so a floor drawn once at boot drifts off its inhabitants and they end
