@@ -53,6 +53,10 @@ def build_scene(client, spec: dict | None = None) -> dict:
     for one in specs:
         created.extend(_build_one(client, one, set_current=False)["created"])
     home = specs[0]["scene"]
+    # Every switch after this one is the director's, so the transition has to be
+    # in place before it starts (B2): a hard cut between scenes reads as a
+    # glitch on a stream whose whole register is calm-that-swells.
+    set_transition(client)
     client.set_current_program_scene(home)
     return {"scene": home, "scenes": [s["scene"] for s in specs], "created": created}
 
@@ -120,6 +124,40 @@ def screenshot(client, path, width: int = 1920, height: int = 1080) -> str:
     scene = client.get_current_program_scene().current_program_scene_name
     client.save_source_screenshot(scene, "png", str(path), width, height, -1)
     return str(path)
+
+
+def set_transition(client, name: str = "Fade", duration_ms: int = 320) -> bool:
+    """Make the director's scene switches cross-fade instead of cutting.
+
+    A hard cut reads as a glitch on a stream whose entire register is
+    calm-that-swells. Best-effort by design: an OBS profile can be built without
+    the stock transitions, and a missing nicety must never take the stream down
+    — the cut still works.
+    """
+    listed = client.get_scene_transition_list().transitions
+    available = {entry["transitionName"] for entry in listed}
+    if name not in available:
+        print(
+            f"transition {name!r} not in this profile; leaving the cut as-is",
+            file=sys.stderr,
+        )
+        return False
+    client.set_current_scene_transition(name)
+    client.set_current_scene_transition_duration(duration_ms)
+    return True
+
+
+def set_audio_gain(client, tier: int, sources=None) -> None:
+    """Apply the tier's audio-bed gain (B2's music-swell hook).
+
+    Silent no-op when there is no bed: the VLC source only exists when
+    STREAM_AUDIO_DIR is set, and addressing an input that isn't there must not
+    raise at 3am on a live stream.
+    """
+    names = stream_scene.audio_source_names() if sources is None else list(sources)
+    gain = stream_scene.audio_gain_db(tier)
+    for name in names:
+        client.set_input_volume(name, vol_db=gain)
 
 
 def configure_output(client) -> None:

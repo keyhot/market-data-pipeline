@@ -82,6 +82,34 @@ def _browser(name: str, path: str, width: int, height: int, x: int, y: int) -> d
     }
 
 
+# B2 step 5 — the music-swell hook, as a mapping rather than a behaviour.
+# Tier 0 is the resting bed level and each step opens it up; monotonic by test,
+# because a bigger event that ducked the music would inverse the whole point.
+# Design + hook only: nothing calls this on a tick yet, because there are no
+# DMCA-safe tracks in STREAM_AUDIO_DIR to swell. Enabling it is an ops step,
+# documented in the runbook — the code side is ready and tested.
+_AUDIO_GAIN_DB: tuple[float, ...] = (-18.0, -12.0, -6.0, 0.0)
+
+
+def audio_gain_db(tier: int) -> float:
+    """Audio-bed gain in dB for a severity ``tier``; clamps to [0, 3]."""
+    clamped = max(0, min(int(tier), len(_AUDIO_GAIN_DB) - 1))
+    return _AUDIO_GAIN_DB[clamped]
+
+
+def audio_source_names() -> list[str]:
+    """Every audio-bed input the scene spec would have created (one per scene,
+    suffixed) — empty when STREAM_AUDIO_DIR is unset, which is the default."""
+    names = []
+    for scene in scenes_spec():
+        names += [
+            source["name"]
+            for source in scene["sources"]
+            if source.get("kind") == "vlc_source"
+        ]
+    return names
+
+
 def audio_sources(suffix: str = "") -> list[dict]:
     """VLC playlist looping over STREAM_AUDIO_DIR; absent when unset so scenes
     build cleanly before any audio exists. `suffix` keeps the input name unique

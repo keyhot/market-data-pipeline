@@ -12,13 +12,36 @@ class FakeResp:
 
 
 class FakeClient:
-    def __init__(self, scenes=(), inputs=(), streaming=False, skipped=0, total=0):
+    def __init__(
+        self,
+        scenes=(),
+        inputs=(),
+        streaming=False,
+        skipped=0,
+        total=0,
+        transitions=("Cut", "Fade"),
+    ):
         self.calls = []
         self._scenes = list(scenes)
         self._inputs = list(inputs)
         self._streaming = streaming
         self._skipped, self._total = skipped, total
+        self._transitions = list(transitions)
         self.current_program_scene = None
+
+    # Present on the real client, so present here: a fake laxer than the thing
+    # it stands in for is how every A4 seam bug stayed green.
+    def get_scene_transition_list(self):
+        return FakeResp(transitions=[{"transitionName": t} for t in self._transitions])
+
+    def set_current_scene_transition(self, name):
+        self._log("set_current_scene_transition", name)
+
+    def set_current_scene_transition_duration(self, ms):
+        self._log("set_current_scene_transition_duration", ms)
+
+    def set_input_volume(self, name, vol_db=None):
+        self._log("set_input_volume", name, vol_db)
 
     def _log(self, name, *args):
         self.calls.append((name, *args))
@@ -199,3 +222,53 @@ def test_cli_exit_code_when_obs_unreachable(monkeypatch):
 
     monkeypatch.setattr(stream_ctl, "make_client", boom)
     assert stream_ctl.main(["status"]) == 2
+
+
+# --- B2: transitions and the audio-bed swell hook ----------------------------
+
+
+def test_scene_switches_get_a_fade_rather_than_a_cut():
+    """The director switches scenes on salience; a hard cut reads as a glitch
+    on a stream whose whole register is calm-that-swells."""
+    client = FakeClient()
+    stream_ctl.set_transition(client)
+    assert ("set_current_scene_transition", "Fade") in client.calls
+    assert any(c[0] == "set_current_scene_transition_duration" for c in client.calls)
+
+
+def test_a_missing_transition_is_skipped_rather_than_crashing_the_stream():
+    """OBS profiles can be built without the stock transitions. Never crash the
+    stream over a nicety — the cut still works."""
+    client = FakeClient(transitions=("Cut",))
+    stream_ctl.set_transition(client)
+    assert not any(c[0] == "set_current_scene_transition" for c in client.calls)
+
+
+def test_audio_bed_gain_ramps_with_tier_and_is_silent_by_default():
+    """The swell hook: louder as the world gets dramatic. Tier 0 is the resting
+    bed level, and the ramp must be monotonic or a bigger event would duck."""
+    from scripts.stream_scene import audio_gain_db
+
+    gains = [audio_gain_db(t) for t in range(4)]
+    assert gains == sorted(gains), gains
+    assert len(set(gains)) == 4
+    assert audio_gain_db(-1) == gains[0] and audio_gain_db(9) == gains[3]
+
+
+def test_setting_the_audio_gain_is_a_no_op_without_an_audio_bed():
+    """The bed only exists when STREAM_AUDIO_DIR is set (Sprint 11). Addressing
+    a source that isn't there must not raise on a live stream."""
+    client = FakeClient()
+    stream_ctl.set_audio_gain(client, tier=3, sources=[])
+    assert not any(c[0] == "set_input_volume" for c in client.calls)
+
+    stream_ctl.set_audio_gain(client, tier=3, sources=["audio-bed"])
+    assert ("set_input_volume", "audio-bed", pytest.approx(0.0)) in client.calls
+
+
+def test_build_puts_the_fade_in_place_before_the_director_starts_switching():
+    """Every switch after `build` is the director's, so the transition has to be
+    set during build or the first dozen scene changes are hard cuts."""
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+    assert ("set_current_scene_transition", "Fade") in client.calls
