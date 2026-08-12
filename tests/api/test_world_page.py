@@ -272,6 +272,49 @@ def test_a_dormant_character_does_not_sink_into_the_background():
     assert "liftDark(" in expression, "the floor is defined but never applied"
 
 
+def test_an_accent_gestures_by_kind_rather_than_all_of_them_rotating():
+    """Rotating a bar about its own base swings it like a felled tree, and the
+    cluster came apart on cheer/wave/shrug. Only what hangs from a joint
+    swings; a bar pumps and a base shifts its weight."""
+    body = client.get("/world").text
+    assert "const GESTURE = {" in body
+    for mode in ("swing:", "pump:", "shift:"):
+        assert mode in body, mode
+    bars = re.search(r"      bars\(body, accents\) \{(.*?)\n      \},", body, re.S)
+    assert '"pump"' in bars.group(1), "the bar cluster still swings"
+
+
+def test_how_far_a_head_may_sink_is_declared_per_body():
+    """`slump` drops the head a fixed distance, but how much room there is to
+    drop into is a property of the body: the figure's head already overlaps its
+    chest at rest, so the shared distance buried a third of it and read blobby
+    rather than dejected. Every body has to say."""
+    body = client.get("/world").text
+    listed = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
+    styles = set(re.findall(r'"([a-z]+)"', listed))
+    declared = re.search(r"const HEAD_TRAVEL = \{(.*?)\}", body, re.S).group(1)
+    travel = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", declared)}
+    assert set(travel) == styles, f"{sorted(travel)} vs {sorted(styles)}"
+    assert travel["figure"] < travel["bars"], "the neckless body sinks furthest"
+
+
+def test_the_animation_sheet_loops_every_animation_through_the_real_player():
+    """Sixteen animations shipped without anyone seeing one — and wave, shake
+    and flicker all sit at or near zero displacement at whatever phase you'd
+    think to freeze. A sheet with its own player would be showing an animation
+    nobody ships, so it drives `advanceCharacters` instead."""
+    body = client.get("/world").text
+    sheet = re.search(
+        r"function drawAnimationSheet\(\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "Object.keys(ANIM)" in sheet, "the sheet keeps its own list of animations"
+    assert "loopAnim" in sheet
+    advance = re.search(
+        r"function advanceCharacters\(dt\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "loopAnim" in advance, "the sheet is not driven by the real player"
+
+
 def test_the_floor_is_laid_out_with_the_characters_not_only_at_boot():
     """The renderer follows the window and `positionCharacters` runs on every
     draw, so a floor drawn once at boot drifts off its inhabitants and they end

@@ -114,6 +114,7 @@
       drawRoom();
       model = character("MODEL");
       trader = character("TRADER");
+      cast.push(model, trader);
       positionCharacters();
       startAmbient();
 
@@ -122,6 +123,14 @@
       // the thing no assertion grades, so it needs to be *lookable*.
       if (new URLSearchParams(location.search).get("gallery") === "1") {
         drawGallery();
+        return;
+      }
+      // `?anims=1` — the other half of the eval gate, and the half that was
+      // missing: sixteen named animations shipped without anyone ever seeing
+      // one. Every animation, on both cast bodies, looping. LOCAL ONLY — 32
+      // characters ticking is not something to point a browser source at.
+      if (new URLSearchParams(location.search).get("anims")) {
+        drawAnimationSheet();
         return;
       }
 
@@ -160,6 +169,55 @@
           setExpression(sample, mood);
           sample.moodTag.text = mood;
           sample.stat.text = style;
+        });
+      });
+    }
+
+    // Sixteen animations went live without anyone seeing one: a still frame
+    // can't show motion, and three of them (wave, shake, flicker) are at or
+    // near zero displacement at any phase you'd think to freeze. So the sheet
+    // LOOPS them, through `advanceCharacters` — a sheet with its own player
+    // would be showing me an animation nobody ships.
+    function drawAnimationSheet() {
+      model.container.visible = false;
+      trader.container.visible = false;
+      layers.room.visible = false;
+      // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
+      // and whether that reads as dejected or as a head in a torso is a
+      // question about broadcast size. Tier-3 amplitude, for the same reason.
+      layers.chars.scale.set(CAST_SCALE);
+      const amp = 0.6 + 3 * 0.25;
+      // `?anims=slump` narrows to one animation across every body — iterating
+      // on a single pose against 32 looping cells is how you miss things.
+      const only = new URLSearchParams(location.search).get("anims");
+      const names = ANIM[only] ? [only] : Object.keys(ANIM);
+      const bodies = ANIM[only] ? STYLES : [CAST.MODEL, CAST.TRADER];
+      const total = names.length * bodies.length;
+      const cellW = 250;
+      const cols = Math.max(1, Math.floor(app.screen.width / cellW));
+      const rows = Math.ceil(total / cols);
+      // A cell shorter than this overlaps its neighbour's labels. The sheet is
+      // a local page, so it runs off the bottom of a short window rather than
+      // shrinking the thing whose size is the question.
+      const rowH = Math.max(330, (app.screen.height - 40) / rows);
+      names.forEach((name, i) => {
+        bodies.forEach((style, b) => {
+          const idx = i * bodies.length + b;
+          const sample = character(style, style);
+          sample.container.x = cellW * ((idx % cols) + 0.5) / CAST_SCALE;
+          sample.container.y =
+            (40 + rowH * Math.floor(idx / cols) + rowH * 0.86) / CAST_SCALE;
+          sample.baseX = sample.container.x;
+          sample.baseY = sample.container.y;
+          sample.headBaseY = sample.head.y;
+          setExpression(sample, "focused");
+          sample.moodTag.text = name;
+          sample.stat.text = "";
+          sample.loopAnim = name;
+          sample.amp = amp;
+          sample.duration = ANIM_DURATION[name] ?? 0.9;
+          sample.phase = (idx * 0.13) % 1;   // stagger, so it isn't a chorus line
+          cast.push(sample);
         });
       });
     }
@@ -273,6 +331,9 @@
           .fill(0x545862);
         const wickLow = new PIXI.Graphics().roundRect(-3.5, -22, 7, 26, 3.5)
           .fill(0x545862);
+        // A wick flicks by lengthening. It cannot swing: it's drawn in the
+        // character's own space, so rotating it pivots about the feet.
+        wickTop.gestureMode = wickLow.gestureMode = "pump";
         accents.push(wickTop, wickLow);
         return -142;
       },
@@ -285,6 +346,7 @@
             .roundRect(-6, -h, 12, h, 4).fill(0x545862);
           bar.x = -36 + i * 18;
           bar.restHeight = h;
+          bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
           accents.push(bar);
         });
         // A static stem, so the head isn't left hovering over the cluster the
@@ -299,6 +361,8 @@
         body.roundRect(-26, -104, 52, 78, 20).fill(0x545862);
         const base = new PIXI.Graphics()
           .roundRect(-38, -30, 76, 30, 14).fill(0x545862);
+        base.gestureMode = "shift";   // a weighted column doesn't wave, it leans
+        base.restX = 0;
         accents.push(base);
         return -134;
       },
@@ -390,16 +454,22 @@
       return char;
     }
 
-    // Limb-less bodies still need a gesture. Accents are the hands: wicks
-    // flick, bars ripple, the base shifts its weight.
+    // Limb-less bodies still need a gesture — but not the same one. Rotating a
+    // bar about its own base swings it like a felled tree, and at tier-3
+    // amplitude the cluster came apart on cheer/wave/shrug; the candle's wicks
+    // were worse, pivoting about the character's *feet*. Only what hangs from
+    // a joint swings. Everything else pumps or shifts its weight.
+    const GESTURE = {
+      swing: (a, amt) => { a.rotation = (a.restRotation ?? 0) + amt * 0.35; },
+      pump: (a, amt) => { a.scale.y = 1 + Math.abs(amt) * 0.55; },
+      shift: (a, amt) => { a.x = (a.restX ?? 0) + amt * 6; },
+    };
+
     function gesture(char, amount, stagger) {
       char.accents.forEach((accent, i) => {
         const offset = stagger ? Math.sin(amount * Math.PI * 2 + i * 0.9) : 1;
-        accent.rotation = (accent.restRotation ?? 0)
-          + amount * 0.35 * (i % 2 ? 1 : -1) * (stagger ? offset : 1);
-        if (accent.restHeight) {
-          accent.scale.y = 1 + Math.abs(amount) * 0.55 * (stagger ? offset : 1);
-        }
+        const amt = amount * (i % 2 ? 1 : -1) * (stagger ? offset : 1);
+        (GESTURE[accent.gestureMode] ?? GESTURE.swing)(accent, amt);
       });
     }
 
@@ -408,6 +478,7 @@
         // Rest is not necessarily zero: dead-straight symmetrical arms read as
         // a mannequin, so the figure's hang at a slight, uneven angle.
         accent.rotation = accent.restRotation ?? 0;
+        accent.x = accent.restX ?? accent.x;
         accent.scale.set(1, 1);
       }
     }
@@ -514,6 +585,12 @@
       }
     }
 
+    // How far `slump` may drop a head, per body. It isn't a style choice: it's
+    // how much room the body leaves. The figure's head already overlaps its
+    // chest at rest, so the shared 10 buried a third of it and read blobby
+    // instead of dejected; the bar cluster has a whole neck to spend.
+    const HEAD_TRAVEL = { bars: 12, figure: 4, candle: 8, monolith: 8, orb: 5 };
+
     // Each named animation from reactions.py, made real. `phase` runs 0->1;
     // every one returns to rest so nothing is ever left sticky-amped.
     const ANIM = {
@@ -525,13 +602,16 @@
                               c.container.y = c.baseY - j * 40 * a;
                               c.container.scale.set(1 + j * 0.05 * a, 1 - j * 0.05 * a); },
       pulse:   (c, p, a) => { c.container.scale.set(1 + Math.sin(p * Math.PI * 2) * 0.11 * a); },
-      lean:    (c, p, a) => { c.container.rotation = Math.sin(p * Math.PI) * 0.16 * a; },
+      // 0.09, not 0.16: the container pivots at the feet, so a tall body's
+      // head swings the full lever arm and 0.16 read as toppling, not leaning.
+      lean:    (c, p, a) => { c.container.rotation = Math.sin(p * Math.PI) * 0.09 * a; },
       shrug:   (c, p, a) => { const u = Math.sin(p * Math.PI);
                               gesture(c, u * a, false);
                               c.container.y = c.baseY - u * 6 * a; },
       slump:   (c, p, a) => { const u = Math.sin(p * Math.PI);
                               c.container.y = c.baseY + u * 12 * a;
-                              c.head.y = c.headBaseY + u * 10 * a;
+                              c.head.y = c.headBaseY
+                                + u * (HEAD_TRAVEL[c.style] ?? 8) * a;
                               c.container.scale.set(1, 1 - u * 0.07 * a); },
       cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2));
                               c.container.y = c.baseY - u * 30 * a;
@@ -542,7 +622,12 @@
                            c.container.scale.set(1 + b, 1 - b); },
       flicker: (c, p) => { c.container.alpha = p % 0.25 < 0.125 ? 0.35 : 1; },
       step:    (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 26 * a; },
-      turn:    (c, p) => { c.container.scale.x = Math.cos(p * Math.PI * 2); },
+      // A flat character can't rotate away, but it must not vanish trying: the
+      // old cos() passed through zero twice a cycle and collapsed to a sliver.
+      // Squash to 40% and turn the head — that reads as looking round.
+      turn:    (c, p, a) => { const u = Math.cos(p * Math.PI * 2);
+                              c.container.scale.x = 0.4 + 0.6 * Math.abs(u);
+                              c.head.rotation = -u * 0.22 * a; },
       pan:     (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 10 * a; },
       talk:    (c, p) => { const o = Math.abs(Math.sin(p * Math.PI * 8));
                            c.mouth.scale.y = 1 + o * 1.6;
@@ -575,9 +660,20 @@
       if (char.headBaseY != null) char.head.y = char.headBaseY;
     }
 
+    // The two inhabitants, plus whatever an eval surface has added. A list
+    // rather than a hard-coded pair so the animation sheet ticks through the
+    // same code path the stream does — a sheet with its own player would be
+    // showing me an animation nobody ships.
+    const cast = [];
+
     function advanceCharacters(dt) {
-      for (const char of [model, trader]) {
+      for (const char of cast) {
         if (!char) continue;
+        if (char.loopAnim) {        // eval surface: run one animation forever
+          char.phase = (char.phase + dt / char.duration) % 1;
+          ANIM[char.loopAnim](char, char.phase, char.amp ?? 1);
+          continue;
+        }
         if (!char.anim) {           // at rest, breathe so nobody is a statue
           ANIM.idle(char, (ambient.t / 3.2) % 1, 1);
           continue;
