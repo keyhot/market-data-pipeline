@@ -339,6 +339,32 @@ def test_the_tier_scale_is_injected_rather_than_reinvented():
         )
 
 
+def test_room_lighting_comes_from_the_shared_ramp():
+    """Four lighting constants loose in a template is how the tier scale went
+    wrong (KI-019). The room's calm→dramatic lighting is injected from
+    `world.visuals.room_light`, and the page keys it off `ambient.tier`, which
+    is the server's own `severity_tier` as it arrives in `/world/state`."""
+    from world.visuals import room_light
+
+    body = client.get("/world").text
+    assert "__ROOM_LIGHT_JSON__" not in body
+    found = re.search(r"const ROOM_LIGHT = (\[.*?\]);", body, re.S)
+    injected = json.loads(found.group(1))
+    assert injected == [room_light(tier) for tier in range(4)]
+    assert "ROOM_LIGHT[" in body, "the ramp is injected but never read"
+
+
+def test_symbol_pillars_are_laid_out_from_the_canvas_not_a_fixed_pitch():
+    """At a fixed 140px pitch from y=24 the top pillar was clipped by the canvas
+    edge on the real 1920×1080 stream — furniture running off the top of the
+    room the ticket is supposed to define."""
+    body = client.get("/world").text
+    pillars = re.search(
+        r"function drawPillars\(state\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "app.screen.height" in pillars, "pillar layout ignores the canvas"
+
+
 def test_characters_have_idle_behaviour_between_events():
     """A calm stretch is most of the airtime and it looked like two statues
     sharing a 2px bob. Blink, glance and weight-shift run only on the branch

@@ -107,6 +107,34 @@ def tier_visuals(tier: int) -> dict[str, float | int]:
     return dict(_TIER_RAMP[clamped])
 
 
+# The room needs a ramp of its own. ``_TIER_RAMP`` above is a CSS font weight
+# and a box-shadow radius — shaped for ``tier_styles_css`` and the DOM
+# overlays, and meaningless to a canvas. Reading ``weight: 700`` as brightness
+# would be worse than an honest number, so there are two ramps and they both
+# live here: what must never happen is lighting constants loose in a template.
+#
+# Calm is dim, cool and closed in; dramatic is bright, warm and open. Monotonic
+# in all three by test, because a tier-2 event reading calmer than a tier-1 one
+# would invert the whole calm-that-swells register.
+_ROOM_LIGHT_RAMP: tuple[dict[str, float], ...] = (
+    {"vignette": 0.55, "warmth": 0.00, "lift": 0.00},   # 0 calm
+    {"vignette": 0.44, "warmth": 0.10, "lift": 0.05},   # 1
+    {"vignette": 0.30, "warmth": 0.26, "lift": 0.12},   # 2
+    {"vignette": 0.16, "warmth": 0.45, "lift": 0.22},   # 3 dramatic
+)
+
+
+def room_light(tier: int) -> dict[str, float]:
+    """Scene-wide lighting for a severity ``tier``.
+
+    ``vignette`` is how closed-in the edges are, ``warmth`` how far the key
+    light runs toward the warm end, and ``lift`` how much the whole room
+    brightens. Clamps out-of-range to [0, 3], like ``tier_visuals``.
+    """
+    clamped = max(0, min(int(tier), len(_ROOM_LIGHT_RAMP) - 1))
+    return dict(_ROOM_LIGHT_RAMP[clamped])
+
+
 def css_variables() -> str:
     """Render ``PALETTE`` as a ``:root{ --key: value; }`` block for one-line
     injection into every page (via the ``__THEME_VARS__`` template placeholder),

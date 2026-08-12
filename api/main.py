@@ -118,6 +118,11 @@ _THEME_REPLACEMENTS = {
     "__THEME_VARS__": visuals.css_variables(),
     "__TIER_STYLES__": visuals.tier_styles_css(),
     "__MOOD_COLORS_JSON__": json.dumps(visuals.MOOD_COLORS),
+    # B2: scene-wide lighting per tier, from the same module as everything else
+    # visual. The canvas gets a ramp shaped for a canvas — see `room_light`.
+    "__ROOM_LIGHT_JSON__": json.dumps(
+        [visuals.room_light(tier) for tier in range(4)]
+    ),
     # The 0..3 tier scale, from world.state. Severities are rule-specific, so a
     # page that hard-codes absolute cuts disagrees with the server about how
     # big an event is — which is how every `signal_resolved` came out tier 0.

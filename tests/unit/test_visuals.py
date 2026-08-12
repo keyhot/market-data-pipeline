@@ -91,3 +91,38 @@ def test_character_color_falls_back_for_unknown_speaker():
     from world.visuals import character_color
 
     assert character_color("nobody").startswith("#")
+
+
+# --- B2: scene-wide room lighting (a canvas ramp, not the DOM one) -----------
+
+
+def test_room_light_ramps_monotonically_from_calm_to_dramatic():
+    """Calm is dim, closed-in and cool; dramatic is bright, open and warm. The
+    ramp has to be monotonic in all three or a tier-2 event would read *calmer*
+    than a tier-1 one — the swell has to go one way."""
+    from world.visuals import room_light
+
+    steps = [room_light(tier) for tier in range(4)]
+    vignettes = [s["vignette"] for s in steps]
+    assert vignettes == sorted(vignettes, reverse=True), vignettes
+    for key in ("warmth", "lift"):
+        values = [s[key] for s in steps]
+        assert values == sorted(values), (key, values)
+        assert len(set(values)) == len(values), f"{key} has a flat step"
+
+
+def test_room_light_clamps_out_of_range_tiers():
+    from world.visuals import room_light
+
+    assert room_light(-3) == room_light(0)
+    assert room_light(99) == room_light(3)
+
+
+def test_room_light_is_its_own_ramp_not_the_dom_one():
+    """`tier_visuals` is {scale, glow, opacity, weight} — a CSS font weight and
+    a box-shadow radius, shaped for `tier_styles_css`. PIXI has no use for
+    those, and reading `weight: 700` as brightness would be worse than an
+    honest number. One ramp per surface, both of them here."""
+    from world.visuals import room_light, tier_visuals
+
+    assert set(room_light(0)) & set(tier_visuals(0)) == set()
