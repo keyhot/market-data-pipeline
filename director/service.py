@@ -24,6 +24,22 @@ from director.policy import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# KI-020. The director ran inert for 25 hours: every tick raised, the loop
+# caught it, the process never exited, and systemd reported `active` with 0
+# restarts while the show was over.
+#
+# 12 ticks at the default 5s cadence is ~1 minute of nothing working. Below
+# that we still swallow — "a director hiccup must never take the stream down"
+# was the right rule, it just had no upper bound. Above it we exit and let
+# systemd's Restart=always rebuild every dependency, including the OBS client
+# that `main` otherwise builds exactly once in the process's lifetime.
+MAX_CONSECUTIVE_FAILURES = 12
+
+# A liveness line roughly every 5 minutes at the default cadence. `systemctl
+# status` said "active" throughout the outage, and the per-tick counters were
+# DEBUG; this is the one line that would have shown a human the show stopped.
+HEARTBEAT_TICKS = 60
+
 
 def director_enabled() -> bool:
     raw = os.environ.get("DIRECTOR_ENABLED")
@@ -44,11 +60,22 @@ def _fetch_world_state(url: str) -> dict:
 
 
 def run(
-    fetch_state, obs_client, tts_runner, record_event, config=None, sleep_seconds=5.0
-) -> None:
+    fetch_state,
+    obs_client,
+    tts_runner,
+    record_event,
+    config=None,
+    sleep_seconds=5.0,
+    max_ticks=None,
+) -> int:
     """Injected dependencies keep this testable (fetch_state() -> dict,
     obs_client = stream_ctl seam, tts_runner(text, voice) [Task 6],
-    record_event(events) [Task 7]). No globals -> unit-testable via tick()."""
+    record_event(events) [Task 7]). No globals -> unit-testable via tick().
+
+    Loops forever unless ``max_ticks`` is set (the test seam, as in
+    broadcast/service.py). Returns 2 if it gave up after sustained failure so
+    systemd restarts it, 0 otherwise.
+    """
     config = config or DirectorConfig()
     dir_state = DirectorState(
         current_scene=config.home_scene,
@@ -56,7 +83,10 @@ def run(
         muted=director_muted(),
     )
     metrics = DirectorMetrics()
-    while True:
+    consecutive_failures = 0
+    ticks = 0
+    while max_ticks is None or ticks < max_ticks:
+        ticks += 1
         now = datetime.now(timezone.utc)
         try:
             state = fetch_state()
@@ -79,8 +109,36 @@ def run(
                     dir_state.last_seen_event_id or 0,
                     max((e.get("id") or 0) for e in recent),
                 )
+            consecutive_failures = 0
         except Exception as exc:  # a director hiccup must never take the stream down
-            logger.warning("Director tick failed", extra={"error": str(exc)})
+            consecutive_failures += 1
+            # Name the thing. This used to be extra={"error": ...}, which the
+            # formatter drops — 25 hours of identical warnings that said only
+            # that something failed (KI-020).
+            logger.warning(
+                "Director tick failed (%d in a row): %s: %s",
+                consecutive_failures,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.error(
+                    "Director failed %d consecutive ticks — exiting so systemd "
+                    "rebuilds its dependencies (last error %s: %s)",
+                    consecutive_failures,
+                    type(exc).__name__,
+                    exc,
+                )
+                return 2
+        if ticks % HEARTBEAT_TICKS == 0:
+            # Not DEBUG: this is the line that says the show is still running.
+            logger.info(
+                "director alive: %d lines, %d switches, %d tts failures so far",
+                metrics.lines_spoken,
+                metrics.scene_switches,
+                metrics.tts_failures,
+            )
         logger.debug(
             "director metrics",
             extra={
@@ -92,6 +150,7 @@ def run(
             },
         )
         time.sleep(sleep_seconds)
+    return 0
 
 
 def _apply(
@@ -172,13 +231,15 @@ def main() -> int:
     def _silent_tts(_text, _voice):
         return True  # no-op success; OBS media-source playback is a go-live step
 
-    run(
+    # Propagated, not discarded: `run` returns 2 when it gives up after
+    # sustained failure, and the whole point is that the process ends so
+    # systemd rebuilds the OBS client this function built exactly once.
+    return run(
         fetch_state=lambda: _fetch_world_state(state_url),
         obs_client=obs_client,
         tts_runner=_silent_tts,
         record_event=record_director_events,
     )
-    return 0
 
 
 if __name__ == "__main__":
