@@ -28,10 +28,62 @@ _SECRET_IN_TEXT = re.compile(
 )
 
 
+# Everything the logging machinery puts on a record itself. Anything else was
+# passed by a caller through `extra=`, and is therefore something someone
+# wanted in the log. Derived from a real record rather than hard-coded,
+# because the set grows between Python versions (`taskName` in 3.12).
+_RESERVED_RECORD_KEYS = frozenset(
+    vars(logging.LogRecord("", 0, "", 0, "", (), None))
+) | {"message", "asctime", "taskName"}
+
+
+def context_fields(record) -> dict:
+    """The `extra=` fields on a record, in the order they were given."""
+    return {
+        key: value
+        for key, value in record.__dict__.items()
+        if key not in _RESERVED_RECORD_KEYS and not key.startswith("_")
+    }
+
+
+class ContextFormatter(logging.Formatter):
+    """Render `extra=` fields, which the bare format string drops on the floor.
+
+    This is KI-020's root cause, and it was never local to the director:
+    eleven call sites across the scheduler, the ingester, the broadcast
+    manager, the storage writer and the trader mirror all reported failures as
+    ``logger.warning("... failed", extra={"error": str(e)})``, and the format
+    string is ``%(message)s``. Every one of them logged that something broke
+    and threw away what. Twenty-five hours of identical, causeless warnings is
+    what that costs; fixing it at each call site would have left the next one
+    to rediscover it.
+    """
+
+    def format(self, record):
+        base = super().format(record)
+        context = context_fields(record)
+        if not context:
+            return base
+        rendered = " ".join(f"{key}={value!r}" for key, value in context.items())
+        return f"{base} | {rendered}"
+
+
 class SensitiveDataFilter(logging.Filter):
     sensitive_keys = sensitive_keys
 
     def filter(self, record):
+        # `extra=` values reach the formatter without ever passing through
+        # `record.msg`, so rendering them (above) would have walked a secret
+        # straight into the journal — the exact KI-016 shape, reintroduced by
+        # its own fix. Masked here, where the sanitiser already lives.
+        for key, value in context_fields(record).items():
+            if key in self.sensitive_keys:
+                setattr(record, key, "******")
+            elif isinstance(value, (dict, list, tuple)):
+                setattr(record, key, sanitize(value))
+            elif isinstance(value, str):
+                setattr(record, key, _SECRET_IN_TEXT.sub(r"\1\2******", value))
+
         if isinstance(record.msg, (dict, list, tuple)):
             record.msg = sanitize(record.msg)
             return True
@@ -81,6 +133,7 @@ def init_logging(log_level: str = "DEBUG") -> logging.Logger:
         "disable_existing_loggers": False,
         "formatters": {
             "default": {
+                "()": ContextFormatter,
                 "format": "%(asctime)s | [%(levelname)s] | %(name)s | %(message)s",
             },
         },

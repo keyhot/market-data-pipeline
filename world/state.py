@@ -56,6 +56,25 @@ def severity_tier(event_type: str, severity: float) -> int:
     return sum(1 for cut in cuts if severity >= cut)
 
 
+def tier_of_js() -> str:
+    """`severity_tier`, as the JavaScript the pages are served with.
+
+    Injecting the *cuts* was only half of KI-019: the three-line function that
+    reads them was then written out twice, byte-identical, in `world.html` and
+    `overlay_events.html`. Two copies of a rule is how the first version drifted
+    from the server, and a page is free to edit its own copy. There is one
+    definition now, and it is this one — the same lookup-then-count as above,
+    including the fall back to the generic scale for an unlisted rule.
+    """
+    return (
+        "function tierOf(eventType, severity) {\n"
+        "      const cuts = TIER_CUTS.cuts[eventType] ?? TIER_CUTS.generic;\n"
+        "      return cuts.reduce("
+        "(tier, cut) => tier + (severity >= cut ? 1 : 0), 0);\n"
+        "    }"
+    )
+
+
 def _parse(timestamp: str | datetime) -> datetime:
     if isinstance(timestamp, datetime):
         return timestamp

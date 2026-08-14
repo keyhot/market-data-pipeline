@@ -50,7 +50,7 @@ from storage.writes import (
 from world import reactions, visuals
 from world.reactions import attach_reactions
 from world.salience import KNOWN_EVENT_TYPES
-from world.state import GENERIC_TIER_CUTS, project_state, tier_cuts
+from world.state import GENERIC_TIER_CUTS, project_state, tier_cuts, tier_of_js
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
@@ -132,6 +132,10 @@ _THEME_REPLACEMENTS = {
             "generic": list(GENERIC_TIER_CUTS),
         }
     ),
+    # ...and the three lines that read them, which were written out twice,
+    # byte-identical, in two templates. One definition, injected — see
+    # `world.state.tier_of_js`.
+    "__TIER_OF_JS__": tier_of_js(),
     # B5: one accent per speaking character, from the same palette module, so
     # a speech bubble can never drift from the room's colours.
     "__CHARACTER_COLORS_JSON__": json.dumps(visuals.CHARACTER_COLORS),

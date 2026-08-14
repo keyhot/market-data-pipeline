@@ -134,11 +134,15 @@ def _load_previous() -> dict:
     silently reconstructing an empty state and re-emitting every open trade.
     """
     rows: list[dict] = []
-    try:
-        for event_type in sorted(TRADER_EVENT_TYPES):
-            rows.extend(get_world_events(limit=200, event_type=event_type))
-    except Exception:
-        return {}
+    # Deliberately unguarded. A read failure used to `return {}`, which is
+    # byte-for-byte the state a genuine cold start produces — so one Postgres
+    # blip made every open trade look newly opened and re-emitted the lot into
+    # an append-only log that cannot be corrected afterwards. That is the
+    # failure this docstring warns about, arriving by the other door. The
+    # caller skips the tick instead; a missed diff is recoverable, a fabricated
+    # one is not.
+    for event_type in sorted(TRADER_EVENT_TYPES):
+        rows.extend(get_world_events(limit=200, event_type=event_type))
     rows.sort(key=lambda r: (r["occurred_at"], r.get("id") or 0), reverse=True)
 
     open_pairs: dict = {}
@@ -178,7 +182,19 @@ def record_trader_events(client=None) -> list[dict]:
         "open_trades": open_trades,
         "profit_closed_percent": (profit or {}).get("profit_closed_percent", 0.0),
     }
-    events = diff_trader_state(_load_previous(), current)
+    try:
+        previous = _load_previous()
+    except Exception as e:
+        # Skipping is the safe direction: without the previous state every
+        # open trade diffs as newly opened, and `world_events` is append-only.
+        logger.warning(
+            "Trader mirror skipped — cannot read previous state, so a diff "
+            "would re-emit every open trade",
+            extra={"error": f"{type(e).__name__}: {e}"},
+        )
+        return []
+
+    events = diff_trader_state(previous, current)
     if events:
         append_world_events(events)
         logger.info("Trader events recorded", extra={"count": len(events)})

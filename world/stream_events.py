@@ -100,5 +100,13 @@ def _spool(event: dict, spool_path: Path) -> None:
 def _safe_latest(event_type: str) -> datetime | None:
     try:
         return latest_world_event_time(event_type, None)
-    except Exception:
-        return None  # DB down — don't let the cooldown check kill recording
+    except Exception as e:
+        # KI-005, accepted by design: the cooldown check must not be what
+        # stops a lifecycle event being recorded. Failing open is the choice;
+        # failing open *silently* was not — a DB outage looked identical to a
+        # cooldown that had simply expired.
+        logger.warning(
+            "Cooldown check unavailable, recording anyway",
+            extra={"event_type": event_type, "error": f"{type(e).__name__}: {e}"},
+        )
+        return None

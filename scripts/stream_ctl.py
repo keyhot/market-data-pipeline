@@ -7,6 +7,7 @@ purpose: this is an ops tool, not a service.
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -15,6 +16,8 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts import stream_scene  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 EXIT_OBS_UNREACHABLE = 2
 
@@ -228,7 +231,10 @@ def main(argv: list[str] | None = None) -> int:
 def _uptime_payload(client) -> dict:
     try:
         return {"timecode": get_status(client)["timecode"]}
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Uptime payload unavailable", extra={"error": f"{type(e).__name__}: {e}"}
+        )
         return {}
 
 
@@ -239,8 +245,17 @@ def _record(event_type: str, payload: dict) -> None:
 
     try:
         record_stream_event(event_type, payload)
-    except Exception:  # recording must never block an ops command
-        pass
+    except Exception as e:
+        # Recording must never block an ops command — but `stream_*` events
+        # ARE the uptime number, and `record_stream_event` already spools to
+        # JSONL when Postgres is down. So anything reaching here is a bug, and
+        # a silently dropped `stream_stopped` makes soak_report overstate
+        # uptime: the KI-014 / KI-021 family, one layer down. ERROR, loudly.
+        logger.error(
+            "Stream event LOST — uptime evidence is now incomplete",
+            extra={"event_type": event_type, "error": f"{type(e).__name__}: {e}"},
+            exc_info=True,
+        )
 
 
 if __name__ == "__main__":

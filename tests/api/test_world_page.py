@@ -323,7 +323,9 @@ def test_a_shadow_is_a_sibling_of_its_body_not_a_child_of_it():
         "shadows are not inside the cast layer, so they lose CAST_SCALE"
     )
     assert "layers.shadows.addChild(shadow)" in body
-    made = re.search(r"function character\(name, style\) \{(.*?)\n    \}", body, re.S).group(1)
+    made = re.search(
+        r"function character\(name, style\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
     assert "container.addChild(...accents, body, head" in made
     assert "container.addChild(shadow" not in made, "the shadow is parented to the body"
 
@@ -356,7 +358,9 @@ def test_the_cast_does_not_breathe_on_one_clock():
     assert "char.breath" in idle_call and "char.phaseOffset" in idle_call, (
         f"the idle clock is shared across the cast: {idle_call}"
     )
-    made = re.search(r"function character\(name, style\) \{(.*?)\n    \}", body, re.S).group(1)
+    made = re.search(
+        r"function character\(name, style\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
     assert "char.phaseOffset = char.rand()" in made
     assert "char.breath" in made
 
@@ -415,6 +419,53 @@ def test_the_tier_scale_is_injected_rather_than_reinvented():
         assert "tierOf(e.event_type" in body or "tierOf(event.event_type" in body, (
             f"{path} computes a tier without saying which rule it came from"
         )
+
+
+def test_registry_lookups_carry_no_default_to_hide_a_gap_behind():
+    """Five lookups used to end in `?? something`. Every one was unreachable —
+    the coverage is closed from both ends: `test_reactions` proves the registry
+    can only emit moods and animations it declares, and the tests above prove
+    the page implements all of both and every `STYLES` entry. So the defaults
+    were never safety nets; they were the branch that would swallow a broken
+    invariant and render a wrong-but-plausible character instead of failing.
+    That is precisely the shape of the `HEADLINES` bug and of KI-019."""
+    body = client.get("/world").text
+    guarded = {
+        "FACE[mood]": r"return FACE\[mood\]\s*(\?\?|\|\|)",
+        "FACE_KIND[style]": r"FACE_KIND\[style\]\s*(\?\?|\|\|)",
+        "SHADOW_WIDTH[style]": r"SHADOW_WIDTH\[style\]\s*(\?\?|\|\|)",
+        "HEAD_TRAVEL[c.style]": r"HEAD_TRAVEL\[c\.style\]\s*(\?\?|\|\|)",
+    }
+    for name, pattern in guarded.items():
+        assert not re.search(pattern, body), (
+            f"{name} grew a default again — if the registry can now miss a key, "
+            "fix the registry or the invariant test, don't paper over it here"
+        )
+    assert "if (!ANIM[animation])" not in body, (
+        "playAnimation silently substitutes idle for an unknown animation again"
+    )
+
+
+def test_the_tier_function_is_injected_not_written_out_per_page():
+    """Injecting the *cuts* was only half of KI-019. The three lines that read
+    them were then written out twice, byte-identical, in `world.html` and
+    `overlay_events.html` — and two copies of a rule is exactly how the first
+    version drifted from the server. One definition, in `world.state`."""
+    from world.state import severity_tier, tier_of_js
+
+    for path in ("/world", "/overlay/events"):
+        body = client.get(path).text
+        assert body.count("function tierOf") == 1, path
+        assert "__TIER_OF_JS__" not in body, f"{path} never got the injection"
+        assert tier_of_js() in body, f"{path} carries its own copy"
+
+    # And the copy agrees with the server it mirrors: same lookup, same count.
+    cuts = re.search(
+        r"const cuts = TIER_CUTS\.cuts\[eventType\] \?\? TIER_CUTS\.generic;",
+        tier_of_js(),
+    )
+    assert cuts, "the injected function stopped reading the injected cuts"
+    assert severity_tier("signal_resolved", 1.3) == 2, "the rule itself moved"
 
 
 def test_room_lighting_comes_from_the_shared_ramp():

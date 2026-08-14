@@ -157,6 +157,32 @@ def test_record_trader_events_wakes_from_a_cold_log(monkeypatch):
     assert len(written) == 2  # persisted -> the next poll is no longer a cold start
 
 
+def test_an_unreadable_log_skips_the_tick_instead_of_re_emitting_everything(
+    monkeypatch,
+):
+    """`_load_previous` used to swallow a read failure and `return {}` — which
+    is byte-for-byte the state a genuine cold start produces. So one Postgres
+    blip made every open trade look newly opened and re-emitted the lot into a
+    log that is append-only and cannot be corrected afterwards. Note the
+    contrast with the cold-log test above: the *same* empty state must wake the
+    character when the read succeeded, and must emit nothing when it didn't."""
+    written = []
+
+    def boom(limit=200, event_type=None):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("world.trader_events.get_world_events", boom)
+    monkeypatch.setattr(
+        "world.trader_events.append_world_events",
+        lambda events: written.extend(events) or len(events),
+    )
+    client = FakeClient({"open_trades": [_trade(1), _trade(2)]},
+                        {"profit_closed_percent": 0.0})
+
+    assert record_trader_events(client=client) == []
+    assert written == [], "a failed read fabricated events into an append-only log"
+
+
 def test_record_trader_events_uses_the_injected_client(monkeypatch):
     written = []
     monkeypatch.setattr(

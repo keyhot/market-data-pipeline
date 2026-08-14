@@ -2,9 +2,14 @@
 to the journal on every connect. The masking filter only ever sanitized dict
 payloads, so a formatted string walked straight through it."""
 
+import io
 import logging
 
-from config.logging import SensitiveDataFilter, init_logging
+from config.logging import (
+    ContextFormatter,
+    SensitiveDataFilter,
+    init_logging,
+)
 
 
 def _redact(message, *args):
@@ -38,6 +43,65 @@ def test_ordinary_messages_are_untouched():
         "Scene rebuilt after OBS recovery"
     )
     assert _redact("bars stored: %d", 42) == "bars stored: 42"
+
+
+def _emit(message, **extra):
+    """Format one record the way a handler would, filter included."""
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(ContextFormatter("%(levelname)s | %(message)s"))
+    handler.addFilter(SensitiveDataFilter())
+    logger = logging.getLogger("test_context_formatter")
+    logger.handlers = [handler]
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    logger.warning(message, extra=extra)
+    return stream.getvalue().strip()
+
+
+def test_extra_fields_are_rendered_not_dropped():
+    """KI-020's root cause, and it was never local to the director. Eleven call
+    sites reported failures as `extra={"error": str(e)}` against a format
+    string of `%(message)s`, so every one of them logged *that* something
+    broke and discarded *what*. Twenty-five hours of causeless warnings is
+    what that cost."""
+    out = _emit("Trader mirror skipped", error="ConnectionRefusedError(111)")
+    assert "Trader mirror skipped" in out
+    assert "ConnectionRefusedError(111)" in out, out
+
+
+def test_a_record_without_extras_is_unchanged():
+    """No trailing separator on the overwhelming majority of lines."""
+    assert _emit("Scene rebuilt after OBS recovery") == (
+        "WARNING | Scene rebuilt after OBS recovery"
+    )
+
+
+def test_a_secret_passed_through_extra_is_still_masked():
+    """Rendering `extra` would otherwise walk a secret into the journal by a
+    route the filter never inspected — KI-016's shape, reintroduced by the fix
+    for KI-020. Both the sensitive *key* and a secret inside a value."""
+    out = _emit("connecting", password="hunter2")
+    assert "hunter2" not in out and "******" in out, out
+
+    nested = _emit("client built", detail="token=abc123 host=127.0.0.1")
+    assert "abc123" not in nested, nested
+    assert "127.0.0.1" in nested, "only the secret goes"
+
+    payload = _emit("request", body={"password": "hunter2", "symbol": "BTC"})
+    assert "hunter2" not in payload and "BTC" in payload, payload
+
+
+def test_no_call_site_still_routes_an_exception_into_a_dropped_field():
+    """The formatter renders `extra` now, so these are no longer silent — this
+    pins the *reason* they are safe. If the format string is ever narrowed
+    back, this is the test that should have to be deleted deliberately."""
+    from config.logging import ContextFormatter as _CF
+
+    assert issubclass(_CF, logging.Formatter)
+    record = logging.LogRecord("x", logging.ERROR, __file__, 1, "boom", (), None)
+    record.error = "ValueError('nope')"
+    assert "ValueError('nope')" in _CF("%(message)s").format(record)
 
 
 def test_obsws_library_is_quieted_below_warning():

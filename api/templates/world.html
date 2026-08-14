@@ -91,10 +91,7 @@
     // frequent event in the world to tier 0, so the room never swelled for it.
     const TIER_CUTS = __TIER_CUTS_JSON__;
 
-    function tierOf(eventType, severity) {
-      const cuts = TIER_CUTS.cuts[eventType] ?? TIER_CUTS.generic;
-      return cuts.reduce((tier, cut) => tier + (severity >= cut ? 1 : 0), 0);
-    }
+    __TIER_OF_JS__
 
     // Declared here, constructed in boot(): character() needs app.screen and
     // the layer containers, neither of which exist until PIXI has initialised.
@@ -427,7 +424,7 @@
     };
 
     function faceFor(mood) {
-      return FACE[mood] ?? FACE.neutral;
+      return FACE[mood];
     }
 
     // Each body is a market glyph. `accents` are the parts that can move
@@ -618,10 +615,10 @@
 
       const char = {
         container, body, head, skull, eyeL, eyeR, mouth, browL, browR, visor,
-        accents, style, stat, moodTag, faceKind: FACE_KIND[style] ?? "human",
+        accents, style, stat, moodTag, faceKind: FACE_KIND[style],
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
         rand: rng32(seed || 1),
-        shadow, shadowW: SHADOW_WIDTH[style] ?? 30,
+        shadow, shadowW: SHADOW_WIDTH[style],
       };
       // Two characters breathing on one clock read as one animation played on
       // two puppets — the exact thing the blink seed already avoids. Offset
@@ -844,7 +841,7 @@
       slump:   (c, p, a) => { const u = EASE.settle(p);
                               c.container.y = c.baseY + u * 12 * a;
                               c.head.y = c.headBaseY
-                                + u * (HEAD_TRAVEL[c.style] ?? 8) * a;
+                                + u * HEAD_TRAVEL[c.style] * a;
                               c.container.scale.set(1, 1 - u * 0.07 * a); },
       cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2));
                               c.container.y = c.baseY - u * 30 * a;
@@ -868,7 +865,6 @@
     };
 
     function playAnimation(char, animation, tier) {
-      if (!ANIM[animation]) animation = "idle";
       // A reaction takes the body back off idle: a half-finished weight shift
       // left under an animation is a character reacting from a crooked stance.
       resetIdle(char);

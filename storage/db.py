@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 
@@ -8,6 +9,8 @@ DATABASE_URL_ENV = "DATABASE_URL"
 _DEFAULT_DATABASE_URL = (
     "postgresql://market_data:market_data@localhost:5432/market_data"
 )
+
+logger = logging.getLogger(__name__)
 
 _pool: ConnectionPool | None = None
 _pool_lock = threading.Lock()
@@ -32,5 +35,11 @@ def ping(timeout_seconds: float = 2.0) -> bool:
         with get_pool().connection(timeout=timeout_seconds) as conn:
             conn.execute("SELECT 1")
         return True
-    except Exception:
+    except Exception as e:
+        # A health check that raises is useless, so the bool stays — but
+        # `/health` reporting `connected: false` with the reason nowhere in
+        # the log is how you end up bisecting a live service by hand.
+        logger.warning(
+            "Postgres ping failed", extra={"error": f"{type(e).__name__}: {e}"}
+        )
         return False

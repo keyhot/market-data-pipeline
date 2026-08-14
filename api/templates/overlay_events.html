@@ -42,10 +42,7 @@
     // common row, permanently in its calmest colour.
     const TIER_CUTS = __TIER_CUTS_JSON__;
 
-    function tierOf(eventType, severity) {
-      const cuts = TIER_CUTS.cuts[eventType] ?? TIER_CUTS.generic;
-      return cuts.reduce((tier, cut) => tier + (severity >= cut ? 1 : 0), 0);
-    }
+    __TIER_OF_JS__
 
     const HEADLINES = {
       big_move: (e) => `${e.symbol} big move — ${e.payload.sigmas?.toFixed(1)}σ bar`,
