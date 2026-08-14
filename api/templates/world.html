@@ -246,10 +246,16 @@
     // calm-that-swells, so the room brightens over seconds, not on a frame.
     const ROOM_LIGHT = __ROOM_LIGHT_JSON__;
 
-    // Gradients as a one-off canvas texture. PIXI has no gradient fill, and
-    // faking one with stacked Graphics bands renders as visible rectangles —
-    // it was tried, and the room came out looking like a wireframe. Built on
-    // layout only (boot + resize), never per frame.
+    // The vignette only. PIXI v8 *does* have `FillGradient` (the wall below
+    // uses it) — but its radial path cannot express a transparent centre:
+    // `buildRadialGradient` pre-fills the whole gradient texture with the LAST
+    // colour stop before painting the ramp over it, and our last stop is opaque
+    // black, so a source-over ramp of transparent-black changes nothing and the
+    // room renders as a solid black rectangle. Measured, not guessed: against
+    // the canvas version this came out max delta 255/255, mean 51.5.
+    // Faking it with stacked Graphics bands was the other thing tried, and it
+    // reads as a wireframe. So: canvas texture, built on layout only (boot +
+    // resize), never per frame.
     function gradientSprite(paint, w, h) {
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.ceil(w));
@@ -259,7 +265,7 @@
     }
 
     function drawRoom() {
-      wall = new PIXI.Container();
+      wall = new PIXI.Graphics();
       floorPlane = new PIXI.Graphics();
       floorLine = new PIXI.Graphics();
       vignette = new PIXI.Container();
@@ -280,14 +286,19 @@
 
       // Depth in three pieces: a back wall darkening toward the ceiling, a
       // floor plane a shade lighter, and a vignette closing the corners.
-      wall.removeChildren();
-      wall.addChild(gradientSprite((ctx, cw, ch) => {
-        const g = ctx.createLinearGradient(0, 0, 0, ch);
-        g.addColorStop(0, "rgba(0,0,0,0.42)");
-        g.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, cw, ch);
-      }, w, ground));
+      // `textureSpace: "global"` takes the same pixel coordinates the canvas-2D
+      // version did, so this is a straight port — verified pixel-for-pixel
+      // against it (max delta 1/255, and that one is a sub-pixel row the canvas
+      // version gained by rounding `ground` up).
+      wall.clear().rect(0, 0, w, ground).fill(new PIXI.FillGradient({
+        textureSpace: "global",
+        start: { x: 0, y: 0 },
+        end: { x: 0, y: ground },
+        colorStops: [
+          { offset: 0, color: "rgba(0,0,0,0.42)" },
+          { offset: 1, color: "rgba(0,0,0,0)" },
+        ],
+      }));
 
       floorPlane.clear().rect(0, ground, w, h - ground)
         .fill({ color: 0xffffff, alpha: 0.022 });

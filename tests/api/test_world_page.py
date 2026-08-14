@@ -420,6 +420,26 @@ def test_the_floor_is_laid_out_with_the_characters_not_only_at_boot():
     assert "layoutRoom(" in layout, "the floor is never re-placed after boot"
 
 
+def test_the_wall_is_a_native_gradient_but_the_vignette_cannot_be():
+    """Half a migration, on purpose. `FillGradient`'s *radial* path pre-fills
+    its whole texture with the LAST colour stop and then paints the ramp over
+    it — so the vignette's opaque outer stop erases its own transparent centre
+    and the room renders as a solid black rectangle (measured against the
+    canvas version: max delta 255/255, mean 51.5). The linear wall has no such
+    pre-fill and ported pixel-for-pixel (max delta 1/255). Someone will
+    reasonably try to finish the job; this is the test that stops them."""
+    body = client.get("/world").text
+    layout = re.search(r"function layoutRoom\(\) \{(.*?)\n    \}", body, re.S).group(1)
+    assert "PIXI.FillGradient" in layout, "the wall stopped using the native gradient"
+    assert 'type: "radial"' not in layout, (
+        "a radial FillGradient pre-fills with its last colour stop, which erases "
+        "any transparent centre — the vignette would render as solid black"
+    )
+    assert layout.count("gradientSprite(") == 1, (
+        "the vignette must stay a canvas texture for the reason above"
+    )
+
+
 def test_gallery_fits_every_style_on_one_screen():
     """At a fixed row pitch the fifth style lands below the canvas — and an
     option nobody can see is an option nobody evaluates, which is the whole job
