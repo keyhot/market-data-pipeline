@@ -299,6 +299,84 @@ def test_how_far_a_head_may_sink_is_declared_per_body():
     assert travel["figure"] < travel["bars"], "the neckless body sinks furthest"
 
 
+def test_every_body_declares_its_own_contact_patch():
+    """A shadow is the only thing telling a viewer where the floor is, and its
+    width is a property of the body — the bar cluster stands wider than the
+    figure. Same registry shape as HEAD_TRAVEL, checked for the same reason:
+    a new body silently inheriting someone else's footprint reads as floating."""
+    body = client.get("/world").text
+    listed = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
+    styles = set(re.findall(r'"([a-z]+)"', listed))
+    declared = re.search(r"const SHADOW_WIDTH = \{(.*?)\}", body, re.S).group(1)
+    widths = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", declared)}
+    assert set(widths) == styles, f"{sorted(widths)} vs {sorted(styles)}"
+    assert widths["bars"] > widths["figure"], "the bar cluster stands wider"
+
+
+def test_a_shadow_is_a_sibling_of_its_body_not_a_child_of_it():
+    """Parented to the character it would inherit every lean, squash and hop —
+    a leaning body would drag its shadow off the floor, which is the exact
+    opposite of grounding. It lives on its own layer *inside* `layers.chars`,
+    so it still gets CAST_SCALE and the same coordinate space for free."""
+    body = client.get("/world").text
+    assert "layers.chars.addChild(layers.shadows)" in body, (
+        "shadows are not inside the cast layer, so they lose CAST_SCALE"
+    )
+    assert "layers.shadows.addChild(shadow)" in body
+    made = re.search(r"function character\(name, style\) \{(.*?)\n    \}", body, re.S).group(1)
+    assert "container.addChild(...accents, body, head" in made
+    assert "container.addChild(shadow" not in made, "the shadow is parented to the body"
+
+
+def test_hiding_a_character_also_hides_its_shadow():
+    """The shadow is on its own layer, so `container.visible = false` leaves it
+    behind — the animation sheet rendered two of them hanging in mid-air where
+    MODEL and TRADER had been. That is the cost of the sibling layout, and the
+    fix is that visibility is a property of the character, not the container."""
+    body = client.get("/world").text
+    helper = re.search(
+        r"function setCharacterVisible\(char, visible\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    assert "char.container.visible = visible" in helper
+    assert "char.shadow.visible = visible" in helper
+    direct = re.findall(r"(?:model|trader)\.container\.visible", body)
+    assert not direct, f"an eval surface hides a body past the helper: {direct}"
+
+
+def test_the_cast_does_not_breathe_on_one_clock():
+    """Two characters sharing a breathing phase read as one animation played on
+    two puppets — the same failure the blink seed already avoids. Both the
+    offset and the period come off the per-character RNG, so they never drift
+    into step either."""
+    body = client.get("/world").text
+    advance = re.search(
+        r"function advanceCharacters\(dt\) \{(.*?)\n    \}", body, re.S
+    ).group(1)
+    idle_call = re.search(r"ANIM\.idle\(char, ([^;]+)\);", advance).group(1)
+    assert "char.breath" in idle_call and "char.phaseOffset" in idle_call, (
+        f"the idle clock is shared across the cast: {idle_call}"
+    )
+    made = re.search(r"function character\(name, style\) \{(.*?)\n    \}", body, re.S).group(1)
+    assert "char.phaseOffset = char.rand()" in made
+    assert "char.breath" in made
+
+
+def test_only_named_animations_get_the_out_of_range_curves():
+    """`anticipate` and `snap` return negative values on purpose — that dip is
+    the crouch and the recoil. But several animations feed the curve straight
+    into a scale, and a big enough negative drives it through zero, which is
+    the bug `turn` already shipped once. So they are applied per animation,
+    never as a blanket substitution for the symmetric bump."""
+    body = client.get("/world").text
+    anim = re.search(r"\n    const ANIM = \{(.*?)\n    \};", body, re.S).group(1)
+    users = set(re.findall(r"(\w+):\s*\([^)]*\) => \{[^\n]*EASE\.(\w+)", anim))
+    assert {("jolt", "snap"), ("hop", "anticipate"), ("slump", "settle")} == users, (
+        f"the curve assignment changed without review: {sorted(users)}"
+    )
+    # `turn` and `pulse` drive scale directly off the raw curve.
+    assert "EASE." not in re.search(r"turn:(.*?)\n      pan:", anim, re.S).group(1)
+
+
 def test_the_animation_sheet_loops_every_animation_through_the_real_player():
     """Sixteen animations shipped without anyone seeing one — and wave, shake
     and flicker all sit at or near zero displacement at whatever phase you'd

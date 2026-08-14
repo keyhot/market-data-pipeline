@@ -113,6 +113,13 @@
       layers.room = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
+      // Shadows are a *child* of the cast layer, not of any character: they
+      // inherit CAST_SCALE and the layer's coordinate space for free, so a
+      // shadow's x is just the character's x — but they are siblings of the
+      // bodies, so a lean, a squash or a hop moves the body without dragging
+      // its shadow off the floor with it. Added first, so they stay behind.
+      layers.shadows = new PIXI.Container();
+      layers.chars.addChild(layers.shadows);
       app.stage.addChild(layers.room, layers.props, layers.chars);
 
       drawRoom();
@@ -144,8 +151,8 @@
     }
 
     function drawGallery() {
-      model.container.visible = false;
-      trader.container.visible = false;
+      setCharacterVisible(model, false);
+      setCharacterVisible(trader, false);
       layers.room.visible = false;   // the floor line is scenery, not a specimen
       layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
@@ -183,8 +190,8 @@
     // LOOPS them, through `advanceCharacters` — a sheet with its own player
     // would be showing me an animation nobody ships.
     function drawAnimationSheet() {
-      model.container.visible = false;
-      trader.container.visible = false;
+      setCharacterVisible(model, false);
+      setCharacterVisible(trader, false);
       layers.room.visible = false;
       // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
       // and whether that reads as dejected or as a head in a torso is a
@@ -521,6 +528,57 @@
 
     // One inhabitant: a body whose colour is its mood, a face that reads at a
     // glance, and a label carrying the numbers.
+    // How wide a body's contact patch is, per style — the same registry shape
+    // as HEAD_TRAVEL, and checked against STYLES for the same reason: a new
+    // body that silently inherits someone else's footprint reads as floating.
+    const SHADOW_WIDTH = { bars: 34, figure: 30, candle: 22, monolith: 26, orb: 20 };
+
+    // One soft blob, built once and shared. A hard ellipse reads as a sticker
+    // and three stacked ellipses band visibly (the same thing that made the
+    // first vignette look like a wireframe) — and `FillGradient` cannot do a
+    // radial alpha ramp, which is exactly the limitation the wall port found.
+    let shadowTexture = null;
+    function softShadow() {
+      if (!shadowTexture) {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 128;
+        const ctx = canvas.getContext("2d");
+        const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+        g.addColorStop(0, "rgba(0,0,0,0.85)");
+        g.addColorStop(0.5, "rgba(0,0,0,0.42)");
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, 128, 128);
+        shadowTexture = PIXI.Texture.from(canvas);
+      }
+      const sprite = new PIXI.Sprite(shadowTexture);
+      sprite.anchor.set(0.5);
+      return sprite;
+    }
+
+    // Light is overhead, so height off the floor spreads the shadow and
+    // thins it. This is the whole grounding cue: without it a jump is a body
+    // sliding up the screen, and with it the floor is somewhere real.
+    // A shadow lives on its own layer, so hiding a character's container does
+    // *not* hide it. The animation sheet caught two of them hanging in mid-air
+    // where MODEL and TRADER had been. Visibility is a property of the
+    // character; both eval surfaces go through here.
+    function setCharacterVisible(char, visible) {
+      char.container.visible = visible;
+      if (char.shadow) char.shadow.visible = visible;
+    }
+
+    function shadowTick(char) {
+      if (!char.shadow) return;
+      const lift = Math.max(0, char.baseY - char.container.y);
+      const spread = 1 + lift * 0.004;
+      char.shadow.x = char.container.x;
+      char.shadow.y = char.baseY + 3;
+      char.shadow.width = char.shadowW * 2 * spread;
+      char.shadow.height = char.shadowW * 0.46 * spread;
+      char.shadow.alpha = 0.55 / (1 + lift * 0.014);
+    }
+
     function character(name, style) {
       style = BODIES[style] ? style : styleFor(name);
       const container = new PIXI.Container();
@@ -555,12 +613,21 @@
       let seed = 0;
       for (const ch of name) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
 
+      const shadow = softShadow();
+      layers.shadows.addChild(shadow);
+
       const char = {
         container, body, head, skull, eyeL, eyeR, mouth, browL, browR, visor,
         accents, style, stat, moodTag, faceKind: FACE_KIND[style] ?? "human",
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
         rand: rng32(seed || 1),
+        shadow, shadowW: SHADOW_WIDTH[style] ?? 30,
       };
+      // Two characters breathing on one clock read as one animation played on
+      // two puppets — the exact thing the blink seed already avoids. Offset
+      // the phase *and* vary the period, so they never drift into step either.
+      char.phaseOffset = char.rand();
+      char.breath = 3.2 * (0.85 + char.rand() * 0.3);
       setExpression(char, "neutral");
       restAccents(char);   // arms hang from their resting angle, not from zero
       return char;
@@ -725,14 +792,48 @@
 
     // Each named animation from reactions.py, made real. `phase` runs 0->1;
     // every one returns to rest so nothing is ever left sticky-amped.
+    // Motion curves. `Math.sin(p * PI)` — a symmetric bump — is what every
+    // animation here used, and a symmetric curve is most of what makes
+    // procedural motion read as procedural: bodies gather before they move and
+    // settle after they arrive. These are applied **per animation**, not as a
+    // blanket substitution: `anticipate` and `snap` deliberately return
+    // negative values, and several animations feed the curve straight into a
+    // scale, where a big enough negative would drive it through zero — the bug
+    // `turn` already shipped once. Ranges are noted for that reason.
+    const EASE = {
+      // -0.18 .. 1 — gathers downward before it rises.
+      anticipate: (p) => (p < 0.22
+        ? -0.18 * Math.sin((p / 0.22) * Math.PI)
+        : Math.sin(((p - 0.22) / 0.78) * Math.PI)),
+      // -0.15 .. 1 — hits hard in the first sixth, then rings down to nothing.
+      snap: (p) => (p < 0.16
+        ? Math.sin((p / 0.16) * (Math.PI / 2))
+        : Math.cos(((p - 0.16) / 0.84) * Math.PI * 1.5) * Math.exp(-(p - 0.16) * 3.4)),
+      // 0 .. 1 — arrives fast and hangs there. A body that drops doesn't bounce.
+      settle: (p) => 1 - Math.pow(1 - Math.sin(p * Math.PI), 2),
+    };
+
     const ANIM = {
-      idle:    (c, p) => { c.container.y = c.baseY + Math.sin(p * Math.PI * 2) * 2; },
-      jolt:    (c, p, a) => { c.container.y = c.baseY - Math.sin(p * Math.PI) * 26 * a;
-                              c.container.scale.set(1 + Math.sin(p * Math.PI) * 0.08 * a); },
+      // Breathing, not bobbing. The inhale takes ~40% of the cycle and the
+      // exhale the rest, because an even in-and-out is the tell that nothing
+      // is alive in there. The chest rises and widens fractionally; at this
+      // amplitude it is felt rather than seen, which is the point — it runs
+      // 24/7 behind everything else.
+      idle:    (c, p) => { const u = p < 0.4
+                              ? Math.sin((p / 0.4) * Math.PI - Math.PI / 2)
+                              : Math.sin(((p - 0.4) / 0.6) * Math.PI + Math.PI / 2);
+                           c.container.y = c.baseY - u * 1.6;
+                           c.container.scale.set(1 - u * 0.006, 1 + u * 0.012); },
+      jolt:    (c, p, a) => { const u = EASE.snap(p);
+                              c.container.y = c.baseY - u * 26 * a;
+                              c.container.scale.set(1 + u * 0.08 * a); },
       shake:   (c, p, a) => { c.container.x = c.baseX + Math.sin(p * 42) * 9 * a * (1 - p); },
-      hop:     (c, p, a) => { const j = Math.sin(p * Math.PI);
+      // Crouches before it leaves the floor, and the squash was inverted: it
+      // went wide-and-short at the apex and tall-and-thin in the crouch, which
+      // is backwards on both. A body in the air stretches along its travel.
+      hop:     (c, p, a) => { const j = EASE.anticipate(p);
                               c.container.y = c.baseY - j * 40 * a;
-                              c.container.scale.set(1 + j * 0.05 * a, 1 - j * 0.05 * a); },
+                              c.container.scale.set(1 - j * 0.05 * a, 1 + j * 0.05 * a); },
       pulse:   (c, p, a) => { c.container.scale.set(1 + Math.sin(p * Math.PI * 2) * 0.11 * a); },
       // 0.09, not 0.16: the container pivots at the feet, so a tall body's
       // head swings the full lever arm and 0.16 read as toppling, not leaning.
@@ -740,7 +841,7 @@
       shrug:   (c, p, a) => { const u = Math.sin(p * Math.PI);
                               gesture(c, u * a, false);
                               c.container.y = c.baseY - u * 6 * a; },
-      slump:   (c, p, a) => { const u = Math.sin(p * Math.PI);
+      slump:   (c, p, a) => { const u = EASE.settle(p);
                               c.container.y = c.baseY + u * 12 * a;
                               c.head.y = c.headBaseY
                                 + u * (HEAD_TRAVEL[c.style] ?? 8) * a;
@@ -914,7 +1015,7 @@
           continue;
         }
         if (!char.anim) {           // at rest, breathe so nobody is a statue
-          ANIM.idle(char, (ambient.t / 3.2) % 1, 1);
+          ANIM.idle(char, (ambient.t / char.breath + char.phaseOffset) % 1, 1);
           idleTick(char, dt);
           watchTick(char, dt);      // last: a deliberate look outranks a glance
           continue;
@@ -927,6 +1028,9 @@
         }
         ANIM[char.anim](char, char.phase, char.amp ?? 1);
       }
+      // After, never during: a shadow reads the body's final height for this
+      // frame, and the loop above leaves by four different paths.
+      for (const char of cast) if (char) shadowTick(char);
     }
 
     // Mirrors world/reactions.reaction_for so the canvas and the server agree
