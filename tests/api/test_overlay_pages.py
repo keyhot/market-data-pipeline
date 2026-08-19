@@ -100,6 +100,7 @@ def _css_rules(body: str) -> dict[str, str]:
     to assert *which* rule owns a property, which is the thing that goes wrong
     here (see KI-019: two surfaces inventing their own copy of a server rule)."""
     style = re.search(r"<style>(.*?)</style>", body, re.S).group(1)
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)   # comments aren't selectors
     style = re.sub(r"@keyframes\s+[\w-]+\s*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", style)
     return {
         selector.strip(): declarations
@@ -218,3 +219,33 @@ def test_the_strip_drops_the_caption_before_the_number():
     narrow = re.search(r"@container[^{]*\{(.*?)\n    \}", body, re.S).group(1)
     assert ".dotlabel { display: none; }" in narrow
     assert "display: none" not in narrow.split(".stats")[-1]
+
+
+def test_the_rail_says_when_it_cannot_reach_the_world():
+    """An empty rail reads the same whether the market is quiet or the feed is
+    broken — and it is the surface a viewer uses to decide the stream is alive.
+    Found live: the rail rendered its header and nothing else, for hours,
+    saying nothing. Same rule as KI-020: the failure names itself."""
+    body = client.get("/overlay/events").text
+    assert "can't reach the world" in body
+    assert "nothing has happened yet" in body
+
+
+def test_the_live_feed_is_not_chained_to_the_first_fetch():
+    """`initial().then(open the EventSource)` means one bad response leaves the
+    rail permanently dead, and nobody refreshes a source that looks quiet."""
+    body = client.get("/overlay/events").text
+    assert "initial().then(" not in body
+    assert re.search(r'const source = new EventSource\("/stream/world/events"\)', body)
+
+
+def test_each_overlay_paints_its_own_surface():
+    """OBS injects `body { background-color: rgba(0, 0, 0, 0); }` into every
+    browser source, so a page whose only background is on `body` reaches the
+    stream transparent. Found by looking at the program output: the rail's
+    rows had live candles running through them."""
+    rules = _css_rules(client.get("/overlay/events").text)
+    assert "background" in rules["#rail"]
+    with patch("api.main.load_watchlist", return_value=_watchlist()):
+        strip = _css_rules(client.get("/overlay/signals").text)
+    assert "background" in strip["#strip"]

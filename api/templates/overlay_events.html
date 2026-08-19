@@ -11,8 +11,14 @@
            font-family: system-ui, sans-serif; overflow: hidden; }
     /* Mounted at 480x840 (chart-focus) and 960x1080 (event-focus): the rail
        fills whatever source OBS gives it rather than a width picked for one. */
+    /* OBS injects `body { background-color: rgba(0,0,0,0) }` into every
+       browser source, so the page's own body background never reaches the
+       stream — the rail carries its own surface. That is also what keeps it
+       readable where it deliberately overlaps the chart: before this, live
+       candles ran through the words. */
     #rail { display: flex; flex-direction: column; height: 100vh;
-            box-sizing: border-box; padding: 0.9rem 1rem; gap: 0.8rem; }
+            box-sizing: border-box; padding: 0.9rem 1rem; gap: 0.8rem;
+            background: var(--bg); }
     /* Newcomer legibility: a viewer who arrives mid-stream otherwise sees a
        column of rows with nothing naming what they are. */
     #legend { display: flex; align-items: baseline; gap: 0.6rem;
@@ -46,6 +52,8 @@
        itself overrides the tier `transform: scale()` for its whole duration
        (animation beats transition), so the biggest event would arrive at the
        wrong size and snap. */
+    .event.quiet { border-left-color: var(--muted); }
+    .event.quiet .headline { color: var(--neutral); }
     .event.fresh .body { animation: enter 0.55s cubic-bezier(0.16, 0.84, 0.44, 1); }
     @keyframes enter { from { transform: translateX(-12px); opacity: 0; } }
   </style>
@@ -179,19 +187,50 @@
       trimToFit();
     }
 
+    // A rail with nothing in it looks identical whether the world is quiet or
+    // the feed is broken, and this is the surface a viewer reads to know the
+    // thing is alive. So it says which. Same rule as KI-020 one layer out: the
+    // failure has to name itself.
+    function note(text) {
+      feed.replaceChildren();
+      const row = document.createElement("div");
+      row.className = "event tier tier-0 quiet";
+      const body = document.createElement("div");
+      body.className = "body";
+      const head = document.createElement("div");
+      head.className = "headline";
+      head.textContent = text;
+      body.appendChild(head);
+      row.appendChild(body);
+      feed.appendChild(row);
+    }
+
     async function initial() {
-      const response = await fetch("/world/events?limit=20");
-      if (!response.ok) return;
+      let response;
+      try {
+        response = await fetch("/world/events?limit=20");
+      } catch (err) {
+        note("can't reach the world — retrying");
+        return;
+      }
+      if (!response.ok) { note("can't reach the world — retrying"); return; }
       const { data } = await response.json();
+      if (!data.events.length) { note("nothing has happened yet"); return; }
       data.events.slice(0, MAX_ROWS).reverse().forEach((e) => addEvent(e, false));
       refreshAges();
       trimToFit();
     }
 
-    initial().then(() => {
-      const source = new EventSource("/stream/world/events");
-      source.onmessage = (event) => addEvent(JSON.parse(event.data), true);
-    });
+    // The live feed is opened whatever the backfill did: chaining it to a
+    // resolved fetch means one bad response leaves the rail dead until someone
+    // notices — and nobody refreshes a browser source that looks merely quiet.
+    const source = new EventSource("/stream/world/events");
+    source.onmessage = (event) => {
+      if (feed.querySelector(".quiet")) feed.replaceChildren();
+      addEvent(JSON.parse(event.data), true);
+    };
+
+    initial();
 
     setInterval(refreshAges, 10000);
   </script>

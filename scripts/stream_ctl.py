@@ -73,7 +73,7 @@ def _build_one(client, spec: dict, set_current: bool) -> dict:
         client.create_scene(spec["scene"])
         created.append(spec["scene"])
     existing = {i["inputName"] for i in client.get_input_list().inputs}
-    for src in spec["sources"]:
+    for layer, src in enumerate(spec["sources"]):
         if src["name"] in existing:
             client.set_input_settings(src["name"], src["settings"], True)
         else:
@@ -87,6 +87,12 @@ def _build_one(client, spec: dict, set_current: bool) -> dict:
             item_id,
             {"positionX": float(src["x"]), "positionY": float(src["y"])},
         )
+        # Stacking is declared by the spec (bottom-first), never inherited from
+        # the order the inputs happened to be created in. It was inherited
+        # until 2026-08-20, and that is how `charts-1m` — added to chart-focus
+        # three weeks after the events rail — ended up drawn OVER the full
+        # height of it: a source rendering perfectly and visible to nobody.
+        client.set_scene_item_index(spec["scene"], item_id, layer)
     if set_current:
         client.set_current_program_scene(spec["scene"])
     return {"scene": spec["scene"], "created": created}

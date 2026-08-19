@@ -3,7 +3,7 @@ request the tool would issue is pinned here instead."""
 
 import pytest
 
-from scripts import stream_ctl
+from scripts import stream_ctl, stream_scene
 
 
 class FakeResp:
@@ -22,6 +22,7 @@ class FakeClient:
         transitions=("Cut", "Fade"),
     ):
         self.calls = []
+        self._item_ids = {}
         self._scenes = list(scenes)
         self._inputs = list(inputs)
         self._streaming = streaming
@@ -64,10 +65,16 @@ class FakeClient:
         self._log("set_input_settings", name)
 
     def get_scene_item_id(self, scene, name):
-        return FakeResp(scene_item_id=7)
+        # Distinct per source: an ordering bug is invisible if every item in
+        # the scene answers to the same id.
+        self._item_ids.setdefault((scene, name), len(self._item_ids) + 1)
+        return FakeResp(scene_item_id=self._item_ids[(scene, name)])
 
     def set_scene_item_transform(self, scene, item_id, transform):
         self._log("set_scene_item_transform", scene, item_id)
+
+    def set_scene_item_index(self, scene, item_id, item_index):
+        self._log("set_scene_item_index", scene, item_id, item_index)
 
     def set_current_program_scene(self, name):
         self._log("set_current_program_scene", name)
@@ -272,3 +279,50 @@ def test_build_puts_the_fade_in_place_before_the_director_starts_switching():
     client = FakeClient()
     stream_ctl.build_scene(client)
     assert ("set_current_scene_transition", "Fade") in client.calls
+
+
+def test_build_pins_the_layer_order_instead_of_inheriting_it():
+    """Found live on 2026-08-20: the events rail rendered perfectly as a source
+    and was **invisible on air** — `charts-1m` (1920x840, the full frame) sat
+    on top of it on the home scene. Stacking came from the order the inputs
+    happened to be created in, and `charts-1m` was added three weeks after the
+    rail (B13), so it landed on top and stayed there. `build` sets position and
+    settings; it never set the one property that decides what you can see.
+
+    Same shape as KI-009 (encoder bitrate inherited from whatever the profile
+    had) and B2's transition: if the layout is not asserted, it is inherited."""
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+
+    spec = next(s for s in stream_scene.scenes_spec() if s["scene"] == "chart-focus")
+    order = [src["name"] for src in spec["sources"]]
+    ids = {name: client._item_ids[("chart-focus", name)] for name in order}
+    indexes = {
+        item_id: index
+        for call, scene, item_id, index in
+        [c for c in client.calls if c[0] == "set_scene_item_index"]
+        if scene == "chart-focus"
+    }
+
+    # Spec order is bottom-to-top, and every source is placed by it.
+    assert [indexes[ids[name]] for name in order] == list(range(len(order)))
+    # The one that matters: the rail is above the chart that used to bury it.
+    assert indexes[ids["overlay-events"]] > indexes[ids["charts-1m"]]
+
+
+def test_no_source_is_completely_covered_by_one_above_it():
+    """The geometry half of the same bug: a source can be pinned to the right
+    layer and still be a source nobody will ever see."""
+    for spec in stream_scene.scenes_spec():
+        boxes = [
+            (src["name"], src["x"], src["y"],
+             src["settings"]["width"], src["settings"]["height"])
+            for src in spec["sources"] if src["kind"] == "browser_source"
+        ]
+        for lower, (name, x, y, w, h) in enumerate(boxes):
+            for above_name, ax, ay, aw, ah in boxes[lower + 1:]:
+                covered = (ax <= x and ay <= y
+                           and ax + aw >= x + w and ay + ah >= y + h)
+                assert not covered, (
+                    f"{spec['scene']}: {above_name} completely covers {name}"
+                )

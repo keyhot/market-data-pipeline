@@ -11,8 +11,10 @@
     /* 120px tall, mounted 1920 wide twice and 960 wide once: the cells share
        whatever width is left after the label, so a third predict symbol
        narrows the strip instead of silently overflowing it. */
+    /* Same reason as the rail: OBS drops the body background, so the band
+       paints its own — a lower third has to sit on something. */
     #strip { display: flex; gap: 1.6rem; align-items: center; height: 120px;
-             box-sizing: border-box; padding: 0 1.5rem; }
+             box-sizing: border-box; padding: 0 1.5rem; background: var(--bg); }
     #label { flex: 0 0 auto; display: flex; flex-direction: column; gap: 0.15rem;
              border-right: 1px solid var(--muted); padding-right: 1.4rem; }
     #label .kicker { font-size: 1rem; font-weight: 600; letter-spacing: 0.14em;
