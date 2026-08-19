@@ -9,29 +9,64 @@
     __TIER_STYLES__
     body { margin: 0; background: var(--bg); color: var(--fg);
            font-family: system-ui, sans-serif; overflow: hidden; }
-    #feed { display: flex; flex-direction: column; gap: 0.5rem;
-            padding: 1rem; max-width: 480px; }
+    /* Mounted at 480x840 (chart-focus) and 960x1080 (event-focus): the rail
+       fills whatever source OBS gives it rather than a width picked for one. */
+    #rail { display: flex; flex-direction: column; height: 100vh;
+            box-sizing: border-box; padding: 0.9rem 1rem; gap: 0.8rem; }
+    /* Newcomer legibility: a viewer who arrives mid-stream otherwise sees a
+       column of rows with nothing naming what they are. */
+    #legend { display: flex; align-items: baseline; gap: 0.6rem;
+              border-bottom: 1px solid var(--muted); padding-bottom: 0.5rem; }
+    #legend h1 { margin: 0; font-size: 1rem; font-weight: 600;
+                 letter-spacing: 0.14em; text-transform: uppercase; }
+    #legend p { margin: 0; color: var(--neutral); font-size: 0.82rem; }
+    #feed { display: flex; flex-direction: column; gap: 0.45rem;
+            width: 100%; flex: 1 1 auto; min-height: 0; overflow: hidden; }
     .event { display: flex; gap: 0.6rem; align-items: flex-start;
-             padding: 0.5rem 0.7rem; background: #1e222d; border-radius: 6px;
-             border-left: 4px solid var(--muted); }
+             padding: 0.55rem 0.8rem; background: var(--surface);
+             border-radius: 7px; border-left: 5px solid var(--muted); }
     /* The border carries the severity tier (category); the injected .tier-*
        ramp carries the swell (glow/scale/opacity/weight, eased). */
     .event.tier-0 { border-left-color: var(--neutral); }
     .event.tier-1 { border-left-color: var(--accent); }
     .event.tier-2 { border-left-color: var(--accent); }
     .event.tier-3 { border-left-color: var(--down); }
-    .body { display: flex; flex-direction: column; gap: 0.1rem; }
-    .headline { font-size: 0.9rem; }
-    .meta { color: var(--neutral); font-size: 0.72rem; }
-    .event.fresh { animation: pop 0.6s ease-out; }
-    @keyframes pop { from { transform: translateY(-6px); opacity: 0; } }
+    .body { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+    .headline { font-size: 1.45rem; line-height: 1.2; }
+    .meta { color: var(--neutral); font-size: 0.86rem;
+            font-variant-numeric: tabular-nums; }
+    .age { color: var(--fg); }
+    /* Age fade, so the newest row reads first. Deliberately on `color` alone:
+       transform / opacity / box-shadow / font-weight belong to the injected
+       tier ramp, and a second rule touching those would quietly fight the
+       server's own severity signal (KI-019, one surface over). */
+    .event.stale .headline { color: var(--neutral); }
+    .event.stale .meta, .event.stale .age { color: var(--muted); }
+    /* The entry motion rides on the inner element: a keyframe on the row
+       itself overrides the tier `transform: scale()` for its whole duration
+       (animation beats transition), so the biggest event would arrive at the
+       wrong size and snap. */
+    .event.fresh .body { animation: enter 0.55s cubic-bezier(0.16, 0.84, 0.44, 1); }
+    @keyframes enter { from { transform: translateX(-12px); opacity: 0; } }
   </style>
 </head>
 <body>
-  <div id="feed"></div>
+  <div id="rail">
+    <header id="legend">
+      <h1>Live events</h1>
+      <p>what the world noticed — newest first</p>
+    </header>
+    <div id="feed"></div>
+  </div>
   <script>
     const feed = document.getElementById("feed");
-    const MAX_ROWS = 20;
+    // An upper bound on what we keep in the DOM. How many actually *show* is
+    // measured below, not guessed: the same rail is mounted 480x840 and
+    // 960x1080, headlines wrap at the narrow one and don't at the wide one, so
+    // any single number is wrong somewhere — and being wrong here means
+    // `overflow: hidden` cutting a row in half with no indication it did.
+    const MAX_ROWS = 11;
+    const STALE_AFTER_SECONDS = 600;
 
     // Severity -> tier (0 calm .. 3 dramatic), matching the world canvas and
     // world/state bands. The tier class drives both the border (category) and
@@ -77,17 +112,54 @@
       catch { return `${e.symbol || "market"} ${e.event_type}`; }
     }
 
-    function relTime(iso) {
-      const secs = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+    function ageSeconds(iso) {
+      return Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+    }
+
+    function relTime(secs) {
+      if (secs < 5) return "just now";
       if (secs < 90) return `${Math.round(secs)}s ago`;
       if (secs < 5400) return `${Math.round(secs / 60)}m ago`;
-      return `${Math.round(secs / 3600)}h ago`;
+      if (secs < 172800) return `${Math.round(secs / 3600)}h ago`;
+      return `${Math.round(secs / 86400)}d ago`;
+    }
+
+    // KI-022. OBS keeps a browser source's page loaded for the life of the
+    // process, so an age written once at insert is a lying number within the
+    // minute and stays on air for hours. The row carries its own timestamp and
+    // ONE timer re-renders every visible age — never a timer per row.
+    function refreshAges() {
+      for (const row of feed.children) {
+        const secs = ageSeconds(row.dataset.occurredAt);
+        row.querySelector(".age").textContent = relTime(secs);
+        row.classList.toggle("stale", secs > STALE_AFTER_SECONDS);
+      }
+    }
+
+    // Drop rows from the bottom until the feed fits its source. Measured with
+    // bounding rects rather than scrollHeight because the injected tier ramp
+    // scales a row *visually* past its layout box — a swelling bottom row is
+    // the one thing scrollHeight cannot see, and the one most worth not
+    // slicing in half. Guarded on length so an over-tall row can't empty the
+    // rail; the last row is then clipped, which beats an empty feed.
+    function overflowsSource() {
+      const last = feed.lastElementChild;
+      return last &&
+        last.getBoundingClientRect().bottom > feed.getBoundingClientRect().bottom;
+    }
+
+    function trimToFit() {
+      while (feed.children.length > 1 &&
+             (feed.children.length > MAX_ROWS || overflowsSource())) {
+        feed.lastChild.remove();
+      }
     }
 
     function addEvent(e, fresh) {
       const row = document.createElement("div");
       row.className =
         `event tier tier-${tierOf(e.event_type, e.severity)}` + (fresh ? " fresh" : "");
+      row.dataset.occurredAt = e.occurred_at;
       const body = document.createElement("div");
       body.className = "body";
       const head = document.createElement("div");
@@ -95,25 +167,33 @@
       head.textContent = headline(e);           /* textContent: payloads are data */
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.textContent =
-        `${e.event_type} · severity ${e.severity.toFixed(1)} · ${relTime(e.occurred_at)}`;
+      const age = document.createElement("span");
+      age.className = "age";
+      age.textContent = relTime(ageSeconds(e.occurred_at));
+      const rest = document.createElement("span");
+      rest.textContent = ` · ${e.event_type} · sev ${e.severity.toFixed(1)}`;
+      meta.append(age, rest);
       body.append(head, meta);
       row.appendChild(body);
       feed.prepend(row);
-      while (feed.children.length > MAX_ROWS) feed.lastChild.remove();
+      trimToFit();
     }
 
     async function initial() {
       const response = await fetch("/world/events?limit=20");
       if (!response.ok) return;
       const { data } = await response.json();
-      data.events.slice().reverse().forEach((e) => addEvent(e, false));
+      data.events.slice(0, MAX_ROWS).reverse().forEach((e) => addEvent(e, false));
+      refreshAges();
+      trimToFit();
     }
 
     initial().then(() => {
       const source = new EventSource("/stream/world/events");
       source.onmessage = (event) => addEvent(JSON.parse(event.data), true);
     });
+
+    setInterval(refreshAges, 10000);
   </script>
 </body>
 </html>

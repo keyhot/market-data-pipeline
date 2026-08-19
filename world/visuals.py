@@ -21,6 +21,7 @@ from __future__ import annotations
 # chart, the world room, and the overlays sit on one continuous surface.
 PALETTE: dict[str, str] = {
     "bg": "#131722",       # page surface (matches overlay_*.html)
+    "surface": "#1e222d",  # a panel *on* the page: feed rows, cards, dividers
     "fg": "#d1d4dc",       # primary text
     "up": "#26a69a",       # gains / positive outcomes
     "down": "#ef5350",     # losses / negative outcomes
