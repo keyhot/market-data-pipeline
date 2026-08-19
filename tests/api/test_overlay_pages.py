@@ -101,7 +101,9 @@ def _css_rules(body: str) -> dict[str, str]:
     here (see KI-019: two surfaces inventing their own copy of a server rule)."""
     style = re.search(r"<style>(.*?)</style>", body, re.S).group(1)
     style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)   # comments aren't selectors
-    style = re.sub(r"@keyframes\s+[\w-]+\s*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", style)
+    # Drop at-rule blocks whole: their nested rules share selectors with the
+    # base rules, and a flat scan would hand back the override instead.
+    style = re.sub(r"@[\w-]+[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", style)
     return {
         selector.strip(): declarations
         for selector, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", style)
@@ -249,3 +251,12 @@ def test_each_overlay_paints_its_own_surface():
     with patch("api.main.load_watchlist", return_value=_watchlist()):
         strip = _css_rules(client.get("/overlay/signals").text)
     assert "background" in strip["#strip"]
+
+
+def test_the_age_timer_survives_the_row_that_has_no_age():
+    """The note row carries no timestamp and no `.age` span, so an unguarded
+    `querySelector(".age").textContent` throws every tick — an error loop in
+    the exact state the note exists for."""
+    body = client.get("/overlay/events").text
+    assert 'const age = row.querySelector(".age");' in body
+    assert "if (!age || !row.dataset.occurredAt) continue;" in body

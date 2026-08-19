@@ -138,8 +138,14 @@
     // ONE timer re-renders every visible age — never a timer per row.
     function refreshAges() {
       for (const row of feed.children) {
+        // The note row below has no timestamp and no age span. Without this
+        // guard the timer throws every 10s for as long as the rail is in the
+        // one state it was added for — an error loop during an outage, which
+        // is precisely when someone is reading the logs.
+        const age = row.querySelector(".age");
+        if (!age || !row.dataset.occurredAt) continue;
         const secs = ageSeconds(row.dataset.occurredAt);
-        row.querySelector(".age").textContent = relTime(secs);
+        age.textContent = relTime(secs);
         row.classList.toggle("stale", secs > STALE_AFTER_SECONDS);
       }
     }
