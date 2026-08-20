@@ -82,6 +82,30 @@
       return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
     };
 
+    // KI-028: the cast measured 1.19:1 (trader) and 1.00:1 against its own
+    // background, versus WCAG's 3:1 floor — the bodies were the same luminance
+    // as the room and only the faces read. A body's colour is NOT its mood
+    // colour: PixiJS tint multiplies, so what renders is BODY_FILL x tint. The
+    // old code floored the luminance of the *tint*, which is not the number a
+    // viewer sees, and with the previous fill of 0x545862 the brightest body
+    // obtainable — a pure white tint — was still only 2.51:1. The ceiling was
+    // below the floor, so no tint could have fixed it; the fill had to move.
+    // Both now come from world/visuals.py, which does the contrast maths and
+    // is test-asserted over every mood.
+    const BODY_TINT = __BODY_TINTS_JSON__;
+    const BODY_FILL = __BODY_BASE_FILL__;
+    // A lit edge, drawn brighter than the fill so the difference survives being
+    // tinted by the same multiplier. Inner alignment so the rim costs the
+    // silhouette no width — shadow sizes and head placement are tuned to these
+    // exact rects. This is also the detail a 2200 kbps VBR encoder keeps best:
+    // it spends its fewest bits on the near-black gradients that used to be the
+    // only thing separating the cast from the room.
+    const BODY_RIM = { width: 1.5, color: __BODY_RIM_FILL__, alignment: 1 };
+    const bodyTint = (mood) => {
+      const hex = BODY_TINT[mood];
+      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
+    };
+
     // Shared severity -> tier bands (mirror the overlay + world/state tiers) so
     // the "swell" reads the same on every surface: tier 0 barely stirs, tier 3
     // leaps. This is the calm-that-swells register in motion.
@@ -434,13 +458,13 @@
       // A candlestick: real body between two wicks. The project's own glyph,
       // and the one that reads most instantly as "this thing is the market".
       candle(body, accents) {
-        body.roundRect(-27, -104, 54, 84, 8).fill(0x545862);
+        body.roundRect(-27, -104, 54, 84, 8).fill(BODY_FILL).stroke(BODY_RIM);
         // Wick thick enough to read as a neck at stream distance, and short
         // enough that the head sits ON the candle rather than floating over it.
         const wickTop = new PIXI.Graphics().roundRect(-3.5, -130, 7, 30, 3.5)
-          .fill(0x545862);
+          .fill(BODY_FILL).stroke(BODY_RIM);
         const wickLow = new PIXI.Graphics().roundRect(-3.5, -22, 7, 26, 3.5)
-          .fill(0x545862);
+          .fill(BODY_FILL).stroke(BODY_RIM);
         // A wick flicks by lengthening. It cannot swing: it's drawn in the
         // character's own space, so rotating it pivots about the feet.
         wickTop.gestureMode = wickLow.gestureMode = "pump";
@@ -453,7 +477,7 @@
         const heights = [54, 86, 68, 96, 60];
         heights.forEach((h, i) => {
           const bar = new PIXI.Graphics()
-            .roundRect(-6, -h, 12, h, 4).fill(0x545862);
+            .roundRect(-6, -h, 12, h, 4).fill(BODY_FILL).stroke(BODY_RIM);
           bar.x = -36 + i * 18;
           bar.restHeight = h;
           bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
@@ -462,15 +486,15 @@
         // A static stem, so the head isn't left hovering over the cluster the
         // way it was. It can't be one of the bars: those ripple, and a neck
         // that stretches would pull the face off the body.
-        body.roundRect(-6, -118, 12, 58, 6).fill(0x545862);
+        body.roundRect(-6, -118, 12, 58, 6).fill(BODY_FILL).stroke(BODY_RIM);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
       // end of the register; a piece that looks like it is thinking.
       monolith(body, accents) {
-        body.roundRect(-26, -104, 52, 78, 20).fill(0x545862);
+        body.roundRect(-26, -104, 52, 78, 20).fill(BODY_FILL).stroke(BODY_RIM);
         const base = new PIXI.Graphics()
-          .roundRect(-38, -30, 76, 30, 14).fill(0x545862);
+          .roundRect(-38, -30, 76, 30, 14).fill(BODY_FILL).stroke(BODY_RIM);
         base.gestureMode = "shift";   // a weighted column doesn't wave, it leans
         base.restX = 0;
         accents.push(base);
@@ -482,16 +506,16 @@
       figure(body, accents) {
         // The gap has to be wide enough to survive the stream: at 6 units the
         // two legs merged into one column and he read as a pedestal.
-        body.roundRect(-19, -56, 13, 56, 6).fill(0x545862);
-        body.roundRect(6, -56, 13, 56, 6).fill(0x545862);
+        body.roundRect(-19, -56, 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(6, -56, 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
         // Waist under a broader chest. The taper is what reads as a person —
         // one capsule reads as a pill — and the wider shoulders are what stop
         // the head (28px, shared with every other body) looking oversized.
-        body.roundRect(-26, -86, 52, 40, 14).fill(0x545862);
-        body.roundRect(-33, -128, 66, 54, 22).fill(0x545862);
+        body.roundRect(-26, -86, 52, 40, 14).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(-33, -128, 66, 54, 22).fill(BODY_FILL).stroke(BODY_RIM);
         for (const side of [-1, 1]) {
           const arm = new PIXI.Graphics().roundRect(-7, -5, 14, 66, 7)
-            .fill(0x545862);
+            .fill(BODY_FILL).stroke(BODY_RIM);
           arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
           // Not quite straight and not quite matching: dead-symmetrical arms
           // read as a mannequin, and the asymmetry costs two numbers.
@@ -509,7 +533,7 @@
       // The original: face on a single disc, no body. Kept as the baseline the
       // others are judged against.
       orb(body) {
-        body.circle(0, -60, 46).fill(0x545862);
+        body.circle(0, -60, 46).fill(BODY_FILL).stroke(BODY_RIM);
         return -66;
       },
     };
@@ -594,7 +618,7 @@
 
       const headY = BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
-      if (style !== "orb") skull.circle(0, 0, 28).fill(0x545862);
+      if (style !== "orb") skull.circle(0, 0, 28).fill(BODY_FILL).stroke(BODY_RIM);
       head.y = headY;
       head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
 
@@ -669,16 +693,14 @@
            | clamp(tint & 0xff);
     }
 
-    // Nothing in this room should sink into the background. The trader stays
-    // dormant until freqtrade events exist, and his dormant colour is nearly
-    // the wall — so put a floor under the luminance. This is a rendering
-    // decision, not a mood one: the palette is untouched, and a dim character
-    // stays dim, it just doesn't disappear.
-    function liftDark(tint, floor) {
-      const r = (tint >> 16) & 0xff, g = (tint >> 8) & 0xff, b = tint & 0xff;
-      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-      return lum >= floor ? tint : shade(tint, floor / Math.max(lum, 0.05));
-    }
+    // `liftDark` used to live here: a luminance floor applied to the TINT.
+    // It was the right instinct aimed one step short of the pixel — the tint is
+    // multiplied by the base fill before anyone sees it, so a tint comfortably
+    // above the floor still rendered a body at 1.19:1. It also used the NTSC
+    // luma weights on raw sRGB rather than WCAG relative luminance, so its
+    // "floor" was not the quantity anyone measures. Both are now done in
+    // world/visuals.py against the rendered colour, and the answer arrives
+    // precomputed in BODY_TINT (KI-028).
 
     // Faces are redrawn rather than tweened: a handful of primitives per mood
     // change is far cheaper than keeping a rig, and OBS renders in software.
@@ -689,7 +711,7 @@
       // exactly as the mood had them.
       char.face = { valence, arousal };
       char.blinkClosed = false;
-      const tint = liftDark(color(mood), 0.3);
+      const tint = bodyTint(mood);
       char.visor.clear();
       if (char.faceKind === "machine") {
         machineFace(char, valence, arousal, tint);

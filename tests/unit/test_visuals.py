@@ -2,6 +2,7 @@
 The mood-colour registry invariant keeps every reaction mood renderable (never
 an invisible blob); the tier ramp encodes the calm->dramatic 'swell'."""
 
+from world import visuals
 from world.reactions import _SIGNAL_OUTCOMES, _STREAK_DIRECTIONS, REACTIONS
 from world.visuals import (
     MOOD_COLORS,
@@ -144,3 +145,58 @@ def test_the_ramp_publishes_its_own_ceiling():
 def test_the_swell_ceiling_is_published_as_a_css_variable():
     """So the rail can size its rows against it in plain CSS."""
     assert f"--tier-max-scale: {max_tier_scale()}" in css_variables()
+
+
+# --- KI-028: the cast has to be visible ----------------------------------
+
+def test_every_mood_renders_a_body_above_the_contrast_floor():
+    """The completeness invariant, in luminance. Mirrors the MOOD_COLORS one:
+    a new mood cannot ship a body that disappears into the room."""
+    for mood in visuals.MOOD_COLORS:
+        measured = visuals.body_contrast(mood)
+        assert measured >= visuals.SILHOUETTE_MIN_CONTRAST, (
+            f"{mood} renders at {measured:.2f}:1"
+        )
+
+
+def test_an_unknown_mood_is_still_visible():
+    # Unknown moods fall back to PALETTE["neutral"], which must clear the floor
+    # too — a new salience rule should degrade quietly, not invisibly.
+    assert visuals.body_contrast("no-such-mood") >= visuals.SILHOUETTE_MIN_CONTRAST
+
+
+def test_the_floor_is_measured_on_the_rendered_body_not_the_tint():
+    """The KI-028 mechanism, pinned. PixiJS tint MULTIPLIES the base fill, so
+    a tint that clears the floor on its own can still render a body far below
+    it — that is exactly what shipped. Assert the published tint is brighter
+    than the body it produces, i.e. that the multiply is being accounted for."""
+    tint = visuals._to_rgb(visuals.body_tint("focused"))
+    rendered = visuals._rendered(tint)
+    assert visuals.relative_luminance(rendered) < visuals.relative_luminance(tint)
+    assert visuals.contrast_ratio(
+        rendered, visuals._to_rgb(visuals.PALETTE["bg"])
+    ) >= visuals.SILHOUETTE_MIN_CONTRAST
+
+
+def test_the_old_base_fill_could_never_have_cleared_the_floor():
+    """Why the fill had to change and not just the colours: with 0x545862 the
+    brightest body obtainable is a pure white tint, and that is 2.51:1 —
+    under WCAG's 3:1, let alone this floor. Kept as a regression guard on
+    BODY_BASE_FILL: lowering it back into that range breaks the whole fix."""
+    room = visuals._to_rgb(visuals.PALETTE["bg"])
+    assert visuals.contrast_ratio((0x54, 0x58, 0x62), room) < 3.0
+    ceiling = visuals.contrast_ratio(visuals._to_rgb(visuals.BODY_BASE_FILL), room)
+    assert ceiling >= visuals.SILHOUETTE_MIN_CONTRAST
+
+
+def test_a_mood_keeps_its_hue_when_it_is_already_bright_enough():
+    # Lifting is a last resort, not a wash: colours that already clear the floor
+    # must come through untouched, or the palette drifts every time this runs.
+    for mood in ("surprised", "startled", "alert", "speaking", "panicked"):
+        assert visuals.body_tint(mood) == visuals.MOOD_COLORS[mood], mood
+
+
+def test_the_rim_is_brighter_than_the_fill_so_it_survives_tinting():
+    # Both are multiplied by the same tint, so their ratio is fixed here. Equal
+    # values would make the rim invisible at every mood simultaneously.
+    assert visuals.BODY_RIM_FILL > visuals.BODY_BASE_FILL

@@ -175,3 +175,137 @@ def tier_styles_css(prefix: str = "tier") -> str:
             f"font-weight: {int(v['weight'])}; }}"
         )
     return "\n".join(rules)
+
+
+# --- The cast has to be visible (KI-028) ----------------------------------
+#
+# Measured on the live program frame, the silhouettes sat at 1.19:1 (trader) and
+# 1.00:1 (model) against their own background, versus WCAG's 3:1 floor for
+# non-text graphics. Only the face marks read; the bodies were the same
+# luminance as the room. The B2 lighting work pulled the room this dark and the
+# characters were never re-tested against it.
+#
+# The arithmetic says it was never fixable by choosing better mood colours.
+# PixiJS tint MULTIPLIES: a body renders at `base x tint / 255`. With the old
+# base fill of 0x545862 the brightest body obtainable — a pure white tint —
+# is 0x545862 itself, which measures 2.51:1. The ceiling was below the floor.
+# So the base fill is the thing that had to move, and it lives here now rather
+# than as a literal repeated through five body-drawing functions in a template.
+BODY_BASE_FILL = 0xD0D0D0
+# The rim is drawn brighter than the fill so the difference SURVIVES tinting
+# (both get multiplied by the same tint, so the ratio between them is fixed
+# here and nowhere else). A lit edge is also what a 2200 kbps VBR encoder
+# preserves best: near-black gradients are what it spends the fewest bits on,
+# which is why the cast read worse on air than in a screenshot.
+BODY_RIM_FILL = 0xFFFFFF
+
+# The floor is set well above WCAG's 3:1 on purpose. This ratio is computed
+# against the flat page background, but on air the vignette darkens the cast and
+# the room together — and because the WCAG formula adds 0.05 to both terms,
+# darkening two colours equally REDUCES their ratio. A body computed at exactly
+# 3.0 here measures below 3.0 in the frame. 4.5 is the margin that survives the
+# vignette, the wall gradient and the encoder.
+SILHOUETTE_MIN_CONTRAST = 4.5
+
+
+def _linearize(channel: float) -> float:
+    c = channel / 255
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def relative_luminance(rgb: tuple[int, int, int]) -> float:
+    """WCAG relative luminance of an sRGB triple."""
+    r, g, b = (_linearize(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    """WCAG contrast ratio between two sRGB triples. Symmetric."""
+    high, low = sorted((relative_luminance(a), relative_luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def _to_rgb(value: str | int) -> tuple[int, int, int]:
+    if isinstance(value, str):
+        value = int(value.lstrip("#"), 16)
+    return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+
+
+def _to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#{:02x}{:02x}{:02x}".format(*(max(0, min(255, round(c))) for c in rgb))
+
+
+def _rendered(tint: tuple[int, int, int]) -> tuple[int, int, int]:
+    """What the canvas actually shows: the base fill multiplied by the tint."""
+    base = _to_rgb(BODY_BASE_FILL)
+    return tuple(base[i] * tint[i] / 255 for i in range(3))
+
+
+def _lerp_to_floor(start, end, background, floor):
+    """Least blend from ``start`` toward ``end`` whose RENDERED body clears the
+    floor. Returns ``end`` if even that cannot (it always can — end is white).
+
+    Bisection rather than a closed form because luminance is non-linear in the
+    blend parameter, and 24 steps lands well inside a single 8-bit level.
+    """
+    def at(t):
+        # Quantized to 8 bits INSIDE the search, not after it. Bisecting on
+        # continuous colour and rounding afterwards lands a hair under the floor
+        # — every mood came out at 4.485-4.497 against a floor of 4.5. What ships
+        # is an integer triple, so that is what has to be measured.
+        return tuple(
+            max(0, min(255, round(start[i] + (end[i] - start[i]) * t)))
+            for i in range(3)
+        )
+
+    def clears(t):
+        return contrast_ratio(_rendered(at(t)), background) >= floor
+
+    if clears(0.0):
+        return at(0.0)
+    if not clears(1.0):
+        return at(1.0)
+    low, high = 0.0, 1.0
+    for _ in range(24):
+        mid = (low + high) / 2
+        if clears(mid):
+            high = mid
+        else:
+            low = mid
+    return at(high)
+
+
+def body_tint(mood: str, background: str | None = None) -> str:
+    """The tint that renders ``mood``'s body at or above the contrast floor.
+
+    Hue is given up last. First the colour is taken to full chroma (scaled so
+    its brightest channel peaks), which costs nothing but darkness; only if that
+    still falls short is it mixed toward white, and only as far as it must go. A
+    dim mood therefore stays recognisably itself — it just stops being invisible.
+    """
+    bg = _to_rgb(background or PALETTE["bg"])
+    mood_rgb = _to_rgb(mood_color(mood))
+    peak = max(mood_rgb) or 1
+    full_chroma = tuple(min(255, c * 255 / peak) for c in mood_rgb)
+    lifted = _lerp_to_floor(mood_rgb, full_chroma, bg, SILHOUETTE_MIN_CONTRAST)
+    if contrast_ratio(_rendered(lifted), bg) < SILHOUETTE_MIN_CONTRAST:
+        lifted = _lerp_to_floor(
+            full_chroma, (255, 255, 255), bg, SILHOUETTE_MIN_CONTRAST
+        )
+    return _to_hex(lifted)
+
+
+def body_tints(background: str | None = None) -> dict[str, str]:
+    """Every mood's body tint, precomputed. Rendered into the page as JSON so
+    the template does no colour maths of its own — the same reason the tier and
+    room-light ramps live here. Completeness over MOOD_COLORS is test-enforced,
+    mirroring the reactions-registry invariant."""
+    return {mood: body_tint(mood, background) for mood in MOOD_COLORS}
+
+
+def body_contrast(mood: str, background: str | None = None) -> float:
+    """Measured contrast of ``mood``'s rendered body against the room. The
+    number the invariant test asserts on, and the number a screenshot is
+    compared back to."""
+    bg = _to_rgb(background or PALETTE["bg"])
+    return contrast_ratio(_rendered(_to_rgb(body_tint(mood, background))), bg)

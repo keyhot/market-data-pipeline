@@ -261,16 +261,27 @@ def test_the_cast_is_scaled_by_its_layer_not_by_each_character():
     assert "layers.chars.scale" in gallery, "the gallery inherits the cast scale"
 
 
-def test_a_dormant_character_does_not_sink_into_the_background():
-    """The trader stays dormant until freqtrade events exist, and his dormant
-    tint is nearly the background — he disappeared in the wide shot. A
-    luminance floor keeps him present without pretending he's active."""
+def test_a_character_does_not_sink_into_the_background():
+    """KI-028. This test used to assert that a function named `liftDark`
+    existed and was called — and it passed, green, while the cast measured
+    1.19:1 and 1.00:1 against its own background. Asserting the mechanism is
+    what let the defect through, so it now asserts the *quantity*: the page
+    must carry a body tint for every mood, and those tints must come from the
+    module that does the contrast maths.
+    """
+    from world.visuals import MOOD_COLORS, SILHOUETTE_MIN_CONTRAST, body_contrast
+
     body = client.get("/world").text
-    assert "function liftDark(" in body
+    assert "const BODY_TINT = {" in body, "the tint table never reached the page"
+    assert "__BODY_TINTS_JSON__" not in body, "placeholder left unreplaced"
     expression = re.search(
         r"function setExpression\(char, mood\) \{(.*?)\n    \}", body, re.S
     ).group(1)
-    assert "liftDark(" in expression, "the floor is defined but never applied"
+    assert "bodyTint(" in expression, "the table is injected but never applied"
+    # The floor is the point, and it holds for every mood the room can show —
+    # not just the two that happened to be on screen when it was measured.
+    for mood in MOOD_COLORS:
+        assert body_contrast(mood) >= SILHOUETTE_MIN_CONTRAST, mood
 
 
 def test_an_accent_gestures_by_kind_rather_than_all_of_them_rotating():

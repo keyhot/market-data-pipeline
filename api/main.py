@@ -118,6 +118,15 @@ _THEME_REPLACEMENTS = {
     "__THEME_VARS__": visuals.css_variables(),
     "__TIER_STYLES__": visuals.tier_styles_css(),
     "__MOOD_COLORS_JSON__": json.dumps(visuals.MOOD_COLORS),
+    # KI-028: the cast measured 1.19:1 and 1.00:1 against its own background.
+    # Body colour is not the mood colour — PixiJS tint MULTIPLIES the base fill
+    # — so the page cannot work it out from __MOOD_COLORS_JSON__ alone, and the
+    # old attempt to (a luminance floor applied to the tint) was floored on the
+    # wrong number. Precomputed per mood here, where the contrast maths and the
+    # base fill live together.
+    "__BODY_TINTS_JSON__": json.dumps(visuals.body_tints()),
+    "__BODY_BASE_FILL__": hex(visuals.BODY_BASE_FILL),
+    "__BODY_RIM_FILL__": hex(visuals.BODY_RIM_FILL),
     # B2: scene-wide lighting per tier, from the same module as everything else
     # visual. The canvas gets a ramp shaped for a canvas — see `room_light`.
     "__ROOM_LIGHT_JSON__": json.dumps(
