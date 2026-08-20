@@ -85,11 +85,38 @@ def run(
     metrics = DirectorMetrics()
     consecutive_failures = 0
     ticks = 0
+    seeded = False
     while max_ticks is None or ticks < max_ticks:
         ticks += 1
         now = datetime.now(timezone.utc)
         try:
             state = fetch_state()
+            if not seeded:
+                # A director that just booted does not narrate history (KI-033).
+                # dir_state is rebuilt on every process start, so
+                # last_seen_event_id is None and lines_for_tick's `None or 0`
+                # makes the whole `recent` window look new — the first tick
+                # re-spoke up to a dozen events the previous process had
+                # already covered. On air that re-announced a five-day-old
+                # event as news after the KI-024 outage, because `recent`
+                # still held pre-outage rows on recovery.
+                #
+                # Seed off the high-water mark of the first window we see and
+                # say nothing about it. Seed exactly once: a later quiet tick
+                # (`recent` empty) must not re-arm this and let the backlog
+                # through a second time. An empty first window leaves the mark
+                # at None, which is correct for a cold DB — the next real event
+                # still clears `> 0`.
+                seeded = True
+                seen_ids = [e.get("id") or 0 for e in (state.get("recent") or [])]
+                if seen_ids:
+                    dir_state.last_seen_event_id = max(seen_ids)
+                    logger.info(
+                        "director starting from event %d — %d earlier event(s) "
+                        "in the window are history, not news",
+                        dir_state.last_seen_event_id,
+                        len(seen_ids),
+                    )
             action = tick(state, dir_state, now, config)
             _apply(
                 action,
