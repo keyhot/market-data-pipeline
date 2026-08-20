@@ -77,8 +77,19 @@ def run(
     systemd restarts it, 0 otherwise.
     """
     config = config or DirectorConfig()
+    from scripts import stream_ctl
+
+    # Read the program scene, don't assume it (KI-034). OBS outlives a director
+    # restart, so `home_scene` was a guess that was wrong every time the show
+    # wasn't already home: the director would then either strand the program on
+    # a scene it thought it had left, or write a `from` that never happened into
+    # an append-only log. None (no client, or OBS won't say) keeps the old
+    # assumption as the fallback.
+    on_air = stream_ctl.current_scene(obs_client)
+    if on_air and on_air != config.home_scene:
+        logger.info("director resuming on the scene already on air: %s", on_air)
     dir_state = DirectorState(
-        current_scene=config.home_scene,
+        current_scene=on_air or config.home_scene,
         last_switch=datetime.now(timezone.utc),
         muted=director_muted(),
     )

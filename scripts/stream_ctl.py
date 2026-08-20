@@ -127,6 +127,22 @@ def switch_scene(client, scene_name: str) -> None:
     client.set_current_program_scene(scene_name)
 
 
+def current_scene(client) -> str | None:
+    """What OBS is *actually* showing right now, or None if it won't say.
+
+    OBS outlives a director restart, so the program scene is something to be
+    read, not assumed (KI-034). Returns None rather than raising: a director
+    that cannot read the scene should still start, on the old home-scene
+    assumption, instead of refusing to run the show.
+    """
+    if client is None:
+        return None
+    try:
+        return client.get_current_program_scene().current_program_scene_name
+    except Exception:  # OBS answering badly must not stop the director starting
+        return None
+
+
 def start_stream(client) -> None:
     client.start_stream()
 
