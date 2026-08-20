@@ -200,3 +200,36 @@ def test_the_rim_is_brighter_than_the_fill_so_it_survives_tinting():
     # Both are multiplied by the same tint, so their ratio is fixed here. Equal
     # values would make the rim invisible at every mood simultaneously.
     assert visuals.BODY_RIM_FILL > visuals.BODY_BASE_FILL
+
+
+def test_the_floor_survives_the_room_brightening_under_load():
+    """The failure this fix could still have had, and the one the sprint note
+    predicted: the contrast floor is computed against the CALM background, but
+    `room_light` lifts the whole room by up to 22% at tier 3 and shifts it warm
+    or cool. A brighter room means a smaller ratio against a fixed body — so a
+    cast tuned only on the calm frame would fade out exactly when an event
+    swells, which is when someone is most likely to be looking.
+
+    Measured across every tier, every colour-temperature target and the full
+    mix range, the worst mood lands at ~4.01:1 — under this module's 4.5 design
+    floor, which is measured against calm, but clear of WCAG's 3:1. That gap IS
+    the margin, and this test is what stops a future retune spending it.
+    """
+    base, warm, cool = (0x13, 0x17, 0x22), (0x24, 0x18, 0x1C), (0x11, 0x1D, 0x28)
+
+    def mixed(target, amount, lift):
+        return tuple(
+            min(255, round((base[i] + (target[i] - base[i]) * amount) * lift))
+            for i in range(3)
+        )
+
+    worst = 99.0
+    for tier in range(4):
+        lift = 1 + visuals.room_light(tier)["lift"]
+        for target in (base, warm, cool):
+            for amount in (0.0, 0.5, 1.0):
+                room = mixed(target, amount, lift)
+                for mood in visuals.MOOD_COLORS:
+                    body = visuals._rendered(visuals._to_rgb(visuals.body_tint(mood)))
+                    worst = min(worst, visuals.contrast_ratio(body, room))
+    assert worst >= 3.0, f"the cast drops to {worst:.2f}:1 when the room lifts"
