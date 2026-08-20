@@ -260,3 +260,48 @@ def test_the_age_timer_survives_the_row_that_has_no_age():
     body = client.get("/overlay/events").text
     assert 'const age = row.querySelector(".age");' in body
     assert "if (!age || !row.dataset.occurredAt) continue;" in body
+
+
+# --- OBS throws the body background away (KI-029) ----------------------------
+
+_OBS_MOUNTED_TEMPLATES = (
+    "charts.html",
+    "overlay_events.html",
+    "overlay_signals.html",
+    "world.html",
+    "standby.html",
+)
+
+
+def _style_rules(template: str):
+    """(selector, declarations) for each rule in the template's <style> block."""
+    import re
+    from pathlib import Path
+
+    css = re.search(
+        r"<style>(.*?)</style>",
+        Path("api/templates", template).read_text(),
+        re.S,
+    ).group(1)
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    return re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+
+
+def test_no_broadcast_page_relies_on_the_body_background():
+    """OBS injects `body { background-color: rgba(0,0,0,0) }` into every browser
+    source, so a page that paints its background on `body` paints nothing and
+    the black OBS canvas shows through wherever no element covers it.
+
+    Both overlays learned this and carry a wrapper that paints itself.
+    `/charts` never did: on air, its 6px grid padding and its ~28px symbol
+    title row were pure `(0,0,0)` — a 34px black bar across the top of the home
+    frame, measured in the live program output on 2026-08-20 (KI-029)."""
+    for template in _OBS_MOUNTED_TEMPLATES:
+        painters = [
+            selector.strip()
+            for selector, body in _style_rules(template)
+            if "background" in body and selector.strip() != "body"
+        ]
+        assert painters, (
+            f"{template} paints its background only on body, which OBS drops"
+        )

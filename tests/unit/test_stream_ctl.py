@@ -23,6 +23,7 @@ class FakeClient:
     ):
         self.calls = []
         self._item_ids = {}
+        self.transforms = {}
         self._scenes = list(scenes)
         self._inputs = list(inputs)
         self._streaming = streaming
@@ -71,6 +72,10 @@ class FakeClient:
         return FakeResp(scene_item_id=self._item_ids[(scene, name)])
 
     def set_scene_item_transform(self, scene, item_id, transform):
+        # The transform payload itself, not just the fact of the call: a fake
+        # that forgets the arguments cannot catch a builder that pins position
+        # and forgets scale (KI-026).
+        self.transforms[(scene, item_id)] = dict(transform)
         self._log("set_scene_item_transform", scene, item_id)
 
     def set_scene_item_index(self, scene, item_id, item_index):
@@ -310,9 +315,17 @@ def test_build_pins_the_layer_order_instead_of_inheriting_it():
     assert indexes[ids["overlay-events"]] > indexes[ids["charts-1m"]]
 
 
-def test_no_source_is_completely_covered_by_one_above_it():
-    """The geometry half of the same bug: a source can be pinned to the right
-    layer and still be a source nobody will ever see."""
+def test_no_two_sources_overlap_in_any_scene():
+    """The geometry half of the same bug — stated the way it should have been
+    stated the first time.
+
+    KI-023 asserted that no source is *entirely* covered by one above it, and
+    "entirely" is the word that cost us KI-025: the rail covers the right 480px
+    of `charts-1m`, which is exactly where ETHUSDT's price scale, last-price
+    label and newest candles live. A partial cover of the one strip carrying
+    the numbers passed cleanly. So the layout does not overlap at all, and the
+    test says so — every scene here tiles the canvas instead of stacking on it.
+    """
     for spec in stream_scene.scenes_spec():
         boxes = [
             (src["name"], src["x"], src["y"],
@@ -320,9 +333,63 @@ def test_no_source_is_completely_covered_by_one_above_it():
             for src in spec["sources"] if src["kind"] == "browser_source"
         ]
         for lower, (name, x, y, w, h) in enumerate(boxes):
-            for above_name, ax, ay, aw, ah in boxes[lower + 1:]:
-                covered = (ax <= x and ay <= y
-                           and ax + aw >= x + w and ay + ah >= y + h)
-                assert not covered, (
-                    f"{spec['scene']}: {above_name} completely covers {name}"
+            for other, ox, oy, ow, oh in boxes[lower + 1:]:
+                overlap_w = min(x + w, ox + ow) - max(x, ox)
+                overlap_h = min(y + h, oy + oh) - max(y, oy)
+                assert overlap_w <= 0 or overlap_h <= 0, (
+                    f"{spec['scene']}: {other} overlaps {name} by "
+                    f"{overlap_w}x{overlap_h}px"
                 )
+
+
+def test_build_pins_scale_so_a_resized_source_is_put_back():
+    """KI-026: `event-chart` sat in live OBS at scale 1.509 — rendering
+    1449x815 against a spec that declares 960x540 — with 489px of it lying
+    across the event rail, shredding its headlines mid-word.
+
+    `_build_one` set positionX/positionY and nothing else. Scale is a separate
+    scene-item property, so `build` reported success, was idempotent by its own
+    lights, and **could not repair the frame**: re-running it moved the source
+    back to (0,0) and left it 1.5x too big. Third instance of one shape, after
+    KI-009's bitrate and KI-023's stacking — if the layout is not asserted, it
+    is inherited."""
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+
+    assert client.transforms, "the builder must set a transform per scene item"
+    for (scene, item_id), transform in client.transforms.items():
+        assert transform["scaleX"] == 1.0, f"{scene}/{item_id} x-scale unpinned"
+        assert transform["scaleY"] == 1.0, f"{scene}/{item_id} y-scale unpinned"
+        # A bounds fit would silently override scale, so the spec's "the source
+        # renders at its own declared size" has to say that too.
+        assert transform["boundsType"] == "OBS_BOUNDS_NONE"
+        assert transform["cropLeft"] == 0 and transform["cropRight"] == 0
+        assert transform["cropTop"] == 0 and transform["cropBottom"] == 0
+        # positionX/Y mean different pixels under a different alignment.
+        assert transform["alignment"] == stream_ctl.ALIGN_TOP_LEFT
+
+
+def test_the_rendered_rect_of_every_source_is_the_rect_the_spec_declares():
+    """The invariant KI-026 asks for, one level up from the call: with scale
+    pinned to 1.0, what OBS draws is the spec's width/height at the spec's
+    x/y — so the no-overlap proof above is a proof about the *frame*, not just
+    about a dict."""
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+
+    for spec in stream_scene.scenes_spec():
+        for src in spec["sources"]:
+            if src["kind"] != "browser_source":
+                continue
+            item_id = client._item_ids[(spec["scene"], src["name"])]
+            transform = client.transforms[(spec["scene"], item_id)]
+            rendered = (
+                src["settings"]["width"] * transform["scaleX"],
+                src["settings"]["height"] * transform["scaleY"],
+            )
+            assert rendered == (
+                float(src["settings"]["width"]),
+                float(src["settings"]["height"]),
+            ), f"{spec['scene']}/{src['name']} renders at {rendered}"
+            assert transform["positionX"] == float(src["x"])
+            assert transform["positionY"] == float(src["y"])

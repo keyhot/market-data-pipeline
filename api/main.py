@@ -677,17 +677,33 @@ def chart(ticker_symbol: str, interval: str = BAR_INTERVAL):
 
 
 @app.get("/charts", response_class=HTMLResponse)
-def charts(interval: str = BAR_INTERVAL):
+def charts(interval: str = BAR_INTERVAL, symbols: str | None = None):
     """Multi-symbol chart page (chart-focus scene): one candlestick panel per
-    watchlist `predict` symbol — BTC *and* ETH — each with prediction markers."""
+    watchlist `predict` symbol — BTC *and* ETH — each with prediction markers.
+
+    `?symbols=BTCUSDT` narrows it to a subset. That exists so a scene needing a
+    single-symbol chart uses this chrome-free broadcast surface instead of
+    `/chart/{symbol}`, whose nav link, status line and footer are meant for a
+    human with a browser and went out on air until KI-027."""
     if interval not in _ALLOWED_CHART_INTERVALS:
         raise BaseAppException(f"Invalid interval: {interval!r}", status_code=400)
-    symbols = [
+    available = [
         spec.symbol.upper()
         for spec in load_watchlist().tickers
         if spec.predict and _SYMBOL_PATTERN.fullmatch(spec.symbol.upper())
     ]
-    deduped = list(dict.fromkeys(symbols))
+    deduped = list(dict.fromkeys(available))
+    if symbols is not None:
+        # Filtered against the watchlist, never taken from the query string:
+        # these are rendered into the page's JS.
+        wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        unknown = [s for s in wanted if s not in deduped]
+        if not wanted or unknown:
+            raise BaseAppException(
+                f"Unknown chart symbol(s): {', '.join(unknown) or symbols!r}",
+                status_code=400,
+            )
+        deduped = [s for s in deduped if s in wanted]
     return HTMLResponse(
         _render_template(
             "charts.html",

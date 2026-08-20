@@ -59,6 +59,16 @@ class WouldDisturbTheStream(RuntimeError):
     """Refusing to switch scenes on a live stream without being told to."""
 
 
+class SceneChangedUnderCapture(RuntimeError):
+    """The program scene moved between the switch and the shutter (KI-030).
+
+    `SETTLE_SECONDS` is also a window in which the director can switch on its
+    own tick — which is guaranteed to be true in the documented `--take-control`
+    usage, on a live stream. A frame named after one scene and showing another
+    is worse than a missing frame, because it looks correct.
+    """
+
+
 def default_scenes() -> list[str]:
     """From the scene spec, never a second list here: a hard-coded set would
     silently skip a scene added later, and `standby` was exactly such a late
@@ -101,8 +111,18 @@ def tier_of(event: dict) -> int:
     return severity_tier(event.get("event_type", ""), event.get("severity", 0.0))
 
 
-def _shoot(client, path: Path) -> Path:
+def _shoot(client, path: Path, expected: str | None = None) -> Path:
+    """Photograph the program scene, refusing to file it under the wrong name.
+
+    The scene is re-read here rather than trusted from the caller because an
+    inactive scene's sources are frozen — but re-reading it is also what lets
+    intent and reality be compared instead of merely diverging."""
     scene = client.get_current_program_scene().current_program_scene_name
+    if expected is not None and scene != expected:
+        raise SceneChangedUnderCapture(
+            f"program scene is {scene!r}, not the {expected!r} this frame "
+            f"would have been named after"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     client.save_source_screenshot(scene, "png", str(path), 1920, 1080, -1)
     return path
@@ -135,8 +155,24 @@ def capture_calm(
         # made per-source screenshots of inactive scenes come back blank white.
         sleeper(SETTLE_SECONDS)
         shot.add(scene)
-        written.append(_shoot(client, out / f"calm-{scene}.png"))
+        written.append(_shoot_settled(client, out / f"calm-{scene}.png", scene, sleeper))
     return written
+
+
+def _shoot_settled(client, path: Path, scene: str, sleeper) -> Path:
+    """One shot, one retry, then fail loudly (KI-030).
+
+    Losing the scene once is ordinary — the director is running and it is
+    allowed to. Taking it back and re-settling is the honest response. Losing
+    it twice means something else owns the wheel, and the harness that grades
+    everything else is the last thing that may report something untrue about
+    itself."""
+    try:
+        return _shoot(client, path, expected=scene)
+    except SceneChangedUnderCapture:
+        client.set_current_program_scene(scene)
+        sleeper(SETTLE_SECONDS)
+    return _shoot(client, path, expected=scene)
 
 
 def capture_swell(

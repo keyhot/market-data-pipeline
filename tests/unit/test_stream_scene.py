@@ -166,3 +166,63 @@ def test_every_scene_url_hits_a_real_route():
                 for route in app.routes
             )
             assert matched, f"{src['name']} points at unknown route {path}"
+
+
+# --- the frame is a tiling, not a stack (KI-023 / KI-025 / KI-029) -----------
+
+
+def test_every_scene_tiles_the_canvas_exactly():
+    """No overlap and no dead space — three bugs are one missing invariant.
+
+    KI-023: `charts-1m` was drawn over the whole events rail. KI-025: fixing
+    the stacking left the rail over ETHUSDT's price scale. KI-029: 154px of the
+    home frame was pure black, because `charts-1m` is 840 tall on a canvas that
+    hands the strip its 120px at y=960. Each was found by photographing the
+    stream. Stated as geometry: every browser source's rect is disjoint from
+    every other, and together they cover the canvas — so nothing can hide
+    behind anything, and no band can be left for the encoder to fill with
+    black."""
+    for scene in stream_scene.scenes_spec():
+        canvas_w, canvas_h = scene["canvas"]
+        boxes = [
+            (src["name"], src["x"], src["y"],
+             src["settings"]["width"], src["settings"]["height"])
+            for src in scene["sources"] if src["kind"] == "browser_source"
+        ]
+        covered = sum(w * h for _, _, _, w, h in boxes)
+        assert covered == canvas_w * canvas_h, (
+            f"{scene['scene']}: sources cover {covered}px of "
+            f"{canvas_w * canvas_h}px — a gap or an overlap"
+        )
+
+
+def test_the_events_rail_never_covers_a_chart(monkeypatch):
+    """KI-025, named. The rail sits at x=1440 and `charts-1m` was 1920 wide, so
+    the rail buried the right-hand pane's price scale, its last-price label and
+    its newest candles: BTC was a complete chart and ETH a cropped one, on air.
+    The chart has to end where the rail begins."""
+    monkeypatch.delenv("STREAM_AUDIO_DIR", raising=False)
+    home = stream_scene.scenes_spec()[0]
+    by_name = {s["name"]: s for s in home["sources"]}
+    chart, rail = by_name["charts-1m"], by_name["overlay-events"]
+    assert chart["x"] + chart["settings"]["width"] <= rail["x"]
+
+
+def test_no_scene_puts_an_app_page_on_air(monkeypatch):
+    """KI-027: `event-chart` pointed at `/chart/BTCUSDT`, the page a human
+    opens in a browser — so its `← dashboard` nav link, its `Live · last 1m
+    bar …` status line and a clipped TradingView footer went out on the
+    stream. The broadcast surfaces (`/charts`, `/overlay/*`, `/world`,
+    `/standby`) exist precisely because a broadcast surface has no navigation.
+    """
+    monkeypatch.delenv("STREAM_AUDIO_DIR", raising=False)
+    chrome_pages = ("/chart/", "/dashboard")
+    for scene in stream_scene.scenes_spec():
+        for src in scene["sources"]:
+            url = src["settings"].get("url")
+            if url is None:
+                continue
+            path = url.split("?", 1)[0].split("8000", 1)[-1]
+            assert not path.startswith(chrome_pages), (
+                f"{scene['scene']}/{src['name']} broadcasts the app page {path}"
+            )

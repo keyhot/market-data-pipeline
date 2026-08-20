@@ -122,6 +122,57 @@ def test_calm_capture_refuses_a_live_stream_without_consent(tmp_path):
     assert client.calls == []
 
 
+# --- the harness may not lie about its own output (KI-030) -------------------
+
+
+def test_a_frame_is_never_named_after_a_scene_it_does_not_show(tmp_path):
+    """KI-030. The filename came from the loop variable; the shot came from
+    whatever was on program 1.5s later. `SETTLE_SECONDS` exists for a good
+    reason — OBS only ticks sources in the active scene — but it is also a
+    window in which the director can switch underneath the capture, and
+    nothing compared intent against reality. `calm-world-focus.png` could
+    contain `chart-focus` and say nothing about it.
+
+    It bites exactly where the tool is meant to be used: `--take-control` on a
+    live stream is the state in which the director is running and switching on
+    its own tick."""
+    client = FakeClient(scene="chart-focus")
+    hijacked = []
+
+    def director_switches_once(_seconds):
+        if not hijacked:                     # the first settle only
+            hijacked.append(True)
+            client.scene = "event-focus"     # the director, on its own tick
+
+    written = capture_scenes.capture_calm(
+        client, ["world-focus"], tmp_path, sleeper=director_switches_once
+    )
+
+    assert [p.name for p in written] == ["calm-world-focus.png"]
+    assert [c[1] for c in shots(client)] == ["world-focus"], (
+        "the only frame written must be of the scene it is named after"
+    )
+    assert switches(client).count("world-focus") == 2, (
+        "the harness has to take the scene back before re-shooting"
+    )
+
+
+def test_a_scene_that_will_not_stay_put_fails_instead_of_writing_a_lie(tmp_path):
+    """One retry, then stop. The harness that grades everything else is the
+    last thing that may report something untrue about itself — and a frame
+    that looks correct and is mislabelled is worse than no frame."""
+    client = FakeClient(scene="chart-focus")
+
+    def director_never_lets_go(_seconds):
+        client.scene = "event-focus"
+
+    with pytest.raises(capture_scenes.SceneChangedUnderCapture):
+        capture_scenes.capture_calm(
+            client, ["world-focus"], tmp_path, sleeper=director_never_lets_go
+        )
+    assert shots(client) == [], "nothing may be written once intent is lost"
+
+
 # --- swell: photograph a real event, never a staged one ----------------------
 
 

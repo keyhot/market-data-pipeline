@@ -8,7 +8,14 @@
     :root { color-scheme: dark; }
     body { margin: 0; background: #131722; color: #d1d4dc;
            font-family: system-ui, sans-serif; overflow: hidden; }
+    /* OBS injects `body { background-color: rgba(0,0,0,0) }` into every browser
+       source, so the body rule above never reaches the stream — the grid has to
+       paint itself. Until 2026-08-20 it didn't: the 6px padding, the 6px gap
+       and the ~28px symbol title row all fell through to the black OBS canvas,
+       and the home frame went out with a 34px black bar across its top
+       (KI-029). Both overlays already carried this fix; this page never got it. */
     #grid { display: grid; height: 100vh; gap: 6px; padding: 6px; box-sizing: border-box;
+            background: #131722;
             grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
             grid-auto-rows: 1fr; }   /* rows fill the height so charts get real px */
     .panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; }

@@ -134,3 +134,21 @@ def test_dashboard_renders_dash_for_null_close():
     assert response.status_code == 200
     assert "—" in response.text
     assert ">None<" not in response.text
+
+
+def test_charts_page_can_be_narrowed_to_one_symbol():
+    """KI-027: `event-focus` needs a single-symbol chart without the app's
+    chrome. `/charts` is already the chrome-free broadcast surface, so it grows
+    a filter rather than the dashboard page growing a `?chrome=0`."""
+    with patch("api.main.load_watchlist", return_value=_predict_watchlist()):
+        body = client.get("/charts?interval=1m&symbols=BTCUSDT").text
+    assert "BTCUSDT" in body
+    assert "ETHUSDT" not in body
+
+
+def test_charts_page_rejects_a_symbol_that_is_not_on_the_watchlist():
+    """The page renders the symbols into JS. Whatever reaches it has to come
+    from the watchlist, never straight from the query string."""
+    with patch("api.main.load_watchlist", return_value=_predict_watchlist()):
+        resp = client.get("/charts?symbols=DOGEUSDT")
+    assert resp.status_code == 400

@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 EXIT_OBS_UNREACHABLE = 2
 
+# OBS_ALIGN_TOP (1) | OBS_ALIGN_LEFT (4). positionX/positionY name a different
+# pixel under a different alignment, so pinning position without pinning this
+# pins nothing.
+ALIGN_TOP_LEFT = 5
+
 
 class ObsUnreachable(RuntimeError):
     """OBS websocket not reachable — its own type so the watchdog can tell
@@ -82,10 +87,28 @@ def _build_one(client, spec: dict, set_current: bool) -> dict:
             )
             created.append(src["name"])
         item_id = client.get_scene_item_id(spec["scene"], src["name"]).scene_item_id
+        # Every property that decides the rendered rect, not just the corner
+        # it starts at. `event-chart` sat at scale 1.509 in live OBS —
+        # rendering 1449x815 against a spec that says 960x540, with 489px of it
+        # lying across the events rail — and `build` could not repair it:
+        # it moved the source back to (0,0) and left it 1.5x too big (KI-026).
         client.set_scene_item_transform(
             spec["scene"],
             item_id,
-            {"positionX": float(src["x"]), "positionY": float(src["y"])},
+            {
+                "positionX": float(src["x"]),
+                "positionY": float(src["y"]),
+                "scaleX": 1.0,
+                "scaleY": 1.0,
+                # A bounds fit silently overrides scale, so "renders at its own
+                # declared size" has to be said, not assumed.
+                "boundsType": "OBS_BOUNDS_NONE",
+                "alignment": ALIGN_TOP_LEFT,
+                "cropLeft": 0,
+                "cropRight": 0,
+                "cropTop": 0,
+                "cropBottom": 0,
+            },
         )
         # Stacking is declared by the spec (bottom-first), never inherited from
         # the order the inputs happened to be created in. It was inherited

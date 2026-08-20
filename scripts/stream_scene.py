@@ -4,16 +4,22 @@ versioned and code-reviewed instead of hand-clicked in OBS.
 Three scenes the director switches between on salience (Sprint 13), all on a
 1920x1080 canvas:
 
-- **chart-focus** (default / home): the composite — live chart on top
-  (1920x840), signals strip pinned to the bottom (1920x120 at y=960),
-  world-event rail on the chart's right edge (480x840). This is the calm home
-  the director rests on and decays back to.
+- **chart-focus** (default / home): the composite — live chart (1440x960) with
+  the world-event rail beside it (480x960 at x=1440) and the signals strip
+  pinned to the bottom (1920x120 at y=960). This is the calm home the director
+  rests on and decays back to.
 - **world-focus**: the /world room foregrounded (1920x960) with the signals
   strip — for model/trader moments.
-- **event-focus**: the world-event feed large with a small chart and the strip
-  — for a burst of market events.
+- **event-focus**: the world-event feed large (960x1080) with a single-symbol
+  chart and the strip on the left — for a burst of market events.
 
-All three reuse existing Browser Source pages — no new asset pipeline. Each
+Every scene **tiles** the 1920x1080 canvas: the sources are disjoint and cover
+it exactly, asserted by `test_every_scene_tiles_the_canvas_exactly`. Overlap is
+how the events rail was invisible for three weeks (KI-023) and then how it
+buried ETHUSDT's price scale once it was on top (KI-025); a gap is how 154px of
+the home frame went out as pure black (KI-029). Neither is a thing to eyeball.
+
+All scenes reuse existing Browser Source pages — no new asset pipeline. Each
 scene carries its own uniquely-named browser sources: a handful of extra
 browser instances kept alive (shutdown=False) for instant switching and live
 SSE. Consolidating shared sources (one strip across scenes, scaled scene items)
@@ -139,9 +145,15 @@ def _chart_focus() -> dict:
         "scene": SCENE_CHART,
         "canvas": CANVAS,
         "sources": [
-            _browser("charts-1m", "/charts?interval=1m", 1920, 840, 0, 0),
+            # 1440 wide, not 1920: the rail starts at x=1440, and a chart
+            # drawn under it loses exactly the strip that carries the numbers —
+            # ETHUSDT's price scale, its last-price label and its newest
+            # candles (KI-025). Both panes now live entirely left of the rail.
+            _browser("charts-1m", "/charts?interval=1m", 1440, 960, 0, 0),
             _browser("overlay-signals", "/overlay/signals", 1920, 120, 0, 960),
-            _browser("overlay-events", "/overlay/events", 480, 840, 1440, 0),
+            # 960 tall, meeting the strip: at 840 it left a 480x120 notch of
+            # dead black under the rail (KI-029).
+            _browser("overlay-events", "/overlay/events", 480, 960, 1440, 0),
             *audio_sources(),
         ],
     }
@@ -167,7 +179,14 @@ def _event_focus() -> dict:
         "canvas": CANVAS,
         "sources": [
             _browser("event-feed", "/overlay/events", 960, 1080, 960, 0),
-            _browser("event-chart", "/chart/BTCUSDT?interval=1m", 960, 540, 0, 0),
+            # `/charts?symbols=`, not `/chart/BTCUSDT`: the latter is the page a
+            # human opens in a browser, and its `← dashboard` nav link, status
+            # line and TradingView footer all went out on air (KI-027).
+            # 960x960 fills the column down to the strip; it was 960x540, which
+            # left the lower-left quarter of the frame empty and invited the
+            # 1.5x upscale that shredded the rail's headlines (KI-026).
+            _browser("event-chart", "/charts?interval=1m&symbols=BTCUSDT",
+                     960, 960, 0, 0),
             _browser("event-signals", "/overlay/signals", 960, 120, 0, 960),
             *audio_sources("event"),
         ],
