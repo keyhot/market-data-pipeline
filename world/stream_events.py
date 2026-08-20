@@ -16,10 +16,13 @@ logger = logging.getLogger(__name__)
 
 # started 1.0 (routine), stopped 2.0 (intentional stops are notable),
 # dropped 5.0 (an outage is high-salience — the world should visibly react).
+# reconnected 3.0 (KI-021): more notable than a stop we chose, less than an
+# outage — the ingest really broke, and it really fixed itself.
 SEVERITIES = {
     "stream_started": 1.0,
     "stream_stopped": 2.0,
     "stream_dropped": 5.0,
+    "stream_reconnected": 3.0,
 }
 STREAM_EVENT_TYPES = frozenset(SEVERITIES)
 
@@ -61,16 +64,41 @@ def record_stream_event(
         last = _safe_latest(event_type)
         if last is not None and event["occurred_at"] - last < DROPPED_COOLDOWN:
             return None
+    # KI-011's shape, one module over — and KI-024 made it load-bearing. The
+    # flush and the fresh append were bundled in ONE try: a single un-appendable
+    # spooled row threw, the fresh event was spooled behind it, and the spool
+    # grew forever. That spool is now the only evidence that survives the
+    # outage it records (an API/Postgres outage is exactly when it is written),
+    # so a spool that can wedge is the mechanism failing silently.
+    flushed = _flush_spool_isolated(spool_path)
+    if flushed:
+        logger.info("Stream event spool flushed", extra={"count": flushed})
     try:
-        flush_spool(spool_path)
         append_world_events([event])
-    except Exception:
+    except Exception as e:
         _spool(event, spool_path)
         logger.warning(
-            "Postgres unreachable — stream event spooled",
-            extra={"stream_event_type": event_type, "spool": str(spool_path)},
+            "stream_event_append_failed — spooled",
+            extra={
+                "stream_event_type": event_type,
+                "spool": str(spool_path),
+                "error": f"{type(e).__name__}: {e}",
+            },
         )
     return event
+
+
+def _flush_spool_isolated(spool_path: Path) -> int:
+    """Drain the spool; on any failure log the truth and return 0. Never raises
+    — the caller relies on this NOT blocking the fresh append."""
+    try:
+        return flush_spool(spool_path)
+    except Exception as e:
+        logger.warning(
+            "stream_event_spool_flush_failed",
+            extra={"spool": str(spool_path), "error": f"{type(e).__name__}: {e}"},
+        )
+        return 0
 
 
 def flush_spool(spool_path: Path | None = None) -> int:
@@ -85,7 +113,6 @@ def flush_spool(spool_path: Path | None = None) -> int:
         events.append(raw)
     if events:
         append_world_events(events)
-        logger.info("Stream event spool flushed", extra={"count": len(events)})
     spool_path.unlink()
     return len(events)
 

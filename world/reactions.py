@@ -21,6 +21,9 @@ REACTIONS: dict[str, tuple[str, str]] = {
     "stream_started": ("relieved", "wave"),
     "stream_stopped": ("idle", "sleep"),
     "stream_dropped": ("alarmed", "flicker"),
+    # KI-021: the ingest dropped and came back on its own in ~2.5s. A blink,
+    # not an alarm — the room should show it happened, not panic about it.
+    "stream_reconnected": ("startled", "flicker"),
     "trader_opened": ("decisive", "step"),
     "trader_closed": ("weighing", "turn"),
     "trader_milestone": ("proud", "cheer"),

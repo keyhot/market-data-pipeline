@@ -1,9 +1,16 @@
 """Watchdog state machine — pure tick() function, no OBS, no clock, no DB."""
 
+import json
 import logging
 import signal
+from datetime import datetime, timedelta, timezone
 
-from scripts.stream_watchdog import WatchdogConfig, WatchdogState, tick
+from scripts.stream_watchdog import (
+    WatchdogConfig,
+    WatchdogState,
+    probe_content,
+    tick,
+)
 
 CFG = WatchdogConfig()
 
@@ -64,7 +71,13 @@ def test_stream_stopped_underneath_us_records_stopped_and_restarts():
 
 def test_dropped_frames_records_event_but_never_restarts():
     state = WatchdogState(obs_up=True, streaming=True)
-    probe = {"reachable": True, "streaming": True, "dropped_ratio": 0.09}
+    # total_frames is not decoration: since KI-021 the rule refuses to speak
+    # until its denominator is real, because a reconnect resets the counters and
+    # a handful of frames makes any ratio look catastrophic.
+    probe = {
+        "reachable": True, "streaming": True, "dropped_ratio": 0.09,
+        "total_frames": 100_000, "skipped_frames": 9_000,
+    }
     state, actions = tick(probe, state, CFG, now=1000.0)
     records = _actions_of(actions, "record")
     assert records and records[0][1] == "stream_dropped"
@@ -484,3 +497,242 @@ def test_clear_escalates_to_sigkill_when_obs_ignores_sigterm():
     )
     assert cleared == 1
     assert (4242, signal.SIGKILL) in killed, "SIGKILL cannot be ignored"
+
+
+# --- KI-021: the RTMP reconnect nothing could see -------------------------
+#
+# YouTube dropped the ingest 3x in 26h. OBS re-dialled each time in ~2.5s while
+# keeping output_active TRUE, so tick() saw no transition, no stream_stopped was
+# recorded, and the report read 100% across a night with three real gaps.
+
+def _live(**over):
+    probe = {
+        "reachable": True,
+        "streaming": True,
+        "dropped_ratio": 0.0,
+        "total_frames": 100_000,
+        "skipped_frames": 0,
+        "reconnecting": False,
+        "congestion": 0.0,
+        "content_ok": True,
+    }
+    probe.update(over)
+    return probe
+
+
+def test_frame_counter_reset_is_recorded_as_a_reconnect():
+    # The usual case: the whole reconnect happens between two 30s polls, so the
+    # only trace left is that the per-session counters restarted from ~zero.
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, _ = tick(_live(total_frames=58_031, skipped_frames=399), state, CFG, 1000.0)
+    state, actions = tick(_live(total_frames=420, skipped_frames=0), state, CFG, 1030.0)
+    records = _actions_of(actions, "record")
+    assert [r[1] for r in records] == ["stream_reconnected"]
+    payload = records[0][2]
+    assert payload["detected"] == "frame_counter_reset"
+    # The pre-reset numbers are stamped into the append-only log, not carried in
+    # memory: a watchdog restart would zero in-memory totals, which is the very
+    # class of problem being fixed.
+    assert payload["frames_before"] == 58_031
+    assert payload["skipped_before"] == 399
+    assert payload["skipped_ratio_before"] == round(399 / 58_031, 4)
+
+
+def test_obs_reconnecting_flag_is_recorded_once_not_twice():
+    # The lucky case: we poll mid-reconnect. It must not then be recorded a
+    # SECOND time when the counters reset on the following tick.
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, _ = tick(_live(total_frames=58_031, skipped_frames=399), state, CFG, 1000.0)
+    state, actions = tick(_live(reconnecting=True, total_frames=58_031), state, CFG, 1030.0)
+    assert [r[1] for r in _actions_of(actions, "record")] == ["stream_reconnected"]
+    assert _actions_of(actions, "record")[0][2]["detected"] == "obs_reconnecting"
+    state, actions = tick(_live(total_frames=60), state, CFG, 1060.0)
+    assert _actions_of(actions, "record") == []
+    # ...and the detector re-arms for the next, genuinely separate, reconnect.
+    state, _ = tick(_live(total_frames=9_000), state, CFG, 1090.0)
+    state, actions = tick(_live(total_frames=12), state, CFG, 1120.0)
+    assert [r[1] for r in _actions_of(actions, "record")] == ["stream_reconnected"]
+
+
+def test_a_normally_rising_counter_is_not_a_reconnect():
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, _ = tick(_live(total_frames=1_000), state, CFG, 1000.0)
+    state, actions = tick(_live(total_frames=1_900), state, CFG, 1030.0)
+    assert _actions_of(actions, "record") == []
+
+
+def test_dropped_frame_rule_waits_for_a_real_denominator():
+    # Right after a reconnect one skipped frame against a 20-frame total reads
+    # as 5% — so the rule most likely to fire is the one whose counter was just
+    # reset by the event that would trigger it.
+    state = WatchdogState(obs_up=True, streaming=True, last_total_frames=20)
+    state, actions = tick(
+        _live(total_frames=20, skipped_frames=1, dropped_ratio=0.05), state, CFG, 1000.0
+    )
+    assert [r[1] for r in _actions_of(actions, "record")] == []
+    assert state.dropped_flagged is False
+    # Once the denominator is real, the same ratio does fire.
+    state, actions = tick(
+        _live(total_frames=CFG.min_frames_for_ratio, skipped_frames=200,
+              dropped_ratio=0.09, congestion=0.4),
+        state, CFG, 1030.0,
+    )
+    records = _actions_of(actions, "record")
+    assert [r[1] for r in records] == ["stream_dropped"]
+    assert records[0][2]["reason"] == "dropped_frames"
+    assert records[0][2]["congestion"] == 0.4
+
+
+def test_reconnect_accrues_no_downtime_and_leaves_the_room_live():
+    # The blocker this fix could have introduced: state.streaming never went
+    # False, so no stream_started follows to clear a "down" — putting a
+    # reconnect in the down branch would leave /world showing a dead stream
+    # forever, on a stream that never stopped.
+    from world.state import empty_state, fold_event
+
+    state = empty_state()
+    for event in (
+        {"occurred_at": "2026-08-20T00:00:00+00:00", "event_type": "stream_started",
+         "severity": 1.0, "payload": {}},
+        {"occurred_at": "2026-08-20T01:00:00+00:00", "event_type": "stream_reconnected",
+         "severity": 3.0, "payload": {"detected": "frame_counter_reset"}},
+    ):
+        state = fold_event(state, event)
+    assert state["stream"]["state"] == "live"
+    assert state["stream"]["reconnects"] == 1
+    assert state["history"]["downtime_seconds"] == 0.0
+    assert state["history"]["outages"] == 0
+
+
+# --- KI-024: a stream that is up in front of a stack that is gone ---------
+
+def test_content_outage_is_recorded_as_downtime_after_debounce():
+    state = WatchdogState(obs_up=True, streaming=True, last_total_frames=100_000)
+    bad = _live(content_ok=False, content_detail="ConnectionRefusedError: 5432")
+    # Debounced: a single 30s blip is not an outage, and recording it as one
+    # makes the uptime number less believable rather than more.
+    for i in range(CFG.content_failures_before_drop - 1):
+        state, actions = tick(bad, state, CFG, 1000.0 + i * 30)
+        assert _actions_of(actions, "record") == []
+    state, actions = tick(bad, state, CFG, 1090.0)
+    records = _actions_of(actions, "record")
+    assert [r[1] for r in records] == ["stream_dropped"]
+    assert records[0][2]["reason"] == "content_unreachable"
+    assert "5432" in records[0][2]["detail"]
+    assert state.content_ok is False
+    # Recorded once per outage, not once per tick for 12 hours.
+    state, actions = tick(bad, state, CFG, 1120.0)
+    assert _actions_of(actions, "record") == []
+    # OBS is streaming happily throughout — no restart, because relaunching OBS
+    # cannot fix a dead Postgres and compose already restarts the containers.
+    assert _actions_of(actions, "relaunch_obs") == []
+    assert _actions_of(actions, "start_stream") == []
+
+
+def test_content_recovery_closes_the_outage():
+    state = WatchdogState(
+        obs_up=True, streaming=True, last_total_frames=100_000,
+        content_ok=False, content_failures=5, content_down_since=1000.0,
+    )
+    state, actions = tick(_live(), state, CFG, 1600.0)
+    records = _actions_of(actions, "record")
+    assert [r[1] for r in records] == ["stream_started"]
+    assert records[0][2]["reason"] == "content_restored"
+    assert records[0][2]["outage_seconds"] == 600.0
+    assert state.content_ok is True
+
+
+def test_content_outage_is_downtime_not_degraded():
+    # The KI-024 window scored ~100% because nothing could be written. Now that
+    # it is written, it must land in the fold as real downtime — a stream whose
+    # pages cannot reach their API is pushing pixels at nobody.
+    from scripts.soak_report import compute_uptime
+
+    start = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    report = compute_uptime(
+        [
+            {"occurred_at": "2026-08-20T01:00:00+00:00", "event_type": "stream_dropped",
+             "payload": {"reason": "content_unreachable"}},
+            {"occurred_at": "2026-08-20T13:00:00+00:00", "event_type": "stream_started",
+             "payload": {"reason": "content_restored"}},
+        ],
+        start, start + timedelta(hours=24),
+    )
+    assert report["downtime_seconds"] == 12 * 3600
+    assert report["uptime_pct"] == 50.0
+    assert report["outages"][0]["reason"] == "content_unreachable"
+
+
+def test_reconnects_are_counted_next_to_uptime_and_cost_no_downtime():
+    from scripts.soak_report import compute_uptime
+
+    start = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    report = compute_uptime(
+        [
+            {"occurred_at": f"2026-08-20T0{h}:00:00+00:00",
+             "event_type": "stream_reconnected", "payload": {}}
+            for h in (1, 3, 5)
+        ],
+        start, start + timedelta(hours=24),
+    )
+    assert report["reconnects"] == 3
+    assert report["uptime_pct"] == 100.0  # honest: 100% up, AND 3 reconnects
+
+
+# --- KI-024: /health answers 200 during a Postgres outage -----------------
+
+class _FakeResp:
+    """Enough of an http response to stand in for urlopen's context manager."""
+
+    def __init__(self, body, status=200):
+        self._body, self.status = body, status
+
+    def read(self):
+        return json.dumps(self._body).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _opener_returning(body, status=200):
+    return lambda url, timeout=None: _FakeResp(body, status)
+
+
+def test_content_probe_fails_when_postgres_is_down_despite_http_200():
+    # THE trap. `/health` hardcodes `status: 200` in its body and FastAPI
+    # returns HTTP 200 — during the exact 12h outage KI-024 describes. A probe
+    # that checked the status code would have passed all the way through it, so
+    # the body is the check.
+    body = {
+        "status": 200,
+        "message": "API is healthy",
+        "data": {"scheduler": {}, "postgres": {"enabled": True, "connected": False}},
+    }
+    result = probe_content(CFG, opener=_opener_returning(body))
+    assert result["content_ok"] is False
+    assert "connected=False" in result["content_detail"]
+
+
+def test_content_probe_rejects_unmeasured_postgres():
+    # connected=None means writes are disabled — for a stream whose world log
+    # IS the show, that is not healthy either, and it must not read as healthy
+    # just because the key is present.
+    body = {"data": {"postgres": {"enabled": False, "connected": None}}}
+    assert probe_content(CFG, opener=_opener_returning(body))["content_ok"] is False
+
+
+def test_content_probe_passes_on_a_genuinely_healthy_stack():
+    body = {"data": {"postgres": {"enabled": True, "connected": True}}}
+    assert probe_content(CFG, opener=_opener_returning(body)) == {"content_ok": True}
+
+
+def test_content_probe_reports_unreachable_rather_than_raising():
+    def refuse(url, timeout=None):
+        raise OSError("[Errno 111] Connection refused")
+
+    result = probe_content(CFG, opener=refuse)
+    assert result["content_ok"] is False
+    assert "Connection refused" in result["content_detail"]

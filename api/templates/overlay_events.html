@@ -109,6 +109,9 @@
         : "stream went live",
       stream_stopped: (e) => "stream stopped",
       stream_dropped: (e) => "stream dropped — recovering",
+      // KI-021. Says what a viewer actually experienced: a blink, already
+      // over by the time the rail shows it.
+      stream_reconnected: (e) => "ingest reconnected — brief drop",
       trader_opened: (e) => e.payload.baseline
         ? `trader already holding ${e.payload.pair ?? "a position"}`
         : `trader opened ${e.payload.pair ?? "a position"}`,

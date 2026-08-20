@@ -13,6 +13,8 @@ from pathlib import Path
 # this. Mirrors scripts/stream_ctl.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from world.state import is_degraded_stream_event  # noqa: E402
+
 
 def compute_uptime(
     events: list[dict], window_start: datetime, window_end: datetime
@@ -27,23 +29,28 @@ def compute_uptime(
         occurred = datetime.fromisoformat(event["occurred_at"])
         etype = event["event_type"]
         payload = event.get("payload") or {}
-        if etype in ("stream_dropped", "stream_stopped"):
+        if etype in ("stream_dropped", "stream_stopped", "stream_reconnected"):
             # A stop or a non-degraded drop opens downtime until the next start.
-            # dropped_frames is the one "down" event that isn't downtime — the
+            # A degraded event is the one "down" event that isn't downtime — the
             # stream stayed live but impaired. Since KI-008 the watchdog records
             # unexpected inactivity as stream_stopped, so it lands here too and
-            # is counted, matching world/state.py's downtime accrual.
-            degraded = (
-                etype == "stream_dropped"
-                and payload.get("reason") == "dropped_frames"
-            )
-            if degraded:
+            # is counted. The rule itself is NOT restated here: it lives in
+            # world.state.is_degraded_stream_event, which world/state.py's
+            # downtime accrual also calls. Two hand-kept copies of it is how
+            # KI-019 happened, and KI-021 would have made it three.
+            if is_degraded_stream_event(etype, payload):
                 # Degraded = live-but-impaired, zero downtime. Record and move
                 # on — leaving it sitting in open_outage would block a real
                 # outage that fires before the next stream_started, deleting
                 # that outage's downtime from the report.
                 outages.append(
-                    {"start": occurred, "end": occurred, "reason": "dropped_frames"}
+                    {
+                        "start": occurred,
+                        "end": occurred,
+                        "reason": payload.get("reason")
+                        or ("rtmp_reconnect" if etype == "stream_reconnected"
+                            else "degraded"),
+                    }
                 )
             elif open_outage is None:
                 open_outage = {
@@ -67,6 +74,12 @@ def compute_uptime(
     return {
         "uptime_pct": uptime_pct,
         "downtime_seconds": downtime,
+        # KI-021: "100% up, 3 reconnects" is the honest line; "100%" alone is
+        # the flattering one. An RTMP reconnect is a real ~2.5s gap in what a
+        # viewer saw, and it is invisible to every other number in this report.
+        "reconnects": sum(
+            1 for e in ordered if e["event_type"] == "stream_reconnected"
+        ),
         "outages": [
             {
                 "start": o["start"].isoformat(),
@@ -255,6 +268,12 @@ def main() -> None:
     print(
         f"- **Uptime: {report['uptime_pct']}%** "
         f"({report['downtime_seconds']:.0f}s down)"
+    )
+    # Printed unconditionally, including the 0 case. A number that only appears
+    # when it is bad teaches the reader that its absence means "not measured".
+    print(
+        f"- Ingest reconnects: **{report['reconnects']}** "
+        f"(OBS re-dialled RTMP on its own; invisible to the uptime figure above)"
     )
     if broadcast["measured"]:
         print(

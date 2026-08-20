@@ -45,6 +45,7 @@ PHRASES: dict[str, dict[str, dict[int, list[str]]]] = {
         "stream_started": {0: ["We're live! Welcome in, everyone."]},
         "stream_stopped": {0: ["That's a wrap for now — thanks for watching."]},
         "stream_dropped": {},
+        "stream_reconnected": {},  # it fixed itself; nothing to announce
         "trader_opened": {0: ["The trader's in on {symbol} — bold move!"]},
         "trader_closed": {0: ["Position closed. On to the next one."]},
         "trader_milestone": {0: ["Milestone reached — look at that go!"]},
@@ -72,6 +73,9 @@ PHRASES: dict[str, dict[str, dict[int, list[str]]]] = {
         "stream_started": {},
         "stream_stopped": {},
         "stream_dropped": {},
+        "stream_reconnected": {
+            1: ["The ingest dropped and re-dialled. Uptime is not continuity."]
+        },
         "trader_opened": {},
         "trader_closed": {2: ["Trade closed — one more realized data point."]},
         "trader_milestone": {},
@@ -109,6 +113,7 @@ PHRASES: dict[str, dict[str, dict[int, list[str]]]] = {
         "stream_started": {},
         "stream_stopped": {0: ["We went dark… I hope everything's okay."]},
         "stream_dropped": {1: ["We're dropping frames — is the stream alright?"]},
+        "stream_reconnected": {1: ["We just blinked out for a second… did you see that?"]},
         "trader_opened": {
             1: ["The trader opened {symbol}. Do they know what they're doing?"]
         },

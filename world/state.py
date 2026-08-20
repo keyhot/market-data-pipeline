@@ -14,6 +14,31 @@ from datetime import datetime, timezone
 TIER_NAMES = ("routine", "notable", "major", "dramatic")
 RECENT_LIMIT = 12
 
+# "Degraded" is live-but-impaired: recorded and reacted to, but never downtime.
+# This predicate is THE definition, and it lives here — in the pure fold module
+# — because both folds that need it are pure and `world/stream_events.py` (the
+# writer, which owns the vocabulary) imports Postgres. Two copies of this rule
+# used to exist, hardcoded as `reason == "dropped_frames"` in this file and in
+# scripts/soak_report.py; KI-019 is what happens when two surfaces each carry
+# their own copy of "how big is this", and KI-021 was about to add a third.
+# Note what is NOT here: `content_unreachable` (KI-024). A stream whose pages
+# cannot reach the API is pushing pixels at nobody — that is a content outage
+# and it accrues downtime, which is the entire point of recording it.
+STREAM_DEGRADED_REASONS = frozenset({"dropped_frames"})
+
+
+def is_degraded_stream_event(event_type: str, payload: dict | None) -> bool:
+    """True when a stream_* event means impaired-but-live, so it accrues no
+    downtime. An RTMP reconnect (KI-021) is the type-level case: OBS never
+    stopped, it re-dialled the ingest in ~2.5s and kept `outputActive` true.
+    """
+    if event_type == "stream_reconnected":
+        return True
+    return (
+        event_type == "stream_dropped"
+        and (payload or {}).get("reason") in STREAM_DEGRADED_REASONS
+    )
+
 # Per-rule cut points onto tiers 0..3. Each rule's own trigger threshold must
 # land on tier 0 — a rule firing at its minimum is by definition routine.
 _TIER_CUTS: dict[str, tuple[float, float, float]] = {
@@ -27,6 +52,7 @@ _TIER_CUTS: dict[str, tuple[float, float, float]] = {
     "stream_started": (2.0, 3.0, 4.0),
     "stream_stopped": (2.0, 3.0, 4.0),
     "stream_dropped": (2.0, 3.0, 4.0),
+    "stream_reconnected": (2.0, 3.0, 4.0),
 }
 _GENERIC_CUTS = (2.0, 5.0, 10.0)
 
@@ -93,7 +119,8 @@ def empty_state() -> dict:
             "current_streak": 0,
             "streak_outcome": None,
         },
-        "stream": {"state": "unknown", "drops": 0, "last_transition": None},
+        "stream": {"state": "unknown", "drops": 0, "reconnects": 0,
+                   "last_transition": None},
         "trader": None,
         "recent": [],
         "history": {
@@ -192,12 +219,20 @@ def fold_event(state: dict, event: dict) -> dict:
                 model["streak_outcome"] = outcome
                 model["current_streak"] = 1
 
-    if etype in ("stream_started", "stream_stopped", "stream_dropped"):
+    if etype in ("stream_started", "stream_stopped", "stream_dropped",
+                 "stream_reconnected"):
         stream = new["stream"]
-        stream["state"] = "live" if etype == "stream_started" else "down"
-        stream["last_transition"] = event["occurred_at"]
+        # KI-021: a reconnect is not a transition to "down". OBS kept
+        # `outputActive` true throughout, so no stream_started follows to clear
+        # it — putting it in the "down" branch would leave /world showing a dead
+        # stream forever, on a stream that never stopped.
+        if etype != "stream_reconnected":
+            stream["state"] = "live" if etype == "stream_started" else "down"
+            stream["last_transition"] = event["occurred_at"]
         if etype == "stream_dropped":
             stream["drops"] += 1
+        elif etype == "stream_reconnected":
+            stream["reconnects"] += 1
 
     if etype in ("trader_opened", "trader_closed", "trader_milestone"):
         trader = new["trader"] or {
@@ -258,17 +293,12 @@ def fold_event(state: dict, event: dict) -> dict:
 
     # Downtime accrues between a stop/drop and the next start. An unclosed
     # outage stays open rather than being guessed at — the log is the record.
-    if etype in ("stream_stopped", "stream_dropped"):
-        # dropped_frames means the stream degraded but stayed LIVE — the
-        # watchdog records it and deliberately does not restart, so no
-        # stream_started follows. Booking that live span as downtime would
-        # fabricate an outage. Canonical handling: scripts/soak_report.py:23-30
-        # and CLAUDE.md ("dropped_frames = degraded, not downtime").
-        degraded = (
-            etype == "stream_dropped"
-            and payload.get("reason") == "dropped_frames"
-        )
-        if not degraded:
+    if etype in ("stream_stopped", "stream_dropped", "stream_reconnected"):
+        # Degraded means the stream stayed LIVE — the watchdog records it and
+        # deliberately does not restart, so no stream_started follows. Booking
+        # that live span as downtime would fabricate an outage. One definition,
+        # shared with scripts/soak_report.py: is_degraded_stream_event.
+        if not is_degraded_stream_event(etype, payload):
             opening = new["_down_since"] is None
             if opening:
                 new["_down_since"] = event["occurred_at"]

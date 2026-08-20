@@ -19,6 +19,8 @@ class FakeClient:
         streaming=False,
         skipped=0,
         total=0,
+        reconnecting=False,
+        congestion=0.0,
         transitions=("Cut", "Fade"),
     ):
         self.calls = []
@@ -27,6 +29,8 @@ class FakeClient:
         self._scenes = list(scenes)
         self._inputs = list(inputs)
         self._streaming = streaming
+        self._reconnecting = reconnecting
+        self._congestion = congestion
         self._skipped, self._total = skipped, total
         self._transitions = list(transitions)
         self.current_program_scene = None
@@ -104,6 +108,11 @@ class FakeClient:
             output_timecode="00:10:00",
             output_skipped_frames=self._skipped,
             output_total_frames=self._total,
+            # KI-021: the reconnect signals. Pinned in the fake because a seam
+            # whose fake is narrower than the real payload is how a field goes
+            # missing without a test noticing.
+            output_reconnecting=self._reconnecting,
+            output_congestion=self._congestion,
         )
 
     def save_source_screenshot(self, name, fmt, path, width, height, quality):
@@ -393,3 +402,14 @@ def test_the_rendered_rect_of_every_source_is_the_rect_the_spec_declares():
             ), f"{spec['scene']}/{src['name']} renders at {rendered}"
             assert transform["positionX"] == float(src["x"])
             assert transform["positionY"] == float(src["y"])
+
+
+def test_status_surfaces_the_reconnect_signals():
+    # KI-021: OBS keeps output_active TRUE across an RTMP reconnect, so these
+    # two fields are the only way anything outside OBS can learn it happened.
+    client = FakeClient(streaming=True, skipped=399, total=58_031,
+                        reconnecting=True, congestion=0.42)
+    status = stream_ctl.get_status(client)
+    assert status["reconnecting"] is True
+    assert status["congestion"] == 0.42
+    assert status["streaming"] is True   # the whole problem, in one assertion

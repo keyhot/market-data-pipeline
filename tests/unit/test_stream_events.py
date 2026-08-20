@@ -18,6 +18,9 @@ def test_severity_semantics():
         "stream_started": 1.0,
         "stream_stopped": 2.0,
         "stream_dropped": 5.0,
+        # KI-021: an ingest reconnect really broke and really fixed itself —
+        # more notable than a stop we chose, less than an outage.
+        "stream_reconnected": 3.0,
     }
 
 

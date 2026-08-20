@@ -148,6 +148,17 @@ def get_status(client) -> dict:
         "timecode": stream.output_timecode,
         "skipped_frames": skipped,
         "total_frames": total,
+        # KI-021: OBS re-dials a dropped RTMP ingest on its own, keeping
+        # output_active true the whole time. This flag and the frame counters
+        # (which reset per output session) are the only way anything outside
+        # OBS can know it happened.
+        "reconnecting": bool(stream.output_reconnecting),
+        # Note what dropped_ratio actually measures: output_skipped_frames is
+        # the ENCODER falling behind, not bandwidth loss. OBS's own log counts
+        # "dropped frames due to insufficient bandwidth" separately and
+        # obs-websocket does not expose it; output_congestion is what OBS
+        # derives from those drops, so it is the network signal here (KI-032).
+        "congestion": float(stream.output_congestion or 0.0),
         "dropped_ratio": (skipped / total) if total else 0.0,
     }
 

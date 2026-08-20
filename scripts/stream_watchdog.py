@@ -7,6 +7,7 @@ api/scheduler containers; this covers the host-side pieces compose can't.
 """
 
 import codecs
+import json
 import logging
 import os
 import signal
@@ -14,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +60,20 @@ class WatchdogConfig:
     # OBS pop a modal "already running" dialog that waits for a human.
     obs_terminate_grace_seconds: float = 10.0
     obs_terminate_poll_seconds: float = 1.0
+    # KI-021: a ratio needs a denominator. OBS's frame counters are PER OUTPUT
+    # SESSION, so a reconnect zeroes them — and one skipped frame against a
+    # 20-frame total reads as 5% and fires a spurious dropped_frames event on
+    # every single reconnect. ~1 minute of video at 30fps before the rule may
+    # speak.
+    min_frames_for_ratio: int = 1800
+    # KI-024: the health of the CONTENT is not the health of the OUTPUT. OBS can
+    # stream a dead API's error pages for 12 hours at "100% uptime".
+    content_health_url: str = "http://127.0.0.1:8000/health"
+    content_timeout_seconds: float = 5.0
+    # Debounce: a single 30s blip recorded as an outage makes the uptime number
+    # less believable, which is the opposite of the point. Three consecutive
+    # failures (~90s) is a real outage, not a restart.
+    content_failures_before_drop: int = 3
 
 
 @dataclass
@@ -72,6 +89,17 @@ class WatchdogState:
     # healthy, and a watchdog that re-asserted a scene every tick would fight
     # it for control.
     on_standby: bool = False
+    # KI-021: last seen frame counters, for detecting the reset that an RTMP
+    # reconnect causes. A *decrease* is the one unambiguous signal that a new
+    # output session began, and it needs nothing new from OBS.
+    last_total_frames: int | None = None
+    last_skipped_frames: int = 0
+    reconnecting: bool = False
+    # KI-024: content health is tracked separately from output health, because
+    # they fail independently — that is the whole bug.
+    content_ok: bool = True
+    content_failures: int = 0
+    content_down_since: float | None = None
 
 
 def tick(
@@ -107,8 +135,14 @@ def tick(
             # Back on air: hand the scene back to the director, once.
             actions.append(("switch_scene", stream_scene.SCENE_CHART))
             state.on_standby = False
+        actions.extend(_note_reconnect(probe, state))
+        actions.extend(_check_content(probe, state, config, now))
         ratio = probe.get("dropped_ratio", 0.0)
-        if ratio >= config.dropped_ratio_threshold:
+        total = int(probe.get("total_frames") or 0)
+        # KI-021: the rule may only speak once its denominator means something.
+        # Straight after a reconnect the counters restart from zero, so the
+        # ratio it reads is "since the last reconnect" over a handful of frames.
+        if total >= config.min_frames_for_ratio and ratio >= config.dropped_ratio_threshold:
             if not state.dropped_flagged:
                 actions.append(
                     (
@@ -117,11 +151,19 @@ def tick(
                         {
                             "reason": "dropped_frames",
                             "dropped_ratio": round(ratio, 4),
+                            "total_frames": total,
+                            # The real network signal. `dropped_ratio` is built
+                            # from output_skipped_frames, which is ENCODER lag,
+                            # not bandwidth loss (KI-032); congestion is what
+                            # OBS derives from actual RTMP drops.
+                            "congestion": round(
+                                float(probe.get("congestion") or 0.0), 4
+                            ),
                         },
                     )
                 )
                 state.dropped_flagged = True
-        else:
+        elif ratio < config.dropped_ratio_threshold:
             state.dropped_flagged = False
         return state, actions
 
@@ -146,6 +188,118 @@ def tick(
         actions.append(("start_stream",))
         state.last_restart_at = now
     return state, actions
+
+
+def _note_reconnect(probe: dict, state: WatchdogState) -> list[tuple]:
+    """KI-021: notice an RTMP reconnect OBS never told anyone about. Pure.
+
+    YouTube dropped the ingest three times in 26h. Each time OBS re-dialled in
+    ~2.5s, kept `outputActive` **true** throughout, and reset the output's frame
+    counters. So `tick` saw no live->inactive transition, no `stream_stopped`
+    was recorded, and the report read 100% across a night with three real gaps.
+
+    Two detectors for one event, because the poll is 30s and the gap is 2.5s:
+
+    * `outputReconnecting` catches one that is in flight — the lucky case, and
+      the best one, since the pre-reset counters are still readable;
+    * a **decrease** in `output_total_frames` catches one that began and ended
+      entirely between two polls, which is the usual case.
+
+    The pre-reset numbers are stamped into the event payload rather than
+    accumulated in `WatchdogState`: state is in-memory and a watchdog restart
+    would zero it, which is the very problem being fixed. The append-only log is
+    the durable record, and it is where soak_report reads from.
+    """
+    actions: list[tuple] = []
+    total = probe.get("total_frames")
+    skipped = int(probe.get("skipped_frames") or 0)
+    prev_total, prev_skipped = state.last_total_frames, state.last_skipped_frames
+
+    def _payload(detected: str) -> dict:
+        body = {"detected": detected}
+        if prev_total:
+            body["frames_before"] = prev_total
+            body["skipped_before"] = prev_skipped
+            body["skipped_ratio_before"] = round(prev_skipped / prev_total, 4)
+        return body
+
+    reconnecting = bool(probe.get("reconnecting"))
+    rising_edge = reconnecting and not state.reconnecting
+    state.reconnecting = reconnecting
+
+    if rising_edge:
+        actions.append(("record", "stream_reconnected", _payload("obs_reconnecting")))
+        # Forget the counters: they are about to reset, and the reset must not
+        # then be recorded a second time as a separate reconnect.
+        state.last_total_frames = None
+        state.last_skipped_frames = 0
+        return actions
+
+    if total is not None:
+        if prev_total is not None and total < prev_total:
+            actions.append(
+                ("record", "stream_reconnected", _payload("frame_counter_reset"))
+            )
+        state.last_total_frames = total
+        state.last_skipped_frames = skipped
+    return actions
+
+
+def _check_content(
+    probe: dict, state: WatchdogState, config: WatchdogConfig, now: float
+) -> list[tuple]:
+    """KI-024: assert the stream has something true to show, not just pixels.
+
+    On 2026-08-19 the whole data stack was down for ~12h while OBS streamed
+    continuously with `outputActive` true. Every measure this project had said
+    the stream was fine, because every one of them measured the *output*: the
+    watchdog read GetStreamStatus, and `compute_uptime` folds `stream_*` rows
+    that could not be written because the database was the thing that was down
+    — and no events in a window is not "unknown" to that fold, it is ~100%.
+
+    So the content gets its own probe, and a failure is recorded as ordinary
+    downtime (`stream_dropped`, NOT degraded — see
+    `world.state.STREAM_DEGRADED_REASONS`). Note the recursive trap the KI names:
+    the evidence lives in the database that goes down with everything else. It
+    survives because `record_stream_event` spools to JSONL and flushes on
+    recovery, which is why that spool's wedging bug had to be fixed first.
+
+    Deliberately NOT a restart trigger: compose already restarts the containers,
+    and an OBS relaunch cannot fix a dead Postgres. This records the truth; it
+    does not thrash.
+    """
+    healthy = bool(probe.get("content_ok", True))
+    if healthy:
+        state.content_failures = 0
+        if not state.content_ok:
+            payload = {"reason": "content_restored"}
+            if state.content_down_since is not None:
+                payload["outage_seconds"] = round(now - state.content_down_since, 1)
+                state.content_down_since = None
+            state.content_ok = True
+            # `stream_started` closes the outage in compute_uptime's fold. The
+            # stream never stopped — but the fold's vocabulary is "dropped opens
+            # downtime, started closes it", and inventing a third verb every
+            # consumer must learn is how two sources of truth get born (KI-019).
+            return [("record", "stream_started", payload)]
+        return []
+
+    state.content_failures += 1
+    if state.content_ok and state.content_failures >= config.content_failures_before_drop:
+        state.content_ok = False
+        state.content_down_since = now
+        return [
+            (
+                "record",
+                "stream_dropped",
+                {
+                    "reason": "content_unreachable",
+                    "detail": probe.get("content_detail", "unknown"),
+                    "consecutive_failures": state.content_failures,
+                },
+            )
+        ]
+    return []
 
 
 def _restart_allowed(
@@ -503,7 +657,41 @@ def probe_obs() -> dict:
         "reachable": True,
         "streaming": status["streaming"],
         "dropped_ratio": status["dropped_ratio"],
+        # KI-021: the counters the reconnect detector reads.
+        "total_frames": status.get("total_frames", 0),
+        "skipped_frames": status.get("skipped_frames", 0),
+        "reconnecting": status.get("reconnecting", False),
+        "congestion": status.get("congestion", 0.0),
     }
+
+
+def probe_content(config: WatchdogConfig, opener=None) -> dict:
+    """KI-024: can the pages on screen actually reach their data?
+
+    **`/health` answers HTTP 200 during a Postgres outage** — `status: 200` is
+    hardcoded in the response body and the endpoint's job is to report, not to
+    fail. A probe that checked the status code would pass for exactly the
+    failure class this exists to catch, so the *body* is the check:
+    `data.postgres.connected` must be `True`. `None` there means writes are
+    disabled, which for a stream whose world log is the show is not healthy
+    either.
+    """
+    opener = opener or urllib.request.urlopen
+    try:
+        with opener(config.content_health_url, timeout=config.content_timeout_seconds) as resp:
+            status = getattr(resp, "status", 200)
+            if status != 200:
+                return {"content_ok": False, "content_detail": f"http {status}"}
+            body = json.loads(resp.read().decode())
+    except Exception as exc:
+        return {"content_ok": False, "content_detail": f"{type(exc).__name__}: {exc}"}
+    postgres = ((body.get("data") or {}).get("postgres") or {})
+    if postgres.get("connected") is not True:
+        return {
+            "content_ok": False,
+            "content_detail": f"postgres connected={postgres.get('connected')!r}",
+        }
+    return {"content_ok": True}
 
 
 def execute_actions(
@@ -544,7 +732,14 @@ def main() -> None:
         "Stream watchdog started", extra={"poll_seconds": config.poll_seconds}
     )
     while True:
-        state, actions = tick(probe_obs(), state, config, now=time.time())
+        probe = probe_obs()
+        # Only when OBS is up and pushing: during an OBS outage the stream is
+        # already correctly counted as down, and a second overlapping outage
+        # (plus the `stream_started` that closes it on recovery) would muddy
+        # the fold rather than sharpen it.
+        if probe.get("reachable") and probe.get("streaming"):
+            probe.update(probe_content(config))
+        state, actions = tick(probe, state, config, now=time.time())
         followups = execute_actions(actions, config, state)
         if followups:
             execute_actions(followups, config, state)
