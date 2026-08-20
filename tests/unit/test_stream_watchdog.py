@@ -736,3 +736,20 @@ def test_content_probe_reports_unreachable_rather_than_raising():
     result = probe_content(CFG, opener=refuse)
     assert result["content_ok"] is False
     assert "Connection refused" in result["content_detail"]
+
+
+def test_a_reconnect_reacts_more_quietly_than_the_stream_going_down():
+    """Severity orders the log; the TIER is what the room and the rail react
+    to, and the two are allowed to disagree. On the stream family's shared cuts
+    a reconnect's 3.0 rendered tier 2 ("major") — a 2.5s blink that had already
+    healed itself swelling harder than the stream actually stopping. That is
+    KI-019's shape: the number was right and what it rendered as was not."""
+    from world.state import severity_tier
+    from world.stream_events import SEVERITIES
+
+    reconnected = severity_tier("stream_reconnected", SEVERITIES["stream_reconnected"])
+    stopped = severity_tier("stream_stopped", SEVERITIES["stream_stopped"])
+    dropped = severity_tier("stream_dropped", SEVERITIES["stream_dropped"])
+    assert reconnected <= stopped, "a self-healed blink out-shouts a real stop"
+    assert reconnected < dropped
+    assert SEVERITIES["stream_reconnected"] > SEVERITIES["stream_stopped"]

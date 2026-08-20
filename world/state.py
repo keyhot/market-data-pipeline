@@ -52,7 +52,14 @@ _TIER_CUTS: dict[str, tuple[float, float, float]] = {
     "stream_started": (2.0, 3.0, 4.0),
     "stream_stopped": (2.0, 3.0, 4.0),
     "stream_dropped": (2.0, 3.0, 4.0),
-    "stream_reconnected": (2.0, 3.0, 4.0),
+    # Its own cuts, not the stream family's shared (2,3,4). Severity 3.0 keeps
+    # the log's ordering honest (a reconnect is a bigger deal than a routine
+    # start), but on the shared cuts that severity renders **tier 2 — "major"**,
+    # i.e. a 2.5s blink that already healed itself reacting LOUDER in the room
+    # than the stream actually going down (stream_stopped, tier 1). Per-rule
+    # cuts exist for exactly this: severity is what happened, the tier is how
+    # hard to react, and they are allowed to disagree. "A blink, not an alarm."
+    "stream_reconnected": (3.0, 4.0, 5.0),
 }
 _GENERIC_CUTS = (2.0, 5.0, 10.0)
 
