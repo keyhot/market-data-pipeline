@@ -7,6 +7,7 @@ from world.visuals import (
     MOOD_COLORS,
     PALETTE,
     css_variables,
+    max_tier_scale,
     mood_color,
     tier_styles_css,
     tier_visuals,
@@ -126,3 +127,20 @@ def test_room_light_is_its_own_ramp_not_the_dom_one():
     from world.visuals import room_light, tier_visuals
 
     assert set(room_light(0)) & set(tier_visuals(0)) == set()
+
+
+# --- the swell has to fit inside the surface it swells on (KI-031) -----------
+
+
+def test_the_ramp_publishes_its_own_ceiling():
+    """A page that scales a row has to know how big the biggest row gets, or it
+    cannot reserve room for it — and reading the ceiling off a hard-coded 1.22
+    in a template is how two sources of truth start (KI-019)."""
+    assert max_tier_scale() == max(
+        tier_visuals(tier)["scale"] for tier in range(4)
+    )
+
+
+def test_the_swell_ceiling_is_published_as_a_css_variable():
+    """So the rail can size its rows against it in plain CSS."""
+    assert f"--tier-max-scale: {max_tier_scale()}" in css_variables()

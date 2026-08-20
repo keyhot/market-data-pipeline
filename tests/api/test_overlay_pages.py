@@ -305,3 +305,24 @@ def test_no_broadcast_page_relies_on_the_body_background():
         assert painters, (
             f"{template} paints its background only on body, which OBS drops"
         )
+
+
+def test_the_rail_reserves_room_for_the_biggest_swell():
+    """KI-031: `.tier` scales a row from `left center`, and `transform` does not
+    reflow — so a full-width card at tier 3 renders 22% wider than the rail and
+    the overflow is simply clipped. Measured on the live program frame on
+    2026-08-20: `model lost on BTCUSDT (called up` cut mid-word, on the home
+    scene. The swell made the highest-severity headlines the only unreadable
+    ones — the exact inverse of KI-019, which had made them the only ones that
+    never swelled at all.
+
+    So a row at rest is sized to `100% / max-scale`: the biggest swell lands
+    exactly on the rail's right edge instead of past it."""
+    import re
+    from pathlib import Path
+
+    css = Path("api/templates/overlay_events.html").read_text()
+    event_rule = re.search(r"\.event \{[^}]*\}", css).group(0)
+    assert "var(--tier-max-scale)" in event_rule, (
+        "the rail sizes its rows against a hard-coded number, or not at all"
+    )

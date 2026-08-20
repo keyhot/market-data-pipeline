@@ -136,11 +136,23 @@ def room_light(tier: int) -> dict[str, float]:
     return dict(_ROOM_LIGHT_RAMP[clamped])
 
 
+def max_tier_scale() -> float:
+    """The biggest a row ever gets. A surface that scales its rows has to
+    reserve room for the largest of them, and `transform` does not reflow —
+    what does not fit is simply clipped (KI-031)."""
+    return max(float(step["scale"]) for step in _TIER_RAMP)
+
+
 def css_variables() -> str:
     """Render ``PALETTE`` as a ``:root{ --key: value; }`` block for one-line
     injection into every page (via the ``__THEME_VARS__`` template placeholder),
-    so all three pages share one source of truth for colour."""
+    so all three pages share one source of truth for colour.
+
+    ``--tier-max-scale`` rides along so a page can size against the swell
+    ceiling in plain CSS rather than hard-coding a number that would drift from
+    ``_TIER_RAMP`` the first time the ramp is retuned."""
     lines = "\n".join(f"  --{key}: {value};" for key, value in PALETTE.items())
+    lines += f"\n  --tier-max-scale: {max_tier_scale()};"
     return f":root {{\n{lines}\n}}"
 
 

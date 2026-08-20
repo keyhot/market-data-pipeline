@@ -28,7 +28,15 @@
     #legend p { margin: 0; color: var(--neutral); font-size: 0.82rem; }
     #feed { display: flex; flex-direction: column; gap: 0.45rem;
             width: 100%; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+    /* Sized to `100% / max-scale`, because the injected `.tier` ramp scales a
+       row from `left center` and `transform` does not reflow: a full-width
+       card at tier 3 rendered 22% wider than the rail and the overflow was
+       clipped by the frame — `model lost on BTCUSDT (called up` cut mid-word
+       on air (KI-031). At rest a row is short of the right edge; the biggest
+       swell now lands exactly on it, so the rail visibly breathes with
+       severity instead of running off the side of the screen. */
     .event { display: flex; gap: 0.6rem; align-items: flex-start;
+             box-sizing: border-box; width: calc(100% / var(--tier-max-scale));
              padding: 0.55rem 0.8rem; background: var(--surface);
              border-radius: 7px; border-left: 5px solid var(--muted); }
     /* The border carries the severity tier (category); the injected .tier-*

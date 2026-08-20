@@ -155,7 +155,9 @@ def capture_calm(
         # made per-source screenshots of inactive scenes come back blank white.
         sleeper(SETTLE_SECONDS)
         shot.add(scene)
-        written.append(_shoot_settled(client, out / f"calm-{scene}.png", scene, sleeper))
+        written.append(
+            _shoot_settled(client, out / f"calm-{scene}.png", scene, sleeper)
+        )
     return written
 
 
