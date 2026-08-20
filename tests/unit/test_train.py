@@ -66,3 +66,39 @@ def test_model_version_format():
 
 def test_latest_artifact_none_when_untrained():
     assert latest_artifact("NEVERTRAINED", "1m") is None
+
+
+def test_the_holdout_split_purges_the_horizon(tmp_artifacts):
+    """KI-004: `backtest.py` purges `horizon_bars` rows at every fold boundary,
+    but this split did not — so the last `horizon_bars - 1` training rows
+    carried labels that peek past the split, into the holdout the metric is
+    supposed to be honest about.
+
+    The invariant is the same one `backtest.py` enforces with
+    `test_start = train_end + horizon_bars`: a gap of exactly `horizon_bars`
+    rows sits between the last training row and the first holdout row.
+    """
+    from model.features import build_features
+
+    horizon = 15
+    bars = _bars()
+    total = len(build_features(bars, horizon_bars=horizon).X)
+
+    metrics = train("TESTCOIN", "1m", horizon_bars=horizon, bars=bars)
+
+    assert metrics["rows_train"] + horizon + metrics["rows_holdout"] == total, (
+        "no purge gap at the holdout boundary — training labels look past the "
+        "split into the holdout (KI-004)"
+    )
+
+
+def test_the_purge_scales_with_the_horizon(tmp_artifacts):
+    """A wider horizon peeks further, so it must purge further — a hardcoded
+    gap would pass the test above and still leak here."""
+    from model.features import build_features
+
+    bars = _bars()
+    for horizon in (5, 30):
+        total = len(build_features(bars, horizon_bars=horizon).X)
+        metrics = train("TESTCOIN", "1m", horizon_bars=horizon, bars=bars)
+        assert metrics["rows_train"] + horizon + metrics["rows_holdout"] == total

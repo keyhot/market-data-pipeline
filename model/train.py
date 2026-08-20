@@ -90,8 +90,14 @@ def train(
     # Time-ordered split, never shuffled (walk-forward evaluation lives in
     # model/backtest.py — this holdout is only a sanity gate).
     split = int(len(result.X) * (1 - HOLDOUT_FRACTION))
-    X_train, X_hold = result.X.iloc[:split], result.X.iloc[split:]
-    y_train, y_hold = result.y.iloc[:split], result.y.iloc[split:]
+    # Purge the boundary, exactly as backtest.py does at every fold
+    # (`test_start = train_end + horizon_bars`): a label is built from the
+    # close `horizon_bars` ahead, so the last horizon_bars-1 training rows
+    # would otherwise peek past the split into the holdout this metric is
+    # billed as being honest about (KI-004).
+    train_end = max(split - horizon_bars, 0)
+    X_train, X_hold = result.X.iloc[:train_end], result.X.iloc[split:]
+    y_train, y_hold = result.y.iloc[:train_end], result.y.iloc[split:]
 
     booster = lgb.train(
         _PARAMS, lgb.Dataset(X_train, label=y_train), num_boost_round=_NUM_ROUNDS
