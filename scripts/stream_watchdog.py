@@ -32,9 +32,14 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class WatchdogConfig:
     poll_seconds: float = 30.0
-    # High dropped-frame ratio is a bandwidth symptom: record it, never
-    # restart (a restart makes congestion worse).
+    # A sustained encoder-skip ratio is an ENCODING symptom, not a bandwidth
+    # one (KI-032): it comes from output_skipped_frames. Record it, never
+    # restart — a restart makes either fault worse.
     dropped_ratio_threshold: float = 0.05
+    # KI-032: the network signal the skip rule was misread as. OBS derives
+    # output_congestion (0.0-1.0) from actual RTMP drops, so this is the rule
+    # that can genuinely see "insufficient bandwidth/connection stalls".
+    congestion_threshold: float = 0.3
     # Max one restart attempt per cooldown window — no flapping.
     restart_cooldown_seconds: float = 300.0
     # KI-017: every modal on the startup path is a permanent stall for an
@@ -83,6 +88,10 @@ class WatchdogState:
     last_restart_at: float | None = None
     down_since: float | None = None
     dropped_flagged: bool = False
+    # KI-032: tracked separately from dropped_flagged — an overloaded encoder
+    # on a clean link and a clean encoder on a congested link are different
+    # faults, and either can start or clear while the other persists.
+    congestion_flagged: bool = False
     failed_relaunches: int = 0
     # B10: is the standby card currently on air? Switching is done on
     # *transitions* only — the director owns the scene while the stream is
@@ -149,13 +158,17 @@ def tick(
                         "record",
                         "stream_dropped",
                         {
-                            "reason": "dropped_frames",
+                            # KI-032: named for what it measures. This ratio is
+                            # built from output_skipped_frames — the encoder
+                            # couldn't keep up — NOT from bandwidth loss. The
+                            # old name for this was `dropped_frames`, which
+                            # history keeps and STREAM_DEGRADED_REASONS still
+                            # accepts.
+                            "reason": "encoder_overloaded",
                             "dropped_ratio": round(ratio, 4),
                             "total_frames": total,
-                            # The real network signal. `dropped_ratio` is built
-                            # from output_skipped_frames, which is ENCODER lag,
-                            # not bandwidth loss (KI-032); congestion is what
-                            # OBS derives from actual RTMP drops.
+                            # Carried alongside so the two faults are always
+                            # comparable in one row.
                             "congestion": round(
                                 float(probe.get("congestion") or 0.0), 4
                             ),
@@ -165,6 +178,28 @@ def tick(
                 state.dropped_flagged = True
         elif ratio < config.dropped_ratio_threshold:
             state.dropped_flagged = False
+
+        # KI-032: the network rule the old one was mistaken for. Independent of
+        # the encoder rule in both directions — either can fire, clear and
+        # re-arm while the other persists — so it gets its own flag.
+        congestion = float(probe.get("congestion") or 0.0)
+        if congestion >= config.congestion_threshold:
+            if not state.congestion_flagged:
+                actions.append(
+                    (
+                        "record",
+                        "stream_dropped",
+                        {
+                            "reason": "network_congested",
+                            "congestion": round(congestion, 4),
+                            "dropped_ratio": round(ratio, 4),
+                            "total_frames": total,
+                        },
+                    )
+                )
+                state.congestion_flagged = True
+        else:
+            state.congestion_flagged = False
         return state, actions
 
     if state.streaming:

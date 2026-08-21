@@ -81,7 +81,10 @@ def test_dropped_frames_records_event_but_never_restarts():
     state, actions = tick(probe, state, CFG, now=1000.0)
     records = _actions_of(actions, "record")
     assert records and records[0][1] == "stream_dropped"
-    assert records[0][2]["reason"] == "dropped_frames"
+    # KI-032: renamed for what it measures — output_skipped_frames is encoder
+    # lag, not bandwidth loss. History keeps "dropped_frames" and
+    # STREAM_DEGRADED_REASONS still accepts it.
+    assert records[0][2]["reason"] == "encoder_overloaded"
     assert _actions_of(actions, "relaunch_obs") == []
     assert _actions_of(actions, "start_stream") == []
     # flag latches: no repeat while the ratio stays high
@@ -578,9 +581,13 @@ def test_dropped_frame_rule_waits_for_a_real_denominator():
         state, CFG, 1030.0,
     )
     records = _actions_of(actions, "record")
-    assert [r[1] for r in records] == ["stream_dropped"]
-    assert records[0][2]["reason"] == "dropped_frames"
-    assert records[0][2]["congestion"] == 0.4
+    # KI-032: congestion 0.4 is over its own threshold, so the independent
+    # network rule fires here too — this test is about the encoder rule's
+    # denominator, so pick that record out rather than asserting on the count.
+    assert [r[1] for r in records] == ["stream_dropped", "stream_dropped"]
+    encoder = [r[2] for r in records if r[2]["reason"] == "encoder_overloaded"]
+    assert len(encoder) == 1, "the encoder rule stayed silent once its denominator was real"
+    assert encoder[0]["congestion"] == 0.4
 
 
 def test_reconnect_accrues_no_downtime_and_leaves_the_room_live():

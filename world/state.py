@@ -24,7 +24,17 @@ RECENT_LIMIT = 12
 # Note what is NOT here: `content_unreachable` (KI-024). A stream whose pages
 # cannot reach the API is pushing pixels at nobody — that is a content outage
 # and it accrues downtime, which is the entire point of recording it.
-STREAM_DEGRADED_REASONS = frozenset({"dropped_frames"})
+# KI-032: `dropped_frames` is the HISTORICAL name and must stay accepted
+# forever. `world_events` is append-only, so every row written before the
+# rename keeps it; dropping it here would reclassify every past degradation as
+# downtime and silently restate the uptime history — fixing a truthfulness bug
+# by corrupting the record it is measured against. The two names that replace
+# it say which fault they are: `encoder_overloaded` is output_skipped_frames
+# (the encoder couldn't keep up), `network_congested` is output_congestion
+# (what OBS actually derives from RTMP drops).
+STREAM_DEGRADED_REASONS = frozenset(
+    {"dropped_frames", "encoder_overloaded", "network_congested"}
+)
 
 
 def is_degraded_stream_event(event_type: str, payload: dict | None) -> bool:

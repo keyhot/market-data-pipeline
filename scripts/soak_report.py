@@ -20,7 +20,9 @@ def compute_uptime(
     events: list[dict], window_start: datetime, window_end: datetime
 ) -> dict:
     """Fold stream_* events (any order) into uptime numbers. Outages open on
-    stream_dropped (except reason=dropped_frames — degraded, not down) and
+    stream_dropped (except the degraded reasons — encoder_overloaded,
+    network_congested, and the historical dropped_frames — which are
+    impaired-but-live, not down) and
     close on the next stream_started."""
     ordered = sorted(events, key=lambda e: e["occurred_at"])
     outages: list[dict] = []
