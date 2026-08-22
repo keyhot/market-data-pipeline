@@ -70,12 +70,20 @@ def compute_uptime(
             open_outage["end"] = window_end
         outages.append(open_outage)
 
-    downtime = sum((o["end"] - o["start"]).total_seconds() for o in outages)
+    durations = [(o["end"] - o["start"]).total_seconds() for o in outages]
+    downtime = sum(durations)
     window = (window_end - window_start).total_seconds()
     uptime_pct = round(100.0 * (1 - downtime / window), 2) if window else 100.0
     return {
         "uptime_pct": uptime_pct,
         "downtime_seconds": downtime,
+        # KI-036: the headline counts rows that cost downtime; the table keeps
+        # every row. A degraded notice is appended with zero duration so its
+        # reason stays visible, and printing len(outages) turned "1 outage, 38s"
+        # into "Outages: 6" on the sprint's own acceptance evidence — a number
+        # that overstates failure is still a number that isn't true.
+        "outage_count": sum(1 for d in durations if d > 0),
+        "degraded_count": sum(1 for d in durations if d == 0),
         # KI-021: "100% up, 3 reconnects" is the honest line; "100%" alone is
         # the flattering one. An RTMP reconnect is a real ~2.5s gap in what a
         # viewer saw, and it is invisible to every other number in this report.
@@ -158,6 +166,60 @@ def compute_broadcast_uptime(
             for s in clipped
         ],
     }
+
+
+def window_bounds(
+    hours: float, ending: str | None, now: datetime
+) -> tuple[datetime, datetime]:
+    """The report window, ending `now` unless an explicit instant is given.
+
+    A soak's acceptance evidence is a report over *that soak's* window, and
+    `--hours N` counted back from now cannot reproduce one an hour after it
+    closed — it scores a different window and says nothing about the shift. An
+    `--ending` without a UTC offset is read as **local wall clock**, because
+    that is the time a human read off their own clock.
+    """
+    if ending is None:
+        return now - timedelta(hours=hours), now
+    end = datetime.fromisoformat(ending).astimezone(timezone.utc)
+    return end - timedelta(hours=hours), end
+
+
+def gap_callouts(report: dict, broadcast: dict) -> list[str]:
+    """The two uptimes answer different questions — OBS uptime is "was the
+    encoder pushing", public uptime is "could anyone watch" — and either can
+    flatter the other. Both directions get called out rather than left for the
+    reader to spot.
+
+    Gated on `measured`: with no broadcast events at all the first note would
+    fire on every report (including before the manager existed), and a warning
+    that cries wolf is ignored by the time it is real.
+
+    The second note (KI-037) is measured in **seconds, not percentage points**.
+    YouTube holds a broadcast `live` through a brief ingest loss, so the A6
+    soak's 38s of dark passed through the public figure untouched — and 38s
+    over 24h is 0.04pp, under any pp threshold worth setting. What makes it
+    worth saying is not its size but that the number claims to have seen
+    something it structurally cannot.
+    """
+    if not broadcast["measured"]:
+        return []
+    notes: list[str] = []
+    gap = report["uptime_pct"] - broadcast["uptime_pct"]
+    if gap > 1.0:
+        notes.append(
+            f"⚠️ OBS was pushing {gap:.2f} percentage points longer than the "
+            f"broadcast was public — encoder up, stream not watchable."
+        )
+    dark = report["downtime_seconds"]
+    if dark > 0 and broadcast["uptime_pct"] >= report["uptime_pct"]:
+        notes.append(
+            f"⚠️ Public-broadcast uptime reads {broadcast['uptime_pct']}% across "
+            f"{dark:.0f}s of recorded OBS downtime — YouTube keeps a broadcast "
+            f"`live` through a short ingest loss, so this figure cannot see a "
+            f"dark gap. For those {dark:.0f}s nobody could watch."
+        )
+    return notes
 
 
 def compute_director_activity(events: list[dict], window_hours: float) -> dict:
@@ -244,12 +306,19 @@ def _broadcast_events_for_window(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stream soak report")
     parser.add_argument("--hours", type=float, default=24.0)
+    parser.add_argument(
+        "--ending",
+        default=None,
+        metavar="ISO8601",
+        help="end of the window (default: now); no offset means local time",
+    )
     args = parser.parse_args()
 
     from storage.postgres_store import get_world_events
 
-    window_end = datetime.now(timezone.utc)
-    window_start = window_end - timedelta(hours=args.hours)
+    window_start, window_end = window_bounds(
+        args.hours, args.ending, datetime.now(timezone.utc)
+    )
     all_events, truncated = _fetch_report_events(get_world_events, window_start)
     stream_events = [e for e in all_events if e["event_type"].startswith("stream_")]
     report = compute_uptime(stream_events, window_start, window_end)
@@ -287,25 +356,21 @@ def main() -> None:
             "- Public-broadcast uptime: **not measured** — no broadcast_* events "
             "in the window (is broadcast_manager running?)"
         )
-    print(f"- Outages: {len(report['outages'])}\n")
+    degraded = report["degraded_count"]
+    suffix = (
+        f" (+{degraded} degraded notice{'s' if degraded != 1 else ''} — live but"
+        " impaired, in the table below)"
+        if degraded
+        else ""
+    )
+    print(f"- Outages: {report['outage_count']}{suffix}\n")
     if report["outages"]:
         print("| start | duration (s) | reason |")
         print("|---|---|---|")
         for o in report["outages"]:
             print(f"| {o['start']} | {o['duration_seconds']:.0f} | {o['reason']} |")
-    # The two uptimes answer different questions: OBS uptime is "was the
-    # encoder pushing", public uptime is "could anyone watch". A gap between
-    # them is the 2026-07-27 failure mode, so it gets called out rather than
-    # left for the reader to spot.
-    # Gated on `measured`: with no broadcast events at all this would fire on
-    # every report (including before the manager exists), and a warning that
-    # cries wolf is ignored by the time it's real.
-    gap = report["uptime_pct"] - broadcast["uptime_pct"]
-    if broadcast["measured"] and gap > 1.0:
-        print(
-            f"\n> ⚠️ OBS was pushing {gap:.2f} percentage points longer than the "
-            f"broadcast was public — encoder up, stream not watchable."
-        )
+    for note in gap_callouts(report, broadcast):
+        print(f"\n> {note}")
     if broadcast["spans"]:
         print("\n| live from | duration (s) |")
         print("|---|---|")

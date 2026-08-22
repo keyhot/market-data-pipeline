@@ -15,6 +15,8 @@ from scripts.soak_report import (
     compute_broadcast_uptime,
     compute_director_activity,
     compute_uptime,
+    gap_callouts,
+    window_bounds,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -297,3 +299,91 @@ def test_director_activity_ignores_non_director_events():
     a = compute_director_activity(events, window_hours=2.0)
     assert a["lines"] == 0 and a["switches"] == 0
     assert a["by_character"] == {}
+
+
+# --- KI-036: `Outages: 6` next to 38 seconds of downtime -------------------
+#
+# Degraded rows are appended with zero duration on purpose, so their reason
+# stays visible in the table. The headline printed len(outages), so the A6
+# report read "Outages: 6" beside "99.96% uptime (38s down)": one real outage,
+# one network_congested, four reconnect notices.
+
+def test_the_outage_headline_counts_downtime_not_degraded_notices():
+    events = [
+        _ev(0, "stream_started"),
+        _ev(10, "stream_reconnected"),
+        _ev(20, "stream_dropped", {"reason": "network_congested"}),
+        _ev(30, "stream_dropped", {"reason": "obs_unreachable"}),
+        _ev(31, "stream_started"),
+    ]
+    result = compute_uptime(events, *WINDOW)
+    assert result["outage_count"] == 1
+    # Every row still reaches the table — the reasons are the evidence.
+    assert len(result["outages"]) == 3
+    assert result["degraded_count"] == 2
+
+
+# --- KI-037: 100.0% public uptime across 38 seconds of dark ----------------
+#
+# YouTube keeps a broadcast in `live` state through a brief ingest loss, so the
+# metric the runbook calls "could anyone actually watch" sailed through the
+# soak's 38s gap untouched. The report only guarded the reverse direction
+# (OBS pushing into a broadcast nobody could watch), so this was structurally
+# invisible. The guard is in seconds, not percentage points: 38s over 24h is
+# 0.04pp and would clear any pp threshold worth setting.
+
+def test_public_uptime_is_called_out_when_it_ignores_a_dark_gap():
+    report = {"uptime_pct": 99.96, "downtime_seconds": 38.0}
+    broadcast = {"uptime_pct": 100.0, "measured": True}
+    notes = gap_callouts(report, broadcast)
+    assert len(notes) == 1
+    assert "38s" in notes[0] and "100.0%" in notes[0]
+
+
+def test_no_dark_gap_callout_when_nothing_went_down():
+    report = {"uptime_pct": 100.0, "downtime_seconds": 0.0}
+    broadcast = {"uptime_pct": 100.0, "measured": True}
+    assert gap_callouts(report, broadcast) == []
+
+
+def test_the_encoder_up_but_unwatchable_gap_is_still_called_out():
+    """The 2026-07-27 failure: ~4h of pushing into no public broadcast."""
+    report = {"uptime_pct": 100.0, "downtime_seconds": 0.0}
+    broadcast = {"uptime_pct": 83.0, "measured": True}
+    notes = gap_callouts(report, broadcast)
+    assert len(notes) == 1 and "17.00 percentage points" in notes[0]
+
+
+def test_unmeasured_broadcast_makes_no_claim_in_either_direction():
+    report = {"uptime_pct": 99.96, "downtime_seconds": 38.0}
+    broadcast = {"uptime_pct": 0.0, "measured": False}
+    assert gap_callouts(report, broadcast) == []
+
+
+# --- Re-running a report over a window that has already closed -------------
+#
+# The acceptance evidence for a soak is a report over *the soak's* window. With
+# only `--hours N` counting back from now, re-running one hour later silently
+# scores a different window and the numbers can't be compared to the ones the
+# sprint note quotes.
+
+def test_the_window_ends_now_by_default():
+    now = datetime(2026, 8, 22, 3, 43, tzinfo=timezone.utc)
+    start, end = window_bounds(24.0, None, now)
+    assert end == now and start == now - timedelta(hours=24)
+
+
+def test_an_explicit_ending_reproduces_a_window_that_has_closed():
+    now = datetime(2026, 8, 22, 3, 43, tzinfo=timezone.utc)
+    start, end = window_bounds(24.0, "2026-08-22T04:30:00+02:00", now)
+    assert end == datetime(2026, 8, 22, 2, 30, tzinfo=timezone.utc)
+    assert start == datetime(2026, 8, 21, 2, 30, tzinfo=timezone.utc)
+
+
+def test_an_ending_without_an_offset_is_local_wall_clock_not_utc():
+    """A human types the time their clock showed. Reading it as UTC would slide
+    the window by the machine's offset — two hours, here — and quietly report on
+    the wrong hours."""
+    now = datetime(2026, 8, 22, 3, 43, tzinfo=timezone.utc)
+    _, end = window_bounds(24.0, "2026-08-22T04:30:00", now)
+    assert end == datetime(2026, 8, 22, 4, 30).astimezone(timezone.utc)
