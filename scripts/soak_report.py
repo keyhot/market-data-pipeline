@@ -253,8 +253,10 @@ def _report_event_types() -> list[str]:
     return sorted(STREAM_EVENT_TYPES | BROADCAST_EVENT_TYPES | DIRECTOR_EVENT_TYPES)
 
 
-def _fetch_report_events(fetch, window_start, per_type_limit: int = 5000) -> tuple:
-    """Fetch the report's events **per type** (KI-014).
+def _fetch_report_events(
+    fetch, window_start, window_end, per_type_limit: int = 5000
+) -> tuple:
+    """Fetch the report's events **per type** (KI-014), bounded at both ends.
 
     One `since` query capped at N returns the *newest* N, so a busy window
     silently drops its oldest rows — the `stream_started` that opened it, or an
@@ -262,6 +264,12 @@ def _fetch_report_events(fetch, window_start, per_type_limit: int = 5000) -> tup
     Sprint 11's acceptance evidence, with no sign anything was lost. Per-type
     queries keep each fold's own events well inside the cap, and hitting it is
     reported rather than swallowed.
+
+    The store only takes a `since`, which is fine while the window ends *now*
+    and wrong the moment it doesn't: re-reading a window that has closed also
+    swept up everything that had happened since. The upper bound is applied
+    here rather than pushed into the store, so the cap — and therefore the
+    truncation warning — still reads the same rows the query returned.
 
     Returns `(events, truncated_types)`.
     """
@@ -271,7 +279,11 @@ def _fetch_report_events(fetch, window_start, per_type_limit: int = 5000) -> tup
         rows = fetch(limit=per_type_limit, event_type=event_type, since=window_start)
         if len(rows) >= per_type_limit:
             truncated.append(event_type)
-        events.extend(rows)
+        events.extend(
+            r
+            for r in rows
+            if datetime.fromisoformat(r["occurred_at"]) < window_end
+        )
     return events, truncated
 
 
@@ -319,7 +331,9 @@ def main() -> None:
     window_start, window_end = window_bounds(
         args.hours, args.ending, datetime.now(timezone.utc)
     )
-    all_events, truncated = _fetch_report_events(get_world_events, window_start)
+    all_events, truncated = _fetch_report_events(
+        get_world_events, window_start, window_end
+    )
     stream_events = [e for e in all_events if e["event_type"].startswith("stream_")]
     report = compute_uptime(stream_events, window_start, window_end)
     broadcast_events = _broadcast_events_for_window(

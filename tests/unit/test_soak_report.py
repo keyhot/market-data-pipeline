@@ -263,7 +263,7 @@ def test_report_fetch_is_per_type_so_a_busy_window_cant_drop_rows():
         asked.append(event_type)
         return [_ev(1, event_type)] if event_type == "stream_started" else []
 
-    events, truncated = _fetch_report_events(fetch, WINDOW[0])
+    events, truncated = _fetch_report_events(fetch, *WINDOW)
     assert "stream_started" in asked and "broadcast_live" in asked
     assert "commentary_spoken" in asked  # director activity shares the fetch
     assert [e["event_type"] for e in events] == ["stream_started"]
@@ -277,7 +277,7 @@ def test_report_fetch_reports_truncation_instead_of_a_quiet_number():
     def fetch(limit=50, event_type=None, since=None):
         return [_ev(1, event_type)] * limit if event_type == "commentary_spoken" else []
 
-    _, truncated = _fetch_report_events(fetch, WINDOW[0], per_type_limit=50)
+    _, truncated = _fetch_report_events(fetch, *WINDOW, per_type_limit=50)
     assert truncated == ["commentary_spoken"]
 
 
@@ -387,3 +387,18 @@ def test_an_ending_without_an_offset_is_local_wall_clock_not_utc():
     now = datetime(2026, 8, 22, 3, 43, tzinfo=timezone.utc)
     _, end = window_bounds(24.0, "2026-08-22T04:30:00", now)
     assert end == datetime(2026, 8, 22, 4, 30).astimezone(timezone.utc)
+
+
+def test_report_fetch_drops_events_from_after_the_window_closed():
+    """`since` has no upper bound, so a window that has already closed also
+    pulls in everything that happened *since* it. Found by re-running A6's
+    window: the report said 143 director lines where the database, asked for
+    the same 24 hours, said 140 — the extra three were spoken after it."""
+    inside = _ev(30, "commentary_spoken")
+    after = _ev_at(WINDOW[1] + timedelta(minutes=5), "commentary_spoken")
+
+    def fetch(limit=50, event_type=None, since=None):
+        return [after, inside] if event_type == "commentary_spoken" else []
+
+    events, _ = _fetch_report_events(fetch, *WINDOW)
+    assert events == [inside]
