@@ -128,6 +128,24 @@ def run(
                         dir_state.last_seen_event_id,
                         len(seen_ids),
                     )
+            # B10 hand-off: the watchdog can move the program between two of
+            # our ticks — it raises the standby card on a genuine drop and
+            # lowers it on recovery — and `dir_state.current_scene` is
+            # otherwise only ever written by our own switches. Without looking,
+            # the policy is asked about a scene the program left minutes ago.
+            # Same lesson as KI-034, one restart later: read the program, don't
+            # remember it. None means OBS wouldn't say; keep what we had.
+            on_air = stream_ctl.current_scene(obs_client)
+            if on_air and on_air != dir_state.current_scene:
+                logger.info(
+                    "the program moved without us: %s -> %s",
+                    dir_state.current_scene,
+                    on_air,
+                )
+                dir_state.current_scene = on_air
+                # Someone else just changed the program; the dwell clock starts
+                # from the change we noticed, not from our own last switch.
+                dir_state.last_switch = now
             action = tick(state, dir_state, now, config)
             _apply(
                 action,

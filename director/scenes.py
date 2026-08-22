@@ -28,6 +28,14 @@ _SCENE_FOR_INTENT = {
 }
 _SWITCH_TIER = 2  # only tier >= this is worth interrupting the current scene
 
+# The scenes the director is allowed to put on the program. `standby` (B10) is
+# deliberately not one of them: the watchdog raises the card while the stream is
+# genuinely down and lowers it on recovery, and a director that switched away
+# from it mid-outage would replace the one surface built to be honest about the
+# outage with a room whose numbers are frozen behind it. Anything the director
+# does not own, it holds.
+DIRECTOR_SCENES = frozenset(_SCENE_FOR_INTENT.values())
+
 
 def _desired_scene(state):
     """The scene the most salient recent event points to, or None if quiet."""
@@ -46,6 +54,12 @@ def _desired_scene(state):
 
 
 def choose_scene(state, dir_state, now, config):
+    if not owns_program(dir_state.current_scene, config):
+        # Someone else has the program — today that is only the watchdog's
+        # standby card. Hold it: both ways out of a scene (a salient event, and
+        # decay-to-home) would otherwise take it back, and the second fires on
+        # exactly the long quiet outage the card is up for.
+        return dir_state.current_scene
     desired = _desired_scene(state)
     dwell = (now - dir_state.last_switch).total_seconds()
     if desired is None:
@@ -63,3 +77,8 @@ def choose_scene(state, dir_state, now, config):
     if dwell < config.min_dwell_seconds:
         return dir_state.current_scene  # hold — dwell not elapsed (no flapping)
     return desired
+
+
+def owns_program(scene, config) -> bool:
+    """Is this a scene the director is allowed to move off?"""
+    return scene in DIRECTOR_SCENES or scene == config.home_scene
