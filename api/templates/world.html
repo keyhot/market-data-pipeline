@@ -51,6 +51,30 @@
     #nowband .record { margin-left: auto; color: var(--neutral);
                        font-variant-numeric: tabular-nums; }
     #nowband .record b { color: var(--fg); font-weight: 600; }
+
+    /* B8 — the tier-3 callout. Every other surface in this room is
+       deliberately low-amplitude; this is the one moment it raises its voice,
+       so it has to be the one unmissable thing on screen. Sized by the BOX,
+       never by a transform: KI-031 clipped the very headlines the swell existed
+       to emphasise, because `transform: scale` does not reflow and the overflow
+       met the frame edge. The entry transform only ever scales *up to* 1, so it
+       cannot exceed the layout box it was measured in. DOM, not canvas: it must
+       stay crisp at 2200 kbps, and it must not ride the camera push. */
+    #callout { position: absolute; left: 50%; top: 15%; z-index: 4;
+               max-width: 68vw; overflow-wrap: anywhere; text-align: center;
+               padding: 0.7rem 1.5rem; border-radius: 0.4rem;
+               background: rgba(19, 23, 34, 0.86);
+               border-bottom: 3px solid var(--accent);
+               font-size: 2.4rem; font-weight: 700; line-height: 1.1;
+               letter-spacing: 0.03em; text-transform: uppercase;
+               opacity: 0; pointer-events: none;
+               transform: translateX(-50%) translateY(10px) scale(0.97);
+               transition: opacity 260ms ease, transform 380ms
+                           cubic-bezier(0.16, 0.84, 0.44, 1); }
+    #callout.in { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+    #callout .where { display: block; margin-top: 0.4rem; font-size: 0.95rem;
+                      font-weight: 600; letter-spacing: 0.16em;
+                      color: var(--neutral); }
   </style>
 </head>
 <body>
@@ -59,6 +83,7 @@
   <div id="room"></div>
   <div id="speech"></div>
   <div id="nowband"></div>
+  <div id="callout"></div>
   <div id="fallback">Waking the world…</div>
   <script src="https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js"
           integrity="sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq"
@@ -163,6 +188,32 @@
       // characters ticking is not something to point a browser source at.
       if (new URLSearchParams(location.search).get("anims")) {
         drawAnimationSheet();
+        return;
+      }
+
+      // B8's evaluation gate. The plan said "trigger via a synthetic tier-3
+      // world event" — but `world_events` is append-only and its entire worth
+      // is that it is true, which is the trade B4 already refused. So the
+      // choreography runs here instead, on a LOCAL-ONLY surface the way
+      // `?anims=1` does: no row is written, and nothing points a browser source
+      // at it. Returns before subscribe(), which is also what makes it
+      // screenshottable — headless Chrome hangs on this page's SSE.
+      //
+      // The severity is taken from the injected cuts rather than typed in, so
+      // the preview swells for the same reason the live room does.
+      if (new URLSearchParams(location.search).get("swell")) {
+        const cuts = TIER_CUTS.cuts["model_losing_streak"] ?? TIER_CUTS.generic;
+        const rehearse = () => {
+          swell.last = -1e9;        // the floor guards the live room, not this
+          react({
+            event_type: "model_losing_streak",
+            symbol: SYMBOLS[0] ?? "BTCUSDT",
+            severity: cuts[cuts.length - 1] + 1,
+            payload: {},
+          });
+        };
+        rehearse();
+        setInterval(rehearse, 12000);
         return;
       }
 
@@ -1179,6 +1230,7 @@
       app.ticker.add((ticker) => {
         const dt = ticker.deltaMS / 1000;
         ambient.t += dt;
+        swellTick(dt);
 
         // Scene-wide lighting, eased toward the current tier's ramp. `tier`
         // here is the server's own severity_tier, arriving in /world/state —
@@ -1321,6 +1373,117 @@
       }, BUBBLE_HOLD_MS);
     }
 
+
+    // --- B8: the tier-3 swell ----------------------------------------------
+    //
+    // The room's whole register is calm-that-swells, and until now the swell
+    // was a brightness ramp and a bigger reaction. This is the beat: push ->
+    // spike -> callout -> decay, choreographed with explicit timings so it
+    // reads as a *moment* rather than as a setting that changed. The character
+    // spike is already react()'s job; this puts the camera and the words
+    // around it.
+    //
+    // Only tier 3 earns it. A swell that fired on the room's ordinary traffic
+    // would be a swell that means nothing, which is the same mistake as a
+    // glance that happens constantly (B7).
+    const SWELL_TIER = 3;
+    const SWELL_PUSH = 0.055;      // 5.5%: a push-in, not a zoom
+    const SWELL_PUSH_S = 0.7;
+    const SWELL_HOLD_S = 2.6;
+    const SWELL_DECAY_S = 1.8;
+    // The floor between two swells. Without it a burst of tier-3 events reads
+    // as a strobe, and the room's biggest moment becomes its most annoying one
+    // — the dwell guard the director already has, applied to the camera.
+    const SWELL_FLOOR_S = 20;
+    const CALLOUT_LEAD_S = 0.18;   // the body moves first; the words land after
+    const swell = { active: false, t: 0, last: -1e9 };
+
+    const calloutEl = document.getElementById("callout");
+    const calloutText = document.createElement("span");
+    const calloutWhere = document.createElement("span");
+    calloutWhere.className = "where";
+    calloutEl.appendChild(calloutText);
+    calloutEl.appendChild(calloutWhere);
+
+    function swellEase(x) {
+      const t = Math.max(0, Math.min(1, x));
+      return t * t * (3 - 2 * t);
+    }
+
+    function swellHeadline(event) {
+      // Derived from the type, not a second copy of overlay_events.html's
+      // HEADLINES map — two hand-kept copies of one vocabulary is how KI-019
+      // happened, and a headline that drifts between two surfaces of the same
+      // stream is worse than a plain one. Short by construction, which is also
+      // what keeps it inside its box (KI-031).
+      return (event.event_type || "").replace(/_/g, " ");
+    }
+
+    function emitSwellCue(event) {
+      // The music cue. There is no audio bed yet — choosing DMCA-safe music is
+      // a human step still open from Sprint 11 — so this fires an event and
+      // nothing listens. Deliberately not a `playSwell()` stub: a function that
+      // looks like it makes a sound and doesn't is a lie the next reader has to
+      // discover. When the bed lands, it subscribes here.
+      window.dispatchEvent(new CustomEvent("world:swell", {
+        detail: {
+          event_type: event.event_type,
+          symbol: event.symbol ?? null,
+          hold_seconds: SWELL_PUSH_S + SWELL_HOLD_S + SWELL_DECAY_S,
+        },
+      }));
+    }
+
+    function restCamera() {
+      // Exactly rest. A push that lands on 0.999 leaves the room fractionally
+      // more zoomed after every swell and nothing on screen would ever say so
+      // — the failure `turn` and `hop` already taught this page, on the stage.
+      app.stage.scale.set(1);
+      app.stage.position.set(0, 0);
+    }
+
+    function startSwell(event) {
+      if (swell.active) return;              // one push per moment
+      if (ambient.t - swell.last < SWELL_FLOOR_S) return;
+      swell.active = true;
+      swell.t = 0;
+      swell.last = ambient.t;
+      calloutText.textContent = swellHeadline(event);
+      calloutWhere.textContent = event.symbol ?? "";
+      emitSwellCue(event);
+    }
+
+    function swellTick(dt) {
+      if (!swell.active) return;
+      swell.t += dt;
+      const t = swell.t;
+      const held = SWELL_PUSH_S + SWELL_HOLD_S;
+      let push;
+      if (t < SWELL_PUSH_S) {
+        push = swellEase(t / SWELL_PUSH_S);
+      } else if (t < held) {
+        push = 1;
+      } else if (t < held + SWELL_DECAY_S) {
+        push = 1 - swellEase((t - held) / SWELL_DECAY_S);
+      } else {
+        swell.active = false;
+        calloutEl.classList.remove("in");
+        restCamera();
+        return;
+      }
+      if (t >= CALLOUT_LEAD_S && t < held) calloutEl.classList.add("in");
+      if (t >= held) calloutEl.classList.remove("in");
+      const scale = 1 + SWELL_PUSH * push;
+      // Push in on the room's centre. Scaling the stage on its own would drag
+      // the frame down and to the right, which reads as a camera falling over
+      // rather than leaning in.
+      app.stage.scale.set(scale);
+      app.stage.position.set(
+        (1 - scale) * app.screen.width / 2,
+        (1 - scale) * app.screen.height / 2,
+      );
+    }
+
     // A live event nudges the room immediately; the next refresh reconciles it
     // with the authoritative server-side projection. The nudge scales with the
     // event's tier, so a calm event barely stirs and a tier-3 event visibly
@@ -1344,6 +1507,8 @@
       // at tier 0 the pair would spend the day turning to look at each other,
       // and a glance that happens constantly stops meaning anything.
       if (tier >= 1) lookAt(target === model ? trader : model, target, 0.25);
+      // B8: the top tier earns the whole room — camera, callout and a cue.
+      if (tier >= SWELL_TIER) startSwell(event);
     }
 
     async function refresh() {

@@ -590,3 +590,82 @@ def test_gallery_fits_every_style_on_one_screen():
     ).group(1)
     assert "STYLES.length" in gallery, "row pitch ignores how many styles there are"
     assert "app.screen.height" in gallery, "row pitch ignores the canvas height"
+
+
+# --- B8: the tier-3 swell sequence -----------------------------------------
+#
+# The money moment, and the Shorts raw material: camera push, character spike,
+# a bold callout, a cue for the audio bed, decay. The page source is what these
+# can assert — the choreography itself is graded by looking at it, which is
+# what `?swell=1` exists for.
+
+def _world_source():
+    return client.get("/world").text
+
+
+def test_a_tier_three_event_starts_the_swell_sequence():
+    body = _world_source()
+    assert "function startSwell(" in body
+    assert re.search(r"tier\s*>=\s*SWELL_TIER", body), (
+        "the swell must key on the tier the server computed, not on a second "
+        "severity scale of its own (KI-019)"
+    )
+
+
+def test_the_camera_push_returns_the_stage_exactly_to_rest():
+    """A transform that does not land back on exactly 1.0 leaves the room a
+    little more zoomed after every swell — the same failure as `hop`'s
+    inverted squash and `turn` collapsing through zero, on the whole stage."""
+    body = _world_source()
+    assert "function restCamera(" in body
+    assert re.search(r"app\.stage\.scale\.set\(1\)", body)
+    assert re.search(r"app\.stage\.position\.set\(0,\s*0\)", body)
+
+
+def test_a_burst_of_tier_three_events_pushes_the_camera_once():
+    """`app.stage.scale` is global: a second push starting mid-decay compounds
+    against a base that is not 1.0, and the room ends up permanently zoomed."""
+    body = _world_source()
+    assert re.search(r"if\s*\(swell\.active\)\s*return", body), (
+        "no guard against a second swell starting inside the first"
+    )
+    assert "SWELL_FLOOR_S" in body, "no floor between consecutive swells"
+
+
+def test_the_swell_cue_is_a_seam_and_not_a_pretend_sound():
+    """There is no audio bed yet — it is Sprint 11's remaining human step. A
+    stub that looks like it plays music is a lie the next reader has to find;
+    an event with no listener is a seam."""
+    body = _world_source()
+    assert "function emitSwellCue(" in body
+    assert 'CustomEvent("world:swell"' in body
+    assert "new Audio(" not in body and ".play()" not in body
+
+
+def test_the_callout_is_constrained_by_layout_not_by_transform():
+    """KI-031: the tier swell clipped the very headlines it existed to
+    emphasise, because `transform: scale` does not reflow and the overflow met
+    the frame edge. The callout is sized by the box, and its text wraps."""
+    body = _world_source()
+    callout = re.search(r"#callout\s*\{[^}]*\}", body)
+    assert callout, "no #callout rule"
+    assert "max-width" in callout.group(0)
+    assert re.search(r"#callout[^{]*\{[^}]*overflow-wrap", body)
+
+
+def test_the_callout_sets_text_as_textcontent():
+    body = _world_source()
+    assert re.search(r"callout\w*\.textContent\s*=", body)
+
+
+def test_the_swell_preview_surface_opens_no_event_stream():
+    """`?swell=1` is the eval gate the sprint note ruled: a local-only surface,
+    the way B1's `?anims=1` is — never a synthetic tier-3 row in an append-only
+    log. It must return before subscribe(), which is also what makes it
+    screenshottable at all: headless Chrome hangs on the page's SSE."""
+    body = _world_source()
+    preview = re.search(
+        r'get\("swell"\).*?\n(?:.*\n){0,12}?\s*return;', body
+    )
+    assert preview, "no early-returning ?swell=1 branch"
+    assert "EventSource" not in preview.group(0)
