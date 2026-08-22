@@ -768,12 +768,40 @@ def execute_actions(
     return followups
 
 
+def seed_state(probe: dict) -> WatchdogState:
+    """The state a starting watchdog should already be in (KI-038). Pure.
+
+    `WatchdogState` defaults to `streaming=False`, which is an assumption, not
+    an observation — and OBS outlives a watchdog restart. So the first tick of
+    a new process against a stream that had been live for 23 hours read as a
+    live edge and wrote `stream_started` into an append-only log; it went out on
+    the events rail as "stream went live". Uptime survives the ordinary case (a
+    start with no open outage closes nothing), but a restart *during* a real
+    outage closes that outage early and understates downtime — the direction
+    that flatters.
+
+    Only `streaming` is seeded. `obs_up` deliberately keeps its default: an OBS
+    that will not answer is a true statement about now, whenever the outage
+    began, and suppressing that would trade a false positive for a silence.
+
+    Same family as KI-033 (the director re-announced its backlog) and KI-034
+    (it assumed the scene it was on): state rebuilt on restart from an
+    assumption rather than from the world.
+    """
+    return WatchdogState(
+        streaming=bool(probe.get("reachable")) and bool(probe.get("streaming"))
+    )
+
+
 def main() -> None:
     init_logging()
     config = WatchdogConfig()
-    state = WatchdogState()
+    # Look before assuming (KI-038): one probe seeds the state, so a restart
+    # into a stream that never stopped announces nothing.
+    state = seed_state(probe_obs())
     logger.info(
-        "Stream watchdog started", extra={"poll_seconds": config.poll_seconds}
+        "Stream watchdog started",
+        extra={"poll_seconds": config.poll_seconds, "streaming": state.streaming},
     )
     while True:
         probe = probe_obs()

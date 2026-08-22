@@ -9,6 +9,7 @@ from scripts.stream_watchdog import (
     WatchdogConfig,
     WatchdogState,
     probe_content,
+    seed_state,
     tick,
 )
 
@@ -789,3 +790,53 @@ def test_the_reconnect_detector_re_arms_after_a_relaunch():
     records = _actions_of(actions, "record")
     assert [r[1] for r in records] == ["stream_reconnected"]
     assert records[0][2]["frames_before"] == 420
+
+
+# --- KI-038: a watchdog restart announced a stream that never stopped ------
+#
+# WatchdogState defaults to streaming=False, so the first tick of a new process
+# against a stream that had been live for 23 hours read as a live-edge and wrote
+# `stream_started` into an append-only log. It went out on the events rail as
+# "stream went live · 43s ago". Uptime is unaffected in the ordinary case — a
+# start with no open outage closes nothing — but a watchdog restart *during* a
+# real outage would close that outage early and understate downtime, which is
+# the direction that flatters. Same family as KI-033 and KI-034: state rebuilt
+# on restart from an assumption instead of from the world.
+
+def test_a_watchdog_restart_does_not_announce_a_stream_that_never_stopped():
+    state = seed_state(_live(total_frames=2_569_432))
+    state, actions = tick(_live(total_frames=2_569_500), state, CFG, 1000.0)
+    assert _actions_of(actions, "record") == []
+
+
+def test_starting_up_into_a_dead_stream_restarts_it_and_claims_nothing():
+    state = seed_state(_live(streaming=False))
+    state, actions = tick(_live(streaming=False), state, CFG, 1000.0)
+    assert ("start_stream",) in actions
+    assert _actions_of(actions, "record") == [], (
+        "a stream that was already down did not just stop"
+    )
+
+
+def test_a_stream_that_really_starts_is_still_announced():
+    state = seed_state(_live(streaming=False))
+    state, actions = tick(_live(), state, CFG, 1000.0)
+    assert [r[1] for r in _actions_of(actions, "record")] == ["stream_started"]
+
+
+def test_an_unreachable_obs_at_startup_is_still_a_drop():
+    """Seeding is about not inventing a *transition*; an OBS that will not
+    answer is a true statement about now, whenever the outage began."""
+    state = seed_state({"reachable": False})
+    state, actions = tick({"reachable": False}, state, CFG, 1000.0)
+    assert [r[1] for r in _actions_of(actions, "record")] == ["stream_dropped"]
+
+
+def test_the_runner_actually_seeds_its_state():
+    """KI-034 needed both halves — the decision and the runner that uses it.
+    A seed nothing calls is a seed that fixes nothing."""
+    import inspect
+
+    from scripts.stream_watchdog import main
+
+    assert "seed_state(" in inspect.getsource(main)
