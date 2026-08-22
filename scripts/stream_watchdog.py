@@ -768,7 +768,16 @@ def execute_actions(
     return followups
 
 
-def seed_state(probe: dict) -> WatchdogState:
+def _program_scene() -> str | None:
+    """What OBS is showing, or None if it will not say. Never raises: a
+    watchdog that cannot read the scene must still start."""
+    try:
+        return stream_ctl.current_scene(stream_ctl.make_client())
+    except Exception:
+        return None
+
+
+def seed_state(probe: dict, program_scene: str | None = None) -> WatchdogState:
     """The state a starting watchdog should already be in (KI-038). Pure.
 
     `WatchdogState` defaults to `streaming=False`, which is an assumption, not
@@ -787,9 +796,19 @@ def seed_state(probe: dict) -> WatchdogState:
     Same family as KI-033 (the director re-announced its backlog) and KI-034
     (it assumed the scene it was on): state rebuilt on restart from an
     assumption rather than from the world.
+
+    `on_standby` is seeded the same way, from what OBS is *showing* (KI-039).
+    B10's hand-back is gated on that flag, so a fresh process defaulting it to
+    False emits no switch and leaves the card up on a healthy stream. `None`
+    (OBS wouldn't say) is treated as "not the card": a spurious switch to
+    chart-focus would take the program off whatever the director had chosen.
+
+    Every field in a restarted state machine is either an observation or a
+    latent KI. `obs_up` is the deliberate exception, above.
     """
     return WatchdogState(
-        streaming=bool(probe.get("reachable")) and bool(probe.get("streaming"))
+        streaming=bool(probe.get("reachable")) and bool(probe.get("streaming")),
+        on_standby=program_scene == stream_scene.SCENE_STANDBY,
     )
 
 
@@ -798,7 +817,7 @@ def main() -> None:
     config = WatchdogConfig()
     # Look before assuming (KI-038): one probe seeds the state, so a restart
     # into a stream that never stopped announces nothing.
-    state = seed_state(probe_obs())
+    state = seed_state(probe_obs(), program_scene=_program_scene())
     logger.info(
         "Stream watchdog started",
         extra={"poll_seconds": config.poll_seconds, "streaming": state.streaming},

@@ -840,3 +840,53 @@ def test_the_runner_actually_seeds_its_state():
     from scripts.stream_watchdog import main
 
     assert "seed_state(" in inspect.getsource(main)
+
+
+# --- KI-039: the hand-back did not survive the watchdog's own restart ------
+#
+# The escape hatch that hid this closed an hour before it was found. B10's
+# hand-back is gated on `state.on_standby`, which a fresh process defaults to
+# False — so a watchdog that restarted while the card was up, with the stream
+# back before its first tick, emitted no switch. Until 696b58d the director
+# rescued it by accident: it never re-read the program scene, believed it was
+# on chart-focus, and its next decision moved the program off the card. Now it
+# reads the scene, correctly refuses to take a scene it doesn't own, and the
+# program stays on standby on a healthy stream with nobody willing to move it.
+
+def test_a_restart_while_the_card_is_up_still_hands_the_scene_back():
+    state = seed_state(_live(), program_scene=SCENE_STANDBY)
+    state, actions = tick(_live(), state, CFG, 1000.0)
+    assert _switches(actions) == [("switch_scene", SCENE_CHART)]
+
+
+def test_the_hand_back_is_still_exactly_one_switch_after_a_restart():
+    state = seed_state(_live(), program_scene=SCENE_STANDBY)
+    state, _ = tick(_live(), state, CFG, 1000.0)
+    state, actions = tick(_live(total_frames=100_600), state, CFG, 1030.0)
+    assert _switches(actions) == [], "re-asserted the scene and fought the director"
+
+
+def test_a_healthy_program_scene_seeds_no_hand_back():
+    state = seed_state(_live(), program_scene=SCENE_CHART)
+    state, actions = tick(_live(), state, CFG, 1000.0)
+    assert _switches(actions) == []
+
+
+def test_an_unreadable_program_scene_seeds_no_hand_back():
+    """None means OBS wouldn't say. Assume the card is not up: a spurious
+    switch to chart-focus would take the program off whatever the director had
+    legitimately chosen."""
+    state = seed_state(_live(), program_scene=None)
+    state, actions = tick(_live(), state, CFG, 1000.0)
+    assert _switches(actions) == []
+
+
+def test_the_runner_seeds_the_card_from_what_obs_is_showing():
+    """Every field in a restarted state machine is either an observation or a
+    latent KI. This is the third one this session — KI-034 the director's
+    scene, KI-038 the watchdog's `streaming`, and now `on_standby`."""
+    import inspect
+
+    from scripts.stream_watchdog import main
+
+    assert "program_scene=" in inspect.getsource(main)
