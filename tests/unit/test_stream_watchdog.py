@@ -760,3 +760,32 @@ def test_a_reconnect_reacts_more_quietly_than_the_stream_going_down():
     assert reconnected <= stopped, "a self-healed blink out-shouts a real stop"
     assert reconnected < dropped
     assert SEVERITIES["stream_reconnected"] > SEVERITIES["stream_stopped"]
+
+
+# --- KI-035: the watchdog's own recovery faked an ingest reconnect ---------
+#
+# KI-021's frame-counter-reset detector is unambiguous about a *new session*
+# and says nothing about *why*. An OBS relaunch starts one too, and zeroes the
+# same counter — so the soak's injected kill recorded stream_started and
+# stream_reconnected 8ms apart, with frames_before from the dead process.
+
+def test_a_relaunched_obs_is_not_an_rtmp_reconnect():
+    state = WatchdogState(obs_up=True, streaming=True)
+    probe = _live(total_frames=1_117_475, skipped_frames=12)
+    state, _ = tick(probe, state, CFG, 1000.0)
+    state, _ = tick({"reachable": False}, state, CFG, 1030.0)
+    state, actions = tick(_live(total_frames=420), state, CFG, 1068.4)
+    assert [r[1] for r in _actions_of(actions, "record")] == ["stream_started"]
+
+
+def test_the_reconnect_detector_re_arms_after_a_relaunch():
+    """The fix must seed the counter on the new process, not switch the
+    detector off — the next genuine re-dial still has to be seen."""
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, _ = tick(_live(total_frames=1_117_475), state, CFG, 1000.0)
+    state, _ = tick({"reachable": False}, state, CFG, 1030.0)
+    state, _ = tick(_live(total_frames=420), state, CFG, 1068.4)
+    state, actions = tick(_live(total_frames=8), state, CFG, 1100.0)
+    records = _actions_of(actions, "record")
+    assert [r[1] for r in records] == ["stream_reconnected"]
+    assert records[0][2]["frames_before"] == 420

@@ -131,6 +131,15 @@ def tick(
     if not state.obs_up:
         actions.append(("rebuild_scene",))
         state.obs_up = True
+        # KI-035: this is a *new* OBS process — the watchdog's own relaunch, or
+        # any other restart — and its output counters start from zero. Diffing
+        # them against the dead process's totals reads as an RTMP re-dial, which
+        # is how the A6 soak recorded a reconnect 8ms after the recovery that
+        # caused it, stamped with the pre-kill session's frame count. The
+        # `obs_reconnecting` branch already forgets the counters for the same
+        # reason; this path never learned to. Let the next probe seed them.
+        state.last_total_frames = None
+        state.last_skipped_frames = 0
 
     if probe.get("streaming"):
         if not state.streaming:
