@@ -72,10 +72,10 @@ def test_leak_detector_oracle_feature_is_visible():
 
     leaky = run_backtest(leaky_bars, _FAST)
 
-    assert leaky["overall_hit_rate"] is not None
-    assert honest["overall_hit_rate"] is not None
-    assert leaky["overall_hit_rate"] > 0.9
-    assert leaky["overall_hit_rate"] > honest["overall_hit_rate"] + 0.2
+    assert leaky["hit_rate_per_position"] is not None
+    assert honest["hit_rate_per_position"] is not None
+    assert leaky["hit_rate_per_position"] > 0.9
+    assert leaky["hit_rate_per_position"] > honest["hit_rate_per_position"] + 0.2
 
 
 def test_the_harness_charges_one_fee_per_position_not_per_bar():

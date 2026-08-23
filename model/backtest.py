@@ -207,7 +207,6 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
 
     equity = float(np.prod([1 + f.strategy_return for f in folds]))
     drawdown = _max_drawdown([f.strategy_return for f in folds])
-    hit_rates = [f.hit_rate for f in folds if f.hit_rate is not None]
     return {
         "config": asdict(config),
         "folds": [asdict(f) for f in folds],
@@ -219,13 +218,22 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         "accounting": "position-level",
         "position_policy": "merge-while-open",
         "max_concurrent_positions": _max_concurrent(held, config.horizon_bars),
-        "overall_hit_rate": float(np.mean(hit_rates)) if hit_rates else None,
+        # Position-weighted, not a mean of per-fold ratios: with 519 positions
+        # over 253 folds, a fold holding one position must not weigh as much
+        # as a fold holding forty. Renamed from `overall_hit_rate`, which was
+        # that unweighted mean over in-market bars.
+        "hit_rate_per_position": (
+            float(sum(f.wins for f in folds) / sum(f.positions for f in folds))
+            if any(f.positions for f in folds) else None
+        ),
         "strategy_total_return": float(equity - 1),
         "buy_hold_total_return": float(
             np.prod([1 + f.buy_hold_return for f in folds]) - 1
         ),
         "max_fold_drawdown": drawdown,
-        "avg_trade_return": float(np.mean(all_returns)) if all_returns else None,
+        # Renamed from `avg_trade_return`: a "trade" used to be an in-market
+        # bar, so the old key's value is not comparable to this one.
+        "avg_position_return": float(np.mean(all_returns)) if all_returns else None,
     }
 
 

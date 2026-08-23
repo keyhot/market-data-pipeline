@@ -208,9 +208,9 @@ Being candid:
 - **There is no clip pipeline.** The world produces small moments worth cutting — a streak
   resolving, a volatility spike decaying — and nothing turns them into shorts.
 - **The model doesn't win yet.** Over 253 walk-forward folds and 50,200 out-of-sample
-  predictions (2026-07-18 → 2026-08-22), version zero called direction correctly **46.4%**
+  predictions (2026-07-18 → 2026-08-22), version zero called direction correctly **49.9%**
   of the time on the positions it took and returned **−63.3%** against +18.4% buy-and-hold;
-  ETHUSDT replicates at 44.8% and −56.6%. The average position earns **−19.2 bps** against a
+  ETHUSDT replicates at 46.8% and −56.6%. The average position earns **−19.2 bps** against a
   22 bps round trip — round-trip costs exceed the per-trade edge at 15-bar holds on
   1-minute data, and there is no edge to speak of before costs either (pooled OOS ROC AUC
   0.4965 BTC / 0.5123 ETH). Trading less often does not rescue it: a p > 0.8 gate is worth
