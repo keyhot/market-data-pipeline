@@ -256,7 +256,12 @@ Being candid:
   bars (1,159 folds, three down years), the strategy still loses to buy-and-hold by two
   orders of magnitude at every exposure setting, and the share of folds beating their own
   null falls through chance — 613 → 571 → 548 of 1,159 — as capital is forced genuinely
-  flat by a re-entry cooldown. Full write-up in the vault plan.
+  flat by a re-entry cooldown.
+  With error bars, **no per-position edge is measurable in either direction**: −6.0 ± 7.1,
+  +3.2 ± 9.4 and −7.4 ± 11.2 bps across the three exposure settings, all inside one
+  standard error of zero. And scored against a *constant*-exposure null rather than one
+  that inherits the model's own allocation, the full-exposure run finishes at **0.98× —
+  below a path with no skill in it at all**. Full write-up in the vault plan.
   Earlier revisions of this README quoted 55.6% and −39.8%, from 3 folds and 264 trades on
   a harness that billed fees per in-market bar rather than per position; both figures are
   superseded, and the record of that is in the vault rather than deleted.
