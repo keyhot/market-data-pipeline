@@ -210,3 +210,6 @@ pyrightconfig.json
 .ionide
 model/artifacts/
 backups/
+
+# Visual QA screenshots — throwaway evidence, regenerated on demand
+data/visual-qa/

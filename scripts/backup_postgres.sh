@@ -21,7 +21,12 @@ OUT="$BACKUP_DIR/market_data_$STAMP.dump"
 
 mkdir -p "$BACKUP_DIR"
 
+# deployment_identity is excluded on purpose: it says whether a database is
+# dev or prod (storage/db.py's guard), which is a property of the HOST, not of
+# the data. Carrying it in the dump would restore a laptop's 'dev' stamp onto
+# production. Each host gets its row from db/init.sql and is stamped once.
 docker compose exec -T postgres pg_dump -U "${POSTGRES_USER:-market_data}" \
+  --exclude-table=deployment_identity \
   -Fc "${POSTGRES_DB:-market_data}" > "$OUT"
 
 SIZE=$(du -h "$OUT" | cut -f1)

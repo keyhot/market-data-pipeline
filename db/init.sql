@@ -96,3 +96,17 @@ CREATE INDEX idx_world_events_type_time ON world_events (event_type, occurred_at
 -- IS the same event. Makes the Sprint 12 historical backfill re-runnable.
 CREATE UNIQUE INDEX uq_world_events_natural
     ON world_events (event_type, occurred_at, symbol) NULLS NOT DISTINCT;
+
+-- Which deployment this database is. Compared against the DEPLOY_ROLE of every
+-- process that connects (storage/db.py); on a mismatch the pool opens
+-- read-only, so a dev session that reaches production through an SSH tunnel
+-- cannot write to the append-only world_events. Seeded 'dev' because the safe
+-- default is the one that is not the world's memory — production is stamped
+-- explicitly. Kept in sync with scripts/migrate_014.sql.
+CREATE TABLE deployment_identity (
+    singleton  BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    role       TEXT NOT NULL CHECK (role IN ('dev', 'prod')),
+    stamped_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO deployment_identity (singleton, role) VALUES (TRUE, 'dev');
