@@ -17,6 +17,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from model.benchmark import exposure_matched_return, held_coverage
 from model.features import DEFAULT_HORIZON_BARS, build_features
 from model.train import _NUM_ROUNDS, _PARAMS, TRAIN_BARS_LIMIT
 from storage.postgres_store import get_price_bars
@@ -32,6 +33,11 @@ class BacktestConfig:
     entry_threshold: float = 0.55  # long when P(up) exceeds this; flat otherwise
     fee_per_side: float = 0.001    # Binance taker 0.1%
     slippage: float = 0.0001       # 1 bp per side
+    # Bars to stay flat after a position exits before another may open.
+    # 0 = off, which is how every published figure was measured; raising it
+    # makes exposure a decision the strategy takes rather than a by-product
+    # of the horizon (model plan item 2).
+    cooldown_bars: int = 0
 
 
 def find_episodes(mask) -> list[tuple[int, int]]:
@@ -85,6 +91,34 @@ def merge_overlapping_holds(
     return closed, pending
 
 
+def apply_cooldown(
+    held: list[tuple[int, int]], horizon_bars: int, cooldown_bars: int
+) -> list[tuple[int, int]]:
+    """Decline entries that arrive before the strategy has been flat for
+    `cooldown_bars` after its previous exit.
+
+    Runs **after** `merge_overlapping_holds`, and deliberately not instead of
+    it: merging is not a policy, it is the KI-001 correctness argument that
+    capital held continuously is one position. The cooldown is the policy —
+    it puts capital genuinely flat, which is the only honest way to lower
+    exposure. The clock starts at the *exit* (`end + horizon_bars`), not at
+    the last signal bar, because the position is still held in between.
+
+    A declined entry never happened, so it starts no cooldown of its own: the
+    clock keeps running from the last position actually taken.
+    """
+    if cooldown_bars <= 0:
+        return list(held)
+    kept: list[tuple[int, int]] = []
+    free_at: int | None = None
+    for start, end in held:
+        if free_at is not None and start < free_at:
+            continue
+        kept.append((start, end))
+        free_at = end + horizon_bars + cooldown_bars
+    return kept
+
+
 def position_returns(
     episodes: list[tuple[int, int]], closes, config: "BacktestConfig"
 ) -> np.ndarray:
@@ -117,6 +151,13 @@ class FoldResult:
     strategy_return: float
     buy_hold_return: float
     wins: int = 0
+    # Fraction of this fold's bars spent in the market, and what a strategy
+    # with no forecasting skill would have returned at that exposure and
+    # turnover. Scored per fold on purpose: over years of bars a single
+    # global null sits a point or two from buy-and-hold and discriminates
+    # nothing, while a falling fold makes being flat worth something.
+    exposure: float = 0.0
+    null_return: float = 0.0
 
 
 def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> dict:
@@ -140,6 +181,7 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
     row_of = close_all.index.get_indexer(X.index)
 
     folds: list[FoldResult] = []
+    fold_spans: list[tuple[int, int]] = []
     episodes: list[tuple[int, int]] = []
     entry_label: dict[int, int] = {}
     fold_of_entry: dict[int, int] = {}
@@ -173,6 +215,9 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
             entry_label[entry] = int(y_test[local_start])
             fold_of_entry[entry] = len(folds)
 
+        fold_spans.append(
+            (int(row_of[test_start]), int(row_of[test_end - 1]))
+        )
         folds.append(
             FoldResult(
                 fold=len(folds),
@@ -190,6 +235,11 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
     # and re-opened there.
     closed, pending = merge_overlapping_holds(episodes, config.horizon_bars)
     held = closed + ([pending] if pending is not None else [])
+    # Merge first, then decline: merging is the KI-001 statement that capital
+    # held continuously is one position, and the cooldown is the policy that
+    # puts capital genuinely flat. Reversing them would re-book one hold as
+    # two, which is the defect that rewrite fixed.
+    held = apply_cooldown(held, config.horizon_bars, config.cooldown_bars)
     held = [
         position for position in held
         if position[1] + config.horizon_bars < len(close_values)
@@ -202,8 +252,14 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         fold.positions += 1
         fold.strategy_return = (1 + fold.strategy_return) * (1 + net) - 1
         fold.wins += entry_label[entry]
-    for fold in folds:
+    coverage = held_coverage(held, config.horizon_bars, len(close_values))
+    cost = 2 * (config.fee_per_side + config.slippage)
+    for fold, (lo, hi) in zip(folds, fold_spans):
         fold.hit_rate = fold.wins / fold.positions if fold.positions else None
+        fold.exposure = float(coverage[lo : hi + 1].mean())
+        fold.null_return = exposure_matched_return(
+            fold.exposure, fold.buy_hold_return, fold.positions, cost
+        )
 
     equity = float(np.prod([1 + f.strategy_return for f in folds]))
     drawdown = _max_drawdown([f.strategy_return for f in folds])
@@ -234,6 +290,19 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         # Renamed from `avg_trade_return`: a "trade" used to be an in-market
         # bar, so the old key's value is not comparable to this one.
         "avg_position_return": float(np.mean(all_returns)) if all_returns else None,
+        # Item 2 of the model plan: the harness could not previously tell a
+        # good model from a long one, because it reported neither how much of
+        # the time it was in the market nor a benchmark matched to that.
+        # Denominator is the full bar series, train region included — the
+        # same one the plan's 82.0% was computed against, so the two are
+        # directly comparable.
+        "time_in_market": float(coverage.mean()) if len(coverage) else 0.0,
+        "null_total_return": float(
+            np.prod([1 + f.null_return for f in folds]) - 1
+        ),
+        "excess_vs_null": float(
+            equity - np.prod([1 + f.null_return for f in folds])
+        ),
     }
 
 
