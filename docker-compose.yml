@@ -28,7 +28,27 @@ services:
       # Loopback-only: OBS browser sources, the director, the watchdog and
       # the broadcast manager all reach the API over localhost on the same
       # host. YouTube is the public surface; the box stays private.
+      #
+      # All twelve loopback shards, not just .1: the KI-013 fix gives every
+      # browser source its own origin (127.0.0.1-12) so each gets its own
+      # Chromium 6-connection pool, and a bind to 127.0.0.1 alone answers
+      # none of the others. Binding only .1 leaves every source except the
+      # first pointing at a closed port — the frame goes white, and it stays
+      # white until someone looks at the stream, because the API is healthy
+      # and the tests pass. 0.0.0.0 would also work and is exactly what this
+      # loopback bind exists to avoid on a public IP.
       - "127.0.0.1:${API_PORT:-8000}:8000"
+      - "127.0.0.2:${API_PORT:-8000}:8000"
+      - "127.0.0.3:${API_PORT:-8000}:8000"
+      - "127.0.0.4:${API_PORT:-8000}:8000"
+      - "127.0.0.5:${API_PORT:-8000}:8000"
+      - "127.0.0.6:${API_PORT:-8000}:8000"
+      - "127.0.0.7:${API_PORT:-8000}:8000"
+      - "127.0.0.8:${API_PORT:-8000}:8000"
+      - "127.0.0.9:${API_PORT:-8000}:8000"
+      - "127.0.0.10:${API_PORT:-8000}:8000"
+      - "127.0.0.11:${API_PORT:-8000}:8000"
+      - "127.0.0.12:${API_PORT:-8000}:8000"
     environment:
       DEPLOY_ROLE: ${DEPLOY_ROLE:-dev}
       DATABASE_URL: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-market_data}@postgres:5432/${POSTGRES_DB:-market_data}

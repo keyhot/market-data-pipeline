@@ -561,3 +561,76 @@ def get_news_items(symbol: str, limit: int = 20) -> list[dict]:
         }
         for id_, title, publisher, url, published_at, summary in rows
     ]
+
+
+_NOW_PLAYING_SQL = """
+    INSERT INTO music_now_playing
+        (id, track_file, title, artist, source, source_url, license,
+         duration_seconds, started_at, updated_at)
+    VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, now())
+    ON CONFLICT (id) DO UPDATE SET
+        track_file = EXCLUDED.track_file,
+        title = EXCLUDED.title,
+        artist = EXCLUDED.artist,
+        source = EXCLUDED.source,
+        source_url = EXCLUDED.source_url,
+        license = EXCLUDED.license,
+        duration_seconds = EXCLUDED.duration_seconds,
+        started_at = EXCLUDED.started_at,
+        updated_at = now()
+"""
+
+
+def set_now_playing(
+    track_file: str,
+    title: str,
+    artist: str,
+    source: str,
+    source_url: str,
+    license_name: str,
+    duration_seconds: float | None,
+    started_at: datetime,
+) -> None:
+    """Record the track the bed just started.
+
+    The music runner lives on the host (it needs the OBS socket) and the API
+    that renders the credit lives in a container, so Postgres is the only thing
+    both can reach. One row, updated in place — see scripts/migrate_015.sql for
+    why this is not a world_event.
+    """
+    with get_pool().connection() as conn:
+        conn.execute(
+            _NOW_PLAYING_SQL,
+            (
+                track_file,
+                title,
+                artist,
+                source,
+                source_url,
+                license_name,
+                duration_seconds,
+                started_at,
+            ),
+        )
+
+
+def get_now_playing() -> dict | None:
+    """The bed's current track, or None when nothing has ever played."""
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT track_file, title, artist, source, source_url, license,"
+            "       duration_seconds, started_at"
+            "  FROM music_now_playing WHERE id = 1",
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "file": row[0],
+        "title": row[1],
+        "artist": row[2],
+        "source": row[3],
+        "source_url": row[4],
+        "license": row[5],
+        "duration_seconds": float(row[6]) if row[6] is not None else None,
+        "started_at": row[7],
+    }

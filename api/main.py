@@ -35,6 +35,7 @@ from storage.postgres_store import (
     get_latest_closes,
     get_model_accuracy,
     get_news_items,
+    get_now_playing,
     get_price_bars,
     get_signal_accuracy,
     get_signals,
@@ -612,6 +613,38 @@ def overlay_signals():
     deduped = list(dict.fromkeys(symbols))
     return HTMLResponse(
         _render_template("overlay_signals.html", {"__SYMBOLS__": json.dumps(deduped)})
+    )
+
+
+@app.get("/music/now-playing")
+def music_now_playing():
+    """The bed's current track, for the credit line on the signals strip.
+
+    Read-only and forgiving: the bed is a courtesy (neither Mixkit's nor
+    Pixabay's licence requires attribution), so if the runner is not up or the
+    row was never written, this answers `{"playing": null}` rather than an
+    error. The strip then shows nothing at all, which is the correct look for a
+    stream with no music.
+    """
+    try:
+        current = get_now_playing()
+    except Exception:  # noqa: BLE001 - a DB blip must not 500 the overlay
+        current = None
+    if not current:
+        return ApiResponse(status=200, data={"playing": None})
+    return ApiResponse(
+        status=200,
+        data={
+            "playing": {
+                "title": current["title"],
+                "artist": current["artist"],
+                "source": current["source"],
+                "source_url": current["source_url"],
+                "license": current["license"],
+                "started_at": current["started_at"],
+                "duration_seconds": current["duration_seconds"],
+            }
+        },
     )
 
 

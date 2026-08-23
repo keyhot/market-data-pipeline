@@ -44,10 +44,52 @@ def test_urls_hit_existing_routes():
 
 def test_audio_source_appears_only_with_dir(monkeypatch):
     monkeypatch.delenv("STREAM_AUDIO_DIR", raising=False)
-    assert all(s["kind"] != "vlc_source" for s in _spec()["sources"])
+    assert all(s["kind"] != "ffmpeg_source" for s in _spec()["sources"])
     monkeypatch.setenv("STREAM_AUDIO_DIR", "/tmp/audio")
-    audio = [s for s in _spec()["sources"] if s["kind"] == "vlc_source"]
+    audio = [s for s in _spec()["sources"] if s["kind"] == "ffmpeg_source"]
     assert len(audio) == 1 and audio[0]["name"] == "audio-bed"
+
+
+def test_the_bed_is_one_input_shared_by_every_scene(monkeypatch):
+    """Four per-scene beds meant four players: OBS deactivates a source outside
+    the program scene, so every director switch restarted the music."""
+    monkeypatch.setenv("STREAM_AUDIO_DIR", "/tmp/audio")
+    scenes = stream_scene.scenes_spec()
+    beds = [
+        [s for s in scene["sources"] if s["kind"] == "ffmpeg_source"] for scene in scenes
+    ]
+    assert all(len(b) == 1 for b in beds), "every scene needs the bed"
+    assert len({b[0]["name"] for b in beds}) == 1, "and it must be the SAME input"
+    assert stream_scene.audio_source_names() == ["audio-bed"]
+
+
+def test_the_bed_is_not_a_kind_this_obs_lacks(monkeypatch):
+    """`vlc_source` needs libVLC and simply is not offered when it is missing —
+    the original spec would have failed at create_input, which nobody found out
+    because STREAM_AUDIO_DIR was never set."""
+    monkeypatch.setenv("STREAM_AUDIO_DIR", "/tmp/audio")
+    assert all(s["kind"] != "vlc_source" for s in _spec()["sources"])
+
+
+def test_the_bed_never_covers_the_frame(monkeypatch):
+    """Sources are indexed bottom-first, so an audio source appended last would
+    be stacked on top of every page (KI-025/026/029 were all this)."""
+    monkeypatch.setenv("STREAM_AUDIO_DIR", "/tmp/audio")
+    for scene in stream_scene.scenes_spec():
+        assert scene["sources"][0]["kind"] == "ffmpeg_source", scene["scene"]
+
+
+def test_the_bed_settings_cannot_silence_the_running_track(monkeypatch):
+    """`build` merges these over the live settings, so naming local_file here
+    would blank the current track every time the watchdog rebuilt the scene."""
+    monkeypatch.setenv("STREAM_AUDIO_DIR", "/tmp/audio")
+    bed = [s for s in _spec()["sources"] if s["kind"] == "ffmpeg_source"][0]
+    assert "local_file" not in bed["settings"]
+    # A looping bed plays one track forever, which makes every credit but the
+    # first one false; restart_on_activate restarts it on every scene switch.
+    assert bed["settings"]["looping"] is False
+    assert bed["settings"]["restart_on_activate"] is False
+    assert bed["settings"]["clear_on_media_end"] is True
 
 
 def test_browser_sources_keep_sse_alive():

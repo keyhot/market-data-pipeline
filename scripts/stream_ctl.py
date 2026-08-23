@@ -71,7 +71,11 @@ def build_scene(client, spec: dict | None = None) -> dict:
 
 def _build_one(client, spec: dict, set_current: bool) -> dict:
     """Build a single scene idempotently. Each scene owns uniquely-named inputs,
-    so an input lives in exactly one scene and get_scene_item_id always resolves."""
+    so an input lives in exactly one scene and get_scene_item_id always resolves —
+    except the music bed, which is marked `shared` and carried into every scene
+    as a second scene item on ONE input (a per-scene bed restarts the music on
+    every director switch; see `stream_scene.audio_sources`). For a shared
+    input, "already exists" no longer implies "already in this scene"."""
     created: list[str] = []
     scenes = {s["sceneName"] for s in client.get_scene_list().scenes}
     if spec["scene"] not in scenes:
@@ -86,7 +90,12 @@ def _build_one(client, spec: dict, set_current: bool) -> dict:
                 spec["scene"], src["name"], src["kind"], src["settings"], True
             )
             created.append(src["name"])
-        item_id = client.get_scene_item_id(spec["scene"], src["name"]).scene_item_id
+        item_id = _scene_item_id(client, spec["scene"], src["name"], shared=src.get("shared", False))
+        if src.get("shared") and "width" not in src["settings"]:
+            # Audio-only: no geometry to set, and no rectangle to fight over.
+            # It is still indexed, at the bottom, so it can never cover a page.
+            client.set_scene_item_index(spec["scene"], item_id, layer)
+            continue
         # Every property that decides the rendered rect, not just the corner
         # it starts at. `event-chart` sat at scale 1.509 in live OBS —
         # rendering 1449x815 against a spec that says 960x540, with 489px of it
@@ -119,6 +128,23 @@ def _build_one(client, spec: dict, set_current: bool) -> dict:
     if set_current:
         client.set_current_program_scene(spec["scene"])
     return {"scene": spec["scene"], "created": created}
+
+
+def _scene_item_id(client, scene: str, source: str, shared: bool) -> int:
+    """The scene item for `source` in `scene`, adding it when a shared input
+    exists but has never been placed here.
+
+    Asks what is in the scene rather than catching the miss: obs-websocket logs
+    a full traceback for every failed request, so a try/except here printed
+    three stack traces on every clean build of a working stream.
+    """
+    if shared:
+        present = {
+            item["sourceName"] for item in client.get_scene_item_list(scene).scene_items
+        }
+        if source not in present:
+            return client.create_scene_item(scene, source).scene_item_id
+    return client.get_scene_item_id(scene, source).scene_item_id
 
 
 def switch_scene(client, scene_name: str) -> None:

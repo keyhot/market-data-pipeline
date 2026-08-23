@@ -24,8 +24,9 @@ scene carries its own uniquely-named browser sources: a handful of extra
 browser instances kept alive (shutdown=False) for instant switching and live
 SSE. Consolidating shared sources (one strip across scenes, scaled scene items)
 is a later perf pass; v0 favours self-contained, idempotent scenes. The audio
-bed, when configured, is one bed per scene (unique name) so audio is present in
-every scene — a single global bed is a go-live OBS-routing optimization.
+bed is the one exception: it is a single global input carried into every scene,
+because four per-scene beds restart the music on every switch (see
+`audio_sources`).
 """
 
 import os
@@ -104,34 +105,64 @@ def audio_gain_db(tier: int) -> float:
 
 
 def audio_source_names() -> list[str]:
-    """Every audio-bed input the scene spec would have created (one per scene,
-    suffixed) — empty when STREAM_AUDIO_DIR is unset, which is the default."""
-    names = []
+    """Every audio-bed input the scene spec would create — one, shared by all
+    scenes, or none when STREAM_AUDIO_DIR is unset."""
+    names: list[str] = []
     for scene in scenes_spec():
         names += [
             source["name"]
             for source in scene["sources"]
-            if source.get("kind") == "vlc_source"
+            if source.get("kind") == "ffmpeg_source" and source["name"] not in names
         ]
     return names
 
 
-def audio_sources(suffix: str = "") -> list[dict]:
-    """VLC playlist looping over STREAM_AUDIO_DIR; absent when unset so scenes
-    build cleanly before any audio exists. `suffix` keeps the input name unique
-    per scene (the home scene keeps the bare 'audio-bed' name)."""
-    audio_dir = os.environ.get("STREAM_AUDIO_DIR")
-    if not audio_dir:
+def audio_sources() -> list[dict]:
+    """The music bed: ONE `ffmpeg_source` shared by every scene, absent when
+    STREAM_AUDIO_DIR is unset so scenes build cleanly before any audio exists.
+
+    Two deliberate departures from how this was written in Sprint 11:
+
+    **`ffmpeg_source`, not `vlc_source`.** `vlc_source` needs libVLC, and OBS
+    does not offer the kind at all when it is missing — this host's OBS 32.2.0
+    lists twelve input kinds and `vlc_source` is not among them, so the original
+    spec would have failed at `create_input` the first time anyone set
+    STREAM_AUDIO_DIR. It never was set, so nobody found out. `ffmpeg_source`
+    plays one file and has no playlist concept, which is what the runner in
+    `scripts/music_bed.py` wants anyway: OBS cannot report which playlist entry
+    is playing, so a playlist would make crediting the track impossible.
+
+    **One input, not one per scene.** Four independent beds meant four
+    independent players: OBS deactivates a source that is not in the program
+    scene, so every director switch restarted the music from the top, and any
+    setting that kept them all alive would have played four tracks at once.
+    A single input with a scene item in each scene plays continuously across
+    switches. This is the one place the "each scene owns uniquely-named inputs"
+    rule in `stream_ctl._build_one` is deliberately broken, and that function
+    handles it.
+
+    `local_file` is deliberately absent: `build` merges these settings over the
+    live ones, so naming it here would blank the current track — and silence
+    the bed — every time the watchdog rebuilt the scene.
+    """
+    if not os.environ.get("STREAM_AUDIO_DIR"):
         return []
-    name = "audio-bed" if not suffix else f"audio-bed-{suffix}"
     return [
         {
-            "name": name,
-            "kind": "vlc_source",
+            "name": "audio-bed",
+            "kind": "ffmpeg_source",
+            "shared": True,
             "settings": {
-                "playlist": [{"value": audio_dir, "hidden": False, "selected": False}],
-                "loop": True,
-                "shuffle": False,
+                "is_local_file": True,
+                # The runner advances tracks; a looping source would play one
+                # track forever and make every credit after the first false.
+                "looping": False,
+                # OBS defaults this True, which restarts the file whenever the
+                # source's scene becomes active — i.e. on every scene switch.
+                "restart_on_activate": False,
+                # Leaves the source in ENDED, which is how the player learns
+                # the track finished.
+                "clear_on_media_end": True,
             },
             "x": 0,
             "y": 0,
@@ -145,6 +176,7 @@ def _chart_focus() -> dict:
         "scene": SCENE_CHART,
         "canvas": CANVAS,
         "sources": [
+            *audio_sources(),
             # 1440 wide, not 1920: the rail starts at x=1440, and a chart
             # drawn under it loses exactly the strip that carries the numbers —
             # ETHUSDT's price scale, its last-price label and its newest
@@ -154,7 +186,6 @@ def _chart_focus() -> dict:
             # 960 tall, meeting the strip: at 840 it left a 480x120 notch of
             # dead black under the rail (KI-029).
             _browser("overlay-events", "/overlay/events", 480, 960, 1440, 0),
-            *audio_sources(),
         ],
     }
 
@@ -165,9 +196,9 @@ def _world_focus() -> dict:
         "scene": SCENE_WORLD,
         "canvas": CANVAS,
         "sources": [
+            *audio_sources(),
             _browser("world-room", "/world", 1920, 960, 0, 0),
             _browser("world-signals", "/overlay/signals", 1920, 120, 0, 960),
-            *audio_sources("world"),
         ],
     }
 
@@ -178,6 +209,7 @@ def _event_focus() -> dict:
         "scene": SCENE_EVENT,
         "canvas": CANVAS,
         "sources": [
+            *audio_sources(),
             _browser("event-feed", "/overlay/events", 960, 1080, 960, 0),
             # `/charts?symbols=`, not `/chart/BTCUSDT`: the latter is the page a
             # human opens in a browser, and its `← dashboard` nav link, status
@@ -188,7 +220,6 @@ def _event_focus() -> dict:
             _browser("event-chart", "/charts?interval=1m&symbols=BTCUSDT",
                      960, 960, 0, 0),
             _browser("event-signals", "/overlay/signals", 960, 120, 0, 960),
-            *audio_sources("event"),
         ],
     }
 
@@ -204,9 +235,9 @@ def _standby() -> dict:
         "scene": SCENE_STANDBY,
         "canvas": CANVAS,
         "sources": [
+            *audio_sources(),
             _browser("standby-card", "/standby?state=reconnecting",
                      CANVAS[0], CANVAS[1], 0, 0),
-            *audio_sources("standby"),
         ],
     }
 

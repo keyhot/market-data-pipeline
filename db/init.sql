@@ -110,3 +110,21 @@ CREATE TABLE deployment_identity (
 );
 
 INSERT INTO deployment_identity (singleton, role) VALUES (TRUE, 'dev');
+
+-- The music bed's current track (Sprint 11 close-out). One row, UPDATEd in
+-- place: this is current state, not history. Deliberately NOT a world_event —
+-- a track change every ~90s would flood the append-only log that salience,
+-- mood and scene choice are computed from. Keep in sync with
+-- scripts/migrate_015.sql.
+CREATE TABLE IF NOT EXISTS music_now_playing (
+    id                smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    track_file        text        NOT NULL,
+    title             text        NOT NULL,
+    artist            text        NOT NULL,
+    source            text        NOT NULL,
+    source_url        text        NOT NULL,
+    license           text        NOT NULL,
+    duration_seconds  numeric(8, 1),
+    started_at        timestamptz NOT NULL,
+    updated_at        timestamptz NOT NULL DEFAULT now()
+);

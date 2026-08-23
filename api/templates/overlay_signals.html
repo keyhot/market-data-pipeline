@@ -54,6 +54,36 @@
     @keyframes settle { from { transform: scale(2.1); } }
     .note { position: fixed; right: 1rem; bottom: 0.3rem; color: var(--muted);
             font-size: 0.7rem; }
+    /* Now playing. Sits at the right end of the strip, which is the one band
+       on air in all three live scenes — so the credit rides along instead of
+       costing three more browser sources (KI-013: they all share one Chromium
+       and six connections per origin). Fixed width so a long title cannot
+       squeeze the model cells, which are the point of the strip. */
+    /* order, not DOM position: the model cells are appended to #strip at
+       runtime, so without this the credit would sit between the label and the
+       symbols instead of at the far end. */
+    #np { order: 99; flex: 0 0 auto; display: none; align-items: center; gap: 0.55rem;
+          max-width: 250px; padding-left: 1.2rem; margin-right: 0.5rem;
+          /* Lifts the credit clear of the simulation disclaimer pinned to the
+             bottom-right; touching, they read as one sentence about the music. */
+          margin-bottom: 1.1rem;
+          border-left: 1px solid var(--muted); }
+    #np.on { display: flex; }
+    #np .ico { font-size: 1.15rem; color: var(--neutral); flex: 0 0 auto; }
+    #np .lines { min-width: 0; display: flex; flex-direction: column;
+                 gap: 0.1rem; }
+    #np .t, #np .a { overflow: hidden; text-overflow: ellipsis;
+                     white-space: nowrap; }
+    #np .t { font-size: 0.9rem; font-weight: 600; }
+    #np .a { font-size: 0.78rem; color: var(--neutral); }
+    #np .k { font-size: 0.62rem; letter-spacing: 0.12em; color: var(--muted);
+             text-transform: uppercase; }
+    /* event-focus mounts this strip at 960: keep the credit (it is the whole
+       reason this element exists) but give it less room. */
+    @media (max-width: 1000px) {
+      #np { max-width: 170px; padding-left: 0.8rem; }
+      #np .k { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -61,6 +91,14 @@
     <div id="label">
       <span class="kicker">Model calls</span>
       <span class="sub">live predictions, scored on the close</span>
+    </div>
+    <div id="np">
+      <span class="ico">&#9835;</span>
+      <div class="lines">
+        <span class="k">Now playing</span>
+        <span class="t" id="np-title"></span>
+        <span class="a" id="np-artist"></span>
+      </div>
     </div>
   </div>
   <p class="note">signal-based simulation — not broker P&amp;L</p>
@@ -133,6 +171,33 @@
     }
 
     SYMBOLS.forEach((symbol) => refresh(symbol, false));
+
+    // The music credit. Polled, not an EventSource: this strip already holds
+    // the page's one SSE connection open for signal resolutions, and a track
+    // changes about every 90 seconds — a 15s poll is well inside the budget
+    // and costs no persistent connection.
+    const np = document.getElementById("np");
+    const npTitle = document.getElementById("np-title");
+    const npArtist = document.getElementById("np-artist");
+
+    async function refreshNowPlaying() {
+      try {
+        const response = await fetch("/music/now-playing");
+        if (!response.ok) { np.classList.remove("on"); return; }
+        const { data } = await response.json();
+        // No bed running is a legitimate state, not an error: show nothing
+        // rather than a stale or empty credit.
+        if (!data || !data.playing) { np.classList.remove("on"); return; }
+        npTitle.textContent = data.playing.title;
+        npArtist.textContent = data.playing.artist;
+        np.classList.add("on");
+      } catch (err) {
+        np.classList.remove("on");
+      }
+    }
+
+    refreshNowPlaying();
+    setInterval(refreshNowPlaying, 15000);
 
     const source = new EventSource("/stream/world/events");
     source.onmessage = (event) => {
