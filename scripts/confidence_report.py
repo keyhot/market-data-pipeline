@@ -31,6 +31,14 @@ from model.features import build_features  # noqa: E402
 from model.train import _NUM_ROUNDS, _PARAMS, TRAIN_BARS_LIMIT  # noqa: E402
 from storage.postgres_store import get_price_bars  # noqa: E402
 
+# NOTE — this script shares `find_episodes` with the harness but deliberately
+# stops there. It does NOT apply `merge_overlapping_holds` or `apply_cooldown`,
+# because it measures the *selection value of a threshold* per episode, not the
+# equity path one unit of capital would have taken. So its `positions` counts
+# are episode counts and are not comparable to `run_backtest`'s
+# `total_positions`, which merges overlapping holds (KI-001) and, when
+# `cooldown_bars > 0`, declines re-entries. Anything that needs the equity path
+# must call `run_backtest` rather than extending the loops below.
 CACHE_DIR = Path(__file__).resolve().parent.parent / "model" / "artifacts"
 BPS = 1e4
 _BUCKET_EDGES = (0.0, 0.3, 0.4, 0.5, 0.55, 0.6, 0.7, 0.8, 0.9, 1.0)
