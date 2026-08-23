@@ -221,7 +221,7 @@ candles.
 poetry run pytest
 ```
 
-798 tests, written test-first, including property-based tests on the state projection and
+805 tests, written test-first, including property-based tests on the state projection and
 mutation checks on the watchdog backoff and the director's rate limits. **No test touches
 the network** — providers, the OBS client, and the store are all injected seams. Integration
 tests under `tests/integration/` need the compose Postgres and auto-skip without it.
