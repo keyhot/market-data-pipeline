@@ -66,3 +66,20 @@ def exposure_matched_return(
     not -114%.
     """
     return (1.0 + exposure * benchmark_return) * (1.0 - cost) ** positions - 1.0
+
+
+def return_dispersion(returns) -> tuple[float | None, float | None]:
+    """Sample standard deviation of the position returns, and the standard
+    error of their mean.
+
+    `avg_position_return` on its own cannot say whether a small positive mean
+    is an edge or a rounding error — a +3.2 bps mean over 1,120 positions is
+    unreadable without knowing how wide the positions were. Both are None
+    below two positions: a single sample has no spread, and 0.0 would read as
+    "measured, and it was zero".
+    """
+    values = np.asarray(list(returns), dtype=float)
+    if len(values) < 2:
+        return None, None
+    std = float(values.std(ddof=1))
+    return std, std / float(np.sqrt(len(values)))

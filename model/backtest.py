@@ -17,7 +17,11 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from model.benchmark import exposure_matched_return, held_coverage
+from model.benchmark import (
+    exposure_matched_return,
+    held_coverage,
+    return_dispersion,
+)
 from model.features import DEFAULT_HORIZON_BARS, build_features
 from model.train import _NUM_ROUNDS, _PARAMS, TRAIN_BARS_LIMIT
 from storage.postgres_store import get_price_bars
@@ -261,6 +265,20 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
             fold.exposure, fold.buy_hold_return, fold.positions, cost
         )
 
+    position_std, position_stderr = return_dispersion(all_returns)
+    # E4 — the per-fold null above uses each fold's OWN exposure, so it
+    # inherits the model's between-fold allocation, which is anti-skilled
+    # (it is more exposed in falling folds than rising ones). Holding
+    # exposure flat at the run's average isolates that: the pair separates
+    # "chose when to be exposed" from merely "was exposed".
+    mean_exposure = float(coverage.mean()) if len(coverage) else 0.0
+    null_constant = float(np.prod([
+        1 + exposure_matched_return(
+            mean_exposure, f.buy_hold_return, f.positions, cost
+        )
+        for f in folds
+    ]) - 1)
+
     equity = float(np.prod([1 + f.strategy_return for f in folds]))
     drawdown = _max_drawdown([f.strategy_return for f in folds])
     return {
@@ -290,6 +308,11 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         # Renamed from `avg_trade_return`: a "trade" used to be an in-market
         # bar, so the old key's value is not comparable to this one.
         "avg_position_return": float(np.mean(all_returns)) if all_returns else None,
+        # E2 — the mean alone is unreadable. A +3.2 bps average over 1,120
+        # positions is an edge or a rounding error depending entirely on how
+        # wide the positions were, and the harness used to decline to say.
+        "position_return_std": position_std,
+        "position_return_stderr": position_stderr,
         # Item 2 of the model plan: the harness could not previously tell a
         # good model from a long one, because it reported neither how much of
         # the time it was in the market nor a benchmark matched to that.
@@ -303,6 +326,7 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         "excess_vs_null": float(
             equity - np.prod([1 + f.null_return for f in folds])
         ),
+        "null_constant_exposure": null_constant,
     }
 
 

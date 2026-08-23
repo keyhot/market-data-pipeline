@@ -23,6 +23,7 @@ from model.backtest import (
 from model.benchmark import (
     exposure_matched_return,
     held_coverage,
+    return_dispersion,
     time_in_market,
 )
 
@@ -242,3 +243,67 @@ def test_the_published_equity_path_is_unchanged_by_the_benchmark_work():
     assert results["strategy_total_return"] == pytest.approx(-0.011022098334825703)
     assert results["buy_hold_total_return"] == pytest.approx(0.041448730766337816)
     assert results["avg_position_return"] == pytest.approx(-0.0006589124138992458)
+
+
+# --- E2: an error bar on the average position ---------------------------
+
+
+def test_dispersion_reports_the_sample_spread_and_the_error_of_the_mean():
+    std, stderr = return_dispersion([0.01, -0.01, 0.02, -0.02])
+
+    assert std == pytest.approx(0.0182574, abs=1e-6)
+    assert stderr == pytest.approx(std / 2)
+
+
+def test_one_position_has_no_dispersion_to_report():
+    """A single sample has no spread. None rather than 0.0, which would read
+    as "measured, and it was zero"."""
+    assert return_dispersion([0.005]) == (None, None)
+
+
+def test_no_positions_has_no_dispersion_to_report():
+    assert return_dispersion([]) == (None, None)
+
+
+def test_the_error_of_the_mean_shrinks_as_positions_accumulate():
+    _, few = return_dispersion([0.01, -0.01] * 5)
+    _, many = return_dispersion([0.01, -0.01] * 50)
+    assert many < few
+
+
+def test_the_summary_quotes_an_error_bar_on_the_average_position():
+    """The point of E2: `avg_position_return` alone cannot say whether a
+    +3.2 bps mean is an edge or a rounding error."""
+    results = run_backtest(_bars(), _FAST)
+
+    assert results["position_return_stderr"] == pytest.approx(
+        results["position_return_std"] / np.sqrt(results["total_positions"])
+    )
+
+
+# --- E4: a null that does not inherit the model's own allocation ---------
+
+
+def test_the_constant_exposure_null_is_reported_alongside_the_matched_one():
+    """The per-fold null uses each fold's OWN exposure, so it inherits the
+    model's between-fold allocation — which is anti-skilled (corr -0.15).
+    The constant-exposure null holds allocation fixed, so the pair separates
+    "chose when to be exposed" from "was exposed"."""
+    results = run_backtest(_bars(), _FAST)
+
+    assert "null_constant_exposure" in results
+    assert results["null_constant_exposure"] != results["null_total_return"]
+
+
+def test_the_two_nulls_agree_when_exposure_never_varies():
+    """A degenerate check that the only difference between them is the
+    allocation: hold exposure flat and they must coincide."""
+    flat = [0.5, 0.5, 0.5]
+    bh = [0.10, -0.05, 0.02]
+    matched = np.prod([
+        1 + exposure_matched_return(e, b, 1, 0.0022) for e, b in zip(flat, bh)
+    ])
+    constant = np.prod([
+        1 + exposure_matched_return(0.5, b, 1, 0.0022) for b in bh
+    ])
+    assert matched == pytest.approx(constant)
