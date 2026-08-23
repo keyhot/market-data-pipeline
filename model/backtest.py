@@ -34,14 +34,89 @@ class BacktestConfig:
     slippage: float = 0.0001       # 1 bp per side
 
 
+def find_episodes(mask) -> list[tuple[int, int]]:
+    """Runs of consecutive True as inclusive (start, end) index pairs.
+
+    One run is one position: entered once, exited once. Charging the round
+    trip per in-market *bar* instead was KI-040 — a ~3x fee overcharge at
+    threshold 0.80, where 3,101 positions were billed 10,052 times.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        return []
+    starts = np.flatnonzero(mask & ~np.r_[False, mask[:-1]])
+    ends = np.flatnonzero(mask & ~np.r_[mask[1:], False])
+    return list(zip(starts.tolist(), ends.tolist()))
+
+
+def merge_overlapping_holds(
+    episodes: list[tuple[int, int]],
+    horizon_bars: int,
+    pending: tuple[int, int] | None = None,
+) -> tuple[list[tuple[int, int]], tuple[int, int] | None]:
+    """Fold episodes whose holding periods overlap into the single position
+    one unit of capital actually held.
+
+    A position is held while the signal is on and realizes `horizon_bars`
+    after it drops. If the next episode opens before that, the trader never
+    exited — so it is the *same* position continuing, not a second one. This
+    is the KI-001 fix: `strategy_total_return` is a product, and a product
+    over overlapping holding periods compounds the same capital twice.
+
+    Merging rather than dropping the later episode matters: dropping would
+    discard a real entry (and, when a signal spans a whole fold, an entire
+    fold's trading). `pending` carries the still-open position across fold
+    boundaries, which are adjacent — merging per fold from a clean slate
+    re-admits the overlap at every seam.
+
+    Returns the positions that closed, and the one still open (if any).
+    """
+    closed: list[tuple[int, int]] = []
+    for start, end in episodes:
+        if pending is None:
+            pending = (start, end)
+            continue
+        open_start, open_end = pending
+        if start <= open_end + horizon_bars:
+            pending = (open_start, max(open_end, end))
+        else:
+            closed.append(pending)
+            pending = (start, end)
+    return closed, pending
+
+
+def position_returns(
+    episodes: list[tuple[int, int]], closes, config: "BacktestConfig"
+) -> np.ndarray:
+    """Net return of each position: entry close to exit close, one round trip.
+
+    `episodes` index into `closes`. A position enters at its first bar and
+    exits `horizon_bars` after its last, so `closes` must extend that far —
+    positions whose exit falls off the end are dropped rather than priced at
+    a bar that does not exist.
+    """
+    closes = np.asarray(closes, dtype=float)
+    cost = 2 * (config.fee_per_side + config.slippage)
+    out = []
+    for start, end in episodes:
+        exit_idx = end + config.horizon_bars
+        if exit_idx >= len(closes) or start >= len(closes):
+            continue
+        out.append(closes[exit_idx] / closes[start] - 1.0 - cost)
+    return np.asarray(out, dtype=float)
+
+
 @dataclass
 class FoldResult:
     fold: int
     rows: int
-    trades: int
-    hit_rate: float
+    positions: int
+    # None, not NaN: a fold with no positions has no hit rate, and NaN is
+    # neither JSON-valid nor equal to itself.
+    hit_rate: float | None
     strategy_return: float
     buy_hold_return: float
+    wins: int = 0
 
 
 def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> dict:
@@ -57,9 +132,17 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
             f"not enough rows for one fold: have {n}, need {fold_span}"
         )
 
+    # Closes live in bar space, which extends `horizon_bars` past the end of
+    # X — a position opened on the last test bar exits at a real price rather
+    # than being silently dropped.
+    close_all = _close_series(bars)
+    close_values = close_all.to_numpy()
+    row_of = close_all.index.get_indexer(X.index)
+
     folds: list[FoldResult] = []
-    equity = 1.0
-    all_returns: list[float] = []
+    episodes: list[tuple[int, int]] = []
+    entry_label: dict[int, int] = {}
+    fold_of_entry: dict[int, int] = {}
     start = 0
     while start + fold_span <= n:
         train_end = start + config.train_rows
@@ -76,40 +159,66 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         prob = booster.predict(X.iloc[test_start:test_end])
         y_test = y.iloc[test_start:test_end].to_numpy()
 
-        # Long when confident, flat otherwise; each entry+exit pays fees and
-        # slippage on both sides.
+        # Long when confident, flat otherwise. A run of consecutive in-market
+        # bars is ONE position — one entry, one exit, one round trip (KI-040)
+        # — and a fresh signal arriving before that position realizes is the
+        # same position continuing, not a second one to compound (KI-001).
         in_market = prob > config.entry_threshold
         close = _closes_for(bars, X.index[test_start:test_end])
-        fwd_return = _forward_returns(bars, X.index[test_start:test_end],
-                                      config.horizon_bars)
-        cost = 2 * (config.fee_per_side + config.slippage)
-        trade_returns = np.where(in_market, fwd_return - cost, 0.0)
 
-        trades = int(in_market.sum())
-        wins = int(((prob > config.entry_threshold) & (y_test == 1)).sum())
-        fold_return = float(np.prod(1 + trade_returns) - 1)
-        buy_hold = float(close.iloc[-1] / close.iloc[0] - 1)
+        for local_start, local_end in find_episodes(in_market):
+            entry = int(row_of[test_start + local_start])
+            exit_bar = int(row_of[test_start + local_end])
+            episodes.append((entry, exit_bar))
+            entry_label[entry] = int(y_test[local_start])
+            fold_of_entry[entry] = len(folds)
+
         folds.append(
             FoldResult(
                 fold=len(folds),
                 rows=len(y_test),
-                trades=trades,
-                hit_rate=wins / trades if trades else float("nan"),
-                strategy_return=fold_return,
-                buy_hold_return=buy_hold,
+                positions=0,
+                hit_rate=None,
+                strategy_return=0.0,
+                buy_hold_return=float(close.iloc[-1] / close.iloc[0] - 1),
             )
         )
-        equity *= 1 + fold_return
-        all_returns.extend(trade_returns[in_market].tolist())
         start += config.test_rows
 
+    # One merge pass over the whole walk-forward, not one per fold: fold test
+    # windows are adjacent, so a position open at a seam must not be closed
+    # and re-opened there.
+    closed, pending = merge_overlapping_holds(episodes, config.horizon_bars)
+    held = closed + ([pending] if pending is not None else [])
+    held = [
+        position for position in held
+        if position[1] + config.horizon_bars < len(close_values)
+    ]
+
+    returns = position_returns(held, close_values, config)
+    all_returns = returns.tolist()
+    for (entry, _), net in zip(held, returns):
+        fold = folds[fold_of_entry[entry]]
+        fold.positions += 1
+        fold.strategy_return = (1 + fold.strategy_return) * (1 + net) - 1
+        fold.wins += entry_label[entry]
+    for fold in folds:
+        fold.hit_rate = fold.wins / fold.positions if fold.positions else None
+
+    equity = float(np.prod([1 + f.strategy_return for f in folds]))
     drawdown = _max_drawdown([f.strategy_return for f in folds])
-    hit_rates = [f.hit_rate for f in folds if not np.isnan(f.hit_rate)]
+    hit_rates = [f.hit_rate for f in folds if f.hit_rate is not None]
     return {
         "config": asdict(config),
         "folds": [asdict(f) for f in folds],
         "n_folds": len(folds),
-        "total_trades": int(sum(f.trades for f in folds)),
+        # Renamed from `total_trades`, which counted in-market BARS. An old
+        # artifact and a new one are not comparable, so they do not share a key.
+        "total_positions": int(sum(f.positions for f in folds)),
+        "fee_charges": int(sum(f.positions for f in folds)),
+        "accounting": "position-level",
+        "position_policy": "merge-while-open",
+        "max_concurrent_positions": _max_concurrent(held, config.horizon_bars),
         "overall_hit_rate": float(np.mean(hit_rates)) if hit_rates else None,
         "strategy_total_return": float(equity - 1),
         "buy_hold_total_return": float(
@@ -128,16 +237,34 @@ def _closes_for(bars: pd.DataFrame, index: pd.Index) -> pd.Series:
     return frame.loc[index, "close"].astype(float)
 
 
-def _forward_returns(
-    bars: pd.DataFrame, index: pd.Index, horizon_bars: int
-) -> np.ndarray:
+
+
+def _close_series(bars: pd.DataFrame) -> pd.Series:
+    """The full close series in bar space, sorted — the price ladder every
+    position is entered and exited against."""
     frame = bars.copy()
     if "timestamp" in frame.columns:
         frame = frame.set_index(pd.to_datetime(frame["timestamp"], utc=True))
     frame.columns = [str(c).lower() for c in frame.columns]
-    close = frame["close"].astype(float).sort_index()
-    fwd = close.shift(-horizon_bars) / close - 1.0
-    return fwd.loc[index].to_numpy()
+    return frame["close"].astype(float).sort_index()
+
+
+def _max_concurrent(held: list[tuple[int, int]], horizon_bars: int) -> int:
+    """How many positions were open at once, measured from the positions the
+    equity path actually took. `skip-while-open` makes this 1; it is computed
+    rather than asserted so that removing the selection shows up as a number."""
+    if not held:
+        return 0
+    edges = []
+    for entry, exit_bar in held:
+        edges.append((entry, 1))
+        edges.append((exit_bar + horizon_bars + 1, -1))
+    edges.sort()
+    open_now = peak = 0
+    for _, delta in edges:
+        open_now += delta
+        peak = max(peak, open_now)
+    return peak
 
 
 def _max_drawdown(fold_returns: list[float]) -> float:

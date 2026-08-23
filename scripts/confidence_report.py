@@ -26,7 +26,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from model.backtest import BacktestConfig, _forward_returns  # noqa: E402
+from model.backtest import BacktestConfig, find_episodes  # noqa: E402
 from model.features import build_features  # noqa: E402
 from model.train import _NUM_ROUNDS, _PARAMS, TRAIN_BARS_LIMIT  # noqa: E402
 from storage.postgres_store import get_price_bars  # noqa: E402
@@ -43,19 +43,21 @@ def round_trip_cost(config: BacktestConfig) -> float:
     return 2 * (config.fee_per_side + config.slippage)
 
 
-def find_episodes(mask: np.ndarray) -> list[tuple[int, int]]:
-    """Runs of consecutive True as inclusive (start, end) index pairs.
-
-    One run is one position. `model/backtest.py` charges a round trip per
-    in-market *bar* instead (KI-040), so the gap between len(mask.sum()) and
-    len(find_episodes(mask)) is the size of that overcharge.
+def _forward_returns(
+    bars: pd.DataFrame, index: pd.Index, horizon_bars: int
+) -> np.ndarray:
+    """Per-BAR forward return over the label horizon — what the bucket tables
+    measure. The equity path in `model/backtest.py` deliberately does not use
+    this: it prices whole positions entry-close to exit-close (KI-001/KI-040),
+    and a per-bar return there is what compounded overlapping holds.
     """
-    mask = np.asarray(mask, dtype=bool)
-    if not mask.any():
-        return []
-    starts = np.flatnonzero(mask & ~np.r_[False, mask[:-1]])
-    ends = np.flatnonzero(mask & ~np.r_[mask[1:], False])
-    return list(zip(starts.tolist(), ends.tolist()))
+    frame = bars.copy()
+    if "timestamp" in frame.columns:
+        frame = frame.set_index(pd.to_datetime(frame["timestamp"], utc=True))
+    frame.columns = [str(c).lower() for c in frame.columns]
+    close = frame["close"].astype(float).sort_index()
+    fwd = close.shift(-horizon_bars) / close - 1.0
+    return fwd.loc[index].to_numpy()
 
 
 def auc(y: np.ndarray, p: np.ndarray) -> float:
@@ -165,8 +167,14 @@ def threshold_table(oos: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
 def position_table(
     oos: pd.DataFrame, closes: pd.Series, config: BacktestConfig
 ) -> pd.DataFrame:
-    """Per-position economics: one entry, one exit, one round trip — what the
-    threshold actually earns once KI-040's per-bar fee is corrected."""
+    """Per-position economics: one entry, one exit, one round trip.
+
+    Episodes are priced independently here, overlaps included — this is a
+    *mean* over positions, which overlap does not bias, and it answers "what
+    does a position at this threshold earn". `run_backtest`'s equity curve
+    asks a different question (what one unit of capital compounds), so it
+    merges overlapping holds; the two are not meant to agree row for row.
+    """
     cost = round_trip_cost(config)
     horizon = config.horizon_bars
     position = {ts: i for i, ts in enumerate(closes.index)}

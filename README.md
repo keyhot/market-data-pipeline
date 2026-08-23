@@ -6,8 +6,10 @@ notices. When it doesn't, the room doesn't either — you can leave it on the wa
 a fireplace on.
 
 The inhabitant whose job is to predict the market is, right now, losing. Its walk-forward
-backtest returned **−39.8%** against **+1%** buy-and-hold, and after costs it loses money.
-That number is published deliberately and is not quietly retuned. The goal is a model that
+backtest returned **−63.3%** against **+18.4%** buy-and-hold, and after costs it loses money.
+That number is published deliberately and is not quietly retuned — it got *worse* when the
+harness's own trade accounting was fixed (KI-001/KI-040, 2026-08-23), and the worse number
+replaced the flattering one. The goal is a model that
 wins; this is version zero, and version zero's record stays in the log forever either way.
 
 ## What you're looking at
@@ -205,12 +207,17 @@ Being candid:
   silence when the binary is absent — which it currently is. No music bed either.
 - **There is no clip pipeline.** The world produces small moments worth cutting — a streak
   resolving, a volatility spike decaying — and nothing turns them into shorts.
-- **The model doesn't win yet.** In walk-forward backtest, version zero called direction
-  correctly 55.6% of the time and still returned −39.8%: round-trip costs of roughly 0.22%
-  exceed the per-trade edge at 15-bar holds on 1-minute data. The live resolved record has
-  so far run below the backtest. Trading less often — a higher threshold, a longer horizon,
-  or a coarser interval — is the first lever; a model that clears its own fees is on the
-  roadmap, and the starting point is published so the progress is checkable.
+- **The model doesn't win yet.** Over 253 walk-forward folds and 50,200 out-of-sample
+  predictions (2026-07-18 → 2026-08-22), version zero called direction correctly **46.4%**
+  of the time on the positions it took and returned **−63.3%** against +18.4% buy-and-hold;
+  ETHUSDT replicates at 44.8% and −56.6%. The average position earns **−19.2 bps** against a
+  22 bps round trip — round-trip costs exceed the per-trade edge at 15-bar holds on
+  1-minute data, and there is no edge to speak of before costs either (pooled OOS ROC AUC
+  0.4965 BTC / 0.5123 ETH). Trading less often does not rescue it: a p > 0.8 gate is worth
+  +0.15 bps of selection value against that 22 bps toll. Earlier revisions of this README
+  quoted 55.6% and −39.8%, from 3 folds and 264 trades on a harness that billed fees per
+  bar rather than per position; both figures are superseded, and the record of that is in
+  the vault rather than deleted.
 
 ## Where the design docs live
 
