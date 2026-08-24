@@ -113,7 +113,9 @@ PHRASES: dict[str, dict[str, dict[int, list[str]]]] = {
         "stream_started": {},
         "stream_stopped": {0: ["We went dark… I hope everything's okay."]},
         "stream_dropped": {1: ["We're dropping frames — is the stream alright?"]},
-        "stream_reconnected": {1: ["We just blinked out for a second… did you see that?"]},
+        "stream_reconnected": {
+            1: ["We just blinked out for a second… did you see that?"]
+        },
         "trader_opened": {
             1: ["The trader opened {symbol}. Do they know what they're doing?"]
         },

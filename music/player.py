@@ -134,7 +134,9 @@ def tick(
     if index >= len(order):
         # Wrapped: reshuffle so the second hour is not the first hour again.
         passes += 1
-        reshuffled = shuffled(list(by_file.values()), state.seed + passes, avoid_first=state.current)
+        reshuffled = shuffled(
+            list(by_file.values()), state.seed + passes, avoid_first=state.current
+        )
         order = tuple(t.file for t in reshuffled)
         index = 0
 

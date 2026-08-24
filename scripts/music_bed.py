@@ -16,7 +16,6 @@ streaming runbook in the vault.
 
 import argparse
 import logging
-import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -115,7 +114,8 @@ def publish(track, started_at: datetime) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "could not publish now-playing", extra={"track": track.file, "error": str(exc)}
+            "could not publish now-playing",
+            extra={"track": track.file, "error": str(exc)},
         )
 
 
@@ -137,7 +137,9 @@ def run_once(client, state: BedState, tracks: list, directory: Path, now: dateti
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Play and credit the stream music bed.")
+    parser = argparse.ArgumentParser(
+        description="Play and credit the stream music bed."
+    )
     parser.add_argument("--poll-seconds", type=float, default=POLL_SECONDS)
     parser.add_argument(
         "--once", action="store_true", help="single tick, for smoke-testing the seam"

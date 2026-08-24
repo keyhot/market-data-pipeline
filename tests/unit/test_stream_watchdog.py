@@ -547,7 +547,9 @@ def test_obs_reconnecting_flag_is_recorded_once_not_twice():
     # SECOND time when the counters reset on the following tick.
     state = WatchdogState(obs_up=True, streaming=True)
     state, _ = tick(_live(total_frames=58_031, skipped_frames=399), state, CFG, 1000.0)
-    state, actions = tick(_live(reconnecting=True, total_frames=58_031), state, CFG, 1030.0)
+    state, actions = tick(
+        _live(reconnecting=True, total_frames=58_031), state, CFG, 1030.0
+    )
     assert [r[1] for r in _actions_of(actions, "record")] == ["stream_reconnected"]
     assert _actions_of(actions, "record")[0][2]["detected"] == "obs_reconnecting"
     state, actions = tick(_live(total_frames=60), state, CFG, 1060.0)
@@ -587,7 +589,9 @@ def test_dropped_frame_rule_waits_for_a_real_denominator():
     # denominator, so pick that record out rather than asserting on the count.
     assert [r[1] for r in records] == ["stream_dropped", "stream_dropped"]
     encoder = [r[2] for r in records if r[2]["reason"] == "encoder_overloaded"]
-    assert len(encoder) == 1, "the encoder rule stayed silent once its denominator was real"
+    assert len(encoder) == 1, (
+        "the encoder rule stayed silent once its denominator was real"
+    )
     assert encoder[0]["congestion"] == 0.4
 
 

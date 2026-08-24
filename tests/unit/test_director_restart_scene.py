@@ -75,7 +75,10 @@ def restore_tick():
 
 def _switch_events(recorded):
     return [
-        e for batch in recorded for e in batch if e.get("event_type") == "scene_switched"
+        e
+        for batch in recorded
+        for e in batch
+        if e.get("event_type") == "scene_switched"
     ]
 
 
@@ -98,7 +101,9 @@ def test_it_does_not_re_switch_to_the_scene_already_on_air():
     already showing what the policy picked."""
     obs = FakeObs(scene="world-focus")
 
-    _, recorded = _run(obs, lambda *a, **k: DirectorAction(scene="world-focus", lines=[]))
+    _, recorded = _run(
+        obs, lambda *a, **k: DirectorAction(scene="world-focus", lines=[])
+    )
 
     assert obs.switched_to == [], "sent a switch to the scene already on air"
     assert _switch_events(recorded) == [], "recorded a switch that never happened"
@@ -108,7 +113,9 @@ def test_a_recorded_switch_names_the_scene_it_actually_came_from():
     """`from` goes into an append-only log; it has to be true."""
     obs = FakeObs(scene="event-focus")
 
-    _, recorded = _run(obs, lambda *a, **k: DirectorAction(scene="world-focus", lines=[]))
+    _, recorded = _run(
+        obs, lambda *a, **k: DirectorAction(scene="world-focus", lines=[])
+    )
 
     events = _switch_events(recorded)
     assert len(events) == 1

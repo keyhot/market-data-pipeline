@@ -27,7 +27,6 @@ from model.benchmark import (
     time_in_market,
 )
 
-
 # --- time in market -----------------------------------------------------
 
 

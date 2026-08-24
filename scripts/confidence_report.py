@@ -100,7 +100,9 @@ def collect_oos(bars: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
     )
     fold_span = config.train_rows + config.horizon_bars + config.test_rows
     if len(X) < fold_span:
-        raise ValueError(f"not enough rows for one fold: have {len(X)}, need {fold_span}")
+        raise ValueError(
+            f"not enough rows for one fold: have {len(X)}, need {fold_span}"
+        )
 
     chunks, start, fold = [], 0, 0
     while start + fold_span <= len(X):
@@ -268,15 +270,15 @@ def _print_report(oos: pd.DataFrame, closes: pd.Series, config: BacktestConfig,
     print(f"predicted p: min {oos.p.min():.3f}  median {oos.p.median():.3f}  "
           f"max {oos.p.max():.3f}")
 
-    print(f"\n-- P(up) buckets: does confidence track accuracy? --")
+    print("\n-- P(up) buckets: does confidence track accuracy? --")
     print(bucket_table(oos, config).to_string(
         index=False, float_format=lambda v: f"{v:8.3f}"))
 
-    print(f"\n-- entry_threshold sweep (long-only, as model/backtest.py) --")
+    print("\n-- entry_threshold sweep (long-only, as model/backtest.py) --")
     print(threshold_table(oos, config).to_string(
         index=False, float_format=lambda v: f"{v:8.3f}"))
 
-    print(f"\n-- per position (one round trip each, correcting KI-040) --")
+    print("\n-- per position (one round trip each, correcting KI-040) --")
     print(position_table(oos, closes, config).to_string(
         index=False, float_format=lambda v: f"{v:8.3f}"))
 
@@ -303,7 +305,8 @@ def _print_report(oos: pd.DataFrame, closes: pd.Series, config: BacktestConfig,
           f"skill score: {1 - brier / brier_base:+.4f}")
 
     absolute = oos.fwd.abs()
-    print(f"|{config.horizon_bars}-bar move|: median {absolute.median() * BPS:.1f} bps, "
+    print(f"|{config.horizon_bars}-bar move|: "
+          f"median {absolute.median() * BPS:.1f} bps, "
           f"mean {absolute.mean() * BPS:.1f} bps; "
           f"P(|move| > {cost * BPS:.0f} bps cost) = {(absolute > cost).mean():.3f}")
 

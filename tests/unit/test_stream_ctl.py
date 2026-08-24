@@ -441,8 +441,12 @@ def test_a_shared_input_is_added_to_a_scene_it_is_missing_from():
     """One bed in four scenes means three of them need a scene item created,
     not a second input — four inputs is four players."""
     client = _SharedBedClient()
-    assert stream_ctl._scene_item_id(client, "chart-focus", "audio-bed", shared=True) == 1
-    assert stream_ctl._scene_item_id(client, "world-focus", "audio-bed", shared=True) == 2
+    assert (
+        stream_ctl._scene_item_id(client, "chart-focus", "audio-bed", shared=True) == 1
+    )
+    assert (
+        stream_ctl._scene_item_id(client, "world-focus", "audio-bed", shared=True) == 2
+    )
     assert client.created_items == [("world-focus", "audio-bed")]
 
 
@@ -451,4 +455,6 @@ def test_a_missing_non_shared_input_still_raises():
     browser source missing from its own scene is a bug, not a thing to paper over."""
     client = _SharedBedClient()
     with pytest.raises(RuntimeError):
-        stream_ctl._scene_item_id(client, "world-focus", "overlay-signals", shared=False)
+        stream_ctl._scene_item_id(
+            client, "world-focus", "overlay-signals", shared=False
+        )

@@ -56,7 +56,8 @@ def test_the_bed_is_one_input_shared_by_every_scene(monkeypatch):
     monkeypatch.setenv("STREAM_AUDIO_DIR", "/tmp/audio")
     scenes = stream_scene.scenes_spec()
     beds = [
-        [s for s in scene["sources"] if s["kind"] == "ffmpeg_source"] for scene in scenes
+        [s for s in scene["sources"] if s["kind"] == "ffmpeg_source"]
+        for scene in scenes
     ]
     assert all(len(b) == 1 for b in beds), "every scene needs the bed"
     assert len({b[0]["name"] for b in beds}) == 1, "and it must be the SAME input"

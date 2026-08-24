@@ -160,7 +160,10 @@ def tick(
         # KI-021: the rule may only speak once its denominator means something.
         # Straight after a reconnect the counters restart from zero, so the
         # ratio it reads is "since the last reconnect" over a handful of frames.
-        if total >= config.min_frames_for_ratio and ratio >= config.dropped_ratio_threshold:
+        if (
+            total >= config.min_frames_for_ratio
+            and ratio >= config.dropped_ratio_threshold
+        ):
             if not state.dropped_flagged:
                 actions.append(
                     (
@@ -329,7 +332,10 @@ def _check_content(
         return []
 
     state.content_failures += 1
-    if state.content_ok and state.content_failures >= config.content_failures_before_drop:
+    if (
+        state.content_ok
+        and state.content_failures >= config.content_failures_before_drop
+    ):
         state.content_ok = False
         state.content_down_since = now
         return [
@@ -722,7 +728,9 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
     """
     opener = opener or urllib.request.urlopen
     try:
-        with opener(config.content_health_url, timeout=config.content_timeout_seconds) as resp:
+        with opener(
+            config.content_health_url, timeout=config.content_timeout_seconds
+        ) as resp:
             status = getattr(resp, "status", 200)
             if status != 200:
                 return {"content_ok": False, "content_detail": f"http {status}"}

@@ -19,7 +19,9 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_MANIFEST = Path(__file__).resolve().parent.parent / "config" / "music_tracks.json"
+DEFAULT_MANIFEST = (
+    Path(__file__).resolve().parent.parent / "config" / "music_tracks.json"
+)
 
 
 class MusicLibraryError(RuntimeError):
@@ -57,7 +59,9 @@ def load_manifest(path: str | os.PathLike | None = None) -> list[Track]:
     except FileNotFoundError as exc:
         raise MusicLibraryError(f"no music manifest at {manifest_path}") from exc
     except json.JSONDecodeError as exc:
-        raise MusicLibraryError(f"malformed music manifest {manifest_path}: {exc}") from exc
+        raise MusicLibraryError(
+            f"malformed music manifest {manifest_path}: {exc}"
+        ) from exc
 
     tracks: list[Track] = []
     for entry in raw.get("tracks", []):
@@ -111,7 +115,9 @@ def track_path(track: Track, directory: Path | None = None) -> Path:
     return directory / track.file
 
 
-def shuffled(tracks: list[Track], seed: int, avoid_first: str | None = None) -> list[Track]:
+def shuffled(
+    tracks: list[Track], seed: int, avoid_first: str | None = None
+) -> list[Track]:
     """A deterministic shuffle, seeded by the caller so tests and reruns agree.
 
     ``avoid_first`` keeps the track that just finished off the front of the next

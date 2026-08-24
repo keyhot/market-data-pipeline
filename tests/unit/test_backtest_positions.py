@@ -20,7 +20,6 @@ from model.backtest import (
     position_returns,
 )
 
-
 # --- KI-040: one position, one round trip -------------------------------
 
 

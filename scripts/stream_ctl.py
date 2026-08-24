@@ -90,7 +90,9 @@ def _build_one(client, spec: dict, set_current: bool) -> dict:
                 spec["scene"], src["name"], src["kind"], src["settings"], True
             )
             created.append(src["name"])
-        item_id = _scene_item_id(client, spec["scene"], src["name"], shared=src.get("shared", False))
+        item_id = _scene_item_id(
+            client, spec["scene"], src["name"], shared=src.get("shared", False)
+        )
         if src.get("shared") and "width" not in src["settings"]:
             # Audio-only: no geometry to set, and no rectangle to fight over.
             # It is still indexed, at the bottom, so it can never cover a page.

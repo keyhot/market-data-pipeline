@@ -46,7 +46,9 @@ def test_a_cold_bed_starts_playing_something(tracks):
 
 def test_a_playing_track_is_left_alone(tracks):
     state, _ = tick(start_state(tracks, seed=1), MediaStatus(), T0, tracks)
-    playing = MediaStatus("OBS_MEDIA_STATE_PLAYING", cursor_ms=5_000, duration_ms=100_000)
+    playing = MediaStatus(
+        "OBS_MEDIA_STATE_PLAYING", cursor_ms=5_000, duration_ms=100_000
+    )
     after, action = tick(state, playing, T0 + timedelta(seconds=5), tracks)
     assert not action.is_change
     assert after.current == state.current
@@ -56,7 +58,9 @@ def test_a_playing_track_is_left_alone(tracks):
 @pytest.mark.parametrize("finished", sorted(FINISHED_STATES))
 def test_every_finished_state_advances_the_track(tracks, finished):
     state, _ = tick(BedState(), MediaStatus(), T0, tracks)
-    after, action = tick(state, MediaStatus(finished), T0 + timedelta(seconds=100), tracks)
+    after, action = tick(
+        state, MediaStatus(finished), T0 + timedelta(seconds=100), tracks
+    )
     assert action.is_change
     assert after.current != state.current
 
@@ -74,11 +78,16 @@ def test_a_stuck_track_is_overruled_by_the_clock(tracks):
     state, _ = tick(BedState(), MediaStatus(), T0, tracks)
     stuck = MediaStatus("OBS_MEDIA_STATE_PLAYING", cursor_ms=100, duration_ms=100_000)
 
-    _, held = tick(state, stuck, T0 + timedelta(seconds=100) + OVERRUN_GRACE / 2, tracks)
+    _, held = tick(
+        state, stuck, T0 + timedelta(seconds=100) + OVERRUN_GRACE / 2, tracks
+    )
     assert not held.is_change, "must not cut a track short"
 
     _, advanced = tick(
-        state, stuck, T0 + timedelta(seconds=100) + OVERRUN_GRACE + timedelta(seconds=1), tracks
+        state,
+        stuck,
+        T0 + timedelta(seconds=100) + OVERRUN_GRACE + timedelta(seconds=1),
+        tracks,
     )
     assert advanced.is_change and advanced.reason == "overran its length"
 
@@ -120,8 +129,12 @@ def test_an_empty_library_is_a_hold_not_a_crash():
 
 
 def test_tick_is_deterministic(tracks):
-    a = tick(start_state(tracks, seed=7), MediaStatus("OBS_MEDIA_STATE_ENDED"), T0, tracks)
-    b = tick(start_state(tracks, seed=7), MediaStatus("OBS_MEDIA_STATE_ENDED"), T0, tracks)
+    a = tick(
+        start_state(tracks, seed=7), MediaStatus("OBS_MEDIA_STATE_ENDED"), T0, tracks
+    )
+    b = tick(
+        start_state(tracks, seed=7), MediaStatus("OBS_MEDIA_STATE_ENDED"), T0, tracks
+    )
     assert a == b
 
 

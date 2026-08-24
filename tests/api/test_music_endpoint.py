@@ -7,7 +7,12 @@ from fastapi.testclient import TestClient
 
 import api.main as main
 
-T0 = datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc)
+# `started_at` must be relative to the clock, never an absolute timestamp.
+# `/music/now-playing` drops a credit that has outlived its track (KI: "a
+# credit must not outlive the track it names"), so a pinned datetime describes
+# a *currently playing* track for a few minutes and a long-dead one forever
+# after — it passed the hour it was written and failed the next.
+NOW = datetime.now(timezone.utc)
 
 ROW = {
     "file": "mixkit-sleepy-cat-135.mp3",
@@ -17,7 +22,7 @@ ROW = {
     "source_url": "https://mixkit.co/free-stock-music/lo-fi-beats/",
     "license": "Mixkit Stock Music Free License",
     "duration_seconds": 119.2,
-    "started_at": T0,
+    "started_at": NOW,
 }
 
 

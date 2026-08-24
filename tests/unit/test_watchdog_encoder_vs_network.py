@@ -26,7 +26,6 @@ fixing a truthfulness bug by corrupting the record it is measured against.
 
 import pytest
 
-from scripts import stream_watchdog
 from scripts.stream_watchdog import WatchdogConfig, WatchdogState, tick
 from world.state import STREAM_DEGRADED_REASONS, is_degraded_stream_event
 

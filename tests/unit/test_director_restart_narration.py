@@ -20,7 +20,6 @@ These tests pin the contract: a director that just booted does not narrate
 history, but it does narrate everything that happens after it arrives.
 """
 
-import pytest
 
 from director import service
 

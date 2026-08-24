@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from music.library import Track
-from music.player import BedState, MediaStatus
+from music.player import BedState
 from scripts import music_bed
 
 T0 = datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc)
@@ -74,8 +74,12 @@ def test_the_settings_the_runner_sends_make_it_a_bed_not_a_loop():
     client = FakeClient()
     music_bed.run_once(client, BedState(), [_track()], Path("/music"), T0)
     _, settings, _ = client.settings[0]
-    assert settings["looping"] is False, "a looping track makes every later credit false"
-    assert settings["restart_on_activate"] is False, "would restart on every scene switch"
+    assert settings["looping"] is False, (
+        "a looping track makes every later credit false"
+    )
+    assert settings["restart_on_activate"] is False, (
+        "would restart on every scene switch"
+    )
     assert settings["clear_on_media_end"] is True, "how the player learns a track ended"
 
 
