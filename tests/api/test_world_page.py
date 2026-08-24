@@ -29,11 +29,34 @@ def test_watchlist_symbols_are_embedded():
     assert "BTCUSDT" in body
 
 
-def test_pixi_is_pinned_with_integrity():
+def test_renderer_is_served_same_origin_and_still_version_pinned():
+    """The renderer must not depend on a third party at page load.
+
+    A transient unpkg response without `Access-Control-Allow-Origin` left
+    `PIXI` undefined and put the "renderer unavailable" card on air for two
+    hours. The version stays pinned — it moved from a URL into a filename.
+    """
     body = client.get("/world").text
-    assert 'pixi.js@8.19.0' in body
-    assert 'integrity="sha384-' in body
-    assert 'crossorigin="anonymous"' in body
+    assert "/static/pixi-8.19.0.min.js" in body
+    assert "unpkg.com" not in body
+    # SRI is for third-party bytes; same-origin it can only white-frame the
+    # stream with no CDN to blame.
+    assert "integrity=" not in body
+
+
+def test_the_vendored_renderer_is_actually_served():
+    """A rewired tag proves nothing if the file is missing from the image."""
+    response = client.get("/static/pixi-8.19.0.min.js")
+    assert response.status_code == 200
+    assert len(response.content) > 100_000
+
+
+def test_a_failed_boot_retries_instead_of_latching():
+    """The fallback used to be terminal: painted once, blank until a human
+    refreshed the browser source. Unattended surfaces must self-heal."""
+    body = client.get("/world").text
+    assert "retryBoot" in body
+    assert "boot_retry" in body
 
 
 def test_page_uses_textcontent_not_innerhtml():

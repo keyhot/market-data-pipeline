@@ -85,9 +85,7 @@
   <div id="nowband"></div>
   <div id="callout"></div>
   <div id="fallback">Waking the world…</div>
-  <script src="https://unpkg.com/pixi.js@8.19.0/dist/pixi.min.js"
-          integrity="sha384-brfu63ZHzOfumoqQXzA4Wo7k9kQOaJ68C/E7+Uc8lgQB42dOOjA+urOyy/sOnKPq"
-          crossorigin="anonymous"></script>
+  <script src="/static/pixi-8.19.0.min.js"></script>
   <script>
     const SYMBOLS = __SYMBOLS__;
     const fallback = document.getElementById("fallback");
@@ -146,15 +144,45 @@
     // the layer containers, neither of which exist until PIXI has initialised.
     let app, layers = {}, world = null, model = null, trader = null;
 
+    // This page is unattended and on air. Every failure below used to latch:
+    // the card was painted once and the room stayed blank until a human
+    // refreshed the browser source. So a boot failure now reloads on a bounded
+    // backoff. The window it covers is small but recurring — a browser source
+    // reloading while the API container restarts, i.e. every deploy.
+    const RETRY_BACKOFF_MS = [2000, 5000, 15000, 30000, 60000];
+
+    function retryBoot(reason) {
+      const attempt = Number(
+        new URLSearchParams(location.search).get("boot_retry") || 0
+      );
+      if (attempt >= RETRY_BACKOFF_MS.length) {
+        // Out of retries: say so plainly and stop. A reload storm against an
+        // API that is genuinely down helps nobody.
+        fallback.textContent = reason + " — the world is still running";
+        return;
+      }
+      fallback.textContent = reason + " — retrying…";
+      const next = new URL(location.href);
+      next.searchParams.set("boot_retry", String(attempt + 1));
+      setTimeout(() => location.replace(next.toString()), RETRY_BACKOFF_MS[attempt]);
+    }
+
     async function boot() {
       if (typeof PIXI === "undefined") {
-        fallback.textContent = "renderer unavailable — the world is still running";
+        retryBoot("renderer unavailable");
         return;
       }
       app = new PIXI.Application();
       await app.init({ background: 0x131722, resizeTo: window, antialias: true });
       document.getElementById("room").appendChild(app.canvas);
       fallback.textContent = "";
+      // Booted. Drop the retry counter so a later failure gets a full budget
+      // again, and so the on-air URL matches the one OBS is configured with.
+      if (new URLSearchParams(location.search).has("boot_retry")) {
+        const clean = new URL(location.href);
+        clean.searchParams.delete("boot_retry");
+        history.replaceState(null, "", clean.toString());
+      }
 
       layers.room = new PIXI.Container();
       layers.chars = new PIXI.Container();
@@ -1528,7 +1556,7 @@
     }
 
     boot().catch(() => {
-      fallback.textContent = "renderer failed to start — the world is still running";
+      retryBoot("renderer failed to start");
     });
   </script>
 </body>

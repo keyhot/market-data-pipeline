@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
 from config.exceptions import BaseAppException, NoDataFoundError
@@ -102,6 +103,17 @@ async def record_request_metrics(request: Request, call_next):
 
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+# The renderer libraries (PixiJS, Lightweight Charts) are vendored here and
+# served same-origin rather than pulled from a CDN at page load. A CDN is a
+# third party in the ON-AIR path: on 2026-08-24 a transient unpkg edge response
+# arrived without an `Access-Control-Allow-Origin` header, the `crossorigin`
+# fetch that SRI requires was rejected, `PIXI` stayed undefined, and /world
+# showed its "renderer unavailable" card on the live stream for two hours while
+# OBS reported streaming=true and a 0.007% drop ratio. Same-origin means the
+# only thing that can fail is the API that is already serving the page.
+_STATIC_DIR = Path(__file__).parent / "static"
+
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 _SYMBOL_PATTERN = re.compile(r"^[A-Z0-9.^=-]{1,15}$")
 
 
