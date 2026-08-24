@@ -152,9 +152,16 @@
     const RETRY_BACKOFF_MS = [2000, 5000, 15000, 30000, 60000];
 
     function retryBoot(reason) {
-      const attempt = Number(
+      // The counter rides in the URL, so treat it as untrusted input: anything
+      // that is not a clean non-negative integer counts as exhausted rather
+      // than as zero. `Number("abc")` is NaN, and NaN fails every comparison
+      // below — it would slip past the cap and then increment to NaN forever,
+      // which is the reload storm this cap exists to prevent.
+      const raw = Number(
         new URLSearchParams(location.search).get("boot_retry") || 0
       );
+      const attempt =
+        Number.isInteger(raw) && raw >= 0 ? raw : RETRY_BACKOFF_MS.length;
       if (attempt >= RETRY_BACKOFF_MS.length) {
         // Out of retries: say so plainly and stop. A reload storm against an
         // API that is genuinely down helps nobody.
@@ -167,6 +174,18 @@
       setTimeout(() => location.replace(next.toString()), RETRY_BACKOFF_MS[attempt]);
     }
 
+    // Called only once the room is fully built. Clearing the counter any
+    // earlier defeats the cap: anything that throws *after* the reset but
+    // before boot() resolves lands in the catch with a fresh budget, and the
+    // page reload-loops forever against the API instead of stopping after
+    // five tries. The reset has to be the last thing, not the first.
+    function bootSucceeded() {
+      if (!new URLSearchParams(location.search).has("boot_retry")) return;
+      const clean = new URL(location.href);
+      clean.searchParams.delete("boot_retry");
+      history.replaceState(null, "", clean.toString());
+    }
+
     async function boot() {
       if (typeof PIXI === "undefined") {
         retryBoot("renderer unavailable");
@@ -176,13 +195,6 @@
       await app.init({ background: 0x131722, resizeTo: window, antialias: true });
       document.getElementById("room").appendChild(app.canvas);
       fallback.textContent = "";
-      // Booted. Drop the retry counter so a later failure gets a full budget
-      // again, and so the on-air URL matches the one OBS is configured with.
-      if (new URLSearchParams(location.search).has("boot_retry")) {
-        const clean = new URL(location.href);
-        clean.searchParams.delete("boot_retry");
-        history.replaceState(null, "", clean.toString());
-      }
 
       layers.room = new PIXI.Container();
       layers.chars = new PIXI.Container();
@@ -202,6 +214,7 @@
       cast.push(model, trader);
       positionCharacters();
       startAmbient();
+      bootSucceeded();
 
       // B1 evaluation gate: `?gallery=1` lays out both styles against every
       // mood so the options can be compared in one screenshot. Aesthetics is

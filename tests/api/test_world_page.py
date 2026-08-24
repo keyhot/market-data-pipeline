@@ -51,6 +51,24 @@ def test_the_vendored_renderer_is_actually_served():
     assert len(response.content) > 100_000
 
 
+def test_the_retry_cap_cannot_be_defeated():
+    """Two ways the bounded backoff stops being bounded, both real.
+
+    1. Resetting the counter mid-boot: anything throwing *after* the reset but
+       before boot() resolves reaches the catch with a fresh budget, so the
+       page reload-loops forever. The reset must come after the room is built.
+    2. The counter rides in the URL. `Number("abc")` is NaN, NaN fails every
+       comparison, so a junk value would slip past the cap and then increment
+       to NaN forever.
+    """
+    body = client.get("/world").text
+    # The reset happens once construction is done, not the moment PIXI answers.
+    assert body.index("startAmbient();") < body.index("bootSucceeded();")
+    assert body.index("bootSucceeded();") < body.index("subscribe()")
+    # A non-integer counter counts as exhausted, never as zero.
+    assert "Number.isInteger(raw)" in body
+
+
 def test_a_failed_boot_retries_instead_of_latching():
     """The fallback used to be terminal: painted once, blank until a human
     refreshed the browser source. Unattended surfaces must self-heal."""
