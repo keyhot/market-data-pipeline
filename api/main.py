@@ -4,6 +4,7 @@ import json
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -616,21 +617,48 @@ def overlay_signals():
     )
 
 
+# How long after a track should have ended we keep crediting it. The runner
+# polls every 5s and advances on ENDED, so a live bed's row is never more than
+# about `duration + 5s` old; anything older means the runner is gone.
+_CREDIT_GRACE_SECONDS = 30.0
+# Fallback when a row carries no duration — defensive only (all shipped tracks
+# parse), but an unbounded credit is exactly what this guard exists to prevent.
+_CREDIT_MAX_SECONDS = 600.0
+
+
+def _credit_expired(started_at, duration_seconds) -> bool:
+    """Has this row outlived the track it describes?
+
+    `music_now_playing` is an upsert, so the last track the runner started
+    stays in the table forever. If the bed dies — a crash loop, a stopped
+    unit, OBS relaunched under it — the row is still there and the strip would
+    go on crediting a song over silence. A credit nobody asked us to give,
+    naming a track that is not playing, is worse than no credit at all.
+    """
+    if started_at is None:
+        return True
+    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+    length = duration_seconds if duration_seconds else _CREDIT_MAX_SECONDS
+    return elapsed > length + _CREDIT_GRACE_SECONDS
+
+
 @app.get("/music/now-playing")
 def music_now_playing():
     """The bed's current track, for the credit line on the signals strip.
 
     Read-only and forgiving: the bed is a courtesy (neither Mixkit's nor
-    Pixabay's licence requires attribution), so if the runner is not up or the
-    row was never written, this answers `{"playing": null}` rather than an
-    error. The strip then shows nothing at all, which is the correct look for a
-    stream with no music.
+    Pixabay's licence requires attribution), so a missing runner, a stale row
+    or a DB blip all answer `{"playing": null}` rather than an error. The strip
+    then shows nothing at all, which is the correct look for a stream with no
+    music.
     """
     try:
         current = get_now_playing()
     except Exception:  # noqa: BLE001 - a DB blip must not 500 the overlay
         current = None
-    if not current:
+    if not current or _credit_expired(
+        current.get("started_at"), current.get("duration_seconds")
+    ):
         return ApiResponse(status=200, data={"playing": None})
     return ApiResponse(
         status=200,
