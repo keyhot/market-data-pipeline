@@ -1,9 +1,11 @@
 """The canvas itself isn't unit-testable, so these tests pin the things that
-silently break a 24/7 browser source: substitution, the SRI pin, and the
-textContent-only rule that keeps event payloads from becoming markup."""
+silently break a 24/7 browser source: substitution, the same-origin rule
+for the renderer (KI-045), the bounded boot retry, and the textContent-only
+rule that keeps event payloads from becoming markup."""
 
 import json
 import re
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -710,3 +712,21 @@ def test_the_swell_preview_surface_opens_no_event_stream():
     )
     assert preview, "no early-returning ?swell=1 branch"
     assert "EventSource" not in preview.group(0)
+
+
+def test_no_template_loads_a_script_from_another_origin():
+    """The rule is "no external origin in a script tag", not "not unpkg".
+
+    KI-045 was unpkg, but cdnjs, jsdelivr or a raw GitHub URL is the identical
+    outage with a different domain: a third party in the on-air load path,
+    whose failures are undetectable from here and unfixable. Naming two vendors
+    in a grep would let the third one through. Scripts specifically — a font or
+    an image that fails to load degrades the frame; a script that fails to load
+    blanks it.
+    """
+    templates = Path(__file__).resolve().parents[2] / "api" / "templates"
+    external = re.compile(r'<script[^>]+src="https?://', re.IGNORECASE)
+    offenders = [
+        p.name for p in templates.glob("*.html") if external.search(p.read_text())
+    ]
+    assert offenders == [], f"templates loading a remote script: {offenders}"

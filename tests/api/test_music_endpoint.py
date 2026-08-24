@@ -7,13 +7,6 @@ from fastapi.testclient import TestClient
 
 import api.main as main
 
-# `started_at` must be relative to the clock, never an absolute timestamp.
-# `/music/now-playing` drops a credit that has outlived its track (KI: "a
-# credit must not outlive the track it names"), so a pinned datetime describes
-# a *currently playing* track for a few minutes and a long-dead one forever
-# after — it passed the hour it was written and failed the next.
-NOW = datetime.now(timezone.utc)
-
 ROW = {
     "file": "mixkit-sleepy-cat-135.mp3",
     "title": "Sleepy Cat",
@@ -22,8 +15,23 @@ ROW = {
     "source_url": "https://mixkit.co/free-stock-music/lo-fi-beats/",
     "license": "Mixkit Stock Music Free License",
     "duration_seconds": 119.2,
-    "started_at": NOW,
 }
+
+
+def playing_now(**overrides):
+    """A row for a track that started *now*, evaluated when the test runs.
+
+    `started_at` must never be a constant — not an absolute datetime, and not
+    a module-level `datetime.now()` either. `/music/now-playing` drops a credit
+    that has outlived its track, and this row expires 149.2s after its
+    timestamp (119.2s duration + 30s grace). A module-level value is computed
+    at *collection*, so the row is fresh only while the whole suite finishes
+    inside that window — fine at today's 17s, not fine on the streaming host
+    where `test_backtest` has taken 5+ minutes under OBS load, and order is
+    randomised. That is the same defect this file already had with an absolute
+    timestamp, one order of magnitude further out.
+    """
+    return {**ROW, "started_at": datetime.now(timezone.utc), **overrides}
 
 
 @pytest.fixture
@@ -32,7 +40,7 @@ def client():
 
 
 def test_it_returns_the_current_track(client, monkeypatch):
-    monkeypatch.setattr(main, "get_now_playing", lambda: ROW)
+    monkeypatch.setattr(main, "get_now_playing", lambda: playing_now())
     body = client.get("/music/now-playing").json()
     assert body["status"] == 200
     playing = body["data"]["playing"]
