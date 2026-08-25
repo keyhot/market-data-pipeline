@@ -70,3 +70,41 @@ def test_a_second_page_cannot_cover_for_a_dead_one():
     record_beat(store, host="localhost:8000", page="world", frames=999, now=1000.0)
     status = renderer_status(store, now=1001.0, started_at=0.0, required_host="127.0.0.5:8000")
     assert status["healthy"] is False
+
+
+def test_a_page_that_reloaded_is_not_frozen_just_because_its_counter_reset():
+    """A browser-source refresh restarts the render loop at a low frame
+    count. Reading that as a stall would record an outage on the page we
+    just successfully recovered - a false row in an append-only log."""
+    store = {}
+    record_beat(store, host="127.0.0.5:8000", page="world", frames=500, now=1000.0)
+    record_beat(store, host="127.0.0.5:8000", page="world", frames=5, now=1010.0)
+    status = renderer_status(store, now=1011.0, started_at=0.0)
+    assert status["pages"]["127.0.0.5:8000"]["frozen"] is False
+    assert status["healthy"] is True
+
+
+def test_age_exactly_at_stale_threshold_is_healthy():
+    """Boundary test: age == STALE_AFTER (45.0) should still be healthy."""
+    store = {}
+    record_beat(store, host="127.0.0.5:8000", page="world", frames=100, now=1000.0)
+    status = renderer_status(store, now=1045.0, started_at=0.0)
+    assert status["healthy"] is True
+    assert status["pages"]["127.0.0.5:8000"]["age_seconds"] == 45.0
+
+
+def test_span_exactly_at_frozen_threshold_with_unchanged_frames_is_frozen():
+    """Boundary test: span == FROZEN_AFTER (8.0) with unchanged frames should be frozen."""
+    store = {}
+    record_beat(store, host="127.0.0.5:8000", page="world", frames=100, now=1000.0)
+    record_beat(store, host="127.0.0.5:8000", page="world", frames=100, now=1008.0)
+    status = renderer_status(store, now=1009.0, started_at=0.0)
+    assert status["pages"]["127.0.0.5:8000"]["frozen"] is True
+
+
+def test_age_exactly_at_prune_threshold_is_not_yet_pruned():
+    """Boundary test: age == PRUNE_AFTER (600.0) should not yet be pruned."""
+    store = {}
+    record_beat(store, host="127.0.0.5:8000", page="world", frames=100, now=1000.0)
+    status = renderer_status(store, now=1600.0, started_at=0.0)
+    assert "127.0.0.5:8000" in status["pages"]

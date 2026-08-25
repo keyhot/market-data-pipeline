@@ -6,7 +6,7 @@ testable without a browser.
 """
 from __future__ import annotations
 
-BeatStore = dict
+BeatStore = dict[str, dict]
 
 GRACE_SECONDS = 120.0     # after process start, before absence means anything
 STALE_AFTER = 45.0        # the page posts every 15s; three misses is dead
@@ -30,7 +30,10 @@ def _judge(beat: dict, now: float, stale_after: float) -> dict:
     frozen = False
     if beat["previous_at"] is not None:
         span = beat["at"] - beat["previous_at"]
-        frozen = span >= FROZEN_AFTER and beat["frames"] <= beat["previous_frames"]
+        # A stalled counter stays equal, never falls. A decrease means the page
+        # reloaded (browser-source refresh, operator reload, or asset redeploy),
+        # not that the renderer is broken. Only equality counts as a stall.
+        frozen = span >= FROZEN_AFTER and beat["frames"] == beat["previous_frames"]
     return {
         "page": beat["page"],
         "frames": beat["frames"],
