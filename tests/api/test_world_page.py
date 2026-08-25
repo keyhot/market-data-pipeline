@@ -730,3 +730,14 @@ def test_no_template_loads_a_script_from_another_origin():
         p.name for p in templates.glob("*.html") if external.search(p.read_text())
     ]
     assert offenders == [], f"templates loading a remote script: {offenders}"
+
+
+def test_the_page_reports_that_it_is_still_drawing():
+    """KI-046. The count must come from the RENDER loop, not from the timer
+    that posts it - a page whose timer fires while its renderer is dead is the
+    exact failure this detects."""
+    body = client.get("/world").text
+    assert "/world/heartbeat" in body
+    assert "framesDrawn++" in body
+    ticker = body.split("app.ticker.add(")[1][:800]
+    assert "framesDrawn" in ticker

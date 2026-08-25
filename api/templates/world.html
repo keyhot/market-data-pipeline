@@ -196,6 +196,12 @@
       document.getElementById("room").appendChild(app.canvas);
       fallback.textContent = "";
 
+      // KI-046: the room can be dark while every light is green. The count is
+      // incremented by the RENDER loop, so a page whose setInterval still fires
+      // over a dead renderer reports a frozen frame count rather than health.
+      let framesDrawn = 0;
+      app.ticker.add(() => { framesDrawn++; });
+
       layers.room = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
@@ -215,6 +221,19 @@
       positionCharacters();
       startAmbient();
       bootSucceeded();
+
+      // KI-046: posted every 15s regardless of which boot branch runs below —
+      // the beat is about whether the renderer is alive, which is equally true
+      // of a preview surface as of the on-air room. Keyed by Host server-side,
+      // so a developer tab never covers for a dead on-air shard (see
+      // world_heartbeat's docstring).
+      setInterval(() => {
+        fetch("/world/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ page: "world", frames: framesDrawn }),
+        }).catch(() => {});   // a failed beat is the watchdog's problem, not the room's
+      }, 15000);
 
       // B1 evaluation gate: `?gallery=1` lays out both styles against every
       // mood so the options can be compared in one screenshot. Aesthetics is
