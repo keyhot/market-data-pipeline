@@ -735,9 +735,29 @@ def test_no_template_loads_a_script_from_another_origin():
 def test_the_page_reports_that_it_is_still_drawing():
     """KI-046. The count must come from the RENDER loop, not from the timer
     that posts it - a page whose timer fires while its renderer is dead is the
-    exact failure this detects."""
+    exact failure this detects.
+
+    Two more regressions the assertions above miss on their own: the posted
+    body could carry a hardcoded `frames: 1` instead of the counter -
+    `framesDrawn++` would still be in the ticker, `/world/heartbeat` would
+    still be in the page, and the test above would stay green while shipping
+    a beat that has nothing to do with whether the page is drawing - and the
+    posting interval could drift off 15s, the same honest counter posted less
+    often, which just as quietly breaks STALE_AFTER=45.0's "three missed
+    beats" meaning. The isolated heartbeat window below pins both."""
     body = client.get("/world").text
     assert "/world/heartbeat" in body
     assert "framesDrawn++" in body
     ticker = body.split("app.ticker.add(")[1][:800]
     assert "framesDrawn" in ticker
+
+    heartbeat = body.split('"/world/heartbeat"')[1][:300]
+    assert re.search(r"frames:\s*framesDrawn\b", heartbeat), (
+        "the posted frame count must be the render-loop counter itself - a "
+        "hardcoded literal such as `frames: 1` would pass every assertion "
+        "above while shipping exactly the bug KI-046 exists to catch"
+    )
+    assert "15000" in heartbeat, (
+        "the posting cadence must be 15s - STALE_AFTER=45.0 only means "
+        "'three missed beats' if the page actually posts that often"
+    )
