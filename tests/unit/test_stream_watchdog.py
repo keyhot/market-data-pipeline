@@ -738,7 +738,12 @@ def test_content_probe_rejects_unmeasured_postgres():
 
 def test_content_probe_passes_on_a_genuinely_healthy_stack():
     body = {"data": {"postgres": {"enabled": True, "connected": True}}}
-    assert probe_content(CFG, opener=_opener_returning(body)) == {"content_ok": True}
+    # KI-046 added a renderer verdict to the same response. An API that reports
+    # no `renderer` block at all (an older build) is not evidence of a blank
+    # room, so the unconfigured probe still reads healthy.
+    assert probe_content(CFG, opener=_opener_returning(body)) == {
+        "content_ok": True, "renderer_ok": True,
+    }
 
 
 def test_content_probe_reports_unreachable_rather_than_raising():
@@ -894,3 +899,192 @@ def test_the_runner_seeds_the_card_from_what_obs_is_showing():
     from scripts.stream_watchdog import main
 
     assert "program_scene=" in inspect.getsource(main)
+
+
+# --- KI-046: a room that is not on screen is dark air ---
+#
+# `tick` returns `(state, actions)`. The brief's blocks called it bare and
+# indexed `a[0]` over that 2-tuple, which is a TypeError on the `WatchdogState`
+# it yields first — so the actions list is taken with `[1]` here. Nothing else
+# about the assertions changed.
+
+
+def test_a_blank_renderer_is_recorded_after_the_configured_failures():
+    """KI-046: OBS says streaming: true, the drop ratio is 0.007%, and the
+    frame is white. Nothing in the system could see that before this rule."""
+    config = WatchdogConfig(renderer_failures_before_drop=3)
+    state = WatchdogState(streaming=True)
+    probe = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+             "content_ok": True, "renderer_ok": False,
+             "renderer_detail": "no heartbeat"}
+    for _ in range(2):
+        assert not [
+            a for a in tick(probe, state, config, now=1.0)[1] if a[0] == "record"
+        ]
+    actions = tick(probe, state, config, now=2.0)[1]
+    recorded = [a for a in actions if a[0] == "record"]
+    assert recorded and recorded[0][1] == "stream_dropped"
+    assert recorded[0][2]["reason"] == "renderer_blank"
+
+
+def test_a_recovered_renderer_closes_the_outage_with_its_duration():
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    bad = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+           "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+    good = {**bad, "renderer_ok": True}
+    tick(bad, state, config, now=100.0)
+    actions = tick(good, state, config, now=160.0)[1]
+    recorded = [a for a in actions if a[0] == "record"]
+    assert recorded[0][2]["reason"] == "renderer_restored"
+    assert recorded[0][2]["outage_seconds"] == 60.0
+
+
+def test_a_blank_renderer_is_not_a_degraded_notice():
+    """STREAM_DEGRADED_REASONS exempts reconnects and congestion from uptime.
+    A room that is not on screen is dark air, and must cost uptime."""
+    from world.state import STREAM_DEGRADED_REASONS
+    assert "renderer_blank" not in STREAM_DEGRADED_REASONS
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+        self.status = 200
+    def read(self):
+        import json
+        return json.dumps(self._payload).encode()
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        return False
+
+
+def _health(pages, healthy=True):
+    return {"data": {"postgres": {"connected": True},
+                     "renderer": {"healthy": healthy, "detail": "x", "pages": pages}}}
+
+
+def test_the_probe_judges_the_named_shard_and_ignores_a_dev_tab():
+    config = WatchdogConfig(renderer_host="127.0.0.5:8000")
+    payload = _health(
+        {"localhost:8000": {"healthy": True, "age_seconds": 1.0, "frozen": False},
+         "127.0.0.5:8000": {"healthy": False, "age_seconds": 90.0, "frozen": False}},
+        healthy=False,
+    )
+    probe = probe_content(config, opener=lambda *a, **k: _FakeResponse(payload))
+    assert probe["renderer_ok"] is False
+
+
+def test_a_dead_dev_tab_does_not_condemn_a_live_on_air_page():
+    config = WatchdogConfig(renderer_host="127.0.0.5:8000")
+    payload = _health(
+        {"localhost:8000": {"healthy": False, "age_seconds": 600.0, "frozen": True},
+         "127.0.0.5:8000": {"healthy": True, "age_seconds": 2.0, "frozen": False}},
+        healthy=False,
+    )
+    probe = probe_content(config, opener=lambda *a, **k: _FakeResponse(payload))
+    assert probe["renderer_ok"] is True
+
+
+def test_a_shard_that_never_posted_is_a_dead_renderer_not_an_unknown():
+    """The literal KI-046 signature. `world.html` registers the heartbeat's
+    setInterval *after* PixiJS boots, so a room that failed to initialise never
+    posts a first beat and never appears in `pages` at all. Reading the
+    fleet-wide `healthy` here (as an earlier draft did) would let a developer
+    tab on localhost vouch for a shard that has never drawn a frame — blind to
+    exactly the bug this rule exists for."""
+    config = WatchdogConfig(renderer_host="127.0.0.4:8000")
+    payload = _health({"localhost:8000": {"healthy": True, "age_seconds": 1.0,
+                                          "frozen": False}}, healthy=True)
+    probe = probe_content(config, opener=lambda *a, **k: _FakeResponse(payload))
+    assert probe["renderer_ok"] is False
+    assert "127.0.0.4:8000" in probe["renderer_detail"]
+
+
+def test_with_no_host_configured_the_probe_keeps_the_advisory_fleet_verdict():
+    """Default config records nothing new: `renderer_host=None` is the
+    unconfigured state every existing deployment is in."""
+    config = WatchdogConfig()
+    payload = _health({"127.0.0.4:8000": {"healthy": True, "age_seconds": 2.0,
+                                          "frozen": False}}, healthy=True)
+    probe = probe_content(config, opener=lambda *a, **k: _FakeResponse(payload))
+    assert probe["renderer_ok"] is True
+
+
+def test_an_unreadable_health_endpoint_returns_no_renderer_verdict_at_all():
+    """A content outage is already recorded as one. Reporting it as a renderer
+    fault too would double-count the same darkness — and claiming the renderer
+    is *fine* would be worse still (see the next test)."""
+    def _boom(*a, **k):
+        raise OSError("connection refused")
+
+    probe = probe_content(WatchdogConfig(renderer_host="127.0.0.4:8000"), opener=_boom)
+    assert probe["content_ok"] is False
+    assert "renderer_ok" not in probe
+
+
+def test_a_dead_api_does_not_forge_a_renderer_recovery():
+    """The ordering hazard: `_check_content` runs first, so a tick that both
+    opened a content outage and closed a renderer one would emit the
+    `stream_started` that closes the outage the same tick just opened —
+    understating downtime, the direction that flatters. No verdict means no
+    change, so the renderer outage stays open until the renderer itself says
+    otherwise."""
+    config = WatchdogConfig(renderer_failures_before_drop=1,
+                            content_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    blank = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+             "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+    tick(blank, state, config, now=100.0)
+    assert state.renderer_ok is False
+    # API dies: probe_content's failure path carries no renderer key.
+    dead_api = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+                "content_ok": False, "content_detail": "OSError"}
+    _s, actions = tick(dead_api, state, config, now=130.0)
+    reasons = [a[2].get("reason") for a in actions if a[0] == "record"]
+    assert "renderer_restored" not in reasons
+    assert state.renderer_ok is False
+    assert state.renderer_down_since == 100.0
+
+
+def test_a_blank_renderer_is_recorded_once_not_every_tick():
+    """`world_events` is append-only and a stream_dropped is severity 5.0. The
+    latch is what keeps one fault one row."""
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    blank = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+             "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+    _s, first = tick(blank, state, config, now=100.0)
+    assert [a[2]["reason"] for a in first if a[0] == "record"] == ["renderer_blank"]
+    _s, again = tick(blank, state, config, now=130.0)
+    assert _actions_of(again, "record") == []
+
+
+def test_a_healthy_renderer_on_a_fresh_watchdog_records_nothing():
+    """A false unhealthy reading is as much a defect as a false healthy one:
+    the debounce IS the grace period. Three ticks of absence (~90s at the 30s
+    poll) outlast any beat gap a restart can produce — the page posts every
+    15s — so no process restart can manufacture an outage."""
+    config = WatchdogConfig()
+    state = WatchdogState(streaming=True)
+    absent = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+              "content_ok": True, "renderer_ok": False, "renderer_detail": "no beat"}
+    for now in (100.0, 130.0):
+        _s, actions = tick(absent, state, config, now=now)
+        assert _actions_of(actions, "record") == []
+    good = {**absent, "renderer_ok": True}
+    _s, actions = tick(good, state, config, now=160.0)
+    assert _actions_of(actions, "record") == []
+    assert state.renderer_failures == 0 and state.renderer_ok is True
+
+
+def test_the_runner_reads_the_on_air_shard_from_the_environment():
+    """The shard `world-room` sits on is deployment configuration, not a
+    constant — if scripts/stream_scene.py's sharding changes, this must change
+    with it."""
+    import inspect
+
+    from scripts.stream_watchdog import main
+
+    assert "WATCHDOG_RENDERER_HOST" in inspect.getsource(main)

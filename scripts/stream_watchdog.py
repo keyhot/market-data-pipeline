@@ -79,6 +79,34 @@ class WatchdogConfig:
     # less believable, which is the opposite of the point. Three consecutive
     # failures (~90s) is a real outage, not a restart.
     content_failures_before_drop: int = 3
+    # KI-046: a renderer that fails to boot is invisible to every other check —
+    # OBS reported `streaming: true` at a 0.007% drop ratio and /health was
+    # green for the two hours a white frame went out. `/health`'s `data.renderer`
+    # answers for it now; this is the host whose verdict is read.
+    #
+    # ONE host, named here, never the fleet-wide `data.renderer.healthy`. That
+    # flag folds every page that has ever posted a beat and is documented as
+    # advisory for exactly that reason: a developer tab on localhost:8000 that
+    # beats once and closes goes stale at 45s and lingers until it is pruned at
+    # 600s, dragging the fleet verdict false for up to nine minutes while every
+    # on-air shard is fine. A watchdog reading it would write a `renderer_blank`
+    # row into an append-only log on a healthy stream (the KI-038 class of bug).
+    #
+    # `None` — the default, and the state of every deployment until an operator
+    # sets it — keeps the fleet verdict, which is advisory and therefore records
+    # nothing new. The on-air value comes from the environment because it is
+    # deployment configuration: `world-room` is sharded onto 127.0.0.4:8000 by
+    # scripts/stream_scene.py (KI-013), and **if that sharding changes this must
+    # change with it**. Set WATCHDOG_RENDERER_HOST in the systemd unit.
+    renderer_host: str | None = None
+    # Same debounce reasoning as content: three consecutive failures (~90s at a
+    # 30s poll) is a real outage. It doubles as the grace period — the page
+    # beats every 15s, so no restart of the API, OBS or the watchdog can leave a
+    # gap long enough to manufacture an outage.
+    renderer_failures_before_drop: int = 3
+    # The browser source Task 16 reloads to recover the room. Declared with the
+    # rule that decides it; nothing reads it yet.
+    renderer_source: str = "world-room"
 
 
 @dataclass
@@ -109,6 +137,16 @@ class WatchdogState:
     content_ok: bool = True
     content_failures: int = 0
     content_down_since: float | None = None
+    # KI-046: and renderer health is tracked separately again — the room can be
+    # blank while the output is live and the content is reachable. Starting
+    # `renderer_ok=True` with zero failures is what makes the debounce a grace
+    # period for a restarted watchdog.
+    renderer_ok: bool = True
+    renderer_failures: int = 0
+    renderer_down_since: float | None = None
+    # Set and cleared by Task 16's recovery action; declared here so the rule
+    # that decides a refresh and the field that rate-limits it stay together.
+    renderer_refreshed_at: float | None = None
 
 
 def tick(
@@ -155,6 +193,7 @@ def tick(
             state.on_standby = False
         actions.extend(_note_reconnect(probe, state))
         actions.extend(_check_content(probe, state, config, now))
+        actions.extend(_check_renderer(probe, state, config, now))
         ratio = probe.get("dropped_ratio", 0.0)
         total = int(probe.get("total_frames") or 0)
         # KI-021: the rule may only speak once its denominator means something.
@@ -346,6 +385,80 @@ def _check_content(
                     "reason": "content_unreachable",
                     "detail": probe.get("content_detail", "unknown"),
                     "consecutive_failures": state.content_failures,
+                },
+            )
+        ]
+    return []
+
+
+def _check_renderer(
+    probe: dict, state: WatchdogState, config: WatchdogConfig, now: float
+) -> list[tuple]:
+    """KI-046: is the room actually reaching the screen? Pure.
+
+    A PixiJS page that throws during boot leaves a white frame, and nothing in
+    this project could see that: OBS reported `streaming: true` at a 0.007% drop
+    ratio, `/health` was green, and two hours of blank video went out. The page
+    now posts a heartbeat carrying a frame counter incremented inside its render
+    loop, so a page whose `setInterval` still fires over a dead renderer reports
+    a *frozen* count rather than health.
+
+    A blank room is REAL downtime, on the `content_unreachable` side of the line
+    and deliberately not in `world.state.STREAM_DEGRADED_REASONS`: pixels going
+    out with nothing on them is dark air, and it must cost uptime.
+
+    Recovery is recorded as `stream_started`, not `stream_reconnected`, for the
+    reason `_check_content` gives above — the fold's vocabulary is "dropped
+    opens downtime, started closes it". It is also the only thing that *works*:
+    `is_degraded_stream_event` is True for `stream_reconnected` at the TYPE
+    level whatever its reason, so a `renderer_restored` reconnect would leave
+    the outage open to the end of the report window in `compute_uptime`, pin
+    /world's stream state at "down" forever, and inflate the KI-021 reconnect
+    count with events that were never RTMP re-dials.
+
+    Absence of a verdict is not a verdict. When `renderer_ok` is missing the
+    rule does nothing at all — no failure counted, no recovery declared. That is
+    the state whenever `probe_content` bailed out early (the API is unreachable,
+    which is already recorded as a content outage) and whenever it was never
+    called (OBS is down, recorded as its own outage). Forcing `True` there
+    instead would let a dead API *close* an open renderer outage — `tick` runs
+    the content check first, so the same tick would open a content outage and
+    then emit the `stream_started` that closes it — understating downtime,
+    which is the direction that flatters.
+
+    Like `_check_content`, this never triggers a restart. Task 16 adds the
+    recovery action; this one records the truth.
+    """
+    healthy = probe.get("renderer_ok")
+    if healthy is None:
+        return []
+
+    if healthy:
+        state.renderer_failures = 0
+        if not state.renderer_ok:
+            payload = {"reason": "renderer_restored"}
+            if state.renderer_down_since is not None:
+                payload["outage_seconds"] = round(now - state.renderer_down_since, 1)
+                state.renderer_down_since = None
+            state.renderer_ok = True
+            return [("record", "stream_started", payload)]
+        return []
+
+    state.renderer_failures += 1
+    if (
+        state.renderer_ok
+        and state.renderer_failures >= config.renderer_failures_before_drop
+    ):
+        state.renderer_ok = False
+        state.renderer_down_since = now
+        return [
+            (
+                "record",
+                "stream_dropped",
+                {
+                    "reason": "renderer_blank",
+                    "detail": probe.get("renderer_detail", "unknown"),
+                    "consecutive_failures": state.renderer_failures,
                 },
             )
         ]
@@ -725,6 +838,12 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
     `data.postgres.connected` must be `True`. `None` there means writes are
     disabled, which for a stream whose world log is the show is not healthy
     either.
+
+    KI-046: the same response also answers for the renderer, so that verdict is
+    read here rather than in a second request. The failure paths below carry no
+    renderer key on purpose — a probe that could not read the endpoint has no
+    opinion about the room, and saying either "fine" or "blank" would be an
+    invention. `_check_renderer` treats a missing key as "no verdict".
     """
     opener = opener or urllib.request.urlopen
     try:
@@ -743,7 +862,38 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
             "content_ok": False,
             "content_detail": f"postgres connected={postgres.get('connected')!r}",
         }
-    return {"content_ok": True}
+
+    renderer = ((body.get("data") or {}).get("renderer") or {})
+    pages = renderer.get("pages") or {}
+    if config.renderer_host:
+        # One host, named by config: a developer tab on localhost must never
+        # cover for a dead on-air source, and a closed tab must never condemn a
+        # live one. `/health`'s own `healthy` folds every page, so it is not the
+        # number to read here.
+        page = pages.get(config.renderer_host)
+        if page is None:
+            # Absent is the literal KI-046 signature, not an unknown: the page
+            # registers its heartbeat *after* PixiJS boots, so a room that never
+            # rendered never posts a first beat and never appears in `pages`.
+            # Reading the fleet verdict here would let any other page vouch for
+            # a shard that has never drawn a frame — blind to the whole bug.
+            # The debounce carries the restart case: a beat arrives within 15s
+            # of the page loading, well inside the ~90s the rule waits.
+            renderer_ok = False
+            detail = f"no beat from {config.renderer_host}"
+        else:
+            renderer_ok = bool(page.get("healthy"))
+            detail = f"age {page.get('age_seconds')}s frozen={page.get('frozen')}"
+    else:
+        # Unconfigured: the advisory fleet verdict, which is what every
+        # deployment gets until an operator names the on-air shard.
+        renderer_ok = bool(renderer.get("healthy", True))
+        detail = str(renderer.get("detail", "unknown"))
+
+    result = {"content_ok": True, "renderer_ok": renderer_ok}
+    if not renderer_ok:
+        result["renderer_detail"] = detail
+    return result
 
 
 def execute_actions(
@@ -822,13 +972,22 @@ def seed_state(probe: dict, program_scene: str | None = None) -> WatchdogState:
 
 def main() -> None:
     init_logging()
-    config = WatchdogConfig()
+    # KI-046: which shard is on air is deployment configuration, not a
+    # constant — `world-room` is on 127.0.0.4:8000 today (scripts/stream_scene.py).
+    # Unset means "judge nothing new", the behaviour every deployment has now.
+    config = WatchdogConfig(
+        renderer_host=os.environ.get("WATCHDOG_RENDERER_HOST") or None
+    )
     # Look before assuming (KI-038): one probe seeds the state, so a restart
     # into a stream that never stopped announces nothing.
     state = seed_state(probe_obs(), program_scene=_program_scene())
     logger.info(
         "Stream watchdog started",
-        extra={"poll_seconds": config.poll_seconds, "streaming": state.streaming},
+        extra={
+            "poll_seconds": config.poll_seconds,
+            "streaming": state.streaming,
+            "renderer_host": config.renderer_host,
+        },
     )
     while True:
         probe = probe_obs()
