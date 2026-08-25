@@ -2,6 +2,7 @@ import asyncio
 import html
 import json
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ import pandas as pd
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from api.metrics import UNMATCHED_ROUTE, MetricsRegistry
 from config.exceptions import BaseAppException, NoDataFoundError
@@ -52,11 +54,30 @@ from storage.writes import (
 )
 from world import reactions, visuals
 from world.reactions import attach_reactions
+from world.renderer_health import record_beat, renderer_status
 from world.salience import KNOWN_EVENT_TYPES
 from world.state import GENERIC_TIER_CUTS, project_state, tier_cuts, tier_of_js
 
 scheduler_service = SchedulerService()
 news_store = CsvNewsStore()
+
+# KI-046: registry behind the renderer heartbeat. `record_beat`/`renderer_status`
+# (world.renderer_health) are pure; this dict plus the lock are the only state
+# and I/O around them. `/health` is a sync `def`, so FastAPI runs it — and
+# `world_heartbeat` — in a threadpool: several OBS browser sources hit the
+# heartbeat route concurrently, and `renderer_status` prunes (deletes) the
+# store while iterating it, so unsynchronized access can race.
+_RENDERER_BEATS: dict = {}
+_RENDERER_BEATS_LOCK = threading.Lock()
+# Captured at import, not in `lifespan`: Starlette only runs lifespan on
+# context-manager entry, and this task's tests construct TestClient(app) at
+# module level, so a lifespan-set value would be unset in every test.
+_PROCESS_STARTED_AT = time.monotonic()
+
+
+class RendererBeat(BaseModel):
+    page: str
+    frames: int
 
 
 @asynccontextmanager
@@ -197,14 +218,41 @@ def _render_template(name: str, replacements: dict[str, str]) -> str:
     return html
 
 
+@app.post("/world/heartbeat")
+def world_heartbeat(beat: RendererBeat, request: Request):
+    """KI-046: the page says it is alive, and carries the frame count that
+    stops a frozen page from being able to say so convincingly.
+
+    Keyed by Host, because OBS's sources load 127.0.0.N shards and a developer
+    tab on localhost must never cover for a dead on-air source.
+    """
+    with _RENDERER_BEATS_LOCK:
+        record_beat(
+            _RENDERER_BEATS,
+            host=request.headers.get("host", "unknown"),
+            page=beat.page,
+            frames=beat.frames,
+            now=time.monotonic(),
+        )
+    return ApiResponse(status=200, message="beat recorded", data={})
+
+
 @app.get("/health")
 def health():
+    with _RENDERER_BEATS_LOCK:
+        renderer = renderer_status(
+            _RENDERER_BEATS, now=time.monotonic(), started_at=_PROCESS_STARTED_AT
+        )
     return ApiResponse(
         status=200,
         message="API is healthy",
         data={
             "scheduler": scheduler_service.status(),
             "postgres": postgres_status(),
+            # `healthy` here folds EVERY page that posted, including developer
+            # tabs, so it is advisory. The watchdog judges one host out of
+            # `pages` — see Task 15. The API cannot know which source is on air.
+            "renderer": renderer,
         },
     )
 
