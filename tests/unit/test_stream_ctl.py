@@ -49,6 +49,9 @@ class FakeClient:
     def set_input_volume(self, name, vol_db=None):
         self._log("set_input_volume", name, vol_db)
 
+    def press_input_properties_button(self, input_name, prop_name):
+        self._log("press_input_properties_button", input_name, prop_name)
+
     def _log(self, name, *args):
         self.calls.append((name, *args))
 
@@ -458,3 +461,25 @@ def test_a_missing_non_shared_input_still_raises():
         stream_ctl._scene_item_id(
             client, "world-focus", "overlay-signals", shared=False
         )
+
+
+def test_refresh_browser_source_presses_the_browser_refresh_button():
+    """obs-websocket has no first-class "reload input" request: the browser
+    source's refresh lives as a button in its properties, and pressing it is the
+    whole recovery (KI-046)."""
+    client = FakeClient()
+    stream_ctl.refresh_browser_source(client, "world-room")
+    assert client.calls == [
+        ("press_input_properties_button", "world-room", "refreshnocache")
+    ]
+
+
+def test_the_refresh_button_is_pressed_the_way_the_real_client_takes_it():
+    """Both sides of the seam, pinned. A fake laxer than the thing it stands in
+    for is how the A4 seam bugs stayed green — and `refreshnocache` is a string
+    obs-browser owns, not one this project may choose."""
+    import inspect
+
+    obsws = pytest.importorskip("obsws_python")
+    sig = inspect.signature(obsws.ReqClient.press_input_properties_button)
+    assert list(sig.parameters) == ["self", "input_name", "prop_name"]

@@ -1116,3 +1116,71 @@ def test_the_runner_reads_the_on_air_shard_from_the_environment():
     from scripts.stream_watchdog import main
 
     assert "WATCHDOG_RENDERER_HOST" in inspect.getsource(main)
+
+
+# --- KI-046, G5: the cheapest recovery first ---
+
+
+def _blank_probe():
+    return {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+            "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+
+
+def test_the_first_blank_renderer_refreshes_the_source_before_anything_heavier():
+    """A blank browser source usually recovers from a reload, which is orders of
+    magnitude cheaper than relaunching OBS — and unlike a relaunch it costs the
+    stream nothing that is currently working."""
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    _s, actions = tick(_blank_probe(), state, config, now=10.0)
+    assert ("refresh_source", "world-room") in actions
+    assert state.renderer_refreshed_at == 10.0
+
+
+def test_the_refresh_does_not_repeat_every_tick():
+    """A page that is broken rather than stuck would otherwise be reloaded every
+    30 seconds forever — the KI-015 shape, where the recovery becomes the fault.
+    One reload per outage; if it did not help, something else must."""
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    tick(_blank_probe(), state, config, now=10.0)
+    _s, again = tick(_blank_probe(), state, config, now=40.0)
+    assert ("refresh_source", "world-room") not in again
+
+
+def test_the_refresh_is_armed_again_by_a_recovery():
+    """Once per outage, not once per process: a room that goes blank, reloads
+    into health, and goes blank again an hour later gets the cheap fix both
+    times."""
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    tick(_blank_probe(), state, config, now=10.0)
+    good = {**_blank_probe(), "renderer_ok": True}
+    tick(good, state, config, now=70.0)
+    assert state.renderer_refreshed_at is None
+    _s, again = tick(_blank_probe(), state, config, now=130.0)
+    assert ("refresh_source", "world-room") in again
+
+
+def test_the_refresh_names_the_source_from_config_not_a_literal():
+    """The source name is one edit away from the shard host it must agree with."""
+    config = WatchdogConfig(renderer_failures_before_drop=1, renderer_source="room-2")
+    state = WatchdogState(streaming=True)
+    _s, actions = tick(_blank_probe(), state, config, now=10.0)
+    assert ("refresh_source", "room-2") in actions
+
+
+def test_execute_actions_actually_dispatches_a_refresh(monkeypatch):
+    """The seam `tick` cannot see. An action kind `execute_actions` does not
+    know falls straight through its if/elif chain and does nothing, silently —
+    a self-heal that only exists in the decision is not a self-heal."""
+    from scripts import stream_watchdog as wd
+
+    pressed = []
+    monkeypatch.setattr(wd.stream_ctl, "make_client", lambda *a, **k: "client")
+    monkeypatch.setattr(
+        wd.stream_ctl, "refresh_browser_source",
+        lambda client, name: pressed.append((client, name)),
+    )
+    wd.execute_actions([("refresh_source", "world-room")], WatchdogConfig())
+    assert pressed == [("client", "world-room")]

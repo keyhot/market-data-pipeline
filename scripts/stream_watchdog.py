@@ -151,8 +151,8 @@ class WatchdogState:
     renderer_ok: bool = True
     renderer_failures: int = 0
     renderer_down_since: float | None = None
-    # Set and cleared by Task 16's recovery action; declared here so the rule
-    # that decides a refresh and the field that rate-limits it stay together.
+    # When the source was last reloaded in the current outage, and `None` once
+    # it recovers. This IS the rate limit: one refresh per outage.
     renderer_refreshed_at: float | None = None
 
 
@@ -447,6 +447,10 @@ def _check_renderer(
             if state.renderer_down_since is not None:
                 payload["outage_seconds"] = round(now - state.renderer_down_since, 1)
                 state.renderer_down_since = None
+            if state.renderer_refreshed_at is not None:
+                payload["refreshed"] = True
+                # Re-arm the cheap fix: once per outage, not once per process.
+                state.renderer_refreshed_at = None
             state.renderer_ok = True
             return [("record", "stream_started", payload)]
         return []
@@ -458,7 +462,7 @@ def _check_renderer(
     ):
         state.renderer_ok = False
         state.renderer_down_since = now
-        return [
+        actions = [
             (
                 "record",
                 "stream_dropped",
@@ -469,6 +473,18 @@ def _check_renderer(
                 },
             )
         ]
+        # The cheapest thing that could work, once. A blank page usually
+        # recovers from a reload, and a reload costs the stream nothing that is
+        # currently working — unlike an OBS relaunch, which takes down the
+        # encoder, every other source and the RTMP session with it. Latched to
+        # one attempt per outage: a page that is broken rather than stuck would
+        # otherwise be reloaded every 30s forever, which is KI-015's shape, the
+        # recovery becoming the fault. If the reload does not help, the row is
+        # already in the log and a human reads it.
+        if state.renderer_refreshed_at is None:
+            state.renderer_refreshed_at = now
+            actions.append(("refresh_source", config.renderer_source))
+        return actions
     return []
 
 
@@ -933,6 +949,12 @@ def execute_actions(
             elif kind == "switch_scene":
                 stream_ctl.switch_scene(stream_ctl.make_client(), action[1])
                 logger.info("Scene switched", extra={"scene": action[1]})
+            elif kind == "refresh_source":
+                stream_ctl.refresh_browser_source(stream_ctl.make_client(), action[1])
+                logger.warning(
+                    "Browser source refreshed after a blank renderer (KI-046)",
+                    extra={"source": action[1]},
+                )
         except Exception:
             logger.exception("Watchdog action failed", extra={"action": kind})
     return followups
