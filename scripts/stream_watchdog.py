@@ -93,11 +93,18 @@ class WatchdogConfig:
     # row into an append-only log on a healthy stream (the KI-038 class of bug).
     #
     # `None` — the default, and the state of every deployment until an operator
-    # sets it — keeps the fleet verdict, which is advisory and therefore records
-    # nothing new. The on-air value comes from the environment because it is
-    # deployment configuration: `world-room` is sharded onto 127.0.0.4:8000 by
+    # sets it — makes the probe decline to answer at all: no `renderer_ok` key,
+    # so `_check_renderer` counts nothing and records nothing. The fleet verdict
+    # is NOT used as a fallback; it is advisory, and nothing the probe returns
+    # is. An unconfigured watchdog therefore does not guard the room at all:
+    # setting this is what arms KI-046's guard, and a silent half-guard that
+    # cried wolf would be worse than an unarmed one.
+    #
+    # The on-air value comes from the environment because it is deployment
+    # configuration: `world-room` is sharded onto 127.0.0.4:8000 by
     # scripts/stream_scene.py (KI-013), and **if that sharding changes this must
-    # change with it**. Set WATCHDOG_RENDERER_HOST in the systemd unit.
+    # change with it**. Set WATCHDOG_RENDERER_HOST in the watchdog's `.env`
+    # (its systemd unit reads that file).
     renderer_host: str | None = None
     # Same debounce reasoning as content: three consecutive failures (~90s at a
     # 30s poll) is a real outage. It doubles as the grace period — the page
@@ -843,7 +850,10 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
     read here rather than in a second request. The failure paths below carry no
     renderer key on purpose — a probe that could not read the endpoint has no
     opinion about the room, and saying either "fine" or "blank" would be an
-    invention. `_check_renderer` treats a missing key as "no verdict".
+    invention. `_check_renderer` treats a missing key as "no verdict". An
+    unconfigured `renderer_host` returns no key for the same reason: the only
+    thing left to read there is the advisory fleet verdict, and this function's
+    output is not advisory.
     """
     opener = opener or urllib.request.urlopen
     try:
@@ -864,31 +874,33 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
         }
 
     renderer = ((body.get("data") or {}).get("renderer") or {})
-    pages = renderer.get("pages") or {}
-    if config.renderer_host:
-        # One host, named by config: a developer tab on localhost must never
-        # cover for a dead on-air source, and a closed tab must never condemn a
-        # live one. `/health`'s own `healthy` folds every page, so it is not the
-        # number to read here.
-        page = pages.get(config.renderer_host)
-        if page is None:
-            # Absent is the literal KI-046 signature, not an unknown: the page
-            # registers its heartbeat *after* PixiJS boots, so a room that never
-            # rendered never posts a first beat and never appears in `pages`.
-            # Reading the fleet verdict here would let any other page vouch for
-            # a shard that has never drawn a frame — blind to the whole bug.
-            # The debounce carries the restart case: a beat arrives within 15s
-            # of the page loading, well inside the ~90s the rule waits.
-            renderer_ok = False
-            detail = f"no beat from {config.renderer_host}"
-        else:
-            renderer_ok = bool(page.get("healthy"))
-            detail = f"age {page.get('age_seconds')}s frozen={page.get('frozen')}"
+    if not config.renderer_host:
+        # No shard named, no opinion — a rule, not a shortcut. `/health`'s own
+        # `healthy` folds every page that ever posted a beat with `all()`, so a
+        # tab opened on localhost:8000 and closed goes stale at 45s and lingers
+        # until the 600s prune, dragging the fleet verdict false for ~9 minutes
+        # while every on-air shard is fine. Nothing this function returns is
+        # advisory — `_check_renderer` RECORDS on it, into an append-only log
+        # (the KI-038 class). So the unconfigured default says nothing at all
+        # rather than something it cannot stand behind.
+        return {"content_ok": True}
+
+    # One host, named by config: a developer tab on localhost must never cover
+    # for a dead on-air source, and a closed tab must never condemn a live one.
+    page = (renderer.get("pages") or {}).get(config.renderer_host)
+    if page is None:
+        # Absent is the literal KI-046 signature, not an unknown: the page
+        # registers its heartbeat *after* PixiJS boots, so a room that never
+        # rendered never posts a first beat and never appears in `pages`.
+        # Reading the fleet verdict here would let any other page vouch for a
+        # shard that has never drawn a frame — blind to the whole bug. The
+        # debounce carries the restart case: a beat arrives within 15s of the
+        # page loading, well inside the ~90s the rule waits.
+        renderer_ok = False
+        detail = f"no beat from {config.renderer_host}"
     else:
-        # Unconfigured: the advisory fleet verdict, which is what every
-        # deployment gets until an operator names the on-air shard.
-        renderer_ok = bool(renderer.get("healthy", True))
-        detail = str(renderer.get("detail", "unknown"))
+        renderer_ok = bool(page.get("healthy"))
+        detail = f"age {page.get('age_seconds')}s frozen={page.get('frozen')}"
 
     result = {"content_ok": True, "renderer_ok": renderer_ok}
     if not renderer_ok:

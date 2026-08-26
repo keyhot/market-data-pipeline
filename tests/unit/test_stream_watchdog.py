@@ -738,12 +738,11 @@ def test_content_probe_rejects_unmeasured_postgres():
 
 def test_content_probe_passes_on_a_genuinely_healthy_stack():
     body = {"data": {"postgres": {"enabled": True, "connected": True}}}
-    # KI-046 added a renderer verdict to the same response. An API that reports
-    # no `renderer` block at all (an older build) is not evidence of a blank
-    # room, so the unconfigured probe still reads healthy.
-    assert probe_content(CFG, opener=_opener_returning(body)) == {
-        "content_ok": True, "renderer_ok": True,
-    }
+    # KI-046 added a renderer verdict to the same response, but only for a
+    # named shard. `CFG` names none, so the probe says nothing about the room —
+    # and an API that reports no `renderer` block at all (an older build) is not
+    # evidence of a blank one either.
+    assert probe_content(CFG, opener=_opener_returning(body)) == {"content_ok": True}
 
 
 def test_content_probe_reports_unreachable_rather_than_raising():
@@ -1002,14 +1001,43 @@ def test_a_shard_that_never_posted_is_a_dead_renderer_not_an_unknown():
     assert "127.0.0.4:8000" in probe["renderer_detail"]
 
 
-def test_with_no_host_configured_the_probe_keeps_the_advisory_fleet_verdict():
-    """Default config records nothing new: `renderer_host=None` is the
-    unconfigured state every existing deployment is in."""
+def test_with_no_host_configured_the_probe_offers_no_verdict_at_all():
+    """`renderer_host=None` is the state every deployment is in until an
+    operator names the on-air shard, and in it this rule must record NOTHING.
+    That is only true if the probe declines to answer: `/health`'s fleet-wide
+    `healthy` is documented as advisory, and anything the probe puts in
+    `renderer_ok` is not advisory — `_check_renderer` records on it."""
     config = WatchdogConfig()
     payload = _health({"127.0.0.4:8000": {"healthy": True, "age_seconds": 2.0,
                                           "frozen": False}}, healthy=True)
     probe = probe_content(config, opener=lambda *a, **k: _FakeResponse(payload))
-    assert probe["renderer_ok"] is True
+    assert "renderer_ok" not in probe
+
+
+def test_a_closed_dev_tab_cannot_manufacture_an_outage_on_an_unconfigured_box():
+    """The reason the unconfigured path may not speak. `renderer_status` folds
+    every page that ever posted a beat with `all()`: a tab opened on
+    localhost:8000 that beats once and closes goes stale at 45s and is not
+    pruned until 600s, so the fleet verdict reads false for ~9 minutes while
+    every on-air shard is fine. Recording that would put a `renderer_blank` row
+    in an append-only log on a healthy stream — the KI-038 class of bug, and the
+    exact thing WATCHDOG_RENDERER_HOST exists to prevent."""
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    payload = _health(
+        {"localhost:8000": {"healthy": False, "age_seconds": 300.0, "frozen": False},
+         "127.0.0.4:8000": {"healthy": True, "age_seconds": 2.0, "frozen": False}},
+        healthy=False,
+    )
+    probe = probe_content(config, opener=lambda *a, **k: _FakeResponse(payload))
+    assert "renderer_ok" not in probe
+
+    state = WatchdogState(streaming=True)
+    _s, actions = tick(
+        {"reachable": True, "streaming": True, "dropped_ratio": 0.0, **probe},
+        state, config, now=100.0,
+    )
+    assert _actions_of(actions, "record") == []
+    assert state.renderer_ok is True and state.renderer_failures == 0
 
 
 def test_an_unreadable_health_endpoint_returns_no_renderer_verdict_at_all():
