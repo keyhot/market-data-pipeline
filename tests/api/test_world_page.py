@@ -761,3 +761,25 @@ def test_the_page_reports_that_it_is_still_drawing():
         "the posting cadence must be 15s - STALE_AFTER=45.0 only means "
         "'three missed beats' if the page actually posts that often"
     )
+
+
+def test_the_monitors_rules_are_injected_rather_than_written_into_the_page():
+    """M1: the painted monitors decide nothing. Both halves are injected — the
+    constants AND the functions that read them — because injecting only the
+    numbers is the half-fix that let KI-019 happen. `__TIER_OF_JS__` above is
+    the precedent; Task 11's page consumes these two placeholders.
+
+    Asserted against the replacement map rather than the rendered body: the
+    template does not carry the placeholders until the candles land, and a
+    seam that is only proven once its consumer exists is a seam nobody checked.
+    """
+    from api.main import _THEME_REPLACEMENTS
+    from world.monitors import monitor_rules, rules_js
+
+    assert json.loads(_THEME_REPLACEMENTS["__MONITOR_RULES_JSON__"]) == monitor_rules()
+    assert _THEME_REPLACEMENTS["__MONITOR_JS__"] == rules_js()
+
+    # Whatever the template does with them, it must not ship them unsubstituted.
+    body = client.get("/world").text
+    assert "__MONITOR_RULES_JSON__" not in body
+    assert "__MONITOR_JS__" not in body

@@ -52,7 +52,7 @@ from storage.writes import (
     write_news,
     write_price_bars,
 )
-from world import reactions, visuals
+from world import monitors, reactions, visuals
 from world.reactions import attach_reactions
 from world.renderer_health import record_beat, renderer_status
 from world.salience import KNOWN_EVENT_TYPES
@@ -207,6 +207,15 @@ _THEME_REPLACEMENTS = {
             },
         }
     ),
+    # M1: the monitors' decisions are made in Python and injected, like every
+    # other threshold the room reads (see __TIER_CUTS_JSON__ above).
+    "__MONITOR_RULES_JSON__": json.dumps(monitors.monitor_rules()),
+    # ...and the rules themselves, not only their numbers — see
+    # `world.state.tier_of_js` for why injecting constants alone was not
+    # enough (KI-019). `world/monitors.py` runs this text in node against its
+    # own Python, so the page and the server cannot disagree about how many
+    # candles fit or when a screen is too old to be believed.
+    "__MONITOR_JS__": monitors.rules_js(),
 }
 
 
