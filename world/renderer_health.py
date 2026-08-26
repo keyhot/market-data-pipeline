@@ -14,7 +14,9 @@ FROZEN_AFTER = 8.0        # frames unchanged across at least this long
 PRUNE_AFTER = 600.0       # a page gone this long is gone, not failing
 
 
-def record_beat(store: BeatStore, host: str, page: str, frames: int, now: float) -> None:
+def record_beat(
+    store: BeatStore, host: str, page: str, frames: int, now: float
+) -> None:
     previous = store.get(host)
     store[host] = {
         "page": page,

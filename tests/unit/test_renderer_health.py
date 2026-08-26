@@ -68,7 +68,9 @@ def test_a_second_page_cannot_cover_for_a_dead_one():
     by Host, and the watchdog names the host it cares about."""
     store = {}
     record_beat(store, host="localhost:8000", page="world", frames=999, now=1000.0)
-    status = renderer_status(store, now=1001.0, started_at=0.0, required_host="127.0.0.5:8000")
+    status = renderer_status(
+        store, now=1001.0, started_at=0.0, required_host="127.0.0.5:8000"
+    )
     assert status["healthy"] is False
 
 
@@ -94,7 +96,7 @@ def test_age_exactly_at_stale_threshold_is_healthy():
 
 
 def test_span_exactly_at_frozen_threshold_with_unchanged_frames_is_frozen():
-    """Boundary test: span == FROZEN_AFTER (8.0) with unchanged frames should be frozen."""
+    """Boundary: span == FROZEN_AFTER (8.0) with unchanged frames is frozen."""
     store = {}
     record_beat(store, host="127.0.0.5:8000", page="world", frames=100, now=1000.0)
     record_beat(store, host="127.0.0.5:8000", page="world", frames=100, now=1008.0)
