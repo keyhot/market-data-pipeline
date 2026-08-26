@@ -79,9 +79,17 @@ def test_a_screen_below_either_dimension_is_not_drawable():
 
 def test_a_rect_that_never_got_measured_is_not_drawable():
     """A manifest entry missing its dimensions must fail closed to dark glass,
-    not raise inside a render loop."""
+    not raise inside a render loop.
+
+    Null, not just absent: these rects are parsed from the plate manifest, and
+    an unmeasured entry in JSON is `"w": null` at least as often as it is a
+    missing key. `None >= MIN_WIDTH` raises, and it would raise per screen per
+    poll inside the render loop of a page whose whole job is not to go blank.
+    """
     assert is_drawable({}) is False
     assert is_drawable({"w": 400}) is False
+    assert is_drawable({"w": None, "h": None}) is False
+    assert is_drawable({"w": 400, "h": None}) is False
 
 
 def test_a_coarser_grid_can_make_a_wide_enough_screen_undrawable():
@@ -156,6 +164,7 @@ def test_the_emitted_javascript_agrees_with_python():
         {"w": MIN_WIDTH - 1, "h": MIN_HEIGHT},
         {"w": MIN_WIDTH, "h": MIN_HEIGHT - 1},
         {"w": 640, "h": 226},
+        {"w": None, "h": None},
     ]
     ages = [0, 1.5, STALE_AFTER_SECONDS, STALE_AFTER_SECONDS + 0.1, 86_400]
 

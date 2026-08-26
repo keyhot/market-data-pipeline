@@ -40,12 +40,17 @@ def is_drawable(rect: dict, cell: int = CELL) -> bool:
     frame it can only fit four candles in.
 
     Fails closed on a rect missing its dimensions - an unmeasured manifest
-    entry renders dark glass, it does not raise inside a render loop.
+    entry renders dark glass, it does not raise inside a render loop. `or 0`
+    rather than a `get` default because these rects are parsed from JSON,
+    where unmeasured is `null` as often as it is absent, and `None >= int`
+    raises. JS reaches the same answer by coercing null to 0; the node
+    cross-check in the tests pins that the two still agree.
     """
+    width = rect.get("w") or 0
     return (
-        rect.get("w", 0) >= MIN_WIDTH
-        and rect.get("h", 0) >= MIN_HEIGHT
-        and bars_that_fit(rect.get("w", 0), cell) >= MIN_BARS
+        width >= MIN_WIDTH
+        and (rect.get("h") or 0) >= MIN_HEIGHT
+        and bars_that_fit(width, cell) >= MIN_BARS
     )
 
 
