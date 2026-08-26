@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -456,13 +457,14 @@ def _check_renderer(
         return []
 
     state.renderer_failures += 1
+    actions: list[tuple] = []
     if (
         state.renderer_ok
         and state.renderer_failures >= config.renderer_failures_before_drop
     ):
         state.renderer_ok = False
         state.renderer_down_since = now
-        actions = [
+        actions.append(
             (
                 "record",
                 "stream_dropped",
@@ -472,20 +474,25 @@ def _check_renderer(
                     "consecutive_failures": state.renderer_failures,
                 },
             )
-        ]
-        # The cheapest thing that could work, once. A blank page usually
-        # recovers from a reload, and a reload costs the stream nothing that is
-        # currently working — unlike an OBS relaunch, which takes down the
-        # encoder, every other source and the RTMP session with it. Latched to
-        # one attempt per outage: a page that is broken rather than stuck would
-        # otherwise be reloaded every 30s forever, which is KI-015's shape, the
-        # recovery becoming the fault. If the reload does not help, the row is
-        # already in the log and a human reads it.
-        if state.renderer_refreshed_at is None:
-            state.renderer_refreshed_at = now
-            actions.append(("refresh_source", config.renderer_source))
-        return actions
-    return []
+        )
+
+    # The cheapest thing that could work, once per outage. A blank page usually
+    # recovers from a reload, and a reload costs the stream nothing that is
+    # currently working — unlike an OBS relaunch, which takes the encoder, every
+    # other source and the RTMP session with it. Latched, because a page that is
+    # broken rather than stuck would otherwise be reloaded every 30s forever:
+    # KI-015's shape, the recovery becoming the fault.
+    #
+    # Deliberately NOT inside the branch above. The latch is cleared when a
+    # press fails (see `execute_actions`), and the branch above runs once per
+    # outage — so a refresh that never happened could never be retried from
+    # there, and one transient obs-websocket error would cost the whole outage
+    # its cheap fix. Here, an outage with a spent latch re-offers exactly when
+    # the attempt did not land.
+    if not state.renderer_ok and state.renderer_refreshed_at is None:
+        state.renderer_refreshed_at = now
+        actions.append(("refresh_source", config.renderer_source))
+    return actions
 
 
 def _restart_allowed(
@@ -924,6 +931,69 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
     return result
 
 
+def refresh_source(name: str, client=None) -> bool:
+    """Press one browser source's refresh button. Returns whether it happened.
+
+    Same contract as `relaunch_obs`: the caller needs the outcome, not an
+    exception, because the outcome feeds back into state (KI-046 — the latch
+    that makes this one attempt per outage may only be spent by an attempt that
+    landed).
+    """
+    try:
+        stream_ctl.refresh_browser_source(client or stream_ctl.make_client(), name)
+    except Exception:
+        logger.exception("Browser source refresh failed", extra={"source": name})
+        return False
+    logger.warning(
+        "Browser source refreshed after a blank renderer (KI-046)",
+        extra={"source": name},
+    )
+    return True
+
+
+def renderer_config_warnings(
+    config: WatchdogConfig, spec: list[dict] | None = None
+) -> list[str]:
+    """KI-046: do the two halves of the guard's configuration agree? Pure.
+
+    `renderer_host` decides whose pulse is judged; `renderer_source` decides
+    which OBS source is reloaded. Nothing but a comment in stream_scene.py ties
+    them, so an operator who moves the room to another shard and updates only
+    the env var gets a watchdog that judges one page and reloads another —
+    reloading a healthy source once per outage, forever. Said out loud at
+    startup rather than mis-handled silently, which is what P3 does for a
+    watchlist disagreement.
+    """
+    if not config.renderer_host:
+        return [
+            "KI-046 renderer guard is OFF: WATCHDOG_RENDERER_HOST is unset, so a "
+            "blank room records nothing. Set it to the shard `"
+            f"{config.renderer_source}` loads from (scripts/stream_scene.py)."
+        ]
+
+    urls = [
+        (source.get("settings") or {}).get("url")
+        for scene in (spec if spec is not None else stream_scene.scenes_spec())
+        for source in (scene.get("sources") or [])
+        if source.get("name") == config.renderer_source
+    ]
+    urls = [url for url in urls if url]
+    if not urls:
+        return [
+            f"KI-046: renderer_source `{config.renderer_source}` is not a browser "
+            "source in the scene spec, so the self-heal would reload nothing."
+        ]
+
+    expected = urllib.parse.urlsplit(urls[0]).netloc
+    if expected != config.renderer_host:
+        return [
+            f"KI-046: WATCHDOG_RENDERER_HOST is {config.renderer_host} but "
+            f"`{config.renderer_source}` is loaded from {expected} — the watchdog "
+            "would judge one page and reload another."
+        ]
+    return []
+
+
 def execute_actions(
     actions: list[tuple], config: WatchdogConfig, state: WatchdogState | None = None
 ) -> list[tuple]:
@@ -950,11 +1020,13 @@ def execute_actions(
                 stream_ctl.switch_scene(stream_ctl.make_client(), action[1])
                 logger.info("Scene switched", extra={"scene": action[1]})
             elif kind == "refresh_source":
-                stream_ctl.refresh_browser_source(stream_ctl.make_client(), action[1])
-                logger.warning(
-                    "Browser source refreshed after a blank renderer (KI-046)",
-                    extra={"source": action[1]},
-                )
+                ok = refresh_source(action[1])
+                if state is not None and not ok:
+                    # A latch is spent by a refresh that HAPPENED. Only a
+                    # recovery clears it otherwise — and the recovery is the
+                    # thing the press was for, so a swallowed error would
+                    # disarm the self-heal for the rest of the outage.
+                    state.renderer_refreshed_at = None
         except Exception:
             logger.exception("Watchdog action failed", extra={"action": kind})
     return followups
@@ -1023,6 +1095,8 @@ def main() -> None:
             "renderer_host": config.renderer_host,
         },
     )
+    for warning in renderer_config_warnings(config):
+        logger.warning(warning)
     while True:
         probe = probe_obs()
         # Only when OBS is up and pushing: during an OBS outage the stream is

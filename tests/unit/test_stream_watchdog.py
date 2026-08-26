@@ -1184,3 +1184,107 @@ def test_execute_actions_actually_dispatches_a_refresh(monkeypatch):
     )
     wd.execute_actions([("refresh_source", "world-room")], WatchdogConfig())
     assert pressed == [("client", "world-room")]
+
+
+def test_a_refresh_that_never_happened_does_not_burn_the_one_attempt(monkeypatch):
+    """The latch is spent by a refresh that HAPPENED. `execute_actions` swallows
+    the exception a transient obs-websocket error raises, so without this the
+    press that never occurred would still disarm the self-heal — and nothing
+    would re-arm it, because only a recovery does, and the recovery is what the
+    press was for. One flaky call would cost the whole outage its cheap fix."""
+    from scripts import stream_watchdog as wd
+
+    def boom(*a, **k):
+        raise OSError("obs-websocket went away")
+
+    monkeypatch.setattr(wd.stream_ctl, "make_client", lambda *a, **k: "client")
+    monkeypatch.setattr(wd.stream_ctl, "refresh_browser_source", boom)
+    state = WatchdogState(streaming=True, renderer_ok=False, renderer_refreshed_at=10.0)
+    wd.execute_actions([("refresh_source", "world-room")], WatchdogConfig(), state)
+    assert state.renderer_refreshed_at is None
+
+
+def test_the_next_tick_retries_a_refresh_that_failed(monkeypatch):
+    """End to end: decide, fail, retry once — and still only once at a time."""
+    from scripts import stream_watchdog as wd
+
+    attempts = []
+
+    def flaky(client, name):
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise OSError("obs-websocket went away")
+
+    monkeypatch.setattr(wd.stream_ctl, "make_client", lambda *a, **k: "client")
+    monkeypatch.setattr(wd.stream_ctl, "refresh_browser_source", flaky)
+
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    _s, actions = tick(_blank_probe(), state, config, now=10.0)
+    wd.execute_actions(actions, config, state)
+
+    _s, retry = tick(_blank_probe(), state, config, now=40.0)
+    assert ("refresh_source", "world-room") in retry
+    # ... and the drop is not recorded a second time by the retry.
+    assert _actions_of(retry, "record") == []
+    wd.execute_actions(retry, config, state)
+
+    _s, third = tick(_blank_probe(), state, config, now=70.0)
+    assert ("refresh_source", "world-room") not in third
+    assert attempts == ["world-room", "world-room"]
+
+
+def _scene_spec(name, url):
+    """The real `scenes_spec()` shape — the URL lives in `settings`, not at the
+    top level. A fake that flattened it passed while the code read the wrong key
+    and warned about every healthy deployment."""
+    return [{"sources": [{"name": name, "kind": "browser_source",
+                          "settings": {"url": url, "shutdown": False}}]}]
+
+
+def test_a_shard_the_watchdog_watches_but_never_reloads_is_a_startup_warning():
+    """`renderer_host` says which page's pulse is judged; `renderer_source` says
+    which OBS source gets reloaded. Nothing but a comment ties them today, so an
+    operator who moves the room to another shard and updates only the env var
+    gets a watchdog that judges one page and reloads another — reloading a
+    healthy source, forever, one per outage. P3 does this for a watchlist
+    disagreement: say it out loud at startup, never mis-render silently."""
+    from scripts.stream_watchdog import renderer_config_warnings
+
+    spec = _scene_spec("world-room", "http://127.0.0.4:8000/world")
+    ok = WatchdogConfig(renderer_host="127.0.0.4:8000", renderer_source="world-room")
+    assert renderer_config_warnings(ok, spec=spec) == []
+
+    moved = WatchdogConfig(renderer_host="127.0.0.9:8000", renderer_source="world-room")
+    (warning,) = renderer_config_warnings(moved, spec=spec)
+    assert "127.0.0.4:8000" in warning and "127.0.0.9:8000" in warning
+
+
+def test_an_unnamed_source_is_a_warning_too():
+    """A source name that matches nothing in the scene spec reloads nothing."""
+    from scripts.stream_watchdog import renderer_config_warnings
+
+    spec = _scene_spec("world-room", "http://127.0.0.4:8000/world")
+    config = WatchdogConfig(renderer_host="127.0.0.4:8000", renderer_source="room-2")
+    (warning,) = renderer_config_warnings(config, spec=spec)
+    assert "room-2" in warning
+
+
+def test_an_unconfigured_watchdog_says_the_guard_is_off():
+    """The default is now genuinely verdict-less, which is safe but silent —
+    and a guard nobody knows is off is how KI-046 lasted two hours."""
+    from scripts.stream_watchdog import renderer_config_warnings
+
+    (warning,) = renderer_config_warnings(WatchdogConfig(), spec=[])
+    assert "WATCHDOG_RENDERER_HOST" in warning
+
+
+def test_the_real_scene_spec_still_carries_the_room_where_the_guard_looks():
+    """Both sides of the seam again, and this one is not a fake: if the scene
+    spec ever stops naming `world-room` as a browser source with a URL, the
+    self-heal has nothing to reload and the warning above is the only thing that
+    would say so."""
+    from scripts.stream_watchdog import renderer_config_warnings
+
+    config = WatchdogConfig(renderer_host="127.0.0.4:8000")
+    assert renderer_config_warnings(config) == []
