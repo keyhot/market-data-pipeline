@@ -88,6 +88,13 @@
   <script src="/static/pixi-8.19.0.min.js"></script>
   <script>
     const SYMBOLS = __SYMBOLS__;
+    // The plate's measured anchors, or null when there is no plate. Every
+    // layout number below reads from here rather than from canvas fractions.
+    // Same-origin by construction (KI-045/KI-047): the manifest names a bare
+    // filename and the page prefixes /static/ itself, so no manifest edit can
+    // put a third party into the on-air load path.
+    const PLATE = __PLATE_JSON__;
+    const PLATE_SRC = PLATE ? "/static/" + PLATE.plate : null;
     const fallback = document.getElementById("fallback");
 
     // Name the room for a newcomer: the symbols in play + the one-line premise.

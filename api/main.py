@@ -53,6 +53,7 @@ from storage.writes import (
     write_price_bars,
 )
 from world import monitors, reactions, visuals
+from world.plate import load_manifest, watchlist_disagreements
 from world.reactions import attach_reactions
 from world.renderer_health import record_beat, renderer_status
 from world.salience import KNOWN_EVENT_TYPES
@@ -795,8 +796,22 @@ def world_page():
         if spec.market == "crypto" and _SYMBOL_PATTERN.fullmatch(spec.symbol.upper())
     ]
     deduped = list(dict.fromkeys(symbols))
+    manifest = load_manifest()
+    # A manifest that disagrees with the watchlist is a warning, never a silent
+    # mis-render: the plate paints tube bases at fixed positions, so a symbol
+    # with no painted base has nowhere to stand and would simply not be drawn.
+    # Absence of the manifest itself is NOT a disagreement — it is the
+    # procedural room, which is a supported way to run (Docs/world-room-plate).
+    for problem in watchlist_disagreements(manifest, deduped):
+        logger.warning("plate manifest disagrees with watchlist: %s", problem)
     return HTMLResponse(
-        _render_template("world.html", {"__SYMBOLS__": json.dumps(deduped)})
+        _render_template(
+            "world.html",
+            {
+                "__SYMBOLS__": json.dumps(deduped),
+                "__PLATE_JSON__": json.dumps(manifest.as_dict() if manifest else None),
+            },
+        )
     )
 
 

@@ -783,3 +783,73 @@ def test_the_monitors_rules_are_injected_rather_than_written_into_the_page():
     body = client.get("/world").text
     assert "__MONITOR_RULES_JSON__" not in body
     assert "__MONITOR_JS__" not in body
+
+
+# --- Track P: the plate's anchors reach the page -------------------------------
+# The room stops guessing its layout from canvas fractions and reads the
+# measured manifest instead. Absence is a first-class answer: no manifest is a
+# procedural room, never a blank one.
+
+
+def test_the_plate_manifest_reaches_the_page():
+    body = _world_source()
+    assert "const PLATE =" in body
+    assert '"plate": "world-plate-btc-eth.png"' in body or (
+        '"plate":"world-plate-btc-eth.png"' in body
+    )
+
+
+def test_the_plate_asset_is_actually_served():
+    response = client.get("/static/world-plate-btc-eth.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_the_plate_is_addressed_same_origin_like_every_other_asset():
+    """KI-045: a third party in the on-air load path white-framed the stream for
+    two hours, and KI-047 white-framed it for 36 hours when the renderer died.
+    The plate is a new hard on-air dependency of exactly that shape, so the
+    manifest may only name a bare filename — never a scheme, a host, or a path
+    that could climb out of `/static/`.
+    """
+    from world.plate import load_manifest
+
+    manifest = load_manifest()
+    assert manifest is not None
+    assert "/" not in manifest.plate
+    assert ":" not in manifest.plate
+    body = _world_source()
+    assert '"/static/" + PLATE.plate' in body
+
+
+def test_a_watchlist_symbol_with_no_painted_tube_warns_at_startup(caplog):
+    """The ticket's whole claim: a disagreement is a WARNING, never a silent
+    mis-render. The plate paints tube bases at fixed positions, so a symbol the
+    manifest does not name has nowhere to stand — it would simply not be drawn,
+    and nothing on air would say so.
+    """
+    import logging as _logging
+
+    from api import main as api_main
+
+    class _Spec:
+        def __init__(self, symbol):
+            self.symbol = symbol
+            self.market = "crypto"
+            self.predict = True
+
+    class _Watchlist:
+        tickers = [_Spec("BTCUSDT"), _Spec("ETHUSDT"), _Spec("SOLUSDT")]
+
+    original = api_main.load_watchlist
+    api_main.load_watchlist = lambda: _Watchlist()
+    try:
+        with caplog.at_level(_logging.WARNING):
+            client.get("/world")
+    finally:
+        api_main.load_watchlist = original
+
+    warnings = " ".join(r.getMessage() for r in caplog.records)
+    assert "SOLUSDT" in warnings, (
+        "a watchlist symbol with no painted tube must be reported, not dropped"
+    )
