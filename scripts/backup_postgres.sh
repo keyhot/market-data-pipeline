@@ -4,7 +4,7 @@
 # rule: nightly pg_dump from Sprint 9, offsite copy before Sprint 12.
 #
 #   ./scripts/backup_postgres.sh          # dump + verify + prune
-#   Cron (host):  10 3 * * *  cd <repo> && ./scripts/backup_postgres.sh >> backups/backup.log 2>&1
+#   Cron (host):  10 3 * * *  cd <repo> && BACKUP_TRIGGER=cron ./scripts/backup_postgres.sh >> backups/backup.log 2>&1
 #
 # KI-049: this script used to redirect straight into its final filename, so the
 # shell created and truncated the destination BEFORE pg_dump ran — four nights
@@ -34,6 +34,11 @@ STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 OUT="$BACKUP_DIR/market_data_$STAMP.dump"
 PART="$OUT.part"
 STATUS="$BACKUP_DIR/last_status.json"
+# Who started this run. The 03:10 cron line should set BACKUP_TRIGGER=cron;
+# a hand-run leaves "unknown", which is the honest answer and never claims
+# a nightly happened. Anything reading last_status.json for freshness needs
+# to be able to tell those apart.
+TRIGGER=${BACKUP_TRIGGER:-unknown}
 
 mkdir -p "$BACKUP_DIR"
 
@@ -43,15 +48,22 @@ mkdir -p "$BACKUP_DIR"
 # happening.
 write_status() {
   local ok="$1" bytes="$2" error="$3"
-  python3 - "$STATUS" "$ok" "$bytes" "$OUT" "$STAMP" "$error" <<'PY'
+  # `|| true`, and it is the whole point of the line: this is the only step in
+  # the failure path with a dependency of its own (python3, which cron's
+  # environment does not guarantee — `sg docker -c` sources no profile, the
+  # KI-017 class). If writing the status file took the FAILURE REPORT down with
+  # it, a failed night would again be traceable only by absence, which is the
+  # bug this script was fixed for.
+  python3 - "$STATUS" "$ok" "$bytes" "$OUT" "$STAMP" "$TRIGGER" "$error" <<'PY' || true
 import json, sys
-path, ok, size, out, stamp, error = sys.argv[1:7]
+path, ok, size, out, stamp, trigger, error = sys.argv[1:8]
 json.dump(
     {
         "stamp": stamp,
         "ok": ok == "true",
         "bytes": int(size),
         "path": out,
+        "trigger": trigger,
         "error": error or None,
     },
     open(path, "w"),
@@ -63,8 +75,10 @@ PY
 fail() {
   local message="$1"
   rm -f "$PART"
-  write_status false 0 "$message"
+  # The cheap, dependency-free trace first: whatever else fails after this
+  # line, the log says the backup did not happen.
   echo "[backup] FAILED: $message" >&2
+  write_status false 0 "$message"
   exit 1
 }
 

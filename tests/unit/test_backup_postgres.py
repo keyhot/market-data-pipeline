@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.backup_prune import dumps_to_prune, is_verified_dump
+from scripts.backup_prune import dumps_to_prune, is_verified_dump, main
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "backup_postgres.sh"
@@ -63,7 +63,22 @@ def _fake_docker(bin_dir: Path, *, dump_exit=0, dump_bytes=b"", restore_exit=0):
     return fake
 
 
-def _run_backup(tmp_path: Path, **fake) -> subprocess.CompletedProcess:
+def _break_python(bin_dir: Path):
+    """A `python3` that always fails.
+
+    The status file is written by a heredoc. Cron runs this script via
+    `sg docker -c '<abs path>'`, which does not source a profile — the same
+    environment gap that produced KI-017 — so "python3 is not there" is a real
+    state, and it must not take the failure REPORT down with it.
+    """
+    broken = bin_dir / "python3"
+    broken.write_text("#!/usr/bin/env bash\necho 'no python here' >&2\nexit 127\n")
+    broken.chmod(0o755)
+
+
+def _run_backup(
+    tmp_path: Path, *, from_elsewhere=False, python_broken=False, **fake
+) -> subprocess.CompletedProcess:
     """Run the real script in a throwaway copy of the repo layout."""
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True, exist_ok=True)
@@ -74,6 +89,9 @@ def _run_backup(tmp_path: Path, **fake) -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     _fake_docker(bin_dir, **fake)
 
+    if python_broken:
+        _break_python(bin_dir)
+
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     return subprocess.run(
@@ -81,7 +99,10 @@ def _run_backup(tmp_path: Path, **fake) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         env=env,
-        cwd=repo,
+        # Cron runs `cd <repo> && sg docker -c '<absolute path>'`; the script's
+        # own `cd "$(dirname "$0")/.."` is what bridges any other cwd, and
+        # nothing pinned that until this argument existed.
+        cwd=tmp_path if from_elsewhere else repo,
         timeout=60,
     )
 
@@ -251,3 +272,57 @@ def test_a_nonsensical_keep_prunes_nothing(tmp_path, keep):
     _dump_file(tmp_path, "market_data_a.dump", PGDMP + b"\x00" * 99)
 
     assert dumps_to_prune(tmp_path, keep=keep) == []
+
+
+def test_the_script_finds_its_own_repo_from_any_directory(tmp_path):
+    """Cron invokes it by absolute path, not from the repo root."""
+    result = _run_backup(
+        tmp_path, from_elsewhere=True, dump_bytes=PGDMP + b"\x00" * 4096
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len(_dumps(tmp_path)) == 1
+    assert list(tmp_path.glob("*.dump")) == [], "wrote into the caller's cwd"
+
+
+def test_a_failure_is_still_announced_when_the_status_file_cannot_be_written(tmp_path):
+    """The status file is a python heredoc, so it has a dependency the rest of
+    the failure path does not. If writing it takes the report down with it, a
+    failed night is once again traceable only by absence — KI-049 restored by
+    its own fix."""
+    result = _run_backup(tmp_path, dump_exit=1, python_broken=True)
+
+    assert result.returncode != 0
+    assert "[backup] FAILED" in result.stderr
+    assert _dumps(tmp_path) == [], "and the half-written dump is still cleaned up"
+
+
+def test_the_status_file_says_how_the_run_was_started(tmp_path):
+    """A hand-run and the 03:10 cron leave the same file. Anything reading it
+    for freshness — the `/health` field this KI defers — would otherwise treat
+    a manual run as a successful nightly."""
+    _run_backup(tmp_path, dump_bytes=PGDMP + b"\x00" * 4096)
+    status_file = tmp_path / "repo" / "backups" / "last_status.json"
+
+    assert json.loads(status_file.read_text())["trigger"] == "unknown"
+
+
+def test_a_dry_run_deletes_nothing(tmp_path):
+    """--dry-run is the gate used before pointing this at real backups."""
+    keep_me = _dump_file(tmp_path, "market_data_a.dump", PGDMP + b"\x00" * 99)
+    doomed_if_real = _dump_file(tmp_path, "market_data_b.dump", b"")
+
+    main([str(tmp_path), "--keep", "1", "--dry-run"])
+
+    assert keep_me.exists() and doomed_if_real.exists()
+
+
+def test_without_dry_run_the_unverified_file_is_actually_deleted(tmp_path):
+    """The other half: the flag has to make a difference."""
+    keep_me = _dump_file(tmp_path, "market_data_a.dump", PGDMP + b"\x00" * 99)
+    doomed = _dump_file(tmp_path, "market_data_b.dump", b"")
+
+    main([str(tmp_path), "--keep", "1"])
+
+    assert keep_me.exists()
+    assert not doomed.exists()
