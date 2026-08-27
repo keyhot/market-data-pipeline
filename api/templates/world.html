@@ -434,6 +434,17 @@
         texture.source.scaleMode = "nearest";
         layers.plate.addChild(sprite);
         plateReady = true;
+        // The plate reserves a quiet strip at the top for the newcomer line.
+        // Bind the banner to the measurement so a repaint moves the text with
+        // the art instead of hanging it over a painted detail.
+        // The bottom band has no element on this page yet — /world has no
+        // price band — so nothing is bound to PLATE.bands.bottom rather than
+        // shipping a guard that can never fire.
+        const banner = document.getElementById("banner");
+        const bandHeight = bannerMinHeight();
+        if (banner && bandHeight) {
+          banner.style.minHeight = bandHeight + "px";
+        }
       } catch (err) {
         // Deliberately NOT retryBoot(): a reload cannot conjure a missing
         // texture, and a reload storm against a 404 helps nobody (the cap in
@@ -502,34 +513,92 @@
     // anything in the room. Now they stand ON the floor the characters stand
     // on, sized from the canvas, behind the cast (`layers.props`), so the room
     // has a background made of the market itself.
+    // --- P5: the layout is read off the plate, not off the canvas ----------
+    // With a plate, every position here is a measurement taken from the
+    // painted room (world/plate.py, checked against the PNG itself). Without
+    // one — a missing manifest, a texture that will not decode, KI-045's shape
+    // — they fall back to the canvas fractions the procedural room has always
+    // used, so the degraded path stays exactly as watchable as it is today.
+    // Both branches are executed in node by tests/api/test_world_page.py;
+    // substring checks over the page could not tell them apart.
+    const CAST_FRACTIONS = { model: 0.32, trader: 0.62 };
+
+    function anchorFor(name) {
+      const painted = plateReady && PLATE && PLATE.cast ? PLATE.cast[name] : null;
+      if (painted) {
+        // `pose` is the plate's answer to "is there a chair here" — the trader
+        // is seated on this plate. C2 rebuilds the rig around it; it is
+        // returned rather than assigned so there is no dead write waiting for
+        // that ticket.
+        return {
+          x: painted.x,
+          baseY: painted.base_y,
+          pose: painted.pose || "standing",
+        };
+      }
+      return {
+        x: app.screen.width * (CAST_FRACTIONS[name] ?? 0.5),
+        baseY: app.screen.height * GROUND,
+        pose: "standing",
+      };
+    }
+
+    // How tall the newcomer banner must be to sit on the strip the plate left
+    // quiet for it. `null` means "no plate — leave the CSS alone". A value
+    // rather than a branch inside drawPlate, because a test can only run a
+    // value: asserting the manifest key appears in the function passed
+    // identically with the height hardcoded.
+    function bannerMinHeight() {
+      if (!plateReady || !PLATE || !PLATE.bands || !PLATE.bands.top) return null;
+      return PLATE.bands.top;
+    }
+
+    function tubeFor(symbol) {
+      if (!plateReady || !PLATE || !PLATE.tubes) return null;
+      return PLATE.tubes.find((tube) => tube.symbol === symbol) || null;
+    }
+
+    // Where one pressure pillar goes. Separated from the drawing so it can be
+    // run without PIXI: an off-by-tens against the painted bore is the whole
+    // risk of this ticket, and it is the kind of thing only arithmetic can
+    // catch before X2 puts it on air.
+    function pillarGeometry(symbol, pressure, index) {
+      const tube = tubeFor(symbol);
+      const ground = app.screen.height * GROUND;
+      const tallest = Math.min(ground - 120, app.screen.height * 0.42);
+      const baseY = tube ? tube.base_y : ground;
+      const width = tube ? tube.width : 54;
+      // A painted tube is a housing with a visible end: the bar may fill it,
+      // never overrun it. Without a plate the old ceiling still applies.
+      const maxHeight = tube ? tube.height : tallest;
+      // Tall enough to be architecture. At 70px they read as bins next to a
+      // 240px cast; a pillar has to give the room a vertical.
+      const height = Math.min(190 + Math.abs(Number(pressure) || 0) * 70, maxHeight);
+      // Right of the cast and marching off toward the corner when procedural,
+      // so they read as depth rather than as a chart; centred in the bore when
+      // the plate painted one.
+      const x = tube ? tube.x - width / 2 : app.screen.width * 0.80 + index * 132;
+      return { x, baseY, width, height };
+    }
+
     function drawPillars(state) {
       layers.props.removeChildren();
       const symbols = Object.entries(state.symbols ?? {})
         .filter(([symbol]) => SYMBOLS.includes(symbol));
       if (!symbols.length) return;
-      const ground = app.screen.height * GROUND;
-      const tallest = Math.min(ground - 120, app.screen.height * 0.42);
-      const width = 54;
-      const gap = 132;
-      // Right of the cast (0.32 / 0.62 of the width) and marching off toward
-      // the corner, so they read as depth rather than as a chart.
-      const first = app.screen.width * 0.80;
       symbols.forEach(([symbol, data], i) => {
-        // Tall enough to be architecture. At 70px they read as bins next to a
-        // 240px cast; a pillar has to give the room a vertical.
-        const height = Math.min(190 + Math.abs(data.pressure) * 70, tallest);
-        const x = first + i * gap;
+        const geo = pillarGeometry(symbol, data.pressure, i);
         const pillar = new PIXI.Graphics()
-          .roundRect(x, ground - height, width, height, 3)
+          .roundRect(geo.x, geo.baseY - geo.height, geo.width, geo.height, 3)
           .fill({ color: color(data.mood), alpha: 0.55 });
         // A cap catches the light: without it a flat column reads as a bar
         // chart, which is the model's body, not the room's furniture.
         const cap = new PIXI.Graphics()
-          .roundRect(x - 4, ground - height - 6, width + 8, 8, 3)
+          .roundRect(geo.x - 4, geo.baseY - geo.height - 6, geo.width + 8, 8, 3)
           .fill({ color: color(data.mood), alpha: 0.8 });
         layers.props.addChild(pillar, cap,
-          label(symbol, x - 6, ground + 12, 13, 0x787b86),
-          label(data.mood, x - 6, ground + 30, 13, 0x5a6472));
+          label(symbol, geo.x - 6, geo.baseY + 12, 13, 0x787b86),
+          label(data.mood, geo.x - 6, geo.baseY + 30, 13, 0x5a6472));
       });
     }
 
@@ -1220,10 +1289,20 @@
       layers.chars.scale.set(CAST_SCALE);
       // Positions are therefore in layer space, which the scale then maps back
       // onto the screen fractions they're written as.
-      model.container.x = app.screen.width * 0.32 / CAST_SCALE;
-      trader.container.x = app.screen.width * 0.62 / CAST_SCALE;
-      model.baseY = trader.baseY = app.screen.height * GROUND / CAST_SCALE;
-      model.container.y = trader.container.y = model.baseY;
+      // The anchors are the plate's, or the canvas fractions when there is no
+      // plate — anchorFor owns that choice. They are divided by CAST_SCALE
+      // because the layer is scaled, so these are layer coordinates.
+      // NOTE: `character()` also sets a y, and it is dead — this runs on every
+      // draw and overwrites it. The plan pointed this ticket at that write.
+      const anchors = { model: anchorFor("model"), trader: anchorFor("trader") };
+      model.container.x = anchors.model.x / CAST_SCALE;
+      trader.container.x = anchors.trader.x / CAST_SCALE;
+      // The two no longer share a floor: on this plate the trader sits on a
+      // painted chair and the model stands on the floor lane, 148px lower.
+      model.baseY = anchors.model.baseY / CAST_SCALE;
+      trader.baseY = anchors.trader.baseY / CAST_SCALE;
+      model.container.y = model.baseY;
+      trader.container.y = trader.baseY;
       // Animations displace from a remembered rest pose, so it has to be
       // recorded here — a resize must not leave a character drifting.
       for (const char of [model, trader]) {

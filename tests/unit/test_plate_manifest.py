@@ -165,3 +165,43 @@ def test_a_manifest_missing_its_canvas_is_absence_too(tmp_path):
     del broken["canvas"]
     path.write_text(json.dumps(broken))
     assert load_manifest(path) is None
+
+
+# P5 adds the detector the ticket's own Step 7 asks a human for. "Confirm the
+# pillars sit IN the painted tubes" needs eyes on a live OBS scene, which is
+# X2; a bad measurement between now and then would otherwise reach air with
+# nothing standing in its way. These are the parts arithmetic can check.
+
+# Where drawPillars writes a tube's two labels, relative to its painted base
+# (api/templates/world.html, the label() calls in drawPillars).
+LABEL_ROWS = (12, 30)
+
+
+def test_a_tubes_labels_stay_clear_of_the_bottom_band():
+    """A tube measured low enough puts its own name under the price band —
+    legible in the browser, covered on the stream."""
+    manifest = load_manifest()
+    _, height = manifest.canvas
+    floor = height - manifest.bands["bottom"]
+    for tube in manifest.tubes:
+        for row in LABEL_ROWS:
+            assert tube["base_y"] + row < floor, f"{tube['symbol']} label at +{row}"
+
+
+def test_every_cast_anchor_stands_inside_the_frame():
+    """`base_y` is already bounded against the bands; `x` was not bounded at
+    all, and a character anchored off-canvas is invisible rather than wrong."""
+    manifest = load_manifest()
+    width, _ = manifest.canvas
+    for name, anchor in manifest.cast.items():
+        assert 0 < anchor["x"] < width, name
+
+
+def test_a_pillar_centred_in_its_bore_stays_inside_the_frame():
+    """drawPillars centres the bar on `tube.x` and draws it `tube.width` wide,
+    so a bore measured near an edge clips."""
+    manifest = load_manifest()
+    width, _ = manifest.canvas
+    for tube in manifest.tubes:
+        left = tube["x"] - tube["width"] / 2
+        assert left >= 0 and left + tube["width"] <= width, tube["symbol"]

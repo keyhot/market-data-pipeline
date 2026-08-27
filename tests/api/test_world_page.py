@@ -5,8 +5,12 @@ rule that keeps event payloads from becoming markup."""
 
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
@@ -541,11 +545,12 @@ def test_symbol_pillars_are_laid_out_from_the_canvas_not_a_fixed_pitch():
     """At a fixed 140px pitch from y=24 the top pillar was clipped by the canvas
     edge on the real 1920×1080 stream — furniture running off the top of the
     room the ticket is supposed to define."""
-    body = client.get("/world").text
-    pillars = re.search(
-        r"function drawPillars\(state\) \{(.*?)\n    \}", body, re.S
-    ).group(1)
-    assert "app.screen.height" in pillars, "pillar layout ignores the canvas"
+    # P5 moved the arithmetic into pillarGeometry so it could be run without
+    # PIXI; the claim is unchanged and now lives where the numbers are. The
+    # behavioural half is test_without_a_plate_the_pillars_march_off_toward_
+    # the_corner_as_before, which executes it.
+    geometry = _js_block(_world_source(), "function pillarGeometry(")
+    assert "app.screen.height" in geometry, "pillar layout ignores the canvas"
 
 
 def test_characters_have_idle_behaviour_between_events():
@@ -855,6 +860,18 @@ def test_a_watchlist_symbol_with_no_painted_tube_warns_at_startup(caplog):
     )
 
 
+def _js_const(source: str, name: str) -> str:
+    """One `const NAME = ...;` line, lifted from the page.
+
+    The node drivers below must run against the page's own constants. Restating
+    `GROUND = 0.66` or the cast fractions in the test would make the fallback
+    assertions test the test — the page could drift to any value and stay green.
+    """
+    match = re.search(rf"^\s*const {name} = .*;$", source, re.M)
+    assert match, f"the page no longer declares a one-line const {name}"
+    return match.group(0).strip() + "\n"
+
+
 def _js_block(source: str, opening: str) -> str:
     """The brace-matched source of one JS construct, from `opening` to its
     closing brace.
@@ -939,3 +956,257 @@ def test_the_heartbeat_is_installed_only_after_the_plate_settles():
     """
     boot = _js_block(_world_source(), "async function boot()")
     assert boot.index("await drawPlate()") < boot.index("/world/heartbeat")
+
+
+# --- P5: layout comes from the measurements, not from canvas fractions -------
+#
+# The plan's Step 1 for this ticket was four `assert "function anchorFor(" in
+# body` checks, which pass on a comment — the same defect as `d1ad270` and the
+# Task 4 checks above. These run the emitted layout helpers in node instead, so
+# an off-by-tens in the manifest or a fallback that never fires is a failure.
+
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
+
+CANVAS = {"width": 1920, "height": 960}
+
+
+def _layout_driver(body: str, *, plate: bool, manifest: dict | None = None) -> str:
+    """The page's own layout helpers, lifted out and run against stubs.
+
+    Only `app`, `GROUND` and the manifest are stubbed — the arithmetic under
+    test is the page's, character for character.
+    """
+    source = _world_source()
+    return (
+        f"const PLATE = {json.dumps(manifest or _manifest())};\n"
+        f"const plateReady = {str(plate).lower()};\n"
+        f"const app = {{ screen: {json.dumps(CANVAS)} }};\n"
+        + _js_const(source, "GROUND")
+        + _js_const(source, "CAST_FRACTIONS")
+        + _js_block(source, "function anchorFor(")
+        + "\n"
+        + _js_block(source, "function tubeFor(")
+        + "\n"
+        + _js_block(source, "function pillarGeometry(")
+        + "\n"
+        + _js_block(source, "function bannerMinHeight(")
+        + "\n"
+        + body
+    )
+
+
+def _run_node(driver: str):
+    result = subprocess.run(
+        [NODE, "-e", driver], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _manifest() -> dict:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "api"
+        / "static"
+        / "world-plate-btc-eth.json"
+    )
+    return json.loads(path.read_text())
+
+
+@needs_node
+def test_the_cast_stands_where_the_plate_painted_it():
+    """GROUND = 0.66 and width * 0.32 put the cast where the canvas said. With
+    a plate, the measurements win — the model on the painted floor lane, the
+    trader on the seat of the painted chair."""
+    emitted = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify({model: anchorFor("model"),'
+            ' trader: anchorFor("trader")}));',
+            plate=True,
+        )
+    )
+    cast = _manifest()["cast"]
+
+    assert emitted["model"] == {
+        "x": cast["model"]["x"],
+        "baseY": cast["model"]["base_y"],
+        "pose": "standing",
+    }
+    assert emitted["trader"] == {
+        "x": cast["trader"]["x"],
+        "baseY": cast["trader"]["base_y"],
+        "pose": "seated",
+    }
+
+    # And it is the manifest being read, not this plate's numbers being known:
+    # a repaint that moves the floor lane moves the model with it.
+    repainted = _manifest()
+    repainted["cast"] = dict(
+        repainted["cast"], model={"x": 111, "base_y": 222, "pose": "standing"}
+    )
+    moved = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify(anchorFor("model")));',
+            plate=True,
+            manifest=repainted,
+        )
+    )
+    assert moved == {"x": 111, "baseY": 222, "pose": "standing"}
+
+
+@needs_node
+def test_without_a_plate_the_cast_keeps_the_canvas_fractions_it_has_today():
+    """The fallback is not decoration: `drawPlate` degrades to the procedural
+    room on any texture failure (KI-045/KI-047), and a room whose cast has no
+    floor to stand on is the blank frame by another route."""
+    emitted = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify({model: anchorFor("model"),'
+            ' trader: anchorFor("trader")}));',
+            plate=False,
+        )
+    )
+
+    assert emitted["model"]["x"] == pytest.approx(1920 * 0.32)
+    assert emitted["trader"]["x"] == pytest.approx(1920 * 0.62)
+    assert emitted["model"]["baseY"] == pytest.approx(960 * 0.66)
+    assert emitted["model"]["pose"] == "standing"
+    assert emitted["trader"]["pose"] == "standing"
+
+
+@needs_node
+def test_a_symbol_the_plate_never_painted_has_no_tube():
+    """`watchlist_disagreements` warns about it at startup; the renderer must
+    also not invent a bore for it."""
+    emitted = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify({btc: tubeFor("BTCUSDT"),'
+            ' sol: tubeFor("SOLUSDT")}));',
+            plate=True,
+        )
+    )
+
+    assert emitted["sol"] is None
+    assert emitted["btc"]["base_y"] == _manifest()["tubes"][0]["base_y"]
+
+
+@needs_node
+def test_a_pillar_is_drawn_inside_the_tube_the_plate_painted():
+    """The ticket's headline claim, as arithmetic: the bar's foot sits on the
+    painted base, it is the painted width, it is centred in the painted bore,
+    and a maximum-pressure pillar cannot outgrow the housing."""
+    emitted = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify(['
+            'pillarGeometry("BTCUSDT", 0.1, 0),'
+            'pillarGeometry("BTCUSDT", 99, 0),'
+            'pillarGeometry("ETHUSDT", 0.1, 1)]));',
+            plate=True,
+        )
+    )
+    btc, btc_full, eth = emitted
+    tubes = {t["symbol"]: t for t in _manifest()["tubes"]}
+
+    assert btc["baseY"] == tubes["BTCUSDT"]["base_y"]
+    assert btc["width"] == tubes["BTCUSDT"]["width"]
+    assert btc["x"] == tubes["BTCUSDT"]["x"] - tubes["BTCUSDT"]["width"] / 2
+    assert btc_full["height"] == tubes["BTCUSDT"]["height"], "a full tube overflows"
+    assert eth["baseY"] == tubes["ETHUSDT"]["base_y"]
+
+
+@needs_node
+def test_without_a_plate_the_pillars_march_off_toward_the_corner_as_before():
+    emitted = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify(['
+            'pillarGeometry("BTCUSDT", 0.1, 0),'
+            'pillarGeometry("ETHUSDT", 0.1, 1)]));',
+            plate=False,
+        )
+    )
+    first, second = emitted
+
+    assert first["x"] == pytest.approx(1920 * 0.80)
+    assert second["x"] == pytest.approx(1920 * 0.80 + 132)
+    assert first["width"] == 54
+    assert first["baseY"] == pytest.approx(960 * 0.66)
+
+
+def test_the_cast_is_placed_from_its_anchor_every_frame():
+    """`character()` sets a y once; `positionCharacters()` overwrites x AND y
+    on every draw and is therefore the only placement that survives. The plan
+    pointed this ticket at `character()`, where the write is dead."""
+    block = _js_block(_world_source(), "function positionCharacters()")
+    assert 'anchorFor("model")' in block
+    assert 'anchorFor("trader")' in block
+    assert "app.screen.width * 0.32" not in block, (
+        "the fraction must live in anchorFor's fallback, not beside it"
+    )
+
+
+@needs_node
+def test_the_banner_sits_on_the_quiet_strip_the_plate_left_for_it():
+    """The plate reserves a top band. Bind the banner to the measurement, so a
+    repaint that moves the strip moves the text with it rather than hanging it
+    over a painted detail.
+
+    The first version of this test asserted `"PLATE.bands.top" in drawPlate`
+    and survived hardcoding the height to 60px — the key still appeared in the
+    guard. That is the fourth test this sprint whose name outran its assertion,
+    so the height is a value now and the test runs it.
+    """
+    emitted = _run_node(
+        _layout_driver("console.log(JSON.stringify(bannerMinHeight()));", plate=True)
+    )
+    assert emitted == _manifest()["bands"]["top"]
+
+    without = _run_node(
+        _layout_driver("console.log(JSON.stringify(bannerMinHeight()));", plate=False)
+    )
+    assert without is None, "no plate, no painted strip to sit on"
+
+    # The shipped band happens to be 60, so the assertion above cannot tell
+    # `PLATE.bands.top` from a literal 60. A repainted manifest can.
+    repainted = _manifest()
+    repainted["bands"] = dict(repainted["bands"], top=88)
+    assert (
+        _run_node(
+            _layout_driver(
+                "console.log(JSON.stringify(bannerMinHeight()));",
+                plate=True,
+                manifest=repainted,
+            )
+        )
+        == 88
+    )
+
+
+def test_the_painted_band_is_what_the_banner_is_actually_set_to():
+    """The value above is only worth having if drawPlate applies it."""
+    block = _js_block(_world_source(), "async function drawPlate(")
+    assert "bannerMinHeight()" in block
+    assert 'banner.style.minHeight = bandHeight + "px"' in block
+
+
+@needs_node
+def test_the_rendered_page_is_valid_javascript():
+    """Nothing else here would notice a broken brace.
+
+    Every other check in this file reads the page as TEXT — brace-matched
+    blocks, substring rules, functions lifted out and run in isolation. All of
+    them stay green on a page that a browser refuses to parse, and a page that
+    will not parse is a white frame: KI-045 and KI-047 by a third route, this
+    time self-inflicted. `drawPlate`'s fallback cannot save it either, because
+    a syntax error means no code runs at all.
+    """
+    scripts = re.findall(r"<script>(.*?)</script>", _world_source(), re.S)
+    assert scripts, "the page has no inline script to check"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "world.js"
+        path.write_text("\n".join(scripts))
+        result = subprocess.run(
+            [NODE, "--check", str(path)], capture_output=True, text=True, timeout=30
+        )
+    assert result.returncode == 0, result.stderr
