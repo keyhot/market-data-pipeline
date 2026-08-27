@@ -209,6 +209,8 @@
       let framesDrawn = 0;
       app.ticker.add(() => { framesDrawn++; });
 
+      // Below the room: the painted backdrop, when there is one.
+      layers.plate = new PIXI.Container();
       layers.room = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
@@ -219,9 +221,9 @@
       // its shadow off the floor with it. Added first, so they stay behind.
       layers.shadows = new PIXI.Container();
       layers.chars.addChild(layers.shadows);
-      app.stage.addChild(layers.room, layers.props, layers.chars);
+      app.stage.addChild(layers.plate, layers.room, layers.props, layers.chars);
 
-      drawRoom();
+      await drawPlate();
       model = character("MODEL");
       trader = character("TRADER");
       cast.push(model, trader);
@@ -293,6 +295,7 @@
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
       layers.room.visible = false;   // the floor line is scenery, not a specimen
+      layers.plate.visible = false;  // and so is the painted backdrop
       layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
@@ -332,6 +335,7 @@
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
       layers.room.visible = false;
+      layers.plate.visible = false;
       // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
       // and whether that reads as dejected or as a head in a torso is a
       // question about broadcast size. Tier-3 amplitude, for the same reason.
@@ -410,7 +414,36 @@
       return new PIXI.Sprite(PIXI.Texture.from(canvas));
     }
 
-    function drawRoom() {
+    let plateReady = false;
+
+    // The plate is a new hard on-air dependency, which is precisely the shape
+    // of KI-045 — and KI-047 is the same page going white for 36 hours because
+    // nothing noticed a dead renderer. So the failure path is written first and
+    // the success path is the special case: no plate, no manifest, or a texture
+    // that will not decode all land in the procedural room the stream already
+    // ships.
+    async function drawPlate() {
+      if (!PLATE_SRC) { drawProceduralRoom(); return; }
+      try {
+        const texture = await PIXI.Assets.load(PLATE_SRC);
+        const sprite = new PIXI.Sprite(texture);
+        sprite.width = PLATE.canvas[0];
+        sprite.height = PLATE.canvas[1];
+        // Nearest-neighbour: the plate is pixel art, and smoothing it is the
+        // one thing guaranteed to make it look worse than the room it replaces.
+        texture.source.scaleMode = "nearest";
+        layers.plate.addChild(sprite);
+        plateReady = true;
+      } catch (err) {
+        // Deliberately NOT retryBoot(): a reload cannot conjure a missing
+        // texture, and a reload storm against a 404 helps nobody (the cap in
+        // retryBoot exists for exactly that). Degrade and carry on.
+        console.warn("plate failed to load", err);
+        drawProceduralRoom();
+      }
+    }
+
+    function drawProceduralRoom() {
       wall = new PIXI.Graphics();
       floorPlane = new PIXI.Graphics();
       floorLine = new PIXI.Graphics();

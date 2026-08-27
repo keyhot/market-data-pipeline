@@ -853,3 +853,89 @@ def test_a_watchlist_symbol_with_no_painted_tube_warns_at_startup(caplog):
     assert "SOLUSDT" in warnings, (
         "a watchlist symbol with no painted tube must be reported, not dropped"
     )
+
+
+def _js_block(source: str, opening: str) -> str:
+    """The brace-matched source of one JS construct, from `opening` to its
+    closing brace.
+
+    The plan's own Task 4 checks were substring-presence over the whole page:
+    `assert "plateReady" in body` passes on a comment, and asserting a colour
+    literal passes because `visuals.css_variables()` already injects `#131722`
+    into every page — it was green before a line of plate code existed. That is
+    the `d1ad270` shape, the third time this sprint. Slicing the actual function
+    is what makes "the failure path calls the fallback" a claim that can fail.
+    """
+    start = source.index(opening)
+    depth = 0
+    for j in range(source.index("{", start), len(source)):
+        if source[j] == "{":
+            depth += 1
+        elif source[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : j + 1]
+    raise AssertionError(f"unbalanced braces after {opening!r}")
+
+
+def test_a_plate_that_fails_to_load_degrades_to_the_procedural_room():
+    """KI-045's lesson applied to the asset that repeats its shape, and KI-047's
+    applied to the page that already went white for 36 hours: the room must
+    never be a blank canvas. A texture that will not decode lands in the
+    procedural room the stream already ships.
+    """
+    body = _world_source()
+    assert "function drawProceduralRoom()" in body
+    draw_plate = _js_block(body, "async function drawPlate(")
+    assert "catch (" in draw_plate
+    failure_path = _js_block(draw_plate[draw_plate.index("catch (") :], "catch (")
+    assert "drawProceduralRoom()" in failure_path, (
+        "the catch block must draw the fallback room, not merely log"
+    )
+
+
+def test_the_missing_plate_path_also_draws_the_room():
+    """No manifest at all is a supported way to run, not a degraded one."""
+    draw_plate = _js_block(_world_source(), "async function drawPlate(")
+    guard = draw_plate[: draw_plate.index("try")]
+    assert "!PLATE_SRC" in guard and "drawProceduralRoom()" in guard
+
+
+def test_plate_ready_is_claimed_only_on_the_success_path():
+    draw_plate = _js_block(_world_source(), "async function drawPlate(")
+    assert "plateReady = true" in draw_plate
+    failure_path = _js_block(draw_plate[draw_plate.index("catch (") :], "catch (")
+    assert "plateReady = true" not in failure_path
+
+
+def test_the_room_is_drawn_once_and_the_plate_decides_which():
+    """The plan is explicit that `drawRoom()` must be *deleted* from boot, not
+    renamed there: leaving the unconditional call draws the procedural room
+    underneath the plate on the success path and twice on the failure path,
+    and the fallback test can no longer tell the two apart.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    assert "await drawPlate()" in boot
+    assert "drawProceduralRoom()" not in boot
+    assert "drawRoom()" not in boot
+
+
+def test_the_canvas_has_a_background_before_the_plate_can_fail():
+    """The third rung: no plate, no procedural room, still not a white frame.
+    Asserted as an ORDERING inside boot, because the colour literal alone is
+    already in every page via the injected theme vars and proves nothing.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    assert boot.index("background: 0x131722") < boot.index("drawPlate()")
+
+
+def test_the_heartbeat_is_installed_only_after_the_plate_settles():
+    """KI-046, and the reason the ordering is not free: `probe_renderer` treats
+    an absent beat as the literal blank-renderer signature, because the page
+    registers its heartbeat *after* the renderer boots. Installing the interval
+    above `await drawPlate()` would let a load that HANGS beat `healthy: true`
+    over an advancing ticker and an empty stage — the one failure the guard
+    exists to catch, made invisible by its own heartbeat.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    assert boot.index("await drawPlate()") < boot.index("/world/heartbeat")
