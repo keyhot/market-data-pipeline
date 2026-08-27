@@ -16,10 +16,11 @@ from pathlib import Path
 from PIL import Image
 
 from scripts.prepare_plate import (
-    SCREEN_QUADS,
+    SCREEN_FRAMES,
     WATERMARK_LUMA,
     WATERMARK_WINDOW,
     _is_terracotta,
+    frame_top,
 )
 
 PLATE = (
@@ -28,27 +29,35 @@ PLATE = (
 BYTE_BUDGET = 3_000_000  # on-disk PNG; the ~7MB figure in the spec is decoded RGBA
 
 
-def _interior(quad):
-    """The pixels strictly inside a quad with vertical left and right edges.
+def _glass(frame):
+    """Every pixel of painted glass a frame encloses, one pixel inside its own
+    dark line.
 
-    Inset by one pixel so the polygon's own rasterised boundary is not what is
-    being measured.
+    Deliberately the FRAME and not the fill quad: the intake insets its fill by
+    two pixels, so a test scoped to the fill would only ever re-read the colour
+    it had just painted and would pass with the quad 50px too small. The two
+    pixel ring between the fill and the frame is the only part of this that can
+    fail, so it is the part that has to be measured.
     """
-    (tlx, tly), (trx, try_), (brx, bry), (blx, bly) = quad
-    span = trx - tlx
-    for x in range(tlx + 1, trx):
-        ratio = (x - tlx) / span
-        top = tly + (try_ - tly) * ratio
-        bottom = bly + (bry - bly) * ratio
-        for y in range(int(top) + 2, int(bottom) - 1):
+    for x in range(frame["left"] + 1, frame["right"]):
+        for y in range(frame_top(frame, x) + 1, frame["bottom"]):
             yield x, y
+
+
+# Measured off schematic that is still on the plate (the left wall screen,
+# x 60-200, y 330-500): green-minus-red runs p5=19, p25=24, median=28. The
+# bezel's own cyan inner reflection - which is bezel, not screen, and sits in
+# the ring this test scans - runs 16-19. The threshold goes between them, and
+# `test_the_peripheral_screens_keep_their_art` is the control proving the rule
+# still finds circuitry in bulk where circuitry was deliberately kept.
+INK_TEAL = 20
 
 
 def _is_schematic_ink(pixel):
     """The teal the generator drew its circuitry in. The dark glass is not teal:
     (26,32,46) and its sheen (34,41,57) both fail the first clause."""
     red, green, blue = pixel
-    return green > red + 15 and blue > red + 10 and green > 50
+    return green > red + INK_TEAL and blue > red + 10 and green > 50
 
 
 def test_the_plate_is_exactly_the_browser_source_size():
@@ -85,13 +94,13 @@ def test_the_generators_watermark_is_gone():
 def test_no_painted_schematic_survives_where_live_candles_go():
     """The central monitors carry live data (Task 11), so a painted circuit
     left in a corner of the glass would be a baked claim under a live chart.
-    Under-filling the quad is invisible at any zoom a human reviews at, which
-    is exactly why this is measured and not eyeballed."""
+    Under-filling is invisible at any zoom a human reviews at, which is exactly
+    why this is measured and not eyeballed."""
     with Image.open(PLATE) as im:
         pixels = im.convert("RGB").load()
-        for name, quad in SCREEN_QUADS.items():
+        for name, frame in SCREEN_FRAMES.items():
             ink = [
-                (x, y) for x, y in _interior(quad) if _is_schematic_ink(pixels[x, y])
+                (x, y) for x, y in _glass(frame) if _is_schematic_ink(pixels[x, y])
             ]
             assert ink == [], (
                 f"{name}: {len(ink)} schematic pixels survived, e.g. {ink[:5]}"
@@ -100,7 +109,11 @@ def test_no_painted_schematic_survives_where_live_candles_go():
 
 def test_the_peripheral_screens_keep_their_art():
     """The other half of the decision: only the two central monitors are
-    flattened. A blanket fill would leave a room with nothing on in it."""
+    flattened. A blanket fill would leave a room with nothing on in it.
+
+    This is also the control for the test above. That one asserts an absence,
+    and an absence is what a mis-aimed scan reports too - so the same predicate
+    has to find circuitry in bulk somewhere circuitry is known to be."""
     with Image.open(PLATE) as im:
         pixels = im.convert("RGB").load()
         ink = sum(

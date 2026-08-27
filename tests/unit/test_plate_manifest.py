@@ -84,10 +84,13 @@ def test_every_chart_screen_is_a_rect_inside_the_canvas():
 
 
 def test_every_screen_rect_lands_on_glass_the_intake_actually_flattened():
-    """The one check that fails if the manifest and the asset ever drift apart:
-    the rect a candle is drawn in must contain no painted schematic. The intake
-    script flattens quads; the manifest carries the axis-aligned rect inside
-    each quad; nothing but this notices if those two stop agreeing."""
+    """The rect a candle is drawn in must contain no painted schematic.
+
+    Scope, stated honestly: this rect is derived to sit INSIDE the quad the
+    intake flattens, so it can only fail when the manifest is edited to claim
+    more glass than the plate has - which is exactly the hand-edit a repaint
+    invites. The complementary direction, an intake that under-fills, is
+    checked against the frame itself in tests/unit/test_plate_asset.py."""
     manifest = load_manifest()
     with Image.open(PLATE_PNG) as im:
         pixels = im.convert("RGB").load()

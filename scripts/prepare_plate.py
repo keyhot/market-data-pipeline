@@ -76,13 +76,44 @@ POT_SHADOW = (1794, 866, 1842, 886)  # the pot's contact shadow: content, not gl
 COUNTER_EDGE = ((1772, 928), (1826, 910))   # (x, y), (x, y) - slope -1/3
 
 # The painted glass is not an axis-aligned rectangle: both monitors are drawn
-# in slight perspective, their top edges rising ~1px per 20px to the right
-# while their bottom edges stay flat. Corners are (x, y), clockwise from
-# top-left, and sit 2px inside the frame's inner dark line.
-SCREEN_QUADS = {
-    "centre-left": ((463, 116), (807, 98), (807, 350), (463, 350)),
-    "centre-right": ((854, 95), (1150, 79), (1150, 304), (854, 304)),
+# in slight perspective, with vertical left and right edges but top edges that
+# rise ~1px per 20px to the right while the bottoms stay flat.
+#
+# These are the frames themselves - the inner dark line the bezel draws around
+# the glass, found per column as the luminance minimum and fitted robustly.
+# `top` is (slope, intercept) of that line; every other edge is constant. The
+# fill quads are DERIVED from them, so the frame is stated once: P4 and P5 need
+# the same numbers, and re-deriving them means redoing the measurement.
+SCREEN_FRAMES = {
+    "centre-left": {
+        "left": 461, "right": 809, "top": (-0.0506, 137.0), "bottom": 352,
+    },
+    "centre-right": {
+        "left": 852, "right": 1152, "top": (-0.0541, 138.8), "bottom": 306,
+    },
 }
+SCREEN_INSET = 2   # px inside the frame line, so a fill never overruns the bezel
+
+
+def frame_top(frame: dict, x: int) -> int:
+    """Where the frame's inner dark line runs at column `x`."""
+    slope, intercept = frame["top"]
+    return round(slope * x + intercept)
+
+
+def screen_quad(frame: dict, inset: int = SCREEN_INSET) -> tuple:
+    """The glass inside a frame, as corners clockwise from top-left."""
+    left = frame["left"] + inset
+    right = frame["right"] - inset
+    return (
+        (left, frame_top(frame, left) + inset),
+        (right, frame_top(frame, right) + inset),
+        (right, frame["bottom"] - inset),
+        (left, frame["bottom"] - inset),
+    )
+
+
+SCREEN_QUADS = {name: screen_quad(frame) for name, frame in SCREEN_FRAMES.items()}
 GLASS = (26, 32, 46)  # between the plate's wall (21,26,40) and its lit glass (33,40,54)
 SHEEN = (34, 41, 57)      # one band along the top edge, so the glass reads as glass
 SHEEN_HEIGHT = 10
