@@ -958,6 +958,37 @@ def test_the_heartbeat_is_installed_only_after_the_plate_settles():
     assert boot.index("await drawPlate()") < boot.index("/world/heartbeat")
 
 
+def test_preview_modes_hide_the_plate_not_just_the_procedural_room():
+    """`?swell=1` (drawGallery) and the cast sheet (drawAnimationSheet) both set
+    layers.room.visible = false. With a plate they must hide layers.plate too,
+    or the character sheet renders over a full pixel-art control room and is
+    unreadable as evidence.
+
+    A page-wide `body.count(...) >= 2` passes if both copies live in the SAME
+    function and the other preview mode hides nothing — this sprint's
+    can't-fail shape (`d1ad270`) applied to a count instead of a substring.
+    `_js_block` slices each function separately so the two assertions are
+    provably about two different regions, and each pins the plate hidden
+    ALONGSIDE the room (not instead of it) — the point of a specimen sheet is
+    a plain background, not a different piece of scenery.
+    """
+    body = _world_source()
+
+    gallery = _js_block(body, "function drawGallery(")
+    assert "STYLES.forEach" in gallery, "not actually the gallery body"
+    assert "layers.room.visible = false" in gallery
+    assert "layers.plate.visible = false" in gallery, (
+        "drawGallery must hide the plate, not just the procedural room"
+    )
+
+    sheet = _js_block(body, "function drawAnimationSheet(")
+    assert "sample.loopAnim" in sheet, "not actually the animation-sheet body"
+    assert "layers.room.visible = false" in sheet
+    assert "layers.plate.visible = false" in sheet, (
+        "drawAnimationSheet must hide the plate, not just the procedural room"
+    )
+
+
 # --- P5: layout comes from the measurements, not from canvas fractions -------
 #
 # The plan's Step 1 for this ticket was four `assert "function anchorFor(" in
