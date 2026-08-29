@@ -1227,9 +1227,28 @@ def test_the_cast_is_drawn_on_a_pixel_grid():
 
 def test_animation_displacement_is_snapped_too():
     """Unsnapped motion over snapped art reads as sub-pixel crawl - the exact
-    tell that gives away 'pixel art' that is really a smooth render."""
-    body = client.get("/world").text
-    assert "snap(" in body.split("function playAnimation(")[1][:2000]
+    tell that gives away 'pixel art' that is really a smooth render.
+
+    Review round 1, Finding 3: `const ANIM = {` (where every displacement
+    write actually lives) precedes `function playAnimation(` in the file, so
+    a forward-only window from `playAnimation` never reaches it - reverting
+    a single ANIM entry left the old version of this test green, and only
+    reverting all three of restCharacter's snaps (textually the one thing
+    inside the old window) turned it red. Sliced on the ANIM table itself
+    instead, which is what the name promises.
+
+    A bare `"snap(" in anim` is not enough, though, and mutation-checking it
+    caught why: `jolt` calls `EASE.snap(p)` - a pre-existing easing curve
+    named `snap`, unrelated to this ticket's grid quantiser - and that alone
+    makes the substring true with every quantiser snap() stripped out. The
+    negative lookbehind is what keeps this test from being exactly the kind
+    of test-that-cannot-fail this ticket exists to replace.
+    """
+    anim = _js_block(_world_source(), "const ANIM = {")
+    assert re.search(r"(?<!EASE\.)snap\(", anim), (
+        "no quantiser snap() in the ANIM table - EASE.snap(p) (an easing "
+        "curve, not this ticket's grid quantiser) does not count"
+    )
 
 
 def test_cell_derives_from_the_plate_and_falls_back_to_a_literal():
@@ -1285,15 +1304,23 @@ def test_the_pillar_fill_is_a_stack_of_blocks_not_a_smooth_rect():
 
 @needs_node
 def test_animation_displacement_actually_quantises_to_the_grid():
-    """`test_animation_displacement_is_snapped_too` above only proves the
-    text `snap(` sits within 2000 characters of `function playAnimation(` -
-    true of a comment, and true of code that snaps the wrong operand. This
-    runs the real `ANIM` table (the code `playAnimation` hands off to, via
-    `advanceCharacters`) against a character whose rest position is
-    deliberately fractional (583.37, not a 4px multiple) and checks the
-    WRITTEN container/head offset, not the source text: it lands on the grid
-    regardless of the fractional input, which is only true if `snap()` wraps
-    the assignment itself.
+    """`test_animation_displacement_is_snapped_too` only proves the text
+    `snap(` sits inside the ANIM table - not that the pixel a viewer's screen
+    receives is on any grid at all. This runs the real `ANIM` table (the code
+    `playAnimation` hands off to, via `advanceCharacters`) against a character
+    whose rest position is deliberately fractional (583.37, not a 4px
+    multiple), and checks the WRITTEN container/head offset in SCREEN space.
+
+    Review round 1, Finding 1: `layers.chars.scale.set(CAST_SCALE)` sits
+    between every `snap()` call in this table and the screen, so a local value
+    landing on a 4px multiple proves nothing about what a viewer sees -
+    that was this test's bug before the fix, and it stayed green through it.
+    The rendered cell is `CELL * CAST_SCALE`; it must itself be a whole number
+    of screen pixels (the ruling: CAST_SCALE = 1.5 makes it exactly 6) or
+    `roundPixels` rounds each frame to a DIFFERENT nearby integer depending on
+    phase - a jittering step, worse than a fixed off-grid one. Every snapped
+    local coordinate, multiplied by CAST_SCALE, must land on an exact
+    multiple of that rendered cell.
     """
     source = _world_source()
     driver = (
@@ -1301,6 +1328,7 @@ def test_animation_displacement_actually_quantises_to_the_grid():
         + _js_const(source, "CELL")
         + _js_block(source, "function snap(")
         + "\n"
+        + _js_const(source, "CAST_SCALE")
         + _js_block(source, "const EASE = {")
         + ";\n"
         + _js_const(source, "HEAD_TRAVEL")
@@ -1322,6 +1350,7 @@ def test_animation_displacement_actually_quantises_to_the_grid():
         }
         console.log(JSON.stringify({
           cell: CELL,
+          castScale: CAST_SCALE,
           idle: run("idle", 0.37, 1),
           jolt: run("jolt", 0.05, 2.3),
           shake: run("shake", 0.6, 1.7),
@@ -1335,17 +1364,100 @@ def test_animation_displacement_actually_quantises_to_the_grid():
     )
     emitted = _run_node(driver)
     cell = emitted["cell"]
+    cast_scale = emitted["castScale"]
     assert cell == 4, "no plate in this driver, so CELL must fall back to the literal"
 
-    # baseY/baseX are deliberately not multiples of 4, so a written value that
-    # lands on the grid anyway proves snap() ran on the final assignment.
+    # The rendered cell has to be a whole number of screen pixels, or the
+    # step PixiJS actually draws jitters between two integers by phase - the
+    # exact failure a CAST_SCALE of 1.35 (5.4px) produces.
+    rendered_cell = cell * cast_scale
+    assert rendered_cell == int(rendered_cell), (
+        f"CELL * CAST_SCALE = {rendered_cell} is not a whole number of screen "
+        "pixels - the rendered step size will jitter under roundPixels"
+    )
+
+    def on_grid(screen_value: float) -> bool:
+        remainder = screen_value % rendered_cell
+        return remainder < 1e-6 or rendered_cell - remainder < 1e-6
+
+    # baseY/baseX are deliberately not multiples of 4, so a LOCAL value that
+    # lands on the grid anyway proves snap() ran on the final assignment. But
+    # the claim this ticket makes is about the screen, not the layer: multiply
+    # by CAST_SCALE (what layers.chars.scale actually does before anything is
+    # composited) before checking it lands on the rendered cell.
     checked = {
         "idle": "y", "jolt": "y", "shake": "x", "hop": "y",
         "slump": "y", "cheer": "y", "step": "x", "pan": "x",
     }
     for name, axis in checked.items():
-        value = emitted[name][axis]
-        assert value % cell == 0, (
-            f"{name}.{axis} = {value} is not snapped to the {cell}px grid"
+        local_value = emitted[name][axis]
+        screen_value = local_value * cast_scale
+        assert on_grid(screen_value), (
+            f"{name}.{axis}: local {local_value} * CAST_SCALE {cast_scale} = "
+            f"{screen_value}, not a multiple of the {rendered_cell}px rendered "
+            "cell - snapped in the wrong coordinate space"
         )
-    assert emitted["slump"]["headY"] % cell == 0, "slump's head offset is unsnapped"
+    head_screen = emitted["slump"]["headY"] * cast_scale
+    assert on_grid(head_screen), "slump's head offset is unsnapped in screen space"
+
+
+@needs_node
+def test_the_idle_glance_is_snapped_too():
+    """Review round 1, Finding 2: `setGaze` (fed by IDLE_ACTIONS.glance and by
+    `watchTick`'s deliberate look) writes a continuous per-frame `dx`/
+    `headShift` through a sin() ease - unsnapped, that is the exact sub-pixel
+    crawl this ticket exists to remove, and `watchTick`'s amplitude (4) is
+    exactly one CELL. Runs the real `setGaze` against fractional inputs and
+    checks the WRITTEN eye/head offset in SCREEN space (local value *
+    CAST_SCALE), for the same reason test 7 had to stop checking local space
+    only: `layers.chars.scale` sits between this function and the screen.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + _js_block(source, "function setGaze(")
+        + "\n"
+        + """
+        function run(dx, rot, headShift) {
+          const c = {
+            eyeL: { x: 0 }, eyeR: { x: 0 }, head: { rotation: 0, x: 0 },
+          };
+          setGaze(c, dx, rot, headShift);
+          return { eyeX: c.eyeL.x, headX: c.head.x };
+        }
+        console.log(JSON.stringify({
+          cell: CELL,
+          castScale: CAST_SCALE,
+          // Fractional and not a multiple of 4, the way a live sin() ease
+          // actually lands - the same reason 583.37 was picked in test 7.
+          glance: run(2.5 * 0.6173, 0.05 * 0.6173, 0),
+          watch: run(4 * 0.8412, 0.12 * 0.8412, 3 * 0.8412),
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    cell = emitted["cell"]
+    cast_scale = emitted["castScale"]
+    rendered_cell = cell * cast_scale
+    assert rendered_cell == int(rendered_cell), (
+        f"CELL * CAST_SCALE = {rendered_cell} is not a whole number of screen "
+        "pixels - the rendered step size will jitter under roundPixels"
+    )
+
+    def on_grid(screen_value: float) -> bool:
+        remainder = screen_value % rendered_cell
+        return remainder < 1e-6 or rendered_cell - remainder < 1e-6
+
+    for name in ("glance", "watch"):
+        for axis in ("eyeX", "headX"):
+            local_value = emitted[name][axis]
+            screen_value = local_value * cast_scale
+            assert on_grid(screen_value), (
+                f"{name}.{axis}: local {local_value} * CAST_SCALE {cast_scale} "
+                f"= {screen_value}, not a multiple of the {rendered_cell}px "
+                "rendered cell - the idle glance is still sub-pixel"
+            )

@@ -653,7 +653,29 @@
     // of the frame, which on a phone-sized YouTube window is nothing. The
     // LAYER carries the scale, not the characters: half the named animations
     // set `container.scale` themselves and would clobber a per-character one.
-    const CAST_SCALE = 1.35;
+    //
+    // 1.5, not 1.35 (review round 1, Finding 1): `positionCharacters` divides
+    // every anchor by CAST_SCALE before assigning it, and this layer then
+    // re-multiplies by the same factor — rendered position on the painted
+    // plate is provably invariant to CAST_SCALE, so changing it moves nothing
+    // and only resizes the cast. What it DOES change is the on-screen size of
+    // the cast's own 4px local grid: at 1.35 that renders as 5.4 screen px,
+    // which `roundPixels` then rounds to 5 or 6 depending on phase — the step
+    // JITTERS, worse than a fixed off-grid value. At 1.5 it renders as an
+    // exact 6 screen px: integer, uniform, no jitter, and every `snap()` call
+    // site in the cast stays correct with the one CELL/snap definition — no
+    // second snap function for a second coordinate space, which is a second
+    // definition of the same rule that later tickets would have to choose
+    // between.
+    //
+    // Known residual, left deliberate rather than hidden: the cast now renders
+    // on a uniform 6px cell while the props (pillars) render on a true 4px
+    // cell — a consistent grid PER SURFACE, not one 4px grid across the whole
+    // room. Strict single-grid conformance needs CAST_SCALE = 1, a 26% shrink
+    // of the only two figures on screen, which trades this sprint's headline
+    // goal (watchability) for a parenthetical. One constant to reverse after
+    // a visual check, not a redesign.
+    const CAST_SCALE = 1.5;
 
     function styleFor(name) {
       const style = STYLE_OVERRIDE || CAST[name];
@@ -1192,10 +1214,20 @@
     // Looking is done with the eyes, not by sliding the skull sideways: a head
     // that translates reads as a part coming loose, on the machine especially,
     // where it sits on a visible stem. The head only rotates.
+    //
+    // Review round 1, Finding 2: the idle glance (IDLE_ACTIONS.glance) and the
+    // B7 deliberate look (watchTick) both drive `dx`/`headShift` through a
+    // continuous sin() ease, and watchTick's amplitude (4) is exactly one
+    // CELL — unsnapped, that is the sub-pixel crawl this ticket exists to
+    // remove. Not literally named in the brief's Step 4 list, but the same
+    // reasoning that put `restCharacter` and the `ANIM` table under `snap()`
+    // reaches every displacement write, and this is one: wrapped once here so
+    // every caller (glance, watchTick, resetIdle) is covered without each of
+    // them having to remember to.
     function setGaze(char, dx, rot, headShift) {
-      char.eyeL.x = char.eyeR.x = dx;
+      char.eyeL.x = char.eyeR.x = snap(dx);
       char.head.rotation = rot;
-      char.head.x = headShift;
+      char.head.x = snap(headShift);
     }
 
     function setBlink(char, closed) {
