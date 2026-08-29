@@ -1210,3 +1210,142 @@ def test_the_rendered_page_is_valid_javascript():
             [NODE, "--check", str(path)], capture_output=True, text=True, timeout=30
         )
     assert result.returncode == 0, result.stderr
+
+
+# --- Task 6: the pixel grid — one drawing rule the whole cast obeys ---------
+
+
+def test_the_cast_is_drawn_on_a_pixel_grid():
+    """The pixel look comes from drawing rules, not from sprite sheets - the
+    tested animation layer (reactions, breathing, the B7 glance, bubbles)
+    survives precisely because we did not replace it with PNGs."""
+    body = client.get("/world").text
+    assert "function snap(" in body
+    assert "roundPixels" in body
+    assert "scaleMode" in body
+
+
+def test_animation_displacement_is_snapped_too():
+    """Unsnapped motion over snapped art reads as sub-pixel crawl - the exact
+    tell that gives away 'pixel art' that is really a smooth render."""
+    body = client.get("/world").text
+    assert "snap(" in body.split("function playAnimation(")[1][:2000]
+
+
+def test_cell_derives_from_the_plate_and_falls_back_to_a_literal():
+    """`snap`/`CELL` are the interface Tasks 7, 8 and 12 build on top of
+    (`drawCandles`, `applySwell`, the seated trader). `world/monitors.py`
+    already owns its own `CELL` for a different surface, so this one must
+    read the plate's measurement rather than mint a third number, and must
+    not throw when there is no manifest (`PLATE` is `null`). Declared at
+    top-level script scope, not inside `boot()`, so every cast helper can
+    reach it.
+    """
+    body = client.get("/world").text
+    cell_line = _js_const(body, "CELL")
+    assert "PLATE.cell" in cell_line
+    assert "|| 4" in cell_line
+    boot = _js_block(body, "async function boot()")
+    assert "const CELL" not in boot
+    assert "function snap(" not in boot
+
+
+def test_the_renderer_disables_antialiasing_globally():
+    """Step 3: `antialias` is a single global PixiJS renderer setting, so
+    turning it off also changes the procedural fallback room - the on-air
+    surface whenever the plate fails to load (KI-045/KI-047). Deliberate,
+    not a side effect: pinned here so a revert reads as a revert.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    assert "antialias: false" in boot
+    assert "antialias: true" not in boot
+
+
+def test_chars_and_props_layers_get_round_pixels():
+    """`roundPixels` is what stops PixiJS compositing the cast and the props
+    layer at sub-pixel offsets - the plate and the vignette stay off this
+    list on purpose, they are painted art and a soft falloff, not the grid.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    assert "layers.chars.roundPixels = true;" in boot
+    assert "layers.props.roundPixels = true;" in boot
+
+
+def test_the_pillar_fill_is_a_stack_of_blocks_not_a_smooth_rect():
+    """Step 3b, decided 2026-08-25 from the reference image: the tube fill is
+    a column of discrete cells, not a single smooth `roundRect`."""
+    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    assert (
+        "roundRect(geo.x, geo.baseY - geo.height, geo.width, geo.height"
+        not in draw_pillars
+    ), "the tube fill is still one smooth rounded rect"
+    assert re.search(r"for\s*\(let b = 0", draw_pillars), "the fill is not a block loop"
+    assert "CELL" in draw_pillars and "snap(" in draw_pillars
+
+
+@needs_node
+def test_animation_displacement_actually_quantises_to_the_grid():
+    """`test_animation_displacement_is_snapped_too` above only proves the
+    text `snap(` sits within 2000 characters of `function playAnimation(` -
+    true of a comment, and true of code that snaps the wrong operand. This
+    runs the real `ANIM` table (the code `playAnimation` hands off to, via
+    `advanceCharacters`) against a character whose rest position is
+    deliberately fractional (583.37, not a 4px multiple) and checks the
+    WRITTEN container/head offset, not the source text: it lands on the grid
+    regardless of the fractional input, which is only true if `snap()` wraps
+    the assignment itself.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_block(source, "const EASE = {")
+        + ";\n"
+        + _js_const(source, "HEAD_TRAVEL")
+        + _js_block(source, "function gesture(")
+        + "\n"
+        + _js_block(source, "const ANIM = {")
+        + ";\n"
+        + """
+        function run(name, p, a) {
+          const c = {
+            baseY: 583.37, baseX: 917.53, headBaseY: -138.25, style: "bars",
+            accents: [],
+            container: { y: 0, x: 0, rotation: 0, alpha: 1, scale: { set() {} } },
+            head: { y: 0, rotation: 0 },
+            mouth: { scale: { y: 1 } },
+          };
+          ANIM[name](c, p, a);
+          return { y: c.container.y, x: c.container.x, headY: c.head.y };
+        }
+        console.log(JSON.stringify({
+          cell: CELL,
+          idle: run("idle", 0.37, 1),
+          jolt: run("jolt", 0.05, 2.3),
+          shake: run("shake", 0.6, 1.7),
+          hop: run("hop", 0.1, 1.4),
+          slump: run("slump", 0.8, 2.1),
+          cheer: run("cheer", 0.25, 1.9),
+          step: run("step", 0.5, 1.3),
+          pan: run("pan", 0.33, 1.1),
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    cell = emitted["cell"]
+    assert cell == 4, "no plate in this driver, so CELL must fall back to the literal"
+
+    # baseY/baseX are deliberately not multiples of 4, so a written value that
+    # lands on the grid anyway proves snap() ran on the final assignment.
+    checked = {
+        "idle": "y", "jolt": "y", "shake": "x", "hop": "y",
+        "slump": "y", "cheer": "y", "step": "x", "pan": "x",
+    }
+    for name, axis in checked.items():
+        value = emitted[name][axis]
+        assert value % cell == 0, (
+            f"{name}.{axis} = {value} is not snapped to the {cell}px grid"
+        )
+    assert emitted["slump"]["headY"] % cell == 0, "slump's head offset is unsnapped"

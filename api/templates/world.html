@@ -147,6 +147,16 @@
 
     __TIER_OF_JS__
 
+    // 4px cells at 1920x960. Every coordinate the cast draws or moves to is
+    // quantised here, so motion reads as pixel STEPS rather than smooth
+    // slides — the one drawing rule the whole cast obeys. Falls back to a
+    // literal 4 when there is no plate (PLATE is null): CELL must not throw
+    // on the no-manifest path any more than anchorFor does. Top-level scope,
+    // not inside boot(), so playAnimation, the cast helpers, and (Tasks 7/8)
+    // drawCandles/applySwell can all reach it.
+    const CELL = (PLATE && PLATE.cell) || 4;
+    function snap(v) { return Math.round(v / CELL) * CELL; }
+
     // Declared here, constructed in boot(): character() needs app.screen and
     // the layer containers, neither of which exist until PIXI has initialised.
     let app, layers = {}, world = null, model = null, trader = null;
@@ -199,7 +209,7 @@
         return;
       }
       app = new PIXI.Application();
-      await app.init({ background: 0x131722, resizeTo: window, antialias: true });
+      await app.init({ background: 0x131722, resizeTo: window, antialias: false });
       document.getElementById("room").appendChild(app.canvas);
       fallback.textContent = "";
 
@@ -222,6 +232,12 @@
       layers.shadows = new PIXI.Container();
       layers.chars.addChild(layers.shadows);
       app.stage.addChild(layers.plate, layers.room, layers.props, layers.chars);
+      // Pixel-art rule: no sub-pixel compositing for anything the cast or its
+      // furniture draws. The plate and the vignette stay off this list on
+      // purpose — they are painted art and a soft light falloff, not part of
+      // the grid.
+      layers.chars.roundPixels = true;
+      layers.props.roundPixels = true;
 
       await drawPlate();
       model = character("MODEL");
@@ -588,9 +604,16 @@
       if (!symbols.length) return;
       symbols.forEach(([symbol, data], i) => {
         const geo = pillarGeometry(symbol, data.pressure, i);
-        const pillar = new PIXI.Graphics()
-          .roundRect(geo.x, geo.baseY - geo.height, geo.width, geo.height, 3)
-          .fill({ color: color(data.mood), alpha: 0.55 });
+        // The tube fill is a column of discrete cells, not a smooth
+        // roundRect — decided 2026-08-25 from the reference image, which
+        // draws it as stacked units. One cell of gap every two blocks so the
+        // column reads as filled units rather than a single bar.
+        const pillar = new PIXI.Graphics();
+        const blocks = Math.floor(geo.height / (CELL * 2));
+        for (let b = 0; b < blocks; b++) {
+          pillar.rect(snap(geo.x), snap(geo.baseY - (b + 1) * CELL * 2), geo.width, CELL)
+                .fill({ color: color(data.mood), alpha: 0.85 });
+        }
         // A cap catches the light: without it a flat column reads as a bar
         // chart, which is the model's body, not the room's furniture.
         const cap = new PIXI.Graphics()
@@ -678,12 +701,12 @@
       // A candlestick: real body between two wicks. The project's own glyph,
       // and the one that reads most instantly as "this thing is the market".
       candle(body, accents) {
-        body.roundRect(-27, -104, 54, 84, 8).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-27), snap(-104), 54, 84, 8).fill(BODY_FILL).stroke(BODY_RIM);
         // Wick thick enough to read as a neck at stream distance, and short
         // enough that the head sits ON the candle rather than floating over it.
-        const wickTop = new PIXI.Graphics().roundRect(-3.5, -130, 7, 30, 3.5)
+        const wickTop = new PIXI.Graphics().roundRect(snap(-3.5), snap(-130), 7, 30, 3.5)
           .fill(BODY_FILL).stroke(BODY_RIM);
-        const wickLow = new PIXI.Graphics().roundRect(-3.5, -22, 7, 26, 3.5)
+        const wickLow = new PIXI.Graphics().roundRect(snap(-3.5), snap(-22), 7, 26, 3.5)
           .fill(BODY_FILL).stroke(BODY_RIM);
         // A wick flicks by lengthening. It cannot swing: it's drawn in the
         // character's own space, so rotating it pivots about the feet.
@@ -697,7 +720,7 @@
         const heights = [54, 86, 68, 96, 60];
         heights.forEach((h, i) => {
           const bar = new PIXI.Graphics()
-            .roundRect(-6, -h, 12, h, 4).fill(BODY_FILL).stroke(BODY_RIM);
+            .roundRect(snap(-6), snap(-h), 12, h, 4).fill(BODY_FILL).stroke(BODY_RIM);
           bar.x = -36 + i * 18;
           bar.restHeight = h;
           bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
@@ -706,15 +729,15 @@
         // A static stem, so the head isn't left hovering over the cluster the
         // way it was. It can't be one of the bars: those ripple, and a neck
         // that stretches would pull the face off the body.
-        body.roundRect(-6, -118, 12, 58, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-6), snap(-118), 12, 58, 6).fill(BODY_FILL).stroke(BODY_RIM);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
       // end of the register; a piece that looks like it is thinking.
       monolith(body, accents) {
-        body.roundRect(-26, -104, 52, 78, 20).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-26), snap(-104), 52, 78, 20).fill(BODY_FILL).stroke(BODY_RIM);
         const base = new PIXI.Graphics()
-          .roundRect(-38, -30, 76, 30, 14).fill(BODY_FILL).stroke(BODY_RIM);
+          .roundRect(snap(-38), snap(-30), 76, 30, 14).fill(BODY_FILL).stroke(BODY_RIM);
         base.gestureMode = "shift";   // a weighted column doesn't wave, it leans
         base.restX = 0;
         accents.push(base);
@@ -726,15 +749,15 @@
       figure(body, accents) {
         // The gap has to be wide enough to survive the stream: at 6 units the
         // two legs merged into one column and he read as a pedestal.
-        body.roundRect(-19, -56, 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(6, -56, 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-19), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(6), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
         // Waist under a broader chest. The taper is what reads as a person —
         // one capsule reads as a pill — and the wider shoulders are what stop
         // the head (28px, shared with every other body) looking oversized.
-        body.roundRect(-26, -86, 52, 40, 14).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(-33, -128, 66, 54, 22).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-26), snap(-86), 52, 40, 14).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-33), snap(-128), 66, 54, 22).fill(BODY_FILL).stroke(BODY_RIM);
         for (const side of [-1, 1]) {
-          const arm = new PIXI.Graphics().roundRect(-7, -5, 14, 66, 7)
+          const arm = new PIXI.Graphics().roundRect(snap(-7), snap(-5), 14, 66, 7)
             .fill(BODY_FILL).stroke(BODY_RIM);
           arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
           // Not quite straight and not quite matching: dead-symmetrical arms
@@ -753,7 +776,7 @@
       // The original: face on a single disc, no body. Kept as the baseline the
       // others are judged against.
       orb(body) {
-        body.circle(0, -60, 46).fill(BODY_FILL).stroke(BODY_RIM);
+        body.circle(snap(0), snap(-60), 46).fill(BODY_FILL).stroke(BODY_RIM);
         return -66;
       },
     };
@@ -838,7 +861,7 @@
 
       const headY = BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
-      if (style !== "orb") skull.circle(0, 0, 28).fill(BODY_FILL).stroke(BODY_RIM);
+      if (style !== "orb") skull.circle(snap(0), snap(0), 28).fill(BODY_FILL).stroke(BODY_RIM);
       head.y = headY;
       head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
 
@@ -882,7 +905,7 @@
     const GESTURE = {
       swing: (a, amt) => { a.rotation = (a.restRotation ?? 0) + amt * 0.35; },
       pump: (a, amt) => { a.scale.y = 1 + Math.abs(amt) * 0.55; },
-      shift: (a, amt) => { a.x = (a.restX ?? 0) + amt * 6; },
+      shift: (a, amt) => { a.x = snap((a.restX ?? 0) + amt * 6); },
     };
 
     function gesture(char, amount, stagger) {
@@ -898,7 +921,7 @@
         // Rest is not necessarily zero: dead-straight symmetrical arms read as
         // a mannequin, so the figure's hang at a slight, uneven angle.
         accent.rotation = accent.restRotation ?? 0;
-        accent.x = accent.restX ?? accent.x;
+        accent.x = snap(accent.restX ?? accent.x);
         accent.scale.set(1, 1);
       }
     }
@@ -947,15 +970,15 @@
       // 0.14, not 0.35: the skull is a 0x545862 fill *tinted*, so it already
       // renders at roughly a third of the mood colour — a 0.35 visor came out
       // the same value as the head and was invisible on the real page.
-      char.visor.roundRect(-21, -16, 42, 23, 8).fill(shade(tint, 0.14));
+      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(shade(tint, 0.14));
       machineEyes(char, arousal);
       char.browL.clear();
       char.browR.clear();
       const w = 10 + arousal * 3;
       const step = valence * 6;
       char.mouth.clear()
-        .moveTo(-w, 12).lineTo(-w / 3, 12 + step)
-        .lineTo(w / 3, 12 + step).lineTo(w, 12)
+        .moveTo(snap(-w), snap(12)).lineTo(snap(-w / 3), snap(12 + step))
+        .lineTo(snap(w / 3), snap(12 + step)).lineTo(snap(w), snap(12))
         .stroke({ width: 2.5, color: 0xd1d4dc });
     }
 
@@ -965,7 +988,7 @@
       const lit = 2 + arousal * 5;
       for (const [eye, side] of [[char.eyeL, -1], [char.eyeR, 1]]) {
         eye.clear();
-        eye.roundRect(side * 10 - 6, -5 - lit / 2, 12, lit, 1.5).fill(0xd1d4dc);
+        eye.roundRect(snap(side * 10 - 6), snap(-5 - lit / 2), 12, lit, 1.5).fill(0xd1d4dc);
       }
     }
 
@@ -977,9 +1000,9 @@
         eye.clear();
         if (arousal < 0.08) {
           // Nearly asleep: a closed lid line reads better than a tiny dot.
-          eye.roundRect(side * dx - 5, eyeY, 10, 2, 1).fill(0xd1d4dc);
+          eye.roundRect(snap(side * dx - 5), snap(eyeY), 10, 2, 1).fill(0xd1d4dc);
         } else {
-          eye.ellipse(side * dx, eyeY, 3.4, open / 2).fill(0xd1d4dc);
+          eye.ellipse(snap(side * dx), snap(eyeY), 3.4, open / 2).fill(0xd1d4dc);
         }
       }
     }
@@ -1002,16 +1025,16 @@
         const lift = arousal * 3;
         const inner = eyeY - 9 - lift - worry * 4;
         const outer = eyeY - 9 - lift + worry * 3;
-        brow.moveTo(side * (dx - 7), inner)
-            .lineTo(side * (dx + 7), outer)
+        brow.moveTo(snap(side * (dx - 7)), snap(inner))
+            .lineTo(snap(side * (dx + 7)), snap(outer))
             .stroke({ width: 2, color: 0x9aa4b2 });
       }
       char.mouth.clear();
       const curve = valence * 7;
       const width = 9 + arousal * 3;
       char.mouth
-        .moveTo(-width, 10)
-        .quadraticCurveTo(0, 10 + curve, width, 10)
+        .moveTo(snap(-width), snap(10))
+        .quadraticCurveTo(snap(0), snap(10 + curve), snap(width), snap(10))
         .stroke({ width: 2.5, color: 0xd1d4dc });
     }
 
@@ -1061,17 +1084,17 @@
       idle:    (c, p) => { const u = p < 0.4
                               ? Math.sin((p / 0.4) * Math.PI - Math.PI / 2)
                               : Math.sin(((p - 0.4) / 0.6) * Math.PI + Math.PI / 2);
-                           c.container.y = c.baseY - u * 1.6;
+                           c.container.y = snap(c.baseY - u * 1.6);
                            c.container.scale.set(1 - u * 0.006, 1 + u * 0.012); },
       jolt:    (c, p, a) => { const u = EASE.snap(p);
-                              c.container.y = c.baseY - u * 26 * a;
+                              c.container.y = snap(c.baseY - u * 26 * a);
                               c.container.scale.set(1 + u * 0.08 * a); },
-      shake:   (c, p, a) => { c.container.x = c.baseX + Math.sin(p * 42) * 9 * a * (1 - p); },
+      shake:   (c, p, a) => { c.container.x = snap(c.baseX + Math.sin(p * 42) * 9 * a * (1 - p)); },
       // Crouches before it leaves the floor, and the squash was inverted: it
       // went wide-and-short at the apex and tall-and-thin in the crouch, which
       // is backwards on both. A body in the air stretches along its travel.
       hop:     (c, p, a) => { const j = EASE.anticipate(p);
-                              c.container.y = c.baseY - j * 40 * a;
+                              c.container.y = snap(c.baseY - j * 40 * a);
                               c.container.scale.set(1 - j * 0.05 * a, 1 + j * 0.05 * a); },
       pulse:   (c, p, a) => { c.container.scale.set(1 + Math.sin(p * Math.PI * 2) * 0.11 * a); },
       // 0.09, not 0.16: the container pivots at the feet, so a tall body's
@@ -1079,28 +1102,28 @@
       lean:    (c, p, a) => { c.container.rotation = Math.sin(p * Math.PI) * 0.09 * a; },
       shrug:   (c, p, a) => { const u = Math.sin(p * Math.PI);
                               gesture(c, u * a, false);
-                              c.container.y = c.baseY - u * 6 * a; },
+                              c.container.y = snap(c.baseY - u * 6 * a); },
       slump:   (c, p, a) => { const u = EASE.settle(p);
-                              c.container.y = c.baseY + u * 12 * a;
-                              c.head.y = c.headBaseY
-                                + u * HEAD_TRAVEL[c.style] * a;
+                              c.container.y = snap(c.baseY + u * 12 * a);
+                              c.head.y = snap(c.headBaseY
+                                + u * HEAD_TRAVEL[c.style] * a);
                               c.container.scale.set(1, 1 - u * 0.07 * a); },
       cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2));
-                              c.container.y = c.baseY - u * 30 * a;
+                              c.container.y = snap(c.baseY - u * 30 * a);
                               gesture(c, u * a, true); },
       wave:    (c, p, a) => { gesture(c, Math.sin(p * Math.PI * 6) * 0.6 * a, false);
                               c.head.rotation = Math.sin(p * Math.PI * 6) * 0.10 * a; },
       sleep:   (c, p) => { const b = Math.sin(p * Math.PI * 2) * 0.02;
                            c.container.scale.set(1 + b, 1 - b); },
       flicker: (c, p) => { c.container.alpha = p % 0.25 < 0.125 ? 0.35 : 1; },
-      step:    (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 26 * a; },
+      step:    (c, p, a) => { c.container.x = snap(c.baseX + Math.sin(p * Math.PI) * 26 * a); },
       // A flat character can't rotate away, but it must not vanish trying: the
       // old cos() passed through zero twice a cycle and collapsed to a sliver.
       // Squash to 40% and turn the head — that reads as looking round.
       turn:    (c, p, a) => { const u = Math.cos(p * Math.PI * 2);
                               c.container.scale.x = 0.4 + 0.6 * Math.abs(u);
                               c.head.rotation = -u * 0.22 * a; },
-      pan:     (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 10 * a; },
+      pan:     (c, p, a) => { c.container.x = snap(c.baseX + Math.sin(p * Math.PI) * 10 * a); },
       talk:    (c, p) => { const o = Math.abs(Math.sin(p * Math.PI * 8));
                            c.mouth.scale.y = 1 + o * 1.6;
                            gesture(c, o * 0.25, true); },
@@ -1123,15 +1146,15 @@
     };
 
     function restCharacter(char) {
-      char.container.y = char.baseY;
-      char.container.x = char.baseX;
+      char.container.y = snap(char.baseY);
+      char.container.x = snap(char.baseX);
       char.container.rotation = 0;
       char.container.alpha = 1;
       char.container.scale.set(1, 1);
       setGaze(char, 0, 0, 0);
       char.mouth.scale.y = 1;
       restAccents(char);
-      if (char.headBaseY != null) char.head.y = char.headBaseY;
+      if (char.headBaseY != null) char.head.y = snap(char.headBaseY);
     }
 
     // --- B7: idle life, and attention -------------------------------------
