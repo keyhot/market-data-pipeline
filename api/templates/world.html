@@ -869,6 +869,12 @@
       style = BODIES[style] ? style : styleFor(name);
       const container = new PIXI.Container();
       container.y = app.screen.height * GROUND;
+      // C2: which anchor this name paints against decides the rig. Only the
+      // trader is ever seated — the plate's `pose` is the one thing that says
+      // so, not a second decision made here. Every other `name` this function
+      // is ever called with (moods and styles, from the gallery/sheet eval
+      // surfaces) misses PLATE.cast entirely and gets "standing" back.
+      container.pose = anchorFor(name.toLowerCase()).pose;
 
       const body = new PIXI.Graphics();
       const head = new PIXI.Container();
@@ -881,7 +887,9 @@
       const visor = new PIXI.Graphics();
       const accents = [];
 
-      const headY = BODIES[style](body, accents);
+      const headY = container.pose === "seated"
+        ? seatedRig(body, accents)
+        : BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
       if (style !== "orb") skull.circle(snap(0), snap(0), 28).fill(BODY_FILL).stroke(BODY_RIM);
       head.y = headY;
@@ -909,6 +917,14 @@
         rand: rng32(seed || 1),
         shadow, shadowW: SHADOW_WIDTH[style],
       };
+      // The two arms `seatedRig` pushed onto `accents` are real Graphics,
+      // already children of `container` — aliased under their own names so
+      // the seated animations below have one to reach for by name instead of
+      // indexing into the array.
+      if (container.pose === "seated") {
+        char.armNear = accents[0];
+        char.armFar = accents[1];
+      }
       // Two characters breathing on one clock read as one animation played on
       // two puppets — the exact thing the blink seed already avoids. Offset
       // the phase *and* vary the period, so they never drift into step either.
@@ -1167,7 +1183,83 @@
       sleep: 4.0, idle: 3.2, talk: 1.6, wave: 1.4, flicker: 1.0, cheer: 1.2,
     };
 
+    // --- C2: TRADER, seated -------------------------------------------------
+    // Everything from the neck up is untouched — `character()` still builds
+    // the head, the face and the blink the same way for every body. Only
+    // what's below the neck is re-drawn here, hips at the container's own
+    // origin: `positionCharacters` puts that on the seat of the painted
+    // chair, not on a floor 148px below it (Task 7's Override 2).
+    function seatedRig(body, accents) {
+      // Thighs: short and low, at the front edge of the seat rather than
+      // dropping to a floor this plate doesn't give the chair.
+      body.roundRect(snap(-22), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
+      body.roundRect(snap(4), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
+      // Waist and chest, stacked straight up off the hips rather than off a
+      // standing pair of legs. The rest pose is upright on purpose — reclined
+      // is something the animations do, not something baked into the rest,
+      // the same way the standing figure's rest isn't already mid-lean.
+      body.roundRect(snap(-25), snap(-42), 50, 34, 14).fill(BODY_FILL).stroke(BODY_RIM);
+      body.roundRect(snap(-29), snap(-80), 58, 40, 20).fill(BODY_FILL).stroke(BODY_RIM);
+      // Forearms bent up toward the desk, not hanging at the sides — shorter
+      // than the standing figure's (66 units): no swing arc to fill.
+      for (const side of [-1, 1]) {
+        const arm = new PIXI.Graphics().roundRect(snap(-6), snap(0), 12, 40, 6)
+          .fill(BODY_FILL).stroke(BODY_RIM);
+        arm.x = side * 30; arm.y = -76;
+        arm.restRotation = side < 0 ? -0.55 : 0.5;
+        arm.shadeFactor = 1.35;
+        accents.push(arm);
+      }
+      // Chair back measures ~220 screen px above the seat (backrest crown at
+      // plate y≈462 vs the seat anchor y≈682) — 147 local units at
+      // CAST_SCALE 1.5. -108 leaves the 28-radius*1.5=42px head crown at
+      // screen y≈478: inside the backrest, not poking over it.
+      return -108;
+    }
+
+    // Every write below moves the torso (`body`), the head, or an arm —
+    // never `container`, the hips, fixed to the chair by
+    // `positionCharacters`. A standing animation moves the whole body, which
+    // is how a seated one sinks through the cushion or slides out of it.
+    const SEATED_ANIMATIONS = {
+      // The rotation leads on purpose: `HEAD_TRAVEL.figure` is exactly one
+      // CELL, so the snapped head-drop alone can round back to nothing for
+      // most of the phase at tier 0. `body.rotation` isn't quantised.
+      slump:   (c, p, a) => { const u = EASE.settle(p);
+                              c.body.rotation = u * 0.16 * a;
+                              c.head.rotation = u * 0.10 * a;
+                              c.head.y = snap(c.headBaseY + u * HEAD_TRAVEL[c.style] * a); },
+      lean:    (c, p, a) => { const u = Math.sin(p * Math.PI) * a;
+                              c.body.x = snap(u * 4);
+                              c.head.x = snap(u * 6); },
+      // No shoulder swing — the desk is in the way. One forearm lifts and
+      // turns instead: the gesture a seated person has room to make.
+      gesture: (c, p, a) => { const u = Math.sin(p * Math.PI) * a;
+                              c.armFar.rotation = (c.armFar.restRotation ?? 0) - u * 0.6; },
+      // The seated ambient loop. Full CELL, not half: `body.y` rests at 0,
+      // already on the grid, so a smaller delta snaps straight back to it.
+      breathe: (c, p) => { c.body.y = snap(Math.sin(p * Math.PI * 2) * CELL); },
+      // Head drops, eyes close via the same closed-lid draw the idle blink
+      // uses (`setBlink`) — not `visible = false`, which reads as empty
+      // sockets rather than a person asleep.
+      asleep:  (c, p, a) => { const u = EASE.settle(p);
+                              c.head.rotation = 0.22 * u;
+                              c.head.y = snap(c.headBaseY + CELL * 3 * u);
+                              setBlink(c, u > 0.5); },
+    };
+    // The registry (world/reactions.py) dispatches `sleep`/`shrug`, never
+    // the literal `asleep`/`gesture` — aliased onto the names that actually
+    // arrive so the re-author is live on real events, not just declared.
+    // `shrug` especially: standing writes `container.y`, the hip-lift this
+    // table exists to stop.
+    SEATED_ANIMATIONS.sleep = SEATED_ANIMATIONS.asleep;
+    SEATED_ANIMATIONS.shrug = SEATED_ANIMATIONS.gesture;
+
     function restCharacter(char) {
+      if (char.container.pose === "seated") {
+        restSeatedCharacter(char);
+        return;
+      }
       char.container.y = snap(char.baseY);
       char.container.x = snap(char.baseX);
       char.container.rotation = 0;
@@ -1177,6 +1269,24 @@
       char.mouth.scale.y = 1;
       restAccents(char);
       if (char.headBaseY != null) char.head.y = snap(char.headBaseY);
+    }
+
+    // The seated counterpart: puts back everything SEATED_ANIMATIONS can
+    // touch (body, head, the arms via restAccents, blink), and leaves
+    // `container` alone — it's the chair, not the body, and the standing
+    // reset above would yank the trader back to a floor this pose doesn't
+    // stand on.
+    function restSeatedCharacter(char) {
+      char.body.rotation = 0;
+      char.body.x = 0;
+      char.body.y = 0;
+      char.head.rotation = 0;
+      setGaze(char, 0, 0, 0);
+      char.mouth.scale.y = 1;
+      restAccents(char);
+      if (char.headBaseY != null) char.head.y = snap(char.headBaseY);
+      setBlink(char, false);
+      char.container.alpha = 1;
     }
 
     // --- B7: idle life, and attention -------------------------------------
@@ -1207,7 +1317,16 @@
       },
       shift: {
         every: [7.0, 17.0], dur: 2.6,
-        run: (c, u, dir) => { c.container.x = c.baseX + dir * 3 * u; },
+        run: (c, u, dir) => {
+          // Task 7's Override 3: for a seated character `container` IS the
+          // chair (`positionCharacters` anchors it to the plate's seat), so
+          // the weight-shift this idle action stages moves the torso
+          // instead — same amplitude, same "under one CELL" reasoning C1
+          // used to leave it unsnapped, applied to the write this ticket's
+          // whole table exists to keep off the hips.
+          if (c.container.pose === "seated") { c.body.x = dir * 3 * u; return; }
+          c.container.x = c.baseX + dir * 3 * u;
+        },
       },
     };
 
@@ -1307,8 +1426,19 @@
           ANIM[char.loopAnim](char, char.phase, char.amp ?? 1);
           continue;
         }
+        // `playAnimation` only ever records a string (`char.anim`) — THIS is
+        // the actual per-frame dispatch, so it's where a seated character has
+        // to be pointed at SEATED_ANIMATIONS instead of ANIM. Falls back to
+        // ANIM for any name not yet re-authored for sitting (Task 7's scope
+        // is five animations, not the whole registry), so an unhandled
+        // reaction still plays rather than throwing on a 24/7 stream.
+        const seated = char.container.pose === "seated";
         if (!char.anim) {           // at rest, breathe so nobody is a statue
-          ANIM.idle(char, (ambient.t / char.breath + char.phaseOffset) % 1, 1);
+          if (seated) {
+            SEATED_ANIMATIONS.breathe(char, (ambient.t / char.breath + char.phaseOffset) % 1, 1);
+          } else {
+            ANIM.idle(char, (ambient.t / char.breath + char.phaseOffset) % 1, 1);
+          }
           idleTick(char, dt);
           watchTick(char, dt);      // last: a deliberate look outranks a glance
           continue;
@@ -1319,7 +1449,8 @@
           restCharacter(char);
           continue;
         }
-        ANIM[char.anim](char, char.phase, char.amp ?? 1);
+        const animFn = (seated && SEATED_ANIMATIONS[char.anim]) || ANIM[char.anim];
+        animFn(char, char.phase, char.amp ?? 1);
       }
       // After, never during: a shadow reads the body's final height for this
       // frame, and the loop above leaves by four different paths.

@@ -1492,3 +1492,377 @@ def test_the_idle_glance_is_snapped_too():
                 f"= {screen_value}, not a multiple of the {rendered_cell}px "
                 "rendered cell - the idle glance is still sub-pixel"
             )
+
+
+# --- Task 7: TRADER, seated -------------------------------------------------
+
+
+def _js_range(source: str, start: str, end_marker: str) -> str:
+    """Source from `start` through the end of the line containing
+    `end_marker` (inclusive).
+
+    `_js_block` brace-matches one construct and stops at its closing brace —
+    it cannot reach the two `SEATED_ANIMATIONS.x = SEATED_ANIMATIONS.y;`
+    statements that follow the object literal, since those are separate
+    top-level statements, not part of it. Reads them from the page rather
+    than restating the names in the test, for the same reason `_js_const`
+    does: a drifted alias should fail here, not stay silently untested.
+    """
+    begin = source.index(start)
+    end = source.index(end_marker, begin)
+    end = source.index("\n", end)
+    return source[begin:end] + "\n"
+
+
+def test_the_trader_has_a_seated_rig():
+    body = client.get("/world").text
+    assert "function seatedRig(" in body
+    assert '"seated"' in body
+
+
+@needs_node
+def test_the_arm_aliases_are_wired_from_the_real_accents_array():
+    """`SEATED_ANIMATIONS.gesture` reaches for `c.armFar` - a name that only
+    exists on the trader because `character()` aliases it onto `accents[1]`,
+    the real Graphics `seatedRig` pushed and already parented to
+    `container`. Every other node test here builds a hand-crafted fake with
+    `armFar` already present (deliberately - Override 1 is about the
+    animation table, not this wiring), which never exercises this specific
+    assignment. Caught by hand-mutation: deleting it left every other test
+    in this file green (`character()` is never run end-to-end without a real
+    PIXI/app), so it gets its own.
+    """
+    source = _world_source()
+    driver = (
+        "const container = { pose: \"seated\" };\n"
+        "const accents = [{ id: 'near' }, { id: 'far' }];\n"
+        "const char = {};\n"
+        + _js_block(source, 'if (container.pose === "seated") {')
+        + "\n"
+        + """
+        console.log(JSON.stringify({
+          armNear: char.armNear && char.armNear.id,
+          armFar: char.armFar && char.armFar.id,
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    assert emitted == {"armNear": "near", "armFar": "far"}
+
+
+def test_every_trader_animation_has_a_seated_variant():
+    """A standing 'slump' played by a seated figure lifts it out of the chair.
+    The animation vocabulary is registry-invariant elsewhere; it has to stay
+    total here too."""
+    body = client.get("/world").text
+    seated = body.split("function seatedRig(")[1][:4000]
+    for animation in ("slump", "lean", "gesture", "breathe", "asleep"):
+        assert animation in seated, f"{animation} has no seated variant"
+
+
+def test_seated_dispatch_replaces_the_standing_table_not_just_names_it():
+    """`playAnimation` only records a string (`char.anim = animation`) — the
+    per-frame dispatch that actually calls a function lives in
+    `advanceCharacters` (`ANIM[char.anim](...)`, and the hardcoded
+    `ANIM.idle(...)` for the at-rest/breathing branch). Branching only inside
+    `playAnimation`/`restCharacter`, the way the brief's Step 3 describes it,
+    would leave every seated animation declared and never once called — the
+    same defect class Override 1 warns about, one level up."""
+    block = _js_block(_world_source(), "function advanceCharacters(")
+    assert re.search(r'pose\s*===\s*"seated"', block), (
+        "advanceCharacters never asks which table a character is animating in"
+    )
+    assert "SEATED_ANIMATIONS.breathe" in block, (
+        "the idle/breathing branch never switches tables"
+    )
+    assert re.search(r"SEATED_ANIMATIONS\[char\.anim\]", block), (
+        "the active-animation branch never switches tables"
+    )
+
+
+def test_the_two_registry_animations_most_likely_to_hit_the_trader_are_aliased_seated():
+    """`world/reactions.py` dispatches `sleep` (stream_stopped,
+    broadcast_ended) and `shrug` (signal_resolved) — never the literal
+    `asleep`/`gesture` this ticket was asked to build. Standing `shrug` also
+    writes `container.y`, exactly the hip-lift the seated table exists to
+    stop. Without the alias both fall back to the whole-container standing
+    table for a character sitting in a chair, and 'the trader sits down' is
+    true for exactly the two names (`slump`, `lean`) that happen to already
+    match a registry animation."""
+    body = _world_source()
+    assert "SEATED_ANIMATIONS.sleep = SEATED_ANIMATIONS.asleep;" in body
+    assert "SEATED_ANIMATIONS.shrug = SEATED_ANIMATIONS.gesture;" in body
+
+
+def test_seated_idle_shift_moves_the_torso_not_the_hips():
+    """Deferred finding carried into this ticket (Task 7's Override 3):
+    `IDLE_ACTIONS.shift` writes `container.x` unsnapped, left alone for
+    standing because its amplitude (3) is under one CELL — a visual call,
+    not a mechanical gap. For a seated character `container` IS the chair
+    (`positionCharacters` anchors it to the plate's seat), so the seated
+    trader gets the same ruling this whole ticket makes for every other
+    animation: don't write the hips. Silence was not an acceptable answer
+    here (Override 3); this is the answer."""
+    block = _js_block(_world_source(), "const IDLE_ACTIONS = {")
+    shift = block[block.index("shift:") : block.index("shift:") + 700]
+    assert re.search(r'pose\s*===\s*"seated"', shift), (
+        "the seated trader's idle shift still writes container.x - the hips"
+    )
+    assert "c.body.x" in shift
+
+
+@needs_node
+def test_seated_animations_actually_move_real_parts():
+    """Override 1's whole risk, made concrete: the brief's Step 3 snippet
+    used `c.torso`/`c.armFar`/`c.eyes` as stand-ins for parts that don't
+    exist on the real rig (`character()` hangs `body`, `head`, `eyeL`,
+    `eyeR`, `mouth`, `accents` off the container — no `torso`, no combined
+    `eyes`). A SEATED_ANIMATIONS table written against the wrong names either
+    throws (undefined has no `.rotation`) or silently no-ops onto a stray
+    property nothing reads — and the Step 1 substring test in the brief
+    passes either way, because it only checks that the names are declared.
+
+    This builds a fake character from the names `character()`/`seatedRig`
+    actually use — nothing invented — and runs every SEATED_ANIMATIONS entry
+    against it via `_run_node`. An invented name throws inside the driver;
+    there is no try/except here on purpose, because `_run_node`'s
+    `result.returncode == 0` assertion already is the failure mode a wrong
+    name produces.
+
+    Presence isn't enough on its own (that's the test above), so each
+    animation also has to move something: run at phase 0 and again at a
+    non-trivial phase/amplitude, and assert a NONZERO delta on the property
+    it is supposed to touch, in SCREEN space (local * CAST_SCALE) for the
+    same reason `test_animation_displacement_actually_quantises_to_the_grid`
+    had to stop checking local space only - `layers.chars.scale` sits between
+    every one of these writes and the screen. `asleep`'s eye-closing claim is
+    checked the same way: `setBlink` is real, `drawEyes` (its only outside
+    dependency, and not what this ticket touches) is swapped for a recording
+    stub so the call becomes an observable fact instead of an assumption.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + _js_block(source, "const EASE = {")
+        + ";\n"
+        + _js_const(source, "HEAD_TRAVEL")
+        + "\n"
+        + """
+        const blinkCalls = [];
+        function drawEyes(char, arousal) { blinkCalls.push(arousal); }
+        """
+        + _js_block(source, "function setBlink(")
+        + "\n"
+        + _js_range(
+            source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.shrug"
+        )
+        + """
+        // The real names character()/seatedRig hang off the rig - no
+        // c.torso, no combined c.eyes. face/blinkClosed are what the real
+        // setBlink actually reads before it calls drawEyes.
+        function fakeChar() {
+          return {
+            style: "figure", headBaseY: -108,
+            face: { arousal: 0.3 }, blinkClosed: false,
+            body: { rotation: 0, x: 0, y: 0 },
+            head: { rotation: 0, x: 0, y: 0 },
+            mouth: { scale: { y: 1 } },
+            armFar: { rotation: 0.5, restRotation: 0.5 },
+            armNear: { rotation: -0.55, restRotation: -0.55 },
+            eyeL: { x: 0 }, eyeR: { x: 0 },
+          };
+        }
+        function snapshot(c) {
+          return {
+            bodyRotation: c.body.rotation, bodyX: c.body.x, bodyY: c.body.y,
+            headRotation: c.head.rotation, headX: c.head.x, headY: c.head.y,
+            armFarRotation: c.armFar.rotation,
+          };
+        }
+        const results = {};
+        for (const name of ["slump", "lean", "gesture", "breathe", "asleep"]) {
+          const c = fakeChar();
+          const before = snapshot(c);
+          SEATED_ANIMATIONS[name](c, 0.7, 1.4);
+          results[name] = { before, after: snapshot(c) };
+        }
+        console.log(JSON.stringify({
+          results, blinkCalls, cell: CELL, castScale: CAST_SCALE,
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    cell, cast_scale = emitted["cell"], emitted["castScale"]
+    rendered_cell = cell * cast_scale
+
+    def on_grid(v: float) -> bool:
+        r = v % rendered_cell
+        return r < 1e-6 or rendered_cell - r < 1e-6
+
+    # Every animation must move at least one property - a phase/amplitude
+    # change that leaves the whole rig bit-for-bit where it started is an
+    # animation implemented against the wrong name.
+    props = [
+        "bodyRotation", "bodyX", "bodyY", "headRotation", "headX", "headY",
+        "armFarRotation",
+    ]
+    position_props = {"bodyX", "bodyY", "headX", "headY"}
+    for name in ("slump", "lean", "gesture", "breathe", "asleep"):
+        before = emitted["results"][name]["before"]
+        after = emitted["results"][name]["after"]
+        moved = [p for p in props if before[p] != after[p]]
+        assert moved, f"{name} changed nothing on the rig at p=0.7, a=1.4"
+        for p in moved:
+            if p in position_props:
+                screen_delta = (after[p] - before[p]) * cast_scale
+                assert on_grid(after[p] * cast_scale), (
+                    f"{name}.{p}: {after[p]} * CAST_SCALE {cast_scale} is not "
+                    f"on the {rendered_cell}px rendered cell"
+                )
+                assert abs(screen_delta) > 1e-6, f"{name}.{p} moved by ~0 screen px"
+    asleep = emitted["results"]["asleep"]
+    assert asleep["before"]["headY"] != asleep["after"]["headY"]
+    assert 0.3 in emitted["blinkCalls"] or 0 in emitted["blinkCalls"], (
+        "asleep never actually called setBlink - eyes never close"
+    )
+
+
+@needs_node
+def test_seated_rest_does_not_touch_the_chair():
+    """`restCharacter`'s standing branch resets `container.y/x/rotation/
+    scale` - for a seated character those ARE the chair `positionCharacters`
+    anchored the trader to, not something an animation should be putting
+    back. The seated branch must reset everything SEATED_ANIMATIONS can
+    touch (`body`, `head`, the arms, blink) and leave `container` alone."""
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_block(source, "function restAccents(")
+        + "\n"
+        + """
+        const blinkCalls = [];
+        function setBlink(c, closed) {
+          blinkCalls.push(closed); c.blinkClosed = closed;
+        }
+        function setGaze(c, dx, rot, headShift) {
+          c.eyeL.x = c.eyeR.x = dx; c.head.rotation = rot; c.head.x = headShift;
+        }
+        """
+        + _js_block(source, "function restCharacter(")
+        + "\n"
+        + _js_block(source, "function restSeatedCharacter(")
+        + "\n"
+        + """
+        const c = {
+          container: { pose: "seated", x: 41, y: 682, rotation: 0.3, alpha: 0.4,
+                       scale: { set() {} } },
+          body: { rotation: 0.16, x: 4, y: 2 },
+          head: { rotation: 0.1, y: -104, x: 7 },
+          mouth: { scale: { y: 2.6 } },
+          accents: [
+            { rotation: 0.9, restRotation: -0.55, x: 3, restX: 0, scale: { set() {} } },
+            { rotation: -0.2, restRotation: 0.5, x: -2, restX: 0, scale: { set() {} } },
+          ],
+          headBaseY: -108,
+          eyeL: {}, eyeR: {},
+        };
+        restCharacter(c);
+        console.log(JSON.stringify({
+          containerX: c.container.x, containerY: c.container.y,
+          containerRotation: c.container.rotation, containerAlpha: c.container.alpha,
+          bodyRotation: c.body.rotation, bodyX: c.body.x, bodyY: c.body.y,
+          headY: c.head.y, headRotation: c.head.rotation, headX: c.head.x,
+          armRestored: c.accents[0].rotation, armRestored2: c.accents[1].rotation,
+          blinkCalls,
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    # The chair: untouched. If restCharacter ran the standing branch instead
+    # of the seated one, these would come back snapped/zeroed.
+    assert emitted["containerX"] == 41
+    assert emitted["containerY"] == 682
+    assert emitted["containerRotation"] == 0.3
+    # Everything SEATED_ANIMATIONS can move: put back.
+    assert emitted["bodyRotation"] == 0
+    assert emitted["bodyX"] == 0
+    assert emitted["bodyY"] == 0
+    assert emitted["headY"] == -108
+    assert emitted["headRotation"] == 0
+    assert emitted["headX"] == 0
+    assert emitted["armRestored"] == -0.55
+    assert emitted["armRestored2"] == 0.5
+    assert False in emitted["blinkCalls"]
+
+
+@needs_node
+def test_the_seated_head_stays_under_the_painted_backrest():
+    """CAST_SCALE went to 1.5 for the grid, not for the chair (Task 7's
+    Override 2) - the seated rig was measured against the plate by hand, not
+    derived from it, so this pins the arithmetic rather than re-deriving it
+    from the PNG on every run. Backrest crown measured off
+    world-plate-btc-eth.png at plate y=462 (screen space, since app.stage
+    scale is 1 at rest); the seat anchor is plate y=682
+    (PLATE.cast.trader.base_y). The skull radius is 28 LOCAL units - 42
+    screen px at CAST_SCALE, not 14 - Sprint 15 review round 1 Finding 1
+    applied to a body part instead of a grid cell; getting that factor wrong
+    is exactly what would let the head silently poke out over the chair.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        # seatedRig's roundRect calls end in `.fill(BODY_FILL).stroke(BODY_RIM)`
+        # - the fake Graphics below never reads either argument, but JS still
+        # evaluates the expression, so the identifiers have to exist. The
+        # forearm loop builds its own `new PIXI.Graphics()` rather than
+        # reusing the `body` argument, so PIXI needs the same stub.
+        + "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        + """
+        class FakeGraphics {
+          roundRect() { return this; }
+          fill() { return this; }
+          stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const fakeGfx = { roundRect() { return this; }, fill() { return this; },
+                           stroke() { return this; } };
+        const accents = [];
+        const headY = seatedRig(fakeGfx, accents);
+        console.log(JSON.stringify({
+          headY, castScale: CAST_SCALE, armCount: accents.length,
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    HEAD_RADIUS_LOCAL = 28
+    SEAT_SCREEN_Y = 682
+    BACKREST_CROWN_SCREEN_Y = 462
+    crown_screen = (
+        SEAT_SCREEN_Y
+        - abs(emitted["headY"]) * emitted["castScale"]
+        - HEAD_RADIUS_LOCAL * emitted["castScale"]
+    )
+    assert crown_screen >= BACKREST_CROWN_SCREEN_Y, (
+        f"the seated head's crown lands at screen y={crown_screen}, above "
+        f"the painted backrest's crown at y={BACKREST_CROWN_SCREEN_Y} - the "
+        "trader pokes out over the top of the chair"
+    )
+    assert emitted["armCount"] == 2, "seatedRig must build exactly two arms"
