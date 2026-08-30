@@ -2126,6 +2126,11 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
 # fix has to live in the room's own additive layer, not in world/visuals.py's
 # shared ramp — retuning that would silently retune both OBS overlays too
 # (KI-019's family; see tests/unit/test_visuals_ramp_is_shared.py).
+#
+# Fix round 1 (coordinator review): `applySwell` now takes the EASED
+# `ambient.light.lift`, not a raw tier (Finding 1), and the glow `Graphics`
+# are built once, when the plate becomes ready, rather than every tick
+# (Finding 2) — see `buildSwellGlows`/`applySwell` in api/templates/world.html.
 
 
 def test_the_swell_is_additive_and_never_tints_the_plate():
@@ -2135,17 +2140,21 @@ def test_the_swell_is_additive_and_never_tints_the_plate():
     The plan's own draft of this test asserted `"ADD" in swell or "add" in
     swell` — the word "additive" alone (in a comment, with no blend mode ever
     set) satisfies that. Strengthened to the actual PIXI blend-mode
-    assignment, and to the plate itself never being tinted anywhere on the
-    page, not merely inside this one slice.
+    assignment. Fix round 1 moved the allocation (and so the `blendMode`
+    assignment) out of `applySwell` into `buildSwellGlows` (Finding 2), so
+    this checks the function that actually sets it now, not the one that
+    merely mentions "additive" in a comment.
     """
     body = client.get("/world").text
-    assert "function applySwell(" in body
-    swell = body.split("function applySwell(")[1][:1500]
-    assert re.search(r'\.blendMode\s*=\s*["\']add["\']', swell), (
-        "applySwell must set PIXI's additive blend mode, not just mention "
-        "the word 'additive' — a bare substring check can't fail here"
+    assert "function buildSwellGlows(" in body
+    build = _js_block(body, "function buildSwellGlows(")
+    assert re.search(r'\.blendMode\s*=\s*["\']add["\']', build), (
+        "buildSwellGlows must set PIXI's additive blend mode, not just "
+        "mention the word 'additive' — a bare substring check can't fail here"
     )
-    assert ".tint" not in swell, "the swell must brighten with alpha, not tint"
+    assert ".tint" not in build, "the swell must brighten with alpha, not tint"
+    apply_swell = _js_block(body, "function applySwell(")
+    assert ".tint" not in apply_swell
     assert "layers.plate.tint" not in body
 
 
@@ -2188,25 +2197,135 @@ def test_the_ambient_vignette_is_guarded_for_the_plate_path():
         "vignette.alpha is also set OUTSIDE the guard — still crashes on the "
         "plate path"
     )
-    assert ambient.index("if (!plateReady)") < ambient.index("applySwell(tier)")
+    assert ambient.index("if (!plateReady)") < ambient.index(
+        "applySwell(ambient.light.lift)"
+    )
+
+
+def test_the_swell_builds_its_graphics_once_not_inside_the_ticker():
+    """Finding 2 (coordinator, fix round 1): the old `applySwell` allocated
+    `new PIXI.Graphics()` * len(PLATE.glow) every tick — rebuilding geometry
+    ~60x/sec, on a box that also encodes 1080p, with no `destroy()` anywhere
+    in the file. `ambient.drift`'s dots and the vignette already show the
+    right shape for this ticker (build once, mutate a property per tick);
+    the swell glows now follow it: allocated once in `drawPlate`'s success
+    path (`buildSwellGlows`), mutated (only `.alpha`) inside the ticker.
+    """
+    body = _world_source()
+    draw_plate = _js_block(body, "async function drawPlate(")
+    assert "buildSwellGlows();" in draw_plate, (
+        "buildSwellGlows must be called once, when the plate becomes ready"
+    )
+    ambient_fn = _js_block(body, "function startAmbient()")
+    ticker = _js_block(ambient_fn, "app.ticker.add(")
+    assert "new PIXI.Graphics()" not in ticker, (
+        "a Graphics allocation inside the per-frame ticker rebuilds "
+        "geometry ~60x/sec"
+    )
+    assert "buildSwellGlows(" not in ticker, (
+        "buildSwellGlows must not be called from inside the ticker"
+    )
+    apply_swell = _js_block(body, "function applySwell(")
+    assert "new PIXI.Graphics()" not in apply_swell, (
+        "applySwell must only mutate .alpha on the pre-built glows"
+    )
+    assert "buildSwellGlows(" not in apply_swell, (
+        "applySwell must not call buildSwellGlows() itself either — that "
+        "would rebuild the geometry every tick just as surely as inlining "
+        "the allocation would"
+    )
+
+
+def test_swell_color_matches_the_shared_accent():
+    """Finding 3 (coordinator, fix round 1): `SWELL_COLOR` is a fixed,
+    room-local accent — deliberately NOT injected from `world/visuals.py`
+    (Override 1: the fewer things this canvas reads out of the shared theme
+    module, the smaller the KI-019 surface it can retune by accident). But
+    it was chosen to match `PALETTE["accent"]` by eye, and nothing enforced
+    that beyond a comment — exactly the "loose lighting constant in a
+    template" shape `world/visuals.py`'s own module docstring warns about.
+
+    Decision: pin the equality with a test rather than inject the palette
+    value, because injecting it would add a new placeholder to
+    `api/main.py`'s `_THEME_REPLACEMENTS` (the shared injection surface
+    Override 1 says to keep changes out of) for a value that is deliberately
+    room-local — the swell's own comment is explicit that it must NOT track
+    `light.warmth`'s colour temperature, i.e. it is meant to be independent
+    of the shared theme at runtime. A test pin gets the same drift
+    protection (a retune of either constant without the other fails here,
+    loudly, in the file a developer is already looking at) without adding a
+    third page/overlay dependency on a value nothing else needs.
+    """
+    from world.visuals import PALETTE
+
+    source = _world_source()
+    match = re.search(r"const SWELL_COLOR = (0x[0-9a-fA-F]+);", source)
+    assert match, "SWELL_COLOR is no longer a one-line hex const"
+    swell_color = int(match.group(1), 16)
+    accent = int(PALETTE["accent"].lstrip("#"), 16)
+    assert swell_color == accent, (
+        f"SWELL_COLOR 0x{swell_color:06x} no longer matches "
+        f"PALETTE['accent'] {PALETTE['accent']}"
+    )
+
+
+def test_no_placeholder_shaped_token_hides_in_a_comment():
+    """Finding 4 (coordinator, fix round 1): `_render_template` (api/main.py)
+    is a blind whole-document `.replace()` — every occurrence of a
+    placeholder's literal string is substituted, not just its own declared
+    site. Task 9 shipped exactly this defect once already: a comment reading
+    "...never __THEME_VARS__ or..." reused a REAL key's exact string and was
+    silently rewritten mid-sentence with the injected CSS block — caught only
+    because the result happened to break JS syntax
+    (`test_the_rendered_page_is_valid_javascript`).
+
+    `test_no_unsubstituted_placeholders_remain` (this file) checks the
+    RENDERED page for `__[A-Z_]+__`-shaped leftovers, but a token that
+    collides with a REAL key doesn't leave one — the collision IS what gets
+    substituted away, so nothing placeholder-shaped survives to be found
+    there. Empirically confirmed against this exact bug before fixing it:
+    the buggy revision passed `test_no_unsubstituted_placeholders_remain`.
+    The only check that can catch a collision, by construction, has to run
+    on the RAW template before substitution — and since several placeholders
+    legitimately appear more than once in this page (`__ROOM_LIGHT_JSON__`
+    seeds both the `const ROOM_LIGHT` declaration and `ambient.light`'s
+    initial value), "exactly once" isn't a safe invariant either. What IS
+    always true: a substitution site is code (an assignment, a JSON
+    injection point) — never English prose inside a `//` comment. This
+    templates uses only `//` line comments, so that's what's checked.
+    """
+    path = (
+        Path(__file__).resolve().parents[2] / "api" / "templates" / "world.html"
+    )
+    source = path.read_text()
+    for lineno, line in enumerate(source.splitlines(), start=1):
+        idx = line.find("//")
+        if idx == -1:
+            continue
+        match = re.search(r"__[A-Z_]+__", line[idx:])
+        assert not match, (
+            f"world.html:{lineno}: comment contains a placeholder-shaped "
+            f"token {match.group(0)!r} — _render_template's blind "
+            "whole-document .replace() will silently rewrite it if it "
+            "matches a real placeholder key"
+        )
 
 
 def _swell_driver(*, plate_ready: bool) -> str:
-    """The page's own `applySwell`, run against the real manifest's `glow`
-    rects and the real `room_light` ramp — only `PIXI.Graphics` and
-    `layers.swell` are stubbed, and the stub records what was actually
-    drawn rather than asserting on source text.
+    """The page's own `buildSwellGlows`/`applySwell`, run against the real
+    manifest's `glow` rects — only `PIXI.Graphics` and `layers.swell` are
+    stubbed, and the stub records what was actually drawn/mutated rather
+    than asserting on source text.
     """
-    from world.visuals import room_light
-
     source = _world_source()
     glow = _manifest()["glow"]
     return (
         f"const PLATE = {json.dumps({'glow': glow})};\n"
         f"const plateReady = {str(plate_ready).lower()};\n"
-        f"const ROOM_LIGHT = {json.dumps([room_light(t) for t in range(4)])};\n"
         "class FakeGraphics {\n"
-        "  constructor() { this.rects = []; this.fills = []; this.blendMode = null; }\n"
+        "  constructor() {\n"
+        "    this.rects = []; this.fills = []; this.blendMode = null; this.alpha = 1;\n"
+        "  }\n"
         "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
         "  fill(opts) { this.fills.push(opts); return this; }\n"
         "}\n"
@@ -2214,6 +2333,7 @@ def _swell_driver(*, plate_ready: bool) -> str:
         "const layers = { swell: { children: [],\n"
         "  removeChildren() { this.children = []; },\n"
         "  addChild(c) { this.children.push(c); } } };\n"
+        "let swellGlows = [];\n"
         + _js_block(source, "function snap(")
         + "\n"
         + _js_const(source, "CELL")
@@ -2221,6 +2341,8 @@ def _swell_driver(*, plate_ready: bool) -> str:
         + _js_const(source, "SWELL_COLOR")
         + "\n"
         + _js_const(source, "SWELL_LIFT_TO_ALPHA")
+        + "\n"
+        + _js_block(source, "function buildSwellGlows(")
         + "\n"
         + _js_block(source, "function applySwell(")
         + "\n"
@@ -2230,19 +2352,27 @@ def _swell_driver(*, plate_ready: bool) -> str:
 @needs_node
 def test_the_swell_brightens_monotonically_across_all_four_tiers():
     """Override 4's acceptance question: a real tier-3 event still has to
-    read as a moment even inside a richer, painted room. Runs the real
-    `applySwell` against the real manifest's `glow` rects for every tier and
-    checks what it actually painted — not a claim about the source text.
+    read as a moment even inside a richer, painted room. Once the room has
+    fully settled at a tier (the EASE itself is tested separately, in
+    `test_the_swell_eases_in_step_with_the_rest_of_the_room_not_a_frame`),
+    the final brightness at each tier must be strictly higher than the
+    last. Feeds `applySwell` each tier's own settled `lift` (from the real
+    `room_light` ramp) and checks what it actually painted — not a claim
+    about the source text.
     """
+    from world.visuals import room_light
+
     glow = _manifest()["glow"]
     assert glow, "no glow rects in the manifest — this test would be vacuous"
 
     driver = _swell_driver(plate_ready=True) + (
+        "buildSwellGlows();\n"
+        f"const lifts = {json.dumps([room_light(t)['lift'] for t in range(4)])};\n"
         "const out = [];\n"
-        "for (let tier = 0; tier < 4; tier++) {\n"
-        "  applySwell(tier);\n"
+        "for (const lift of lifts) {\n"
+        "  applySwell(lift);\n"
         "  out.push(layers.swell.children.map((c) => ({\n"
-        "    fill: c.fills[c.fills.length - 1], blend: c.blendMode,\n"
+        "    alpha: c.alpha, fill: c.fills[c.fills.length - 1], blend: c.blendMode,\n"
         "  })));\n"
         "}\n"
         "console.log(JSON.stringify(out));\n"
@@ -2251,17 +2381,18 @@ def test_the_swell_brightens_monotonically_across_all_four_tiers():
     assert len(emitted) == 4
     for per_tier in emitted:
         assert len(per_tier) == len(glow), (
-            "applySwell must draw exactly one glow per manifest glow rect"
+            "buildSwellGlows must build exactly one glow per manifest glow rect"
         )
         for rect in per_tier:
             assert rect["blend"] == "add"
 
-    # Monotonic per rect: the alpha painted over the SAME glow rect must rise
-    # with tier, never fall or flatten — the ramp's own monotonicity
-    # (test_visuals_ramp_is_shared.py) is necessary but not sufficient; this
-    # is the proof that applySwell actually passes it through.
+    # Monotonic per rect: the SETTLED alpha painted over the SAME glow rect
+    # must rise with tier, never fall or flatten — the ramp's own
+    # monotonicity (test_visuals_ramp_is_shared.py) is necessary but not
+    # sufficient; this is the proof that applySwell actually passes it
+    # through.
     for i in range(len(glow)):
-        alphas = [emitted[tier][i]["fill"]["alpha"] for tier in range(4)]
+        alphas = [emitted[tier][i]["alpha"] for tier in range(4)]
         assert alphas == sorted(alphas), (i, alphas)
         assert len(set(alphas)) > 1, f"glow rect {i} never brightens at all"
 
@@ -2274,16 +2405,130 @@ def test_the_swell_brightens_monotonically_across_all_four_tiers():
 
 @needs_node
 def test_the_no_plate_path_never_populates_the_swell_layer():
-    """Override 2: with no plate, `applySwell` must be a no-op — the
+    """Override 2: with no plate, `buildSwellGlows` is never invoked at all
+    (`drawPlate`'s `!PLATE_SRC`/catch branches call `drawProceduralRoom`
+    instead, and never reach the `plateReady = true; buildSwellGlows();`
+    pair) and `applySwell` is a no-op regardless of what it's fed — the
     procedural room keeps the ambient tint/alpha animation it already has,
     left exactly as it is by this ticket."""
     driver = _swell_driver(plate_ready=False) + (
         "const out = [];\n"
-        "for (let tier = 0; tier < 4; tier++) {\n"
-        "  applySwell(tier);\n"
+        "for (const lift of [0, 0.05, 0.12, 0.22]) {\n"
+        "  applySwell(lift);\n"
         "  out.push(layers.swell.children.length);\n"
         "}\n"
         "console.log(JSON.stringify(out));\n"
     )
     emitted = _run_node(driver)
     assert emitted == [0, 0, 0, 0]
+
+
+@needs_node
+def test_apply_swell_stays_dark_when_the_plate_is_not_ready_even_if_built():
+    """The realistic no-plate path never calls `buildSwellGlows` at all
+    (see the test above), so on its own that leaves `applySwell`'s
+    `if (!plateReady) return;` guard unreachable — a `swellGlows` array
+    that already had children in it (say, from a future edit that calls
+    `buildSwellGlows` somewhere it shouldn't) would otherwise get lit up by
+    `applySwell` regardless of `plateReady`, since the guard is the only
+    thing standing between "no plate" and "light it anyway". Builds the
+    glows UNCONDITIONALLY here — deliberately bypassing the real call
+    pattern — so the guard itself, not just today's caller discipline, is
+    what this test is pinning.
+    """
+    driver = _swell_driver(plate_ready=False) + (
+        "buildSwellGlows();\n"
+        "const before = layers.swell.children.map((c) => c.alpha);\n"
+        "applySwell(0.22);\n"
+        "const after = layers.swell.children.map((c) => c.alpha);\n"
+        "console.log(JSON.stringify({ before, after }));\n"
+    )
+    result = _run_node(driver)
+    assert result["before"], "buildSwellGlows built nothing to test the guard against"
+    assert result["before"] == result["after"], (
+        "applySwell must leave the glows exactly as buildSwellGlows left "
+        "them when plateReady is false — it changed them instead"
+    )
+
+
+def _tick_snippet(source: str) -> str:
+    """The ticker's own contiguous tier/ease/`applySwell` call — sliced
+    verbatim between two anchors rather than restated, so a mutated CALL
+    SITE (not just a mutated `applySwell`) shows up here. Not brace-delimited
+    (it's a `const`, a `for` block, a dead `if` block, then a bare call), so
+    plain string slicing between the real first and last lines does the job
+    `_js_block` does for a single construct.
+    """
+    start = source.index(
+        "const tier = Math.max(0, Math.min(3, Math.round(ambient.tier)));"
+    )
+    end_marker = "applySwell(ambient.light.lift);"
+    end = source.index(end_marker, start) + len(end_marker)
+    return source[start:end]
+
+
+@needs_node
+def test_the_swell_eases_in_step_with_the_rest_of_the_room_not_a_frame():
+    """Finding 1 (coordinator, fix round 1): `applySwell` used to read
+    `ROOM_LIGHT[tier].lift` directly — the ramp's raw TARGET — while the
+    very same ticker block eases `ambient.light.lift` toward that target
+    over ~4s ("a swell you can watch arrive, not a cut"). `ambient.tier`
+    jumps discretely (`readAmbient` takes the symbols' current max each
+    poll), so the old code snapped the glow to full tier-3 alpha in ONE
+    FRAME while the vignette/warmth/background dimming beside it kept
+    easing for four more seconds — two speeds for one swell, which the
+    sprint's acceptance criterion (a tier-3 event reads as a MOMENT, not a
+    flash) can't survive as a pop.
+
+    Runs the REAL ticker call site verbatim (`_tick_snippet` — the tier
+    lookup, the ease loop, and the actual `applySwell(ambient.light.lift)`
+    call, not a restatement of any of it) beside the real
+    `applySwell`/`buildSwellGlows`, simulating a hard tier-0-to-tier-3 jump
+    one 1/60s frame at a time and checking what got written each frame. A
+    regression at the CALL SITE (reverting to `applySwell(want.lift)`, say)
+    would be invisible to a test that only re-ran the ease arithmetic
+    itself; this runs the line that actually calls it.
+    """
+    from world.visuals import room_light
+
+    source = _world_source()
+    match = re.search(r"const SWELL_LIFT_TO_ALPHA = ([\d.]+);", source)
+    assert match, "SWELL_LIFT_TO_ALPHA is no longer a one-line numeric const"
+    swell_lift_to_alpha = float(match.group(1))
+
+    driver = (
+        _swell_driver(plate_ready=True)
+        + f"const ROOM_LIGHT = {json.dumps([room_light(t) for t in range(4)])};\n"
+        + "buildSwellGlows();\n"
+        # `ambient.tier = 3` forces the tick snippet's own tier/want lookup
+        # to a hard jump straight to tier 3; `.light` starts at the calm end,
+        # same as the real `ambient` object's own initializer
+        # (`light: { ...__ROOM_LIGHT_JSON__[0] }`).
+        + "const ambient = { tier: 3, light: { ...ROOM_LIGHT[0] } };\n"
+        + "const dt = 1 / 60;\n"
+        + "const alphas = [];\n"
+        + "for (let frame = 0; frame < 1800; frame++) {\n"
+        + _tick_snippet(source)
+        + "\n"
+        + "  alphas.push(layers.swell.children[0].alpha);\n"
+        + "}\n"
+        + "console.log(JSON.stringify({\n"
+        + "  first: alphas[0], early: alphas[5], mid: alphas[15], last: alphas[1799],\n"
+        + "}));\n"
+    )
+    result = _run_node(driver)
+    settled = min(1, room_light(3)["lift"] * swell_lift_to_alpha)
+
+    # Frame 0 must not already be near the settled brightness — a one-frame
+    # jump to (near) `settled` IS the pop this test exists to catch.
+    assert result["first"] < settled * 0.5, (
+        f"frame 0 alpha {result['first']} is already within striking "
+        f"distance of the settled value {settled} — the swell is popping, "
+        "not easing"
+    )
+    # Still climbing well into the window — not flat, not already arrived.
+    assert result["first"] < result["early"] < result["mid"], result
+    # And it has to actually GET somewhere: settle near the real target
+    # within the simulated window (30s of frames at 60fps is many time
+    # constants past the ~4s ease).
+    assert abs(result["last"] - settled) < 0.02, (result["last"], settled)

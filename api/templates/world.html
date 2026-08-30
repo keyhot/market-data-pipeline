@@ -487,6 +487,9 @@
         texture.source.scaleMode = "nearest";
         layers.plate.addChild(sprite);
         plateReady = true;
+        // Built once, right here — never inside the per-frame ticker. See
+        // buildSwellGlows's own comment for why.
+        buildSwellGlows();
         // The plate reserves a quiet strip at the top for the newcomer line.
         // Bind the banner to the measurement so a repaint moves the text with
         // the art instead of hanging it over a painted detail.
@@ -1672,8 +1675,12 @@
         }
         // The plate can't be tinted (Task 9): applySwell is a no-op of its
         // own accord when there is no plate, so it is safe to call every
-        // tick either way.
-        applySwell(tier);
+        // tick either way. `ambient.light.lift` — the EASED value from the
+        // loop above — not `want.lift`/`ROOM_LIGHT[tier].lift`: reading the
+        // ramp's raw target here would snap the glow to full brightness in
+        // one frame while the vignette/warmth/background dimming beside it
+        // keep easing for four more seconds. Two speeds for one swell.
+        applySwell(ambient.light.lift);
 
         // Colour temperature: warm as selling pressure builds, cool as it eases.
         // Tier warmth composes on top rather than replacing it — pressure is
@@ -1716,34 +1723,51 @@
     // desk lamp) that makes the room feel lived in. The swell instead ADDS
     // light to the surfaces the plate deliberately left blank: the dark
     // monitors and the tube housings, listed in the manifest as
-    // `PLATE.glow`. A fixed, room-local accent — never `light.warmth`'s
-    // colour temperature — so the lamp's own painted hue can't drift with
-    // tier; only how brightly the room lights it does.
-    // Matches world.visuals.PALETTE.accent.
+    // `PLATE.glow`. A fixed, room-local accent — never the ramp's colour
+    // temperature — so the lamp's own painted hue can't drift with tier;
+    // only how brightly the room lights it does. Pinned equal to
+    // world.visuals.PALETTE["accent"] by
+    // tests/api/test_world_page.py::test_swell_color_matches_the_shared_accent
+    // rather than injected: this value is deliberately room-local (Override
+    // 1 — the fewer things this canvas reads out of the shared theme
+    // module, the smaller the KI-019 surface), so a test pins the match
+    // instead of a new placeholder wiring the two together at runtime.
     const SWELL_COLOR = 0xf0b90b;
-    // Room-local scale from `lift` (0 at tier 0, ~0.22 at tier 3) to a
-    // visible additive alpha. Deliberately not a copy of the ramp itself —
-    // retuning this number changes only this canvas, never the theme vars
-    // block or the overlays that read `room_light` directly (KI-019's family).
+    // Room-local scale from the eased `lift` (0 at tier 0, ~0.22 at tier 3)
+    // to a visible additive alpha. Deliberately not a copy of the ramp
+    // itself — retuning this number changes only this canvas, never the
+    // theme vars block or the overlays that read `room_light` directly
+    // (KI-019's family).
     const SWELL_LIFT_TO_ALPHA = 3;
 
-    function applySwell(tier) {
-      const light = ROOM_LIGHT[tier] || ROOM_LIGHT[0];
-      layers.swell.removeChildren();
-      if (!plateReady) {
-        // No plate: the procedural room keeps the ambient tint/alpha
-        // animation it has today (the vignette, above) — left exactly as it
-        // is, per this ticket's scope.
-        return;
-      }
-      const alpha = Math.min(1, light.lift * SWELL_LIFT_TO_ALPHA);
-      for (const rect of PLATE.glow) {
+    // Built once, the moment the plate becomes ready (drawPlate, above) —
+    // never inside the per-frame ticker. `applySwell` runs ~60x/sec, and a
+    // `new PIXI.Graphics()` per glow rect at that rate is exactly the
+    // "full-canvas Graphics rebuilt per frame" cost B2's own comment (above,
+    // "the room is built ONCE") warns against, on a box that also encodes
+    // 1080p. `ambient.drift`'s dots and the vignette already show the right
+    // shape for this ticker — build once, mutate a property per tick — so
+    // the swell glows follow the same rule.
+    let swellGlows = [];
+
+    function buildSwellGlows() {
+      swellGlows = PLATE.glow.map((rect) => {
         const glow = new PIXI.Graphics()
           .rect(snap(rect.x), snap(rect.y), snap(rect.w), snap(rect.h))
-          .fill({ color: SWELL_COLOR, alpha });
+          .fill({ color: SWELL_COLOR, alpha: 1 });
         glow.blendMode = "add";
+        glow.alpha = 0;              // applySwell sets the real value per tick
         layers.swell.addChild(glow);
-      }
+        return glow;
+      });
+    }
+
+    // `lift` must be the EASED `ambient.light.lift`, never `ROOM_LIGHT[tier]
+    // .lift` directly — see the ticker's own call site for why.
+    function applySwell(lift) {
+      if (!plateReady) return;   // no plate: nothing was ever built to light
+      const alpha = Math.min(1, lift * SWELL_LIFT_TO_ALPHA);
+      for (const glow of swellGlows) glow.alpha = alpha;
     }
 
     // --- B9: the always-on now-band ---------------------------------------
