@@ -347,6 +347,15 @@
     // near zero displacement at any phase you'd think to freeze. So the sheet
     // LOOPS them, through `advanceCharacters` — a sheet with its own player
     // would be showing me an animation nobody ships.
+    // C2 review round 1, Finding 2b: this sheet is the ticket's own
+    // prescribed check ("check that in every frame of every trader animation
+    // the figure stays in the chair") - the real query param is `?anims=`,
+    // not the brief's invented `?sheet=1`. Before this fix it was
+    // unperformable: `character(style, style)` passes a BODY-STYLE name
+    // ("figure") where `anchorFor` wants a CHARACTER name ("trader"), so
+    // every sample resolved pose:"standing" and seatedRig never ran here,
+    // and `asleep`/`gesture`/`breathe` aren't ANIM keys at all, so they
+    // could not even be listed.
     function drawAnimationSheet() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
@@ -360,9 +369,33 @@
       // `?anims=slump` narrows to one animation across every body — iterating
       // on a single pose against 32 looping cells is how you miss things.
       const only = new URLSearchParams(location.search).get("anims");
-      const names = ANIM[only] ? [only] : Object.keys(ANIM);
-      const bodies = ANIM[only] ? STYLES : [CAST.MODEL, CAST.TRADER];
-      const total = names.length * bodies.length;
+      // Cells are (character-name, body-style, animation-name) triples, not
+      // a name x style cross product: `gesture`/`breathe`/`asleep` only mean
+      // anything for the trader, and trying them against the model's bars
+      // body would call `SEATED_ANIMATIONS[name] || ANIM[name]` with both
+      // sides undefined and throw.
+      let cells;
+      if (ANIM[only]) {
+        // Unchanged from before this fix: one animation surveyed across
+        // every candidate body, standing, for comparing body TYPES rather
+        // than casting - `style` stays the sample's own name here on purpose.
+        cells = STYLES.map((style) => [style, style, only]);
+      } else if (SEATED_ANIMATIONS[only] && !ANIM[only]) {
+        cells = [["TRADER", CAST.TRADER, only]];
+      } else {
+        cells = [
+          ...Object.keys(ANIM).map((name) => [CAST.MODEL, CAST.MODEL, name]),
+          // "TRADER", not CAST.TRADER twice - the one change that makes
+          // `anchorFor("trader")` resolve `pose: "seated"` and seatedRig run.
+          ...Object.keys(ANIM).map((name) => ["TRADER", CAST.TRADER, name]),
+          // The three names ANIM doesn't have at all - otherwise declared
+          // and never once seen, the exact defect this ticket is about.
+          ...Object.keys(SEATED_ANIMATIONS)
+            .filter((name) => !ANIM[name])
+            .map((name) => ["TRADER", CAST.TRADER, name]),
+        ];
+      }
+      const total = cells.length;
       const cellW = 250;
       const cols = Math.max(1, Math.floor(app.screen.width / cellW));
       const rows = Math.ceil(total / cols);
@@ -370,25 +403,22 @@
       // a local page, so it runs off the bottom of a short window rather than
       // shrinking the thing whose size is the question.
       const rowH = Math.max(330, (app.screen.height - 40) / rows);
-      names.forEach((name, i) => {
-        bodies.forEach((style, b) => {
-          const idx = i * bodies.length + b;
-          const sample = character(style, style);
-          sample.container.x = cellW * ((idx % cols) + 0.5) / CAST_SCALE;
-          sample.container.y =
-            (40 + rowH * Math.floor(idx / cols) + rowH * 0.86) / CAST_SCALE;
-          sample.baseX = sample.container.x;
-          sample.baseY = sample.container.y;
-          sample.headBaseY = sample.head.y;
-          setExpression(sample, "focused");
-          sample.moodTag.text = name;
-          sample.stat.text = "";
-          sample.loopAnim = name;
-          sample.amp = amp;
-          sample.duration = ANIM_DURATION[name] ?? 0.9;
-          sample.phase = (idx * 0.13) % 1;   // stagger, so it isn't a chorus line
-          cast.push(sample);
-        });
+      cells.forEach(([name, style, anim], idx) => {
+        const sample = character(name, style);
+        sample.container.x = cellW * ((idx % cols) + 0.5) / CAST_SCALE;
+        sample.container.y =
+          (40 + rowH * Math.floor(idx / cols) + rowH * 0.86) / CAST_SCALE;
+        sample.baseX = sample.container.x;
+        sample.baseY = sample.container.y;
+        sample.headBaseY = sample.head.y;
+        setExpression(sample, "focused");
+        sample.moodTag.text = anim;
+        sample.stat.text = "";
+        sample.loopAnim = anim;
+        sample.amp = amp;
+        sample.duration = ANIM_DURATION[anim] ?? 0.9;
+        sample.phase = (idx * 0.13) % 1;   // stagger, so it isn't a chorus line
+        cast.push(sample);
       });
     }
 
@@ -1195,25 +1225,37 @@
       body.roundRect(snap(-22), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
       body.roundRect(snap(4), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
       // Waist and chest, stacked straight up off the hips rather than off a
-      // standing pair of legs. The rest pose is upright on purpose — reclined
-      // is something the animations do, not something baked into the rest,
-      // the same way the standing figure's rest isn't already mid-lean.
-      body.roundRect(snap(-25), snap(-42), 50, 34, 14).fill(BODY_FILL).stroke(BODY_RIM);
-      body.roundRect(snap(-29), snap(-80), 58, 40, 20).fill(BODY_FILL).stroke(BODY_RIM);
+      // standing pair of legs. Review round 1, Finding 1: the seat measures
+      // 79 screen px wide (`PLATE.cast.trader.seat.width`), and 58 units of
+      // chest was 87px at CAST_SCALE 1.5 (still 78.3px at the pre-ticket
+      // 1.35 - the rig's own width was the overflow, not the scale). Chest
+      // is 48 (not the naive 50 - snap(-24)=-24 exactly, snap(-25) rounds to
+      // -24 too but off-centre, pushing one edge to 26; picking start/width
+      // that land clean on the 4px grid keeps the shape actually symmetric)
+      // - 48*1.5=72px, inside the seat with margin.
+      // `test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_
+      // backrest` (page) and `test_the_seated_rig_fits_inside_the_manifest_
+      // seat` (manifest) both compute this from the real roundRect calls
+      // against the manifest's measurement, rather than trusting this
+      // comment's arithmetic.
+      body.roundRect(snap(-20), snap(-42), 40, 34, 14).fill(BODY_FILL).stroke(BODY_RIM);
+      body.roundRect(snap(-24), snap(-80), 48, 40, 20).fill(BODY_FILL).stroke(BODY_RIM);
       // Forearms bent up toward the desk, not hanging at the sides — shorter
-      // than the standing figure's (66 units): no swing arc to fill.
+      // than the standing figure's (66 units). Pivot at 14: the arm's own
+      // local rect snaps to [-4, 8], so a wider pivot pushes its outer edge
+      // past the chest and becomes the new widest part.
       for (const side of [-1, 1]) {
         const arm = new PIXI.Graphics().roundRect(snap(-6), snap(0), 12, 40, 6)
           .fill(BODY_FILL).stroke(BODY_RIM);
-        arm.x = side * 30; arm.y = -76;
+        arm.x = side * 14; arm.y = -76;
         arm.restRotation = side < 0 ? -0.55 : 0.5;
         arm.shadeFactor = 1.35;
         accents.push(arm);
       }
       // Chair back measures ~220 screen px above the seat (backrest crown at
       // plate y≈462 vs the seat anchor y≈682) — 147 local units at
-      // CAST_SCALE 1.5. -108 leaves the 28-radius*1.5=42px head crown at
-      // screen y≈478: inside the backrest, not poking over it.
+      // CAST_SCALE 1.5. -108 leaves the 42px head crown at screen y≈478:
+      // inside the backrest. Unaffected by the width change - orthogonal axis.
       return -108;
     }
 
@@ -1423,7 +1465,14 @@
         if (!char) continue;
         if (char.loopAnim) {        // eval surface: run one animation forever
           char.phase = (char.phase + dt / char.duration) % 1;
-          ANIM[char.loopAnim](char, char.phase, char.amp ?? 1);
+          // C2 review round 1, Finding 2a: this branch was left pointed at
+          // ANIM only - the sheet's trader samples silently played the
+          // standing table (or, for asleep/gesture, called `undefined` and
+          // threw) no matter what `character()` set `pose` to. Same
+          // fallback shape as the main dispatch below.
+          const loopFn = (char.container.pose === "seated" && SEATED_ANIMATIONS[char.loopAnim])
+            || ANIM[char.loopAnim];
+          loopFn(char, char.phase, char.amp ?? 1);
           continue;
         }
         // `playAnimation` only ever records a string (`char.anim`) — THIS is

@@ -13,7 +13,8 @@
   ],
   "cast": {
     "model": {"x": 360, "base_y": 830, "pose": "standing"},
-    "trader": {"x": 1330, "base_y": 682, "pose": "seated"}
+    "trader": {"x": 1330, "base_y": 682, "pose": "seated",
+     "seat": {"x": 1299, "y": 682, "width": 79}}
   },
   "screens": [
     {"id": "centre-left", "x": 463, "y": 116, "w": 344, "h": 234,

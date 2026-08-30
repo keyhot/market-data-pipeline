@@ -1553,11 +1553,26 @@ def test_the_arm_aliases_are_wired_from_the_real_accents_array():
 def test_every_trader_animation_has_a_seated_variant():
     """A standing 'slump' played by a seated figure lifts it out of the chair.
     The animation vocabulary is registry-invariant elsewhere; it has to stay
-    total here too."""
+    total here too.
+
+    Review round 1, Finding 3: the brief's original bare `animation in
+    seated` substring check over a 4000-char window following `function
+    seatedRig(` is vacuous for more than the asleep/gesture pair first
+    reported - `lean` renamed to `tilt` also stays green, because the
+    pre-existing standing-figure comment "...isn't already mid-lean" sits
+    inside that same window. Sliced instead to the SEATED_ANIMATIONS object
+    literal itself (brace-matched, not a guessed character count) and
+    matched as an actual object KEY (`name:` followed by the arrow function -
+    the same pattern `test_every_registry_animation_is_implemented_by_the_
+    renderer` already uses for the standing table), so a nearby comment or
+    docstring mentioning the word cannot satisfy it.
+    """
     body = client.get("/world").text
-    seated = body.split("function seatedRig(")[1][:4000]
+    seated = _js_block(body, "const SEATED_ANIMATIONS = {")
     for animation in ("slump", "lean", "gesture", "breathe", "asleep"):
-        assert animation in seated, f"{animation} has no seated variant"
+        assert re.search(rf"\b{animation}:\s*\(c", seated), (
+            f"{animation} has no seated variant"
+        )
 
 
 def test_seated_dispatch_replaces_the_standing_table_not_just_names_it():
@@ -1592,6 +1607,141 @@ def test_the_two_registry_animations_most_likely_to_hit_the_trader_are_aliased_s
     body = _world_source()
     assert "SEATED_ANIMATIONS.sleep = SEATED_ANIMATIONS.asleep;" in body
     assert "SEATED_ANIMATIONS.shrug = SEATED_ANIMATIONS.gesture;" in body
+
+
+@needs_node
+def test_the_sheets_loop_dispatch_is_pose_aware_too():
+    """Review round 1, Finding 2a: the main per-frame dispatch
+    (`ANIM[char.anim]`) was made pose-aware by this ticket, but
+    `advanceCharacters`' OTHER dispatch - the `char.loopAnim` branch the
+    evaluation sheet uses - was left pointed at `ANIM` only. `asleep` and
+    `gesture` are not `ANIM` keys at all, so a seated sample looping either
+    one would call `undefined` and throw; `slump`/`lean` would silently run
+    the whole-container standing animation on a seated body instead of the
+    re-authored one. Runs the REAL `advanceCharacters` (not a restated
+    slice) against a fake seated character whose `loopAnim` is "asleep" - a
+    name that exists only in SEATED_ANIMATIONS, never in ANIM, so a stray
+    `ANIM[char.loopAnim]` fallback would throw rather than silently pass -
+    and checks it does not throw and actually moves the rig, the same
+    standard Override 1 set for the main dispatch.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _js_block(source, "const EASE = {")
+        + ";\n"
+        + _js_const(source, "HEAD_TRAVEL")
+        + "\n"
+        + "function setBlink() {}\n"
+        + _js_range(
+            source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.shrug"
+        )
+        + """
+        // Deliberately empty: "asleep" must resolve via SEATED_ANIMATIONS
+        // alone, or this test is exercising the fallback, not the fix.
+        const ANIM = {};
+        function idleTick() {}
+        function watchTick() {}
+        function restCharacter() {}
+        const ambient = { t: 0 };
+        """
+        + _js_block(source, "function shadowTick(")
+        + "\n"
+        + _js_block(source, "function advanceCharacters(")
+        + "\n"
+        + """
+        const char = {
+          loopAnim: "asleep", phase: 0, duration: 0.9, amp: 1,
+          container: { pose: "seated" },
+          headBaseY: -108, head: { rotation: 0, y: 0 },
+          body: { rotation: 0, x: 0, y: 0 },
+        };
+        const cast = [char];
+        advanceCharacters(0.5);
+        console.log(JSON.stringify({
+          headY: char.head.y, headRotation: char.head.rotation,
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    assert emitted["headY"] != 0 or emitted["headRotation"] != 0, (
+        "the loopAnim branch did not run SEATED_ANIMATIONS.asleep - nothing moved"
+    )
+
+
+@needs_node
+def test_the_sheet_can_actually_reach_seatedrig():
+    """Review round 1, Finding 2b: `character(style, style)` passes a
+    BODY-STYLE name ("figure") where `anchorFor` wants a CHARACTER name
+    ("trader") - `PLATE.cast` only has "model"/"trader", so every sample the
+    sheet ever built resolved `pose: "standing"` and `seatedRig` never ran on
+    this page at all. That is the surface the brief's Step 4 tells a human
+    to look at to confirm the seated trader stays in the chair through every
+    frame of every animation - so the one prescribed check for this ticket's
+    headline claim had never once been performable. Runs the real cell-
+    building logic (stubbed `character()` recorder, not a live PIXI render)
+    and checks it actually calls `character("TRADER", ...)` - the one change
+    that makes `anchorFor("trader")` resolve seated - and that the three
+    seated-only names only ever pair with the trader, never with a body
+    `ANIM` has no key for (which `advanceCharacters` would throw on)."""
+    source = _world_source()
+    driver = (
+        _js_block(source, "const ANIM = {")
+        + ";\n"
+        + _js_range(
+            source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.shrug"
+        )
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + """
+        const STYLES = ["bars", "figure", "candle", "monolith", "orb"];
+        const CAST = { MODEL: "bars", TRADER: "figure" };
+        const ANIM_DURATION = {};
+        const app = { screen: { width: 1920, height: 960 } };
+        const cast = [];
+        const calls = [];
+        function character(name, style) {
+          calls.push([name, style]);
+          const sample = {
+            container: {}, head: { y: 0 }, moodTag: {}, stat: {},
+          };
+          return sample;
+        }
+        function setCharacterVisible() {}
+        function setExpression() {}
+        const layers = { room: {}, plate: {}, chars: { scale: { set() {} } } };
+        const location = { search: "" };
+        const model = {}, trader = {};
+        """
+        + _js_block(source, "function drawAnimationSheet(")
+        + "\n"
+        + """
+        drawAnimationSheet();
+        console.log(JSON.stringify({
+          calls, animsInOrder: cast.map((s) => s.loopAnim),
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    calls = emitted["calls"]
+    anims = emitted["animsInOrder"]
+    assert ["TRADER", "figure"] in calls, (
+        "drawAnimationSheet never builds a sample named \"TRADER\" - "
+        "anchorFor can never resolve pose: seated on this page"
+    )
+    seated_only = {"gesture", "breathe", "asleep"}
+    for (name, style), anim in zip(calls, anims):
+        if anim in seated_only:
+            assert name == "TRADER", (
+                f"{anim} is dispatched against a body ({name}, {style}) "
+                "that has no ANIM key for it - advanceCharacters would throw"
+            )
 
 
 def test_seated_idle_shift_moves_the_torso_not_the_hips():
@@ -1866,3 +2016,84 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         "trader pokes out over the top of the chair"
     )
     assert emitted["armCount"] == 2, "seatedRig must build exactly two arms"
+
+
+@needs_node
+def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
+    """Review round 1, Finding 1: the chair overflow was never CAST_SCALE's
+    fault. The reviewer's own arithmetic - chest width 58 units was 87px at
+    1.5 AND 78.3px at the pre-ticket 1.35 (break-even is 75/58=1.293, under
+    both) - proves the rig's own local width was the defect, not the scale
+    review round 1 of Task 6 chose. So this asserts the WIDTH budget directly
+    against the rig's real geometry, not a screenshot: every `roundRect` call
+    `seatedRig` makes (thighs/waist/chest onto the fake `body`, and each
+    arm's own call onto its own fake `PIXI.Graphics`, offset by the `arm.x`
+    the real function sets) is recorded, and the widest extent across all of
+    them - computed, not eyeballed - is what gets checked against the seat.
+
+    The seat width itself is read from `PLATE.cast.trader.seat` (the
+    manifest, `api/static/world-plate-btc-eth.json`) - review round 1's
+    correction: the reviewer's first instruction named that field before it
+    existed, so it was added there rather than left as a literal here. This
+    test's own JS driver still runs with `PLATE = null` (it is exercising
+    the CELL/CAST_SCALE fallback literals, unrelated to the seat), so the
+    manifest is read on the Python side, the same way `_manifest()` already
+    reads `cast`/`bands`/`tubes` for every other plate-derived test in this
+    file. `tests/unit/test_plate_manifest.py::test_the_seated_rig_fits_
+    inside_the_manifest_seat` runs the identical check from the manifest's
+    own test file, mutation-checked there against a deliberately narrowed
+    seat; this one is the same claim from the rendering side.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        + """
+        class FakeGraphics {
+          constructor() { this.calls = []; this.x = 0; }
+          roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
+          fill() { return this; }
+          stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const bodyCalls = [];
+        const fakeGfx = {
+          roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
+          fill() { return this; },
+          stroke() { return this; },
+        };
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        seatedRig(fakeGfx, accents);
+        function extent(calls, offset) {
+          let widest = 0;
+          for (const [x, w] of calls) {
+            widest = Math.max(widest, Math.abs(offset + x), Math.abs(offset + x + w));
+          }
+          return widest;
+        }
+        let widest = extent(bodyCalls, 0);
+        for (const accent of accents) {
+          widest = Math.max(widest, extent(accent.calls, accent.x));
+        }
+        console.log(JSON.stringify({ widest, castScale: CAST_SCALE }));
+        """
+    )
+    emitted = _run_node(driver)
+    # widest is a half-width
+    screen_width = emitted["widest"] * emitted["castScale"] * 2
+    seat_width = _manifest()["cast"]["trader"]["seat"]["width"]
+    assert screen_width <= seat_width, (
+        f"the seated rig's widest extent is {emitted['widest']} local units "
+        f"({screen_width}px at CAST_SCALE {emitted['castScale']}) - wider "
+        f"than the manifest's {seat_width}px painted seat"
+    )

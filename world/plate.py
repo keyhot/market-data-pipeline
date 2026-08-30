@@ -11,6 +11,15 @@ intake script flattened. `tests/unit/test_plate_manifest.py` checks the ones a
 machine can re-derive from the image, so the manifest cannot quietly drift away
 from the picture it describes.
 
+`cast.trader.seat` (added Sprint 15, Task 7 review round 1) is the one seat
+measurement in that list that did not reach the manifest until this fix:
+the seat's material was told apart from the surrounding room by a colour scan
+along the row at `base_y` (blue-grey, `b > r + 15`), not by eye - the
+contiguous span at that row is `[1299, 1378]`, recorded as the left edge and
+width a screen-space rect would use, the same convention `screens` already
+uses. It exists so the seated rig's width has something machine-checkable to
+fit inside, rather than a number carried only in a test's docstring.
+
 Pure and DB-free by design: this is read during a page render, and a broken
 manifest must degrade to the procedural room rather than raise into it.
 """

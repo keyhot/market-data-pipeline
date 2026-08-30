@@ -9,7 +9,11 @@ off an image drift the moment the image is replaced, and a candle drawn 6px off
 the painted glass is not something a schema check can see.
 """
 import json
+import re
+import shutil
+import subprocess
 
+import pytest
 from PIL import Image
 
 from world.plate import (
@@ -17,6 +21,30 @@ from world.plate import (
     load_manifest,
     watchlist_disagreements,
 )
+
+WORLD_TEMPLATE = (
+    DEFAULT_MANIFEST_PATH.resolve().parents[2] / "api" / "templates" / "world.html"
+)
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
+
+
+def _js_block(source: str, opening: str) -> str:
+    """The brace-matched source of one JS construct - mirrors
+    tests/api/test_world_page.py's helper of the same name and purpose
+    (kept local rather than imported: that module builds a TestClient at
+    import time, which a plate-manifest unit test has no business pulling
+    in)."""
+    start = source.index(opening)
+    depth = 0
+    for j in range(source.index("{", start), len(source)):
+        if source[j] == "{":
+            depth += 1
+        elif source[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : j + 1]
+    raise AssertionError(f"unbalanced braces after {opening!r}")
 
 PLATE_PNG = DEFAULT_MANIFEST_PATH.with_suffix(".png")
 
@@ -205,3 +233,92 @@ def test_a_pillar_centred_in_its_bore_stays_inside_the_frame():
     for tube in manifest.tubes:
         left = tube["x"] - tube["width"] / 2
         assert left >= 0 and left + tube["width"] <= width, tube["symbol"]
+
+
+# C2 review round 1, Finding 1 correction: the reviewer's first instruction
+# ("read the seat width from the plate manifest") named a field that did not
+# exist yet - `cast.trader` carried only x/base_y/pose. This is that field.
+
+
+def test_the_seat_is_a_rect_inside_the_canvas():
+    """Same shape of check as `test_every_chart_screen_is_a_rect_inside_the_
+    canvas` - a seat measured off the edge of the frame is not a seat the
+    trader can be drawn inside of."""
+    manifest = load_manifest()
+    width, height = manifest.canvas
+    seat = manifest.cast["trader"]["seat"]
+    assert seat["x"] >= 0 and seat["y"] >= 0
+    assert seat["x"] + seat["width"] <= width
+    assert seat["y"] <= height
+
+
+@needs_node
+def test_the_seated_rig_fits_inside_the_manifest_seat():
+    """The check `test_the_seated_rig_fits_inside_the_painted_seat_not_just_
+    the_backrest` (tests/api/test_world_page.py) runs, except the seat width
+    now comes from THIS manifest instead of a constant duplicated in that
+    test file - so a repaint that moves or narrows the chair has exactly one
+    number to update, and a stale one is what this test catches.
+
+    Mutation-checked against a deliberately mis-measured manifest: narrowing
+    `seat.width` below the rig's real extent must fail this test, or the
+    check is decorative. (Verified by hand during review, not asserted here
+    - asserting a specific narrowed value would just be a second magic
+    number standing in for the first one review round 1 objected to.)
+    """
+    manifest = load_manifest()
+    seat = manifest.cast["trader"]["seat"]
+    source = WORLD_TEMPLATE.read_text()
+
+    driver = (
+        "const CELL = 4;\n"
+        "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        + """
+        class FakeGraphics {
+          constructor() { this.calls = []; this.x = 0; }
+          roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
+          fill() { return this; }
+          stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const bodyCalls = [];
+        const fakeGfx = {
+          roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
+          fill() { return this; },
+          stroke() { return this; },
+        };
+        """
+    )
+    for name in ("function snap(", "function seatedRig("):
+        driver += _js_block(source, name) + "\n"
+    cast_scale_line = re.search(r"^\s*const CAST_SCALE = .*;$", source, re.M)
+    assert cast_scale_line, "the page no longer declares CAST_SCALE as a one-line const"
+    driver += cast_scale_line.group(0).strip() + "\n"
+    driver += """
+        const accents = [];
+        seatedRig(fakeGfx, accents);
+        function extent(calls, offset) {
+          let widest = 0;
+          for (const [x, w] of calls) {
+            widest = Math.max(widest, Math.abs(offset + x), Math.abs(offset + x + w));
+          }
+          return widest;
+        }
+        let widest = extent(bodyCalls, 0);
+        for (const accent of accents) {
+          widest = Math.max(widest, extent(accent.calls, accent.x));
+        }
+        console.log(JSON.stringify({ widest, castScale: CAST_SCALE }));
+    """
+
+    result = subprocess.run(
+        [NODE, "-e", driver], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    emitted = json.loads(result.stdout)
+    # widest is a half-width
+    rig_width_screen = emitted["widest"] * emitted["castScale"] * 2
+    assert rig_width_screen <= seat["width"], (
+        f"the seated rig is {rig_width_screen}px wide at CAST_SCALE "
+        f"{emitted['castScale']} - wider than the manifest's {seat['width']}px seat"
+    )
