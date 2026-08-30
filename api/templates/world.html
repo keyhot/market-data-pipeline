@@ -254,6 +254,12 @@
       startAmbient();
       bootSucceeded();
 
+      // M2: polled, not streamed (KI-013 — see pollBars's own comment). Runs
+      // regardless of which boot branch follows; pollBars is a no-op with no
+      // plate, so this is as safe on the preview/gallery paths as it is live.
+      pollBars();
+      setInterval(pollBars, BARS_POLL_MS);
+
       // KI-046: posted every 15s regardless of which boot branch runs below —
       // the beat is about whether the renderer is alive, which is equally true
       // of a preview surface as of the on-air room. Keyed by Host server-side,
@@ -490,6 +496,10 @@
         // Built once, right here — never inside the per-frame ticker. See
         // buildSwellGlows's own comment for why.
         buildSwellGlows();
+        // M2: one Graphics per painted monitor, same "build once" rule —
+        // never inside drawCandles or the poll loop. See buildMonitorGraphics
+        // below.
+        buildMonitorGraphics();
         // The plate reserves a quiet strip at the top for the newcomer line.
         // Bind the banner to the measurement so a repaint moves the text with
         // the art instead of hanging it over a painted detail.
@@ -639,6 +649,12 @@
 
     function drawPillars(state) {
       layers.props.removeChildren();
+      // M2: layers.props is also where the monitor Graphics live (built once,
+      // at plate-success time) — removeChildren() above detaches them from
+      // the scene graph without destroying them, so put them straight back
+      // before anything early-returns below, or the monitors keep drawing
+      // correctly into Graphics nobody renders again.
+      Object.values(monitorGraphics).forEach((g) => layers.props.addChild(g));
       const symbols = Object.entries(state.symbols ?? {})
         .filter(([symbol]) => SYMBOLS.includes(symbol));
       if (!symbols.length) return;
@@ -1768,6 +1784,111 @@
       if (!plateReady) return;   // no plate: nothing was ever built to light
       const alpha = Math.min(1, lift * SWELL_LIFT_TO_ALPHA);
       for (const glow of swellGlows) glow.alpha = alpha;
+    }
+
+    // --- M2: live candles in the painted monitors -------------------------
+    // The plate paints two central monitors as flat dark glass. The rules for
+    // whether/how much of that glass is worth drawing into — how many candles
+    // fit an irregular painted frame, whether a frame is legible at all, and
+    // when data is too old to be shown as the present — are decided in
+    // world/monitors.py and injected here, both as constants AND as the
+    // functions that read them: injecting only the numbers is the half-fix
+    // that let KI-019 happen (the tier-cuts injection above this block is the
+    // same lesson applied to tiers). This page must not re-derive any of it.
+    //
+    // NOTE: a placeholder token must never be spelled out in a comment below
+    // its own substitution line — `_render_template` string-replaces EVERY
+    // occurrence in the page, comments included, so a token named in prose
+    // gets rewritten into JS mid-sentence. Found by `node --check` on this
+    // exact block while writing it.
+    const MONITOR_RULES = __MONITOR_RULES_JSON__;
+    // The rule-reading functions themselves - barsThatFit, isDrawable and
+    // staleAlpha - generated FROM the constants above by world/monitors.py,
+    // so the page and the server cannot drift on how many candles fit or
+    // when a screen is too old to be believed.
+    __MONITOR_JS__
+
+    // One Graphics per painted screen, created ONCE — on the plate-success
+    // path, right after buildSwellGlows() — and only cleared/redrawn per
+    // poll. Rebuilding Graphics every tick or every poll is exactly what B2
+    // warned would cost the stream frames on a box that also encodes 1080p.
+    const monitorGraphics = {};
+
+    function buildMonitorGraphics() {
+      for (const screen of PLATE.screens || []) {
+        const g = new PIXI.Graphics();
+        // Above the additive swell, below the cast, so glow never washes the
+        // candles out and the cast never stands behind its own market data.
+        layers.props.addChild(g);
+        monitorGraphics[screen.id] = g;
+      }
+    }
+
+    // Procedural pixel candles, on the same 4px grid as the cast. Not
+    // Lightweight Charts: a smooth anti-aliased chart inside a pixel-art
+    // monitor reads as a screenshot pasted into a painting.
+    function drawCandles(screen, bars) {
+      const g = monitorGraphics[screen.id];
+      // A screen absent from monitorGraphics (never built, or a stale
+      // manifest reference) fails closed rather than throwing inside a
+      // render loop the whole page depends on.
+      if (!g) return;
+      g.clear();
+      // barsThatFit / isDrawable are INJECTED from world/monitors.py — the
+      // page must not re-derive them. A screen too small for a legible
+      // candle stays dark glass: the plate's painted state is the honest
+      // rendering of "nothing to say here".
+      const fits = barsThatFit(screen.w);
+      if (!isDrawable(screen)) return;
+      if (!bars || !bars.length) return;
+
+      const shown = bars.slice(-fits);
+      const highs = shown.map((b) => b.high), lows = shown.map((b) => b.low);
+      const top = Math.max(...highs), bottom = Math.min(...lows);
+      const span = top - bottom;
+      if (!(span > 0)) return;      // a flat span would divide by zero and draw a lie
+
+      const newest = Date.parse(shown[shown.length - 1].timestamp);
+      const ageSeconds = (Date.now() - newest) / 1000;
+      g.alpha = staleAlpha(ageSeconds);   // INJECTED from world/monitors.py - see above
+
+      const pad = MONITOR_RULES.pad_cells * CELL;
+      const pitch = (MONITOR_RULES.body_cells + MONITOR_RULES.gap_cells) * CELL;
+      const plotH = screen.h - 2 * pad;
+      const yOf = (price) => snap(screen.y + pad + (top - price) / span * plotH);
+
+      shown.forEach((bar, i) => {
+        const x = snap(screen.x + pad + i * pitch);
+        const up = bar.close >= bar.open;
+        const clr = up ? 0x26a69a : 0xef5350;
+        const bodyTop = yOf(Math.max(bar.open, bar.close));
+        const bodyBottom = yOf(Math.min(bar.open, bar.close));
+        g.rect(x + CELL, yOf(bar.high), CELL, yOf(bar.low) - yOf(bar.high)).fill(clr);
+        g.rect(x, bodyTop, MONITOR_RULES.body_cells * CELL,
+               Math.max(CELL, bodyBottom - bodyTop)).fill(clr);
+      });
+    }
+
+    // Polling, not SSE (KI-013): subscribe() below already spends one of
+    // Chromium's six same-origin connections on this page's live event
+    // stream, and OBS's browser sources all share that one network stack. A
+    // second EventSource here is how the room went blank for a week.
+    // /music/now-playing set this precedent. 20s is well inside a 1m bar and
+    // costs one short-lived fetch per screen per tick.
+    const BARS_POLL_MS = 20000;
+    async function pollBars() {
+      if (!plateReady || !PLATE.screens) return;
+      for (const screen of PLATE.screens) {
+        if (screen.role !== "chart" || !screen.symbol) continue;
+        try {
+          const res = await fetch(`/bars/${screen.symbol}?interval=1m&limit=120`);
+          if (!res.ok) { drawCandles(screen, []); continue; }
+          const body = await res.json();
+          drawCandles(screen, (body.data && body.data.bars) || []);
+        } catch (err) {
+          drawCandles(screen, []);   // dark glass, never a stale claim
+        }
+      }
     }
 
     // --- B9: the always-on now-band ---------------------------------------

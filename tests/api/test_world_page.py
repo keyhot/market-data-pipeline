@@ -2532,3 +2532,352 @@ def test_the_swell_eases_in_step_with_the_rest_of_the_room_not_a_frame():
     # within the simulated window (30s of frames at 60fps is many time
     # constants past the ~4s ease).
     assert abs(result["last"] - settled) < 0.02, (result["last"], settled)
+
+
+# --- M2: live candles in the painted monitors --------------------------------
+# world/monitors.py already decided every rule (bars_that_fit/is_drawable/
+# stale_alpha_for) under test; this ticket only wires the injected constants
+# and functions into drawCandles()/pollBars() and never re-derives them.
+
+
+def test_candles_are_polled_not_streamed():
+    """KI-013: eight browser sources share one Chromium network stack with a
+    6-connections-per-origin limit. A second SSE stream on this page is how the
+    room went blank for a week."""
+    body = client.get("/world").text
+    assert "/bars/" in body
+    candles = body.split("function pollBars(")[1][:1500]
+    assert "EventSource" not in candles
+
+
+def test_an_empty_or_undrawable_screen_renders_dark_glass():
+    """Never an empty axis, never a flat line at zero: the plate's own painted
+    dark glass is the honest rendering of 'no data'."""
+    body = client.get("/world").text
+    draw = body.split("function drawCandles(")[1][:2000]
+    assert "isDrawable(screen)" in draw
+    # The rule is injected, not restated: one definition, per KI-019.
+    assert "function isDrawable(" in body
+    assert "function barsThatFit(" in body
+
+
+def test_stale_bars_dim_instead_of_posing_as_the_present():
+    """AMENDED 2026-08-26 (M1). The two substring asserts this test used to
+    carry both ship inside `__MONITOR_RULES_JSON__` whether or not the page
+    calls the rule, so they passed on a page that restated the threshold
+    inline - the second copy of a rule that KI-019 is named after. Pin the
+    CALL, and pin that the page does not re-derive it."""
+    body = client.get("/world").text
+    draw = body.split("function drawCandles(")[1][:2000]
+    assert "staleAlpha(" in draw
+    assert "function staleAlpha(" in body
+    assert "stale_after_seconds" not in draw, "the threshold is read, not restated"
+
+
+def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
+    """B2's own lesson, restated for this ticket: a `new PIXI.Graphics()`
+    inside the per-poll draw function or the poll loop itself is the exact
+    cost B2 had to walk back on a box that also encodes 1080p. It must be
+    built exactly once, from the plate-success path, mirroring
+    `buildSwellGlows()`."""
+    body = _world_source()
+    draw = _js_block(body, "function drawCandles(")
+    assert "new PIXI.Graphics()" not in draw, (
+        "drawCandles must reuse a Graphics keyed by screen.id, not build one"
+    )
+    poll = _js_block(body, "async function pollBars(")
+    assert "new PIXI.Graphics()" not in poll
+
+    build = _js_block(body, "function buildMonitorGraphics(")
+    assert "new PIXI.Graphics()" in build
+    assert "layers.props.addChild(" in build, (
+        "monitor graphics must land in layers.props, above swell so glow "
+        "does not wash out the candles"
+    )
+
+    # Built alongside buildSwellGlows(), on the plate SUCCESS path only.
+    draw_plate = _js_block(body, "async function drawPlate(")
+    assert "buildMonitorGraphics()" in draw_plate
+    failure_path = _js_block(draw_plate[draw_plate.index("catch (") :], "catch (")
+    assert "buildMonitorGraphics()" not in failure_path
+
+
+def _monitor_driver(*, plate_ready: bool) -> str:
+    """The page's own `buildMonitorGraphics`/`drawCandles`/`pollBars`, run
+    against the real manifest's `screens`, with only `PIXI.Graphics`,
+    `layers.props` and `fetch` stubbed. The stub records what was actually
+    built/drawn/fetched rather than asserting on source text — the
+    `_swell_driver` pattern applied to the monitors.
+    """
+    source = _world_source()
+    screens = _manifest()["screens"]
+    return (
+        f"const PLATE = {json.dumps({'screens': screens})};\n"
+        f"const plateReady = {str(plate_ready).lower()};\n"
+        "let graphicsBuilt = 0;\n"
+        "class FakeGraphics {\n"
+        "  constructor() {\n"
+        "    graphicsBuilt++;\n"
+        "    this.rects = []; this.fills = []; this.cleared = 0; this.alpha = 1;\n"
+        "  }\n"
+        "  clear() { this.cleared++; this.rects = []; this.fills = []; return this; }\n"
+        "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
+        "  fill(color) { this.fills.push(color); return this; }\n"
+        "}\n"
+        "const PIXI = { Graphics: FakeGraphics };\n"
+        "const layers = { props: { children: [],\n"
+        "  removeChildren() { this.children = []; },\n"
+        "  addChild(...items) { this.children.push(...items); } } };\n"
+        "const monitorGraphics = {};\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "MONITOR_RULES")
+        + "\n"
+        + _js_block(source, "function barsThatFit(")
+        + "\n"
+        + _js_block(source, "function isDrawable(")
+        + "\n"
+        + _js_block(source, "function staleAlpha(")
+        + "\n"
+        + _js_block(source, "function buildMonitorGraphics(")
+        + "\n"
+        + _js_block(source, "function drawCandles(")
+        + "\n"
+    )
+
+
+FRESH_TS = "2099-01-01T00:00:00+00:00"
+STALE_TS = "2020-01-01T00:00:05+00:00"
+
+
+def _sample_bars(*, ts_iso: str, flat: bool = False) -> list:
+    """A short, drawable run of 1m bars, oldest first — the shape
+    `get_price_bars` actually returns."""
+    if flat:
+        return [
+            {"timestamp": ts_iso, "open": 100, "high": 100, "low": 100, "close": 100}
+            for _ in range(20)
+        ]
+    bars = []
+    price = 100.0
+    for i in range(20):
+        o, c = price, price + (1 if i % 2 == 0 else -1)
+        bars.append({
+            "timestamp": ts_iso if i == 19 else "2020-01-01T00:00:00+00:00",
+            "open": o, "high": max(o, c) + 1, "low": min(o, c) - 1, "close": c,
+        })
+        price = c
+    return bars
+
+
+@needs_node
+def test_drawCandles_executed_stays_dark_glass_for_too_small_no_data_and_flat_span():
+    """Three honest-state paths, run for real rather than grepped: a screen
+    below the legibility floor, a drawable screen with no bars, and a
+    drawable screen whose bars have zero price span. All three must draw
+    nothing — never an empty axis, never a flat line at zero."""
+    driver = _monitor_driver(plate_ready=True) + (
+        "buildMonitorGraphics();\n"
+        "const small = { id: 'small', x: 0, y: 0, w: 40, h: 30, role: 'chart',"
+        " symbol: 'BTCUSDT' };\n"
+        "const drawable = PLATE.screens[0];\n"
+        f"const freshBars = {json.dumps(_sample_bars(ts_iso=FRESH_TS))};\n"
+        f"const flatBars = {json.dumps(_sample_bars(ts_iso=FRESH_TS, flat=True))};\n"
+        "monitorGraphics.small = new PIXI.Graphics();\n"
+        # Snapshot rects/cleared as plain numbers IMMEDIATELY after each call.
+        # `drawable` shares ONE Graphics across the noData/flatSpan cases
+        # (buildMonitorGraphics keys by screen.id, and both reuse
+        # PLATE.screens[0]) - holding onto the *object* instead and reading it
+        # only at the end would report the state after the LAST draw for
+        # every earlier case too, since it is the same reference throughout.
+        "drawCandles(small, freshBars);\n"
+        "const tooSmall = { rects: monitorGraphics.small.rects.length,"
+        " cleared: monitorGraphics.small.cleared };\n"
+        "drawCandles(drawable, []);\n"
+        "const noData = { rects: monitorGraphics[drawable.id].rects.length,"
+        " cleared: monitorGraphics[drawable.id].cleared };\n"
+        "drawCandles(drawable, flatBars);\n"
+        "const flatSpan = { rects: monitorGraphics[drawable.id].rects.length,"
+        " cleared: monitorGraphics[drawable.id].cleared };\n"
+        "console.log(JSON.stringify({ tooSmall, noData, flatSpan }));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["tooSmall"]["rects"] == 0, "too small a screen still drew candles"
+    assert emitted["tooSmall"]["cleared"] >= 1, "dark glass still clears stale geometry"
+    assert emitted["noData"]["rects"] == 0, "no bars still drew candles"
+    assert emitted["flatSpan"]["rects"] == 0, "a zero price span still drew candles"
+
+
+@needs_node
+def test_drawCandles_executed_draws_fresh_candles_and_dims_stale_ones():
+    """The success path, run for real: a drawable screen with real bars draws
+    at least one candle at full opacity when the newest bar is fresh, and the
+    injected `staleAlpha` — not a second copy of the threshold — dims it when
+    the newest bar is old."""
+    from world.monitors import STALE_ALPHA
+
+    driver = _monitor_driver(plate_ready=True) + (
+        "buildMonitorGraphics();\n"
+        "const drawable = PLATE.screens[0];\n"
+        f"const freshBars = {json.dumps(_sample_bars(ts_iso=FRESH_TS))};\n"
+        f"const staleBars = {json.dumps(_sample_bars(ts_iso=STALE_TS))};\n"
+        "drawCandles(drawable, freshBars);\n"
+        "const fresh = { rects: monitorGraphics[drawable.id].rects.length,"
+        " fills: monitorGraphics[drawable.id].fills.length,"
+        " alpha: monitorGraphics[drawable.id].alpha };\n"
+        "drawCandles(drawable, staleBars);\n"
+        "const stale = { rects: monitorGraphics[drawable.id].rects.length,"
+        " alpha: monitorGraphics[drawable.id].alpha };\n"
+        "console.log(JSON.stringify({ fresh, stale }));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["fresh"]["rects"] > 0, (
+        "a drawable screen with fresh bars drew nothing"
+    )
+    assert emitted["fresh"]["fills"] > 0
+    assert emitted["fresh"]["alpha"] == 1, "fresh data must render at full strength"
+    assert emitted["stale"]["rects"] > 0, "stale data must still be drawn, only dimmed"
+    assert emitted["stale"]["alpha"] == STALE_ALPHA, (
+        "stale alpha did not match world.monitors.STALE_ALPHA - the page and "
+        "the server disagree about the injected rule"
+    )
+
+
+@needs_node
+def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_props():
+    """Exactly one Graphics per painted screen, keyed by `screen.id`, and
+    parented under `layers.props` — never `layers.swell` (additive glow would
+    wash the candles out) and never `layers.chars`."""
+    driver = _monitor_driver(plate_ready=True) + (
+        "buildMonitorGraphics();\n"
+        "console.log(JSON.stringify({\n"
+        "  built: graphicsBuilt,\n"
+        "  ids: Object.keys(monitorGraphics).sort(),\n"
+        "  inProps: layers.props.children.length,\n"
+        "  sameRef: monitorGraphics[PLATE.screens[0].id]"
+        " === layers.props.children[0],\n"
+        "}));\n"
+    )
+    emitted = _run_node(driver)
+    manifest_ids = sorted(s["id"] for s in _manifest()["screens"])
+    assert emitted["built"] == len(manifest_ids)
+    assert emitted["ids"] == manifest_ids
+    assert emitted["inProps"] == len(manifest_ids)
+    assert emitted["sameRef"] is True
+
+
+@needs_node
+def test_drawPillars_preserves_the_monitor_graphics_across_its_own_wipe():
+    """`drawPillars` is the only other consumer of `layers.props`, and it
+    unconditionally `removeChildren()`s it on every `/world/state` refresh.
+    Without a fix, the monitor Graphics built once at boot would be silently
+    detached from the scene graph the first time the room redraws its
+    pillars - drawn correctly forever after into a Graphics nobody renders.
+    """
+    source = _world_source()
+    driver = (
+        "const SYMBOLS = [];\n"
+        "const CELL = 4;\n"
+        "function snap(v) { return v; }\n"
+        "const monitorGraphics = { probe: { id: 'probe' } };\n"
+        "const layers = { props: { children: [monitorGraphics.probe],\n"
+        "  removeChildren() { this.children = []; },\n"
+        "  addChild(...items) { this.children.push(...items); } } };\n"
+        "function color() { return 0; }\n"
+        "function label() { return {}; }\n"
+        "function pillarGeometry() {\n"
+        "  return { x: 0, baseY: 0, width: 1, height: 1 };\n"
+        "}\n"
+        "class FakeGraphics { rect() { return this; } fill() { return this; } }\n"
+        "const PIXI = { Graphics: FakeGraphics };\n"
+        + _js_block(source, "function drawPillars(")
+        + "\n"
+        "drawPillars({ symbols: {} });\n"
+        "console.log(JSON.stringify({\n"
+        "  stillThere: layers.props.children.includes(monitorGraphics.probe),\n"
+        "}));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["stillThere"] is True, (
+        "drawPillars() wiped the monitor Graphics off layers.props and never "
+        "put them back"
+    )
+
+
+@needs_node
+def test_pollBars_never_fetches_when_there_is_no_plate():
+    """Override 4: PLATE may be null and plateReady may be false. `pollBars`
+    must be a clean no-op then, not a per-screen exception every 20s."""
+    driver = (
+        "const PLATE = null;\n"
+        "const plateReady = false;\n"
+        "let fetchCalls = 0;\n"
+        "function fetch() { fetchCalls++; throw new Error('must not fetch'); }\n"
+        "function drawCandles() { throw new Error('must not draw'); }\n"
+        + _js_const(_world_source(), "BARS_POLL_MS")
+        + "\n"
+        + _js_block(_world_source(), "async function pollBars(")
+        + "\n"
+        "pollBars().then(() => console.log(JSON.stringify({ fetchCalls })));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["fetchCalls"] == 0
+
+
+@needs_node
+def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure():
+    """Three screens: one not a chart, one a chart with no symbol assigned yet,
+    one real. Only the real one is fetched, using the exact `/bars/{symbol}
+    ?interval=1m&limit=120` path this ticket is pinned to. A non-OK response
+    and a thrown fetch both degrade to dark glass (`drawCandles(screen, [])`),
+    never a stale claim."""
+    source = _world_source()
+    driver = (
+        "const PLATE = { screens: [\n"
+        "  { id: 'tube', role: 'gauge', symbol: 'BTCUSDT' },\n"
+        "  { id: 'blank', role: 'chart', symbol: null },\n"
+        "  { id: 'live', role: 'chart', symbol: 'BTCUSDT' },\n"
+        "  { id: 'bad', role: 'chart', symbol: 'DOGEUSDT' },\n"
+        "  { id: 'down', role: 'chart', symbol: 'ETHUSDT' },\n"
+        "] };\n"
+        "const plateReady = true;\n"
+        "const fetchUrls = [];\n"
+        "const drawnWith = {};\n"
+        "function drawCandles(screen, bars) { drawnWith[screen.id] = bars; }\n"
+        "function fetch(url) {\n"
+        "  fetchUrls.push(url);\n"
+        # A real 4xx/5xx Response still carries a `.json()` method - a fetch
+        # stub that omits it would make an unguarded `!res.ok` mutant fail via
+        # the generic catch instead of via the guard actually missing, which
+        # proves nothing about the guard itself. This body is shaped like a
+        # SUCCESS payload on purpose, so skipping the check would draw it as
+        # if it were real data instead of dark glass.
+        "  if (url.includes('DOGEUSDT')) return Promise.resolve({ ok: false,"
+        " json: () => Promise.resolve({ data: { bars: [{ open: 9, high: 9,"
+        " low: 9, close: 9, timestamp: '2001-01-01T00:00:00+00:00' }] } }) });\n"
+        "  if (url.includes('ETHUSDT'))"
+        " return Promise.reject(new Error('network down'));\n"
+        "  return Promise.resolve({ ok: true, json: () => Promise.resolve(\n"
+        "    { data: { bars: [{ open: 1, high: 2, low: 0, close: 1,"
+        " timestamp: '2099-01-01T00:00:00+00:00' }] } }) });\n"
+        "}\n"
+        + _js_const(source, "BARS_POLL_MS")
+        + "\n"
+        + _js_block(source, "async function pollBars(")
+        + "\n"
+        "pollBars().then(() =>"
+        " console.log(JSON.stringify({ fetchUrls, drawnWith })));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["fetchUrls"] == [
+        "/bars/BTCUSDT?interval=1m&limit=120",
+        "/bars/DOGEUSDT?interval=1m&limit=120",
+        "/bars/ETHUSDT?interval=1m&limit=120",
+    ], "must skip the non-chart and symbol-less screens, and poll the rest in order"
+    assert emitted["drawnWith"]["live"][0]["close"] == 1
+    assert emitted["drawnWith"]["bad"] == [], "a non-OK response must draw dark glass"
+    assert emitted["drawnWith"]["down"] == [], "a thrown fetch must draw dark glass"
+    assert "tube" not in emitted["drawnWith"]
+    assert "blank" not in emitted["drawnWith"]
