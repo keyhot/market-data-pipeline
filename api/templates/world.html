@@ -222,6 +222,12 @@
       // Below the room: the painted backdrop, when there is one.
       layers.plate = new PIXI.Container();
       layers.room = new PIXI.Container();
+      // Task 9: additive light (applySwell) falls ON the room but must never
+      // land over the cast's faces, so it sits above layers.room — and, since
+      // a later ticket (M2) draws live chart candles into layers.props,
+      // BELOW layers.props too, or the glow would wash the candles out the
+      // moment they exist.
+      layers.swell = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
       // Shadows are a *child* of the cast layer, not of any character: they
@@ -231,11 +237,12 @@
       // its shadow off the floor with it. Added first, so they stay behind.
       layers.shadows = new PIXI.Container();
       layers.chars.addChild(layers.shadows);
-      app.stage.addChild(layers.plate, layers.room, layers.props, layers.chars);
+      app.stage.addChild(
+        layers.plate, layers.room, layers.swell, layers.props, layers.chars);
       // Pixel-art rule: no sub-pixel compositing for anything the cast or its
       // furniture draws. The plate and the vignette stay off this list on
       // purpose — they are painted art and a soft light falloff, not part of
-      // the grid.
+      // the grid. The swell layer is additive light too, for the same reason.
       layers.chars.roundPixels = true;
       layers.props.roundPixels = true;
 
@@ -1650,12 +1657,23 @@
         // here is the server's own severity_tier, arriving in /world/state —
         // so the room's swell and the director's decision agree by
         // construction rather than by a second scale (KI-019).
-        const want = ROOM_LIGHT[Math.max(0, Math.min(3, Math.round(ambient.tier)))];
+        const tier = Math.max(0, Math.min(3, Math.round(ambient.tier)));
+        const want = ROOM_LIGHT[tier];
         for (const key of ["vignette", "warmth", "lift"]) {
           // ~4s to cross the ramp: a swell you can watch arrive, not a cut.
           ambient.light[key] += (want[key] - ambient.light[key]) * Math.min(1, dt / 4);
         }
-        vignette.alpha = ambient.light.vignette;
+        if (!plateReady) {
+          // `vignette` only exists on the procedural path
+          // (drawProceduralRoom is the only place that builds one) — the
+          // plate is painted, so there is nothing here to dim. B2's
+          // tint/alpha room animation, left exactly as it was.
+          vignette.alpha = ambient.light.vignette;
+        }
+        // The plate can't be tinted (Task 9): applySwell is a no-op of its
+        // own accord when there is no plate, so it is safe to call every
+        // tick either way.
+        applySwell(tier);
 
         // Colour temperature: warm as selling pressure builds, cool as it eases.
         // Tier warmth composes on top rather than replacing it — pressure is
@@ -1691,6 +1709,41 @@
           }
         }
       });
+    }
+
+    // Task 9: the plate is painted, so the room can no longer be tinted —
+    // multiplying a pixel-art texture destroys the one detail (the amber
+    // desk lamp) that makes the room feel lived in. The swell instead ADDS
+    // light to the surfaces the plate deliberately left blank: the dark
+    // monitors and the tube housings, listed in the manifest as
+    // `PLATE.glow`. A fixed, room-local accent — never `light.warmth`'s
+    // colour temperature — so the lamp's own painted hue can't drift with
+    // tier; only how brightly the room lights it does.
+    // Matches world.visuals.PALETTE.accent.
+    const SWELL_COLOR = 0xf0b90b;
+    // Room-local scale from `lift` (0 at tier 0, ~0.22 at tier 3) to a
+    // visible additive alpha. Deliberately not a copy of the ramp itself —
+    // retuning this number changes only this canvas, never the theme vars
+    // block or the overlays that read `room_light` directly (KI-019's family).
+    const SWELL_LIFT_TO_ALPHA = 3;
+
+    function applySwell(tier) {
+      const light = ROOM_LIGHT[tier] || ROOM_LIGHT[0];
+      layers.swell.removeChildren();
+      if (!plateReady) {
+        // No plate: the procedural room keeps the ambient tint/alpha
+        // animation it has today (the vignette, above) — left exactly as it
+        // is, per this ticket's scope.
+        return;
+      }
+      const alpha = Math.min(1, light.lift * SWELL_LIFT_TO_ALPHA);
+      for (const rect of PLATE.glow) {
+        const glow = new PIXI.Graphics()
+          .rect(snap(rect.x), snap(rect.y), snap(rect.w), snap(rect.h))
+          .fill({ color: SWELL_COLOR, alpha });
+        glow.blendMode = "add";
+        layers.swell.addChild(glow);
+      }
     }
 
     // --- B9: the always-on now-band ---------------------------------------

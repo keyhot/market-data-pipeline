@@ -2117,3 +2117,173 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         f"{right_screen - seat['x'] - seat['width']}px past the seat's "
         f"right edge ({seat['x'] + seat['width']})"
     )
+
+
+# --- Task 9: the swell goes additive ----------------------------------------
+#
+# Tinting a painted plate multiplies every pixel by the tint colour, so the
+# hand-painted amber desk lamp comes out teal (the ticket's own framing). The
+# fix has to live in the room's own additive layer, not in world/visuals.py's
+# shared ramp — retuning that would silently retune both OBS overlays too
+# (KI-019's family; see tests/unit/test_visuals_ramp_is_shared.py).
+
+
+def test_the_swell_is_additive_and_never_tints_the_plate():
+    """Tinting a pixel-art texture turns the amber desk lamp teal, and the
+    lamp is exactly the detail that makes the room feel inhabited.
+
+    The plan's own draft of this test asserted `"ADD" in swell or "add" in
+    swell` — the word "additive" alone (in a comment, with no blend mode ever
+    set) satisfies that. Strengthened to the actual PIXI blend-mode
+    assignment, and to the plate itself never being tinted anywhere on the
+    page, not merely inside this one slice.
+    """
+    body = client.get("/world").text
+    assert "function applySwell(" in body
+    swell = body.split("function applySwell(")[1][:1500]
+    assert re.search(r'\.blendMode\s*=\s*["\']add["\']', swell), (
+        "applySwell must set PIXI's additive blend mode, not just mention "
+        "the word 'additive' — a bare substring check can't fail here"
+    )
+    assert ".tint" not in swell, "the swell must brighten with alpha, not tint"
+    assert "layers.plate.tint" not in body
+
+
+def test_the_swell_layer_sits_above_the_room_and_below_props_and_chars():
+    """Additive light must land on the room but never over the cast's faces
+    — so `layers.swell` sits above `layers.room` and below `layers.chars` —
+    and, because a later ticket (M2) draws live chart candles into
+    `layers.props`, it must sit below `layers.props` too, or the glow would
+    wash the candles out before anyone draws them.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    assert "layers.swell = new PIXI.Container();" in boot
+    match = re.search(r"app\.stage\.addChild\(([^)]*)\);", boot)
+    assert match, "boot() no longer builds the stage in one addChild call"
+    order = [name.strip() for name in match.group(1).split(",")]
+    assert order == ["layers.plate", "layers.room", "layers.swell",
+                      "layers.props", "layers.chars"], order
+
+
+def test_the_ambient_vignette_is_guarded_for_the_plate_path():
+    """`vignette` (the Container) only exists on the procedural path —
+    `drawProceduralRoom` is the only place that builds one; `drawPlate`'s
+    success path never does. Setting `vignette.alpha` unconditionally inside
+    the per-frame ticker throws the moment a plate loads, since the ticker
+    runs every frame regardless of which room got drawn — this was the
+    crash hiding at the brief's stale `world.html:357`. Pinned as an
+    ordering/guard check, not a node run: the ticker closure captures too
+    much per-frame state (dt, ambient, drift, mixChannel) to usefully
+    re-run standalone.
+    """
+    ambient = _js_block(_world_source(), "function startAmbient()")
+    assert "if (!plateReady)" in ambient
+    guard = _js_block(
+        ambient[ambient.index("if (!plateReady)"):], "if (!plateReady)"
+    )
+    assert "vignette.alpha" in guard, (
+        "vignette.alpha must be set only inside the !plateReady guard"
+    )
+    assert "vignette.alpha" not in ambient.replace(guard, "", 1), (
+        "vignette.alpha is also set OUTSIDE the guard — still crashes on the "
+        "plate path"
+    )
+    assert ambient.index("if (!plateReady)") < ambient.index("applySwell(tier)")
+
+
+def _swell_driver(*, plate_ready: bool) -> str:
+    """The page's own `applySwell`, run against the real manifest's `glow`
+    rects and the real `room_light` ramp — only `PIXI.Graphics` and
+    `layers.swell` are stubbed, and the stub records what was actually
+    drawn rather than asserting on source text.
+    """
+    from world.visuals import room_light
+
+    source = _world_source()
+    glow = _manifest()["glow"]
+    return (
+        f"const PLATE = {json.dumps({'glow': glow})};\n"
+        f"const plateReady = {str(plate_ready).lower()};\n"
+        f"const ROOM_LIGHT = {json.dumps([room_light(t) for t in range(4)])};\n"
+        "class FakeGraphics {\n"
+        "  constructor() { this.rects = []; this.fills = []; this.blendMode = null; }\n"
+        "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
+        "  fill(opts) { this.fills.push(opts); return this; }\n"
+        "}\n"
+        "const PIXI = { Graphics: FakeGraphics };\n"
+        "const layers = { swell: { children: [],\n"
+        "  removeChildren() { this.children = []; },\n"
+        "  addChild(c) { this.children.push(c); } } };\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "SWELL_COLOR")
+        + "\n"
+        + _js_const(source, "SWELL_LIFT_TO_ALPHA")
+        + "\n"
+        + _js_block(source, "function applySwell(")
+        + "\n"
+    )
+
+
+@needs_node
+def test_the_swell_brightens_monotonically_across_all_four_tiers():
+    """Override 4's acceptance question: a real tier-3 event still has to
+    read as a moment even inside a richer, painted room. Runs the real
+    `applySwell` against the real manifest's `glow` rects for every tier and
+    checks what it actually painted — not a claim about the source text.
+    """
+    glow = _manifest()["glow"]
+    assert glow, "no glow rects in the manifest — this test would be vacuous"
+
+    driver = _swell_driver(plate_ready=True) + (
+        "const out = [];\n"
+        "for (let tier = 0; tier < 4; tier++) {\n"
+        "  applySwell(tier);\n"
+        "  out.push(layers.swell.children.map((c) => ({\n"
+        "    fill: c.fills[c.fills.length - 1], blend: c.blendMode,\n"
+        "  })));\n"
+        "}\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    emitted = _run_node(driver)
+    assert len(emitted) == 4
+    for per_tier in emitted:
+        assert len(per_tier) == len(glow), (
+            "applySwell must draw exactly one glow per manifest glow rect"
+        )
+        for rect in per_tier:
+            assert rect["blend"] == "add"
+
+    # Monotonic per rect: the alpha painted over the SAME glow rect must rise
+    # with tier, never fall or flatten — the ramp's own monotonicity
+    # (test_visuals_ramp_is_shared.py) is necessary but not sufficient; this
+    # is the proof that applySwell actually passes it through.
+    for i in range(len(glow)):
+        alphas = [emitted[tier][i]["fill"]["alpha"] for tier in range(4)]
+        assert alphas == sorted(alphas), (i, alphas)
+        assert len(set(alphas)) > 1, f"glow rect {i} never brightens at all"
+
+    # Colour must not drift with tier: brightening has to come from alpha,
+    # not hue, or the "desk lamp stays amber at every tier" claim is false.
+    for i in range(len(glow)):
+        colors = {emitted[tier][i]["fill"]["color"] for tier in range(4)}
+        assert len(colors) == 1, f"glow rect {i} changes colour across tiers: {colors}"
+
+
+@needs_node
+def test_the_no_plate_path_never_populates_the_swell_layer():
+    """Override 2: with no plate, `applySwell` must be a no-op — the
+    procedural room keeps the ambient tint/alpha animation it already has,
+    left exactly as it is by this ticket."""
+    driver = _swell_driver(plate_ready=False) + (
+        "const out = [];\n"
+        "for (let tier = 0; tier < 4; tier++) {\n"
+        "  applySwell(tier);\n"
+        "  out.push(layers.swell.children.length);\n"
+        "}\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted == [0, 0, 0, 0]
