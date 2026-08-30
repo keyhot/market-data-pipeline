@@ -255,18 +255,28 @@ def test_the_seat_is_a_rect_inside_the_canvas():
 @needs_node
 def test_the_seated_rig_fits_inside_the_manifest_seat():
     """The check `test_the_seated_rig_fits_inside_the_painted_seat_not_just_
-    the_backrest` (tests/api/test_world_page.py) runs, except the seat width
-    now comes from THIS manifest instead of a constant duplicated in that
-    test file - so a repaint that moves or narrows the chair has exactly one
-    number to update, and a stale one is what this test catches.
+    the_backrest` (tests/api/test_world_page.py) runs, except the seat comes
+    from THIS manifest instead of a constant duplicated in that test file -
+    so a repaint that moves or narrows the chair has exactly one number to
+    update, and a stale one is what this test catches.
+
+    Review round 2, Finding 4: an aggregate width check (`rig width <= seat
+    width`) is position-blind - it stayed green while the rig, composited on
+    the anchor (`cast.trader.x`), sat measurably off the seat this file
+    measured. Composites the rig at the manifest's own anchor the same way
+    `positionCharacters` does (`container.x` = the anchor, every local
+    coordinate scaled by CAST_SCALE from there) and checks both edges
+    against the seat rect, not just their difference.
 
     Mutation-checked against a deliberately mis-measured manifest: narrowing
-    `seat.width` below the rig's real extent must fail this test, or the
-    check is decorative. (Verified by hand during review, not asserted here
-    - asserting a specific narrowed value would just be a second magic
-    number standing in for the first one review round 1 objected to.)
+    `seat.width` below the rig's real extent, and shifting `cast.trader.x`
+    off-centre, must each fail this test, or the check is decorative.
+    (Verified by hand during review, not asserted here - asserting a
+    specific mis-measured value would just be a second magic number
+    standing in for the first one review round 1 objected to.)
     """
     manifest = load_manifest()
+    anchor_x = manifest.cast["trader"]["x"]
     seat = manifest.cast["trader"]["seat"]
     source = WORLD_TEMPLATE.read_text()
 
@@ -297,18 +307,21 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     driver += """
         const accents = [];
         seatedRig(fakeGfx, accents);
-        function extent(calls, offset) {
-          let widest = 0;
+        function range(calls, offset) {
+          let lo = Infinity, hi = -Infinity;
           for (const [x, w] of calls) {
-            widest = Math.max(widest, Math.abs(offset + x), Math.abs(offset + x + w));
+            lo = Math.min(lo, offset + x);
+            hi = Math.max(hi, offset + x + w);
           }
-          return widest;
+          return [lo, hi];
         }
-        let widest = extent(bodyCalls, 0);
+        let [lo, hi] = range(bodyCalls, 0);
         for (const accent of accents) {
-          widest = Math.max(widest, extent(accent.calls, accent.x));
+          const [alo, ahi] = range(accent.calls, accent.x);
+          lo = Math.min(lo, alo);
+          hi = Math.max(hi, ahi);
         }
-        console.log(JSON.stringify({ widest, castScale: CAST_SCALE }));
+        console.log(JSON.stringify({ lo, hi, castScale: CAST_SCALE }));
     """
 
     result = subprocess.run(
@@ -316,9 +329,14 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     )
     assert result.returncode == 0, result.stderr
     emitted = json.loads(result.stdout)
-    # widest is a half-width
-    rig_width_screen = emitted["widest"] * emitted["castScale"] * 2
-    assert rig_width_screen <= seat["width"], (
-        f"the seated rig is {rig_width_screen}px wide at CAST_SCALE "
-        f"{emitted['castScale']} - wider than the manifest's {seat['width']}px seat"
+    left_screen = anchor_x + emitted["lo"] * emitted["castScale"]
+    right_screen = anchor_x + emitted["hi"] * emitted["castScale"]
+    assert left_screen >= seat["x"], (
+        f"the seated rig's left edge is at screen x={left_screen} - "
+        f"{seat['x'] - left_screen}px past the seat's left edge ({seat['x']})"
+    )
+    assert right_screen <= seat["x"] + seat["width"], (
+        f"the seated rig's right edge is at screen x={right_screen} - "
+        f"{right_screen - seat['x'] - seat['width']}px past the seat's "
+        f"right edge ({seat['x'] + seat['width']})"
     )

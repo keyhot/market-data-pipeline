@@ -2024,19 +2024,28 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     fault. The reviewer's own arithmetic - chest width 58 units was 87px at
     1.5 AND 78.3px at the pre-ticket 1.35 (break-even is 75/58=1.293, under
     both) - proves the rig's own local width was the defect, not the scale
-    review round 1 of Task 6 chose. So this asserts the WIDTH budget directly
-    against the rig's real geometry, not a screenshot: every `roundRect` call
-    `seatedRig` makes (thighs/waist/chest onto the fake `body`, and each
-    arm's own call onto its own fake `PIXI.Graphics`, offset by the `arm.x`
-    the real function sets) is recorded, and the widest extent across all of
-    them - computed, not eyeballed - is what gets checked against the seat.
+    review round 1 of Task 6 chose. So this asserts the rig's real geometry,
+    not a screenshot: every `roundRect` call `seatedRig` makes (thighs/waist/
+    chest onto the fake `body`, and each arm's own call onto its own fake
+    `PIXI.Graphics`, offset by the `arm.x` the real function sets) is
+    recorded, and the LEFT and RIGHT extent across all of them - computed,
+    not eyeballed - is what gets checked.
 
-    The seat width itself is read from `PLATE.cast.trader.seat` (the
-    manifest, `api/static/world-plate-btc-eth.json`) - review round 1's
-    correction: the reviewer's first instruction named that field before it
-    existed, so it was added there rather than left as a literal here. This
-    test's own JS driver still runs with `PLATE = null` (it is exercising
-    the CELL/CAST_SCALE fallback literals, unrelated to the seat), so the
+    Review round 2, Finding 4: an aggregate width check (`rig width <= seat
+    width`) is position-blind - it passed while the rig, composited on the
+    unchanged anchor `cast.trader.x`, sat measurably off the seat the ticket
+    had just measured (left edge ~5px past the cushion's real left edge,
+    ~12px of slack on the right - the reviewer's own trace). This composites
+    the rig at the manifest's own anchor (`positionCharacters` places
+    `container.x` there) and checks BOTH edges against the seat rect, not
+    just their difference.
+
+    The seat itself is read from `PLATE.cast.trader.seat` (the manifest,
+    `api/static/world-plate-btc-eth.json`) - review round 1's correction:
+    the reviewer's first instruction named that field before it existed, so
+    it was added there rather than left as a literal here. This test's own
+    JS driver still runs with `PLATE = null` (it is exercising the
+    CELL/CAST_SCALE fallback literals, unrelated to the seat), so the
     manifest is read on the Python side, the same way `_manifest()` already
     reads `cast`/`bands`/`tubes` for every other plate-derived test in this
     file. `tests/unit/test_plate_manifest.py::test_the_seated_rig_fits_
@@ -2074,26 +2083,37 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         + """
         const accents = [];
         seatedRig(fakeGfx, accents);
-        function extent(calls, offset) {
-          let widest = 0;
+        function range(calls, offset) {
+          let lo = Infinity, hi = -Infinity;
           for (const [x, w] of calls) {
-            widest = Math.max(widest, Math.abs(offset + x), Math.abs(offset + x + w));
+            lo = Math.min(lo, offset + x);
+            hi = Math.max(hi, offset + x + w);
           }
-          return widest;
+          return [lo, hi];
         }
-        let widest = extent(bodyCalls, 0);
+        let [lo, hi] = range(bodyCalls, 0);
         for (const accent of accents) {
-          widest = Math.max(widest, extent(accent.calls, accent.x));
+          const [alo, ahi] = range(accent.calls, accent.x);
+          lo = Math.min(lo, alo);
+          hi = Math.max(hi, ahi);
         }
-        console.log(JSON.stringify({ widest, castScale: CAST_SCALE }));
+        console.log(JSON.stringify({ lo, hi, castScale: CAST_SCALE }));
         """
     )
     emitted = _run_node(driver)
-    # widest is a half-width
-    screen_width = emitted["widest"] * emitted["castScale"] * 2
-    seat_width = _manifest()["cast"]["trader"]["seat"]["width"]
-    assert screen_width <= seat_width, (
-        f"the seated rig's widest extent is {emitted['widest']} local units "
-        f"({screen_width}px at CAST_SCALE {emitted['castScale']}) - wider "
-        f"than the manifest's {seat_width}px painted seat"
+    manifest = _manifest()
+    anchor_x = manifest["cast"]["trader"]["x"]
+    seat = manifest["cast"]["trader"]["seat"]
+    # `positionCharacters` places `container.x` at the anchor; every local
+    # coordinate `seatedRig` draws is relative to that, scaled by CAST_SCALE.
+    left_screen = anchor_x + emitted["lo"] * emitted["castScale"]
+    right_screen = anchor_x + emitted["hi"] * emitted["castScale"]
+    assert left_screen >= seat["x"], (
+        f"the seated rig's left edge is at screen x={left_screen} - "
+        f"{seat['x'] - left_screen}px past the seat's left edge ({seat['x']})"
+    )
+    assert right_screen <= seat["x"] + seat["width"], (
+        f"the seated rig's right edge is at screen x={right_screen} - "
+        f"{right_screen - seat['x'] - seat['width']}px past the seat's "
+        f"right edge ({seat['x'] + seat['width']})"
     )
