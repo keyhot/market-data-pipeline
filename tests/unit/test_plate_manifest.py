@@ -16,6 +16,7 @@ import subprocess
 import pytest
 from PIL import Image
 
+from world import monitors
 from world.plate import (
     DEFAULT_MANIFEST_PATH,
     load_manifest,
@@ -70,6 +71,23 @@ def test_the_shipped_manifest_loads():
     assert manifest is not None
     assert manifest.canvas == (1920, 960)
     assert manifest.cell == 4
+
+
+def test_the_manifests_cell_agrees_with_the_one_python_bakes_into_the_js():
+    """`CELL` has three definitions that all have to agree: `monitors.CELL`
+    (baked as a literal into the `barsThatFit`/`isDrawable` JS `rules_js()`
+    generates), `MONITOR_RULES.cell` (the same constant, injected as data),
+    and the page's own `const CELL = (PLATE && PLATE.cell) || 4;` (read from
+    THIS manifest). `drawCandles` mixes sources - pitch/pad/`yOf` use the
+    page's `CELL` (so the manifest's value), `barsThatFit`/`isDrawable` use
+    Python's baked literal - so a repaint that changed `cell` without a
+    matching code change would double the layout pitch without changing how
+    many bars the fit-count rule believes fit. A schema check on the
+    manifest alone can't see that; this pins the one thing that keeps it from
+    happening silently.
+    """
+    manifest = load_manifest()
+    assert manifest.cell == monitors.CELL
 
 
 def test_the_manifest_names_the_plate_beside_it():
