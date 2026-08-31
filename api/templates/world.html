@@ -153,7 +153,7 @@
     // literal 4 when there is no plate (PLATE is null): CELL must not throw
     // on the no-manifest path any more than anchorFor does. Top-level scope,
     // not inside boot(), so playAnimation, the cast helpers, and (Tasks 7/8)
-    // drawCandles/applySwell can all reach it.
+    // drawCandles/applyGlow can all reach it.
     const CELL = (PLATE && PLATE.cell) || 4;
     function snap(v) { return Math.round(v / CELL) * CELL; }
 
@@ -222,13 +222,13 @@
       // Below the room: the painted backdrop, when there is one.
       layers.plate = new PIXI.Container();
       layers.room = new PIXI.Container();
-      // Task 9: additive light (applySwell) falls ON the room but must never
+      // Task 9: additive light (applyGlow) falls ON the room but must never
       // land over the cast's faces, so it sits above layers.room — and,
       // since M2's live chart candles (layers.monitors) must never be washed
       // out by the glow, this sits below that layer too.
-      layers.swell = new PIXI.Container();
+      layers.glow = new PIXI.Container();
       // M2: the monitors get their OWN container, a stage sibling exactly
-      // like layers.swell — built once (buildMonitorGraphics, called from
+      // like layers.glow — built once (buildMonitorGraphics, called from
       // drawPlate's success path) and never wiped by anyone else. It does
       // NOT share layers.props: that container has a per-cycle
       // wipe-and-rebuild contract (drawPillars calls removeChildren() on
@@ -236,7 +236,7 @@
       // never cleared" — putting both contracts in one container is how a
       // future props consumer forgets to preserve the monitors and the room
       // goes blank on air with no text-reading test able to see it. Placed
-      // above swell (so glow never washes the candles out) and below props
+      // above layers.glow (so it never washes the candles out) and below props
       // (so pillars/labels still paint over it exactly as before, since they
       // never spatially overlap the painted screens anyway).
       layers.monitors = new PIXI.Container();
@@ -250,12 +250,12 @@
       layers.shadows = new PIXI.Container();
       layers.chars.addChild(layers.shadows);
       app.stage.addChild(
-        layers.plate, layers.room, layers.swell, layers.monitors,
+        layers.plate, layers.room, layers.glow, layers.monitors,
         layers.props, layers.chars);
       // Pixel-art rule: no sub-pixel compositing for anything the cast or its
       // furniture draws. The plate and the vignette stay off this list on
       // purpose — they are painted art and a soft light falloff, not part of
-      // the grid. The swell layer is additive light too, for the same reason.
+      // the grid. The glow layer is additive light too, for the same reason.
       layers.chars.roundPixels = true;
       layers.props.roundPixels = true;
       layers.monitors.roundPixels = true;
@@ -506,14 +506,21 @@
         // one thing guaranteed to make it look worse than the room it replaces.
         texture.source.scaleMode = "nearest";
         layers.plate.addChild(sprite);
-        plateReady = true;
         // Built once, right here — never inside the per-frame ticker. See
-        // buildSwellGlows's own comment for why.
-        buildSwellGlows();
+        // buildGlows's own comment for why.
+        buildGlows();
         // M2: one Graphics per painted monitor, same "build once" rule —
         // never inside drawCandles or the poll loop. See buildMonitorGraphics
         // below.
         buildMonitorGraphics();
+        // Claimed only once BOTH builders have actually succeeded — not
+        // before them. Every other read of `plateReady` (the vignette gate,
+        // applyGlow, drawCandles) treats it as "the room is safe to light as
+        // painted"; claiming it before the builders ran let a throw inside
+        // either leave the flag true while the catch below drew the
+        // procedural room on top of the still-added plate sprite — plate and
+        // procedural room composited together, a darkened double-exposure.
+        plateReady = true;
         // The plate reserves a quiet strip at the top for the newcomer line.
         // Bind the banner to the measurement so a repaint moves the text with
         // the art instead of hanging it over a painted detail.
@@ -530,6 +537,12 @@
         // texture, and a reload storm against a 404 helps nobody (the cap in
         // retryBoot exists for exactly that). Degrade and carry on.
         console.warn("plate failed to load", err);
+        // `plateReady` is still false here by construction (see the comment
+        // above) — but the sprite may already be sitting in `layers.plate`
+        // if the throw came from a builder rather than the texture load
+        // itself. Strip it before drawing the fallback, or the room reads as
+        // plate-and-procedural-room composited rather than a clean degrade.
+        layers.plate.removeChildren();
         drawProceduralRoom();
       }
     }
@@ -1325,6 +1338,17 @@
                               c.head.rotation = 0.22 * u;
                               c.head.y = snap(c.headBaseY + CELL * 3 * u);
                               setBlink(c, u > 0.5); },
+      // `trader_milestone`'s own beat, not borrowed: both forearms pump up
+      // together, twice within the phase — the double-lift standing `cheer`
+      // uses — kept off `container` so the trader stays seated at the desk
+      // it just closed a profitable position at. `trader_opened` fires on
+      // every cold sidecar start, so unlike the other trader_* reactions
+      // this one is guaranteed to run the moment the opt-in profile is ever
+      // enabled, and "proud" deserves to read as distinct from "resigned".
+      cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2)) * a;
+                              c.armNear.rotation = (c.armNear.restRotation ?? 0) - u * 0.5;
+                              c.armFar.rotation = (c.armFar.restRotation ?? 0) + u * 0.5;
+                              c.body.y = snap(-u * CELL); },
     };
     // The registry (world/reactions.py) dispatches `sleep`/`shrug`, never
     // the literal `asleep`/`gesture` — aliased onto the names that actually
@@ -1333,6 +1357,20 @@
     // table exists to stop.
     SEATED_ANIMATIONS.sleep = SEATED_ANIMATIONS.asleep;
     SEATED_ANIMATIONS.shrug = SEATED_ANIMATIONS.gesture;
+    // `trader_*` (world/reactions.py: trader_opened -> step, trader_closed ->
+    // turn, trader_milestone -> cheer) is the vocabulary EVERY event routed
+    // to the trader can carry — `react()` sends every trader_* type there,
+    // never through `model`. None of `step`/`turn` had a seated match: a
+    // standing `step` slides the body 26px off the cushion, and `turn`
+    // squashes `scale.x` to 0.4 inside a full-width chair — both landed on
+    // `container`, the exact write this table exists to stop. `step`
+    // ("decisive") reuses the seated lean; `turn` ("weighing") reuses the
+    // seated gesture — a considering forearm motion reads as weighing a
+    // decision at least as well as it reads as a shrug. `cheer` is defined
+    // directly above rather than aliased: milestones are the one distinctly
+    // celebratory trader reaction and deserve their own beat.
+    SEATED_ANIMATIONS.step = SEATED_ANIMATIONS.lean;
+    SEATED_ANIMATIONS.turn = SEATED_ANIMATIONS.gesture;
 
     function restCharacter(char) {
       if (char.container.pose === "seated") {
@@ -1700,14 +1738,14 @@
           // tint/alpha room animation, left exactly as it was.
           vignette.alpha = ambient.light.vignette;
         }
-        // The plate can't be tinted (Task 9): applySwell is a no-op of its
+        // The plate can't be tinted (Task 9): applyGlow is a no-op of its
         // own accord when there is no plate, so it is safe to call every
         // tick either way. `ambient.light.lift` — the EASED value from the
         // loop above — not `want.lift`/`ROOM_LIGHT[tier].lift`: reading the
         // ramp's raw target here would snap the glow to full brightness in
         // one frame while the vignette/warmth/background dimming beside it
         // keep easing for four more seconds. Two speeds for one swell.
-        applySwell(ambient.light.lift);
+        applyGlow(ambient.light.lift);
 
         // Colour temperature: warm as selling pressure builds, cool as it eases.
         // Tier warmth composes on top rather than replacing it — pressure is
@@ -1747,54 +1785,60 @@
 
     // Task 9: the plate is painted, so the room can no longer be tinted —
     // multiplying a pixel-art texture destroys the one detail (the amber
-    // desk lamp) that makes the room feel lived in. The swell instead ADDS
+    // desk lamp) that makes the room feel lived in. The glow instead ADDS
     // light to the surfaces the plate deliberately left blank: the dark
     // monitors and the tube housings, listed in the manifest as
     // `PLATE.glow`. A fixed, room-local accent — never the ramp's colour
     // temperature — so the lamp's own painted hue can't drift with tier;
     // only how brightly the room lights it does. Pinned equal to
     // world.visuals.PALETTE["accent"] by
-    // tests/api/test_world_page.py::test_swell_color_matches_the_shared_accent
+    // tests/api/test_world_page.py::test_glow_color_matches_the_shared_accent
     // rather than injected: this value is deliberately room-local (Override
     // 1 — the fewer things this canvas reads out of the shared theme
     // module, the smaller the KI-019 surface), so a test pins the match
     // instead of a new placeholder wiring the two together at runtime.
-    const SWELL_COLOR = 0xf0b90b;
+    const GLOW_COLOR = 0xf0b90b;
     // Room-local scale from the eased `lift` (0 at tier 0, ~0.22 at tier 3)
     // to a visible additive alpha. Deliberately not a copy of the ramp
     // itself — retuning this number changes only this canvas, never the
     // theme vars block or the overlays that read `room_light` directly
     // (KI-019's family).
-    const SWELL_LIFT_TO_ALPHA = 3;
+    const GLOW_LIFT_TO_ALPHA = 3;
 
     // Built once, the moment the plate becomes ready (drawPlate, above) —
-    // never inside the per-frame ticker. `applySwell` runs ~60x/sec, and a
+    // never inside the per-frame ticker. `applyGlow` runs ~60x/sec, and a
     // `new PIXI.Graphics()` per glow rect at that rate is exactly the
     // "full-canvas Graphics rebuilt per frame" cost B2's own comment (above,
     // "the room is built ONCE") warns against, on a box that also encodes
     // 1080p. `ambient.drift`'s dots and the vignette already show the right
     // shape for this ticker — build once, mutate a property per tick — so
-    // the swell glows follow the same rule.
-    let swellGlows = [];
+    // the glow's own Graphics follow the same rule.
+    let glows = [];
 
-    function buildSwellGlows() {
-      swellGlows = PLATE.glow.map((rect) => {
+    function buildGlows() {
+      // Defensive, not load-bearing today: the only caller is drawPlate's
+      // try block, once. But a half-thrown call (this map throws partway
+      // through, e.g. a bad rect) or a future retry path calling it twice
+      // would otherwise leave orphaned Graphics stacked in layers.glow —
+      // this makes a second call start clean instead of accumulating.
+      layers.glow.removeChildren();
+      glows = PLATE.glow.map((rect) => {
         const glow = new PIXI.Graphics()
           .rect(snap(rect.x), snap(rect.y), snap(rect.w), snap(rect.h))
-          .fill({ color: SWELL_COLOR, alpha: 1 });
+          .fill({ color: GLOW_COLOR, alpha: 1 });
         glow.blendMode = "add";
-        glow.alpha = 0;              // applySwell sets the real value per tick
-        layers.swell.addChild(glow);
+        glow.alpha = 0;              // applyGlow sets the real value per tick
+        layers.glow.addChild(glow);
         return glow;
       });
     }
 
     // `lift` must be the EASED `ambient.light.lift`, never `ROOM_LIGHT[tier]
     // .lift` directly — see the ticker's own call site for why.
-    function applySwell(lift) {
+    function applyGlow(lift) {
       if (!plateReady) return;   // no plate: nothing was ever built to light
-      const alpha = Math.min(1, lift * SWELL_LIFT_TO_ALPHA);
-      for (const glow of swellGlows) glow.alpha = alpha;
+      const alpha = Math.min(1, lift * GLOW_LIFT_TO_ALPHA);
+      for (const glow of glows) glow.alpha = alpha;
     }
 
     // --- M2: live candles in the painted monitors -------------------------
@@ -1820,7 +1864,7 @@
     __MONITOR_JS__
 
     // One Graphics per painted screen, created ONCE — on the plate-success
-    // path, right after buildSwellGlows() — and only cleared/redrawn per
+    // path, right after buildGlows() — and only cleared/redrawn per
     // poll. Rebuilding Graphics every tick or every poll is exactly what B2
     // warned would cost the stream frames on a box that also encodes 1080p.
     const monitorGraphics = {};
