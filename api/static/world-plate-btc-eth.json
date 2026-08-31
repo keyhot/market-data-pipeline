@@ -1,0 +1,34 @@
+{
+  "plate": "world-plate-btc-eth.png",
+  "canvas": [1920, 960],
+  "cell": 4,
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "tubes": [
+    {"symbol": "BTCUSDT", "x": 552, "base_y": 719, "height": 315, "width": 57},
+    {"symbol": "ETHUSDT", "x": 650, "base_y": 691, "height": 300, "width": 57}
+  ],
+  "spare_tubes": [
+    {"x": 1191, "base_y": 449, "height": 280, "width": 46},
+    {"x": 1252, "base_y": 428, "height": 290, "width": 45}
+  ],
+  "cast": {
+    "model": {"x": 360, "base_y": 830, "pose": "standing"},
+    "trader": {"x": 1339, "base_y": 682, "pose": "seated",
+     "seat": {"x": 1299, "y": 682, "width": 79}}
+  },
+  "screens": [
+    {"id": "centre-left", "x": 463, "y": 116, "w": 344, "h": 234,
+     "quad": [[463, 116], [807, 98], [807, 350], [463, 350]],
+     "role": "chart", "symbol": "BTCUSDT"},
+    {"id": "centre-right", "x": 854, "y": 95, "w": 296, "h": 209,
+     "quad": [[854, 95], [1150, 79], [1150, 304], [854, 304]],
+     "role": "chart", "symbol": "ETHUSDT"}
+  ],
+  "glow": [
+    {"id": "centre-left", "x": 463, "y": 116, "w": 344, "h": 234},
+    {"id": "centre-right", "x": 854, "y": 95, "w": 296, "h": 209},
+    {"id": "tubes-floor", "x": 515, "y": 380, "w": 175, "h": 380},
+    {"id": "tubes-desk", "x": 1160, "y": 120, "w": 122, "h": 340}
+  ],
+  "bands": {"top": 60, "bottom": 105}
+}

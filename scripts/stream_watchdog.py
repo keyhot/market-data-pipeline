@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,6 +80,48 @@ class WatchdogConfig:
     # less believable, which is the opposite of the point. Three consecutive
     # failures (~90s) is a real outage, not a restart.
     content_failures_before_drop: int = 3
+    # KI-046: a renderer that fails to boot is invisible to every other check —
+    # OBS reported `streaming: true` at a 0.007% drop ratio and /health was
+    # green for the two hours a white frame went out. `/health`'s `data.renderer`
+    # answers for it now; this is the host whose verdict is read.
+    #
+    # ONE host, named here, never the fleet-wide `data.renderer.healthy`. That
+    # flag folds every page that has ever posted a beat and is documented as
+    # advisory for exactly that reason: a developer tab on localhost:8000 that
+    # beats once and closes goes stale at 45s and lingers until it is pruned at
+    # 600s, dragging the fleet verdict false for up to nine minutes while every
+    # on-air shard is fine. A watchdog reading it would write a `renderer_blank`
+    # row into an append-only log on a healthy stream (the KI-038 class of bug).
+    #
+    # `None` — the default, and the state of every deployment until an operator
+    # sets it — makes the probe decline to answer at all: no `renderer_ok` key,
+    # so `_check_renderer` counts nothing and records nothing. The fleet verdict
+    # is NOT used as a fallback; it is advisory, and nothing the probe returns
+    # is. An unconfigured watchdog therefore does not guard the room at all:
+    # setting this is what arms KI-046's guard, and a silent half-guard that
+    # cried wolf would be worse than an unarmed one.
+    #
+    # The on-air value comes from the environment because it is deployment
+    # configuration: `world-room` is sharded onto 127.0.0.4:8000 by
+    # scripts/stream_scene.py (KI-013), and **if that sharding changes this must
+    # change with it**. Set WATCHDOG_RENDERER_HOST in the watchdog's `.env`
+    # (its systemd unit reads that file).
+    renderer_host: str | None = None
+    # Same debounce reasoning as content: three consecutive failures (~90s at a
+    # 30s poll) is a real outage. It doubles as the grace period — the page
+    # beats every 15s, so no restart of the API, OBS or the watchdog can leave a
+    # gap long enough to manufacture an outage.
+    renderer_failures_before_drop: int = 3
+    # The browser source Task 16 reloads to recover the room. Declared with the
+    # rule that decides it; nothing reads it yet.
+    renderer_source: str = "world-room"
+    # KI-046's self-heal is "once per outage" only when the press SUCCEEDS —
+    # a press that throws (a renamed source, a flapping obs-websocket) clears
+    # the latch in execute_actions so the outage can try again, and without a
+    # ceiling that retry fires every poll for the entire outage: a new
+    # websocket client built and an exception logged every 30s against a
+    # fault that was never going to clear itself. Capped, not uncapped-but-rare.
+    max_renderer_refresh_attempts: int = 3
 
 
 @dataclass
@@ -109,6 +152,23 @@ class WatchdogState:
     content_ok: bool = True
     content_failures: int = 0
     content_down_since: float | None = None
+    # KI-046: and renderer health is tracked separately again — the room can be
+    # blank while the output is live and the content is reachable. Starting
+    # `renderer_ok=True` with zero failures is what makes the debounce a grace
+    # period for a restarted watchdog.
+    renderer_ok: bool = True
+    renderer_failures: int = 0
+    renderer_down_since: float | None = None
+    # When the source was last reloaded in the current outage, and `None` once
+    # it recovers. This IS the rate limit: one refresh per outage — but only
+    # while the press keeps succeeding; a failing press clears it back to
+    # `None` (see execute_actions) so the outage can try again.
+    renderer_refreshed_at: float | None = None
+    # How many times THIS outage has offered a refresh, success or failure —
+    # the ceiling on the retry `renderer_refreshed_at` alone cannot cap once
+    # the press itself is what's failing. Reset to 0 on recovery, same as
+    # `renderer_refreshed_at`.
+    renderer_refresh_attempts: int = 0
 
 
 def tick(
@@ -155,6 +215,7 @@ def tick(
             state.on_standby = False
         actions.extend(_note_reconnect(probe, state))
         actions.extend(_check_content(probe, state, config, now))
+        actions.extend(_check_renderer(probe, state, config, now))
         ratio = probe.get("dropped_ratio", 0.0)
         total = int(probe.get("total_frames") or 0)
         # KI-021: the rule may only speak once its denominator means something.
@@ -350,6 +411,118 @@ def _check_content(
             )
         ]
     return []
+
+
+def _check_renderer(
+    probe: dict, state: WatchdogState, config: WatchdogConfig, now: float
+) -> list[tuple]:
+    """KI-046: is the room actually reaching the screen? Pure.
+
+    A PixiJS page that throws during boot leaves a white frame, and nothing in
+    this project could see that: OBS reported `streaming: true` at a 0.007% drop
+    ratio, `/health` was green, and two hours of blank video went out. The page
+    now posts a heartbeat carrying a frame counter incremented inside its render
+    loop, so a page whose `setInterval` still fires over a dead renderer reports
+    a *frozen* count rather than health.
+
+    A blank room is REAL downtime, on the `content_unreachable` side of the line
+    and deliberately not in `world.state.STREAM_DEGRADED_REASONS`: pixels going
+    out with nothing on them is dark air, and it must cost uptime.
+
+    Recovery is recorded as `stream_started`, not `stream_reconnected`, for the
+    reason `_check_content` gives above — the fold's vocabulary is "dropped
+    opens downtime, started closes it". It is also the only thing that *works*:
+    `is_degraded_stream_event` is True for `stream_reconnected` at the TYPE
+    level whatever its reason, so a `renderer_restored` reconnect would leave
+    the outage open to the end of the report window in `compute_uptime`, pin
+    /world's stream state at "down" forever, and inflate the KI-021 reconnect
+    count with events that were never RTMP re-dials.
+
+    Absence of a verdict is not a verdict. When `renderer_ok` is missing the
+    rule does nothing at all — no failure counted, no recovery declared. That is
+    the state whenever `probe_content` bailed out early (the API is unreachable,
+    which is already recorded as a content outage) and whenever it was never
+    called (OBS is down, recorded as its own outage). Forcing `True` there
+    instead would let a dead API *close* an open renderer outage — `tick` runs
+    the content check first, so the same tick would open a content outage and
+    then emit the `stream_started` that closes it — understating downtime,
+    which is the direction that flatters.
+
+    Like `_check_content`, this never triggers a restart. Task 16 adds the
+    recovery action; this one records the truth.
+    """
+    healthy = probe.get("renderer_ok")
+    if healthy is None:
+        return []
+
+    if healthy:
+        state.renderer_failures = 0
+        if not state.renderer_ok:
+            payload = {"reason": "renderer_restored"}
+            if state.renderer_down_since is not None:
+                payload["outage_seconds"] = round(now - state.renderer_down_since, 1)
+                state.renderer_down_since = None
+            if state.renderer_refreshed_at is not None:
+                payload["refreshed"] = True
+                # Re-arm the cheap fix: once per outage, not once per process.
+                state.renderer_refreshed_at = None
+            # The retry ceiling is per-outage too — a recovery (however it
+            # happened) means the NEXT outage starts with a clean budget.
+            state.renderer_refresh_attempts = 0
+            state.renderer_ok = True
+            return [("record", "stream_started", payload)]
+        return []
+
+    state.renderer_failures += 1
+    actions: list[tuple] = []
+    if (
+        state.renderer_ok
+        and state.renderer_failures >= config.renderer_failures_before_drop
+    ):
+        state.renderer_ok = False
+        state.renderer_down_since = now
+        actions.append(
+            (
+                "record",
+                "stream_dropped",
+                {
+                    "reason": "renderer_blank",
+                    "detail": probe.get("renderer_detail", "unknown"),
+                    "consecutive_failures": state.renderer_failures,
+                },
+            )
+        )
+
+    # The cheapest thing that could work, once per outage. A blank page usually
+    # recovers from a reload, and a reload costs the stream nothing that is
+    # currently working — unlike an OBS relaunch, which takes the encoder, every
+    # other source and the RTMP session with it. Latched, because a page that is
+    # broken rather than stuck would otherwise be reloaded every 30s forever:
+    # KI-015's shape, the recovery becoming the fault.
+    #
+    # Deliberately NOT inside the branch above. The latch is cleared when a
+    # press fails (see `execute_actions`), and the branch above runs once per
+    # outage — so a refresh that never happened could never be retried from
+    # there, and one transient obs-websocket error would cost the whole outage
+    # its cheap fix. Here, an outage with a spent latch re-offers exactly when
+    # the attempt did not land.
+    #
+    # But a PERMANENTLY failing press (renamed source, an obs-websocket that
+    # never stops flapping) would re-offer every single tick for the rest of
+    # the outage with no ceiling on the latch alone — a new client built and
+    # an exception logged every 30s against a fault that was never going to
+    # clear. `max_renderer_refresh_attempts` bounds it; past the cap the
+    # outage is still recorded and still recovers on its own, it just stops
+    # being hammered with reload attempts that keep not landing.
+    if (
+        not state.renderer_ok
+        and state.renderer_refreshed_at is None
+        and state.renderer_refresh_attempts < config.max_renderer_refresh_attempts
+    ):
+        state.renderer_refreshed_at = now
+        state.renderer_refresh_attempts += 1
+        actions.append(("refresh_source", config.renderer_source))
+    return actions
 
 
 def _restart_allowed(
@@ -725,6 +898,15 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
     `data.postgres.connected` must be `True`. `None` there means writes are
     disabled, which for a stream whose world log is the show is not healthy
     either.
+
+    KI-046: the same response also answers for the renderer, so that verdict is
+    read here rather than in a second request. The failure paths below carry no
+    renderer key on purpose — a probe that could not read the endpoint has no
+    opinion about the room, and saying either "fine" or "blank" would be an
+    invention. `_check_renderer` treats a missing key as "no verdict". An
+    unconfigured `renderer_host` returns no key for the same reason: the only
+    thing left to read there is the advisory fleet verdict, and this function's
+    output is not advisory.
     """
     opener = opener or urllib.request.urlopen
     try:
@@ -743,7 +925,120 @@ def probe_content(config: WatchdogConfig, opener=None) -> dict:
             "content_ok": False,
             "content_detail": f"postgres connected={postgres.get('connected')!r}",
         }
-    return {"content_ok": True}
+
+    renderer = ((body.get("data") or {}).get("renderer") or {})
+    if not config.renderer_host:
+        # No shard named, no opinion — a rule, not a shortcut. `/health`'s own
+        # `healthy` folds every page that ever posted a beat with `all()`, so a
+        # tab opened on localhost:8000 and closed goes stale at 45s and lingers
+        # until the 600s prune, dragging the fleet verdict false for ~9 minutes
+        # while every on-air shard is fine. Nothing this function returns is
+        # advisory — `_check_renderer` RECORDS on it, into an append-only log
+        # (the KI-038 class). So the unconfigured default says nothing at all
+        # rather than something it cannot stand behind.
+        return {"content_ok": True}
+
+    # One host, named by config: a developer tab on localhost must never cover
+    # for a dead on-air source, and a closed tab must never condemn a live one.
+    page = (renderer.get("pages") or {}).get(config.renderer_host)
+    if page is None:
+        # Absent is the literal KI-046 signature, not an unknown: the page
+        # registers its heartbeat *after* PixiJS boots, so a room that never
+        # rendered never posts a first beat and never appears in `pages`.
+        # Reading the fleet verdict here would let any other page vouch for a
+        # shard that has never drawn a frame — blind to the whole bug. The
+        # debounce carries the restart case: a beat arrives within 15s of the
+        # page loading, well inside the ~90s the rule waits.
+        renderer_ok = False
+        detail = f"no beat from {config.renderer_host}"
+    else:
+        renderer_ok = bool(page.get("healthy"))
+        detail = f"age {page.get('age_seconds')}s frozen={page.get('frozen')}"
+
+    result = {"content_ok": True, "renderer_ok": renderer_ok}
+    if not renderer_ok:
+        result["renderer_detail"] = detail
+    return result
+
+
+def refresh_source(name: str, client=None) -> bool:
+    """Press one browser source's refresh button. Returns whether it happened.
+
+    Same contract as `relaunch_obs`: the caller needs the outcome, not an
+    exception, because the outcome feeds back into state (KI-046 — the latch
+    that makes this one attempt per outage may only be spent by an attempt that
+    landed).
+    """
+    try:
+        stream_ctl.refresh_browser_source(client or stream_ctl.make_client(), name)
+    except Exception:
+        logger.exception("Browser source refresh failed", extra={"source": name})
+        return False
+    logger.warning(
+        "Browser source refreshed after a blank renderer (KI-046)",
+        extra={"source": name},
+    )
+    return True
+
+
+def renderer_config_warnings(
+    config: WatchdogConfig, spec: list[dict] | None = None
+) -> list[str]:
+    """KI-046: do the two halves of the guard's configuration agree? Pure.
+
+    `renderer_host` decides whose pulse is judged; `renderer_source` decides
+    which OBS source is reloaded. Nothing but a comment in stream_scene.py ties
+    them, so an operator who moves the room to another shard and updates only
+    the env var gets a watchdog that judges one page and reloads another —
+    reloading a healthy source once per outage, forever. Said out loud at
+    startup rather than mis-handled silently, which is what P3 does for a
+    watchlist disagreement.
+
+    A third thing has to agree too: `_BROWSER_DEFAULTS["shutdown"]` in
+    stream_scene.py must stay False. OBS tears a `shutdown: True` source down
+    whenever its scene is off program — so every dwell away from world-focus
+    would blank the renderer, `probe_content` would call it unhealthy, and the
+    director would speak a false severity-5 `stream_dropped renderer_blank` on
+    a perfectly healthy stream. A plausible perf tweak to that one shared
+    default silently arms this for all twelve shards at once, so it gets the
+    same loud startup warning as the other two halves.
+    """
+    if not config.renderer_host:
+        return [
+            "KI-046 renderer guard is OFF: WATCHDOG_RENDERER_HOST is unset, so a "
+            "blank room records nothing. Set it to the shard `"
+            f"{config.renderer_source}` loads from (scripts/stream_scene.py)."
+        ]
+
+    entries = [
+        source.get("settings") or {}
+        for scene in (spec if spec is not None else stream_scene.scenes_spec())
+        for source in (scene.get("sources") or [])
+        if source.get("name") == config.renderer_source
+    ]
+    entries = [settings for settings in entries if settings.get("url")]
+    if not entries:
+        return [
+            f"KI-046: renderer_source `{config.renderer_source}` is not a browser "
+            "source in the scene spec, so the self-heal would reload nothing."
+        ]
+
+    expected = urllib.parse.urlsplit(entries[0]["url"]).netloc
+    if expected != config.renderer_host:
+        return [
+            f"KI-046: WATCHDOG_RENDERER_HOST is {config.renderer_host} but "
+            f"`{config.renderer_source}` is loaded from {expected} — the watchdog "
+            "would judge one page and reload another."
+        ]
+
+    if entries[0].get("shutdown") is not False:
+        return [
+            f"KI-046: `{config.renderer_source}`'s `shutdown` is not False — OBS "
+            "tears the source down whenever its scene is off program, so every "
+            "dwell away from world-focus would read as a dead renderer and the "
+            "self-heal would fire on a perfectly healthy stream."
+        ]
+    return []
 
 
 def execute_actions(
@@ -771,6 +1066,14 @@ def execute_actions(
             elif kind == "switch_scene":
                 stream_ctl.switch_scene(stream_ctl.make_client(), action[1])
                 logger.info("Scene switched", extra={"scene": action[1]})
+            elif kind == "refresh_source":
+                ok = refresh_source(action[1])
+                if state is not None and not ok:
+                    # A latch is spent by a refresh that HAPPENED. Only a
+                    # recovery clears it otherwise — and the recovery is the
+                    # thing the press was for, so a swallowed error would
+                    # disarm the self-heal for the rest of the outage.
+                    state.renderer_refreshed_at = None
         except Exception:
             logger.exception("Watchdog action failed", extra={"action": kind})
     return followups
@@ -822,14 +1125,25 @@ def seed_state(probe: dict, program_scene: str | None = None) -> WatchdogState:
 
 def main() -> None:
     init_logging()
-    config = WatchdogConfig()
+    # KI-046: which shard is on air is deployment configuration, not a
+    # constant — `world-room` is on 127.0.0.4:8000 today (scripts/stream_scene.py).
+    # Unset means "judge nothing new", the behaviour every deployment has now.
+    config = WatchdogConfig(
+        renderer_host=os.environ.get("WATCHDOG_RENDERER_HOST") or None
+    )
     # Look before assuming (KI-038): one probe seeds the state, so a restart
     # into a stream that never stopped announces nothing.
     state = seed_state(probe_obs(), program_scene=_program_scene())
     logger.info(
         "Stream watchdog started",
-        extra={"poll_seconds": config.poll_seconds, "streaming": state.streaming},
+        extra={
+            "poll_seconds": config.poll_seconds,
+            "streaming": state.streaming,
+            "renderer_host": config.renderer_host,
+        },
     )
+    for warning in renderer_config_warnings(config):
+        logger.warning(warning)
     while True:
         probe = probe_obs()
         # Only when OBS is up and pushing: during an OBS outage the stream is

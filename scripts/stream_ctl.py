@@ -155,6 +155,21 @@ def switch_scene(client, scene_name: str) -> None:
     client.set_current_program_scene(scene_name)
 
 
+def refresh_browser_source(client, name: str) -> None:
+    """Reload one browser source, touching nothing else on the scene (KI-046).
+
+    obs-websocket has no first-class "reload input" request. The browser
+    source's refresh is a *button* in its properties, and `refreshnocache` is
+    the name obs-browser gives it (`RefreshNoCache` in its locale, the button
+    labelled "Refresh cache of current page") — a string this project reads, not
+    one it may choose. Pressing it is the cheapest recovery the stack has: it
+    reloads one page while the stream, the encoder and every other source keep
+    running, orders of magnitude below relaunching OBS (KI-015, where the
+    recovery became the fault).
+    """
+    client.press_input_properties_button(name, "refreshnocache")
+
+
 def current_scene(client) -> str | None:
     """What OBS is *actually* showing right now, or None if it won't say.
 

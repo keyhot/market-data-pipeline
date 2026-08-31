@@ -53,6 +53,18 @@ _SHARD_HOSTS = (
     "127.0.0.5", "127.0.0.6", "127.0.0.7", "127.0.0.8",
     "127.0.0.9", "127.0.0.10", "127.0.0.11", "127.0.0.12",
 )
+# KI-046: the shard `world-room` lands on is load-bearing outside this file.
+# The watchdog judges the renderer heartbeat of ONE host — the on-air room's —
+# and is told which by `WATCHDOG_RENDERER_HOST` in its systemd unit, because
+# `/health`'s fleet-wide verdict folds developer tabs too. `world-room` is the
+# second source of `world-focus`, so it is 127.0.0.4:8000 today. **Reorder or
+# resize this tuple and that env var must change with it**, or the watchdog
+# starts watching a page that is not on screen.
+#
+# Its `shutdown: False` (below) is load-bearing for the same rule: a source OBS
+# tears down when its scene is not on program stops rendering, stops beating,
+# and reads as a dead renderer on a perfectly healthy stream.
+#
 # Only loopback can be sharded this way; a real host (compose's `api`, a remote
 # box) has one address and must be left alone.
 _SHARDABLE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})

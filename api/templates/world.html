@@ -88,6 +88,13 @@
   <script src="/static/pixi-8.19.0.min.js"></script>
   <script>
     const SYMBOLS = __SYMBOLS__;
+    // The plate's measured anchors, or null when there is no plate. Every
+    // layout number below reads from here rather than from canvas fractions.
+    // Same-origin by construction (KI-045/KI-047): the manifest names a bare
+    // filename and the page prefixes /static/ itself, so no manifest edit can
+    // put a third party into the on-air load path.
+    const PLATE = __PLATE_JSON__;
+    const PLATE_SRC = PLATE ? "/static/" + PLATE.plate : null;
     const fallback = document.getElementById("fallback");
 
     // Name the room for a newcomer: the symbols in play + the one-line premise.
@@ -139,6 +146,16 @@
     const TIER_CUTS = __TIER_CUTS_JSON__;
 
     __TIER_OF_JS__
+
+    // 4px cells at 1920x960. Every coordinate the cast draws or moves to is
+    // quantised here, so motion reads as pixel STEPS rather than smooth
+    // slides — the one drawing rule the whole cast obeys. Falls back to a
+    // literal 4 when there is no plate (PLATE is null): CELL must not throw
+    // on the no-manifest path any more than anchorFor does. Top-level scope,
+    // not inside boot(), so playAnimation, the cast helpers, and (Tasks 7/8)
+    // drawCandles/applyGlow can all reach it.
+    const CELL = (PLATE && PLATE.cell) || 4;
+    function snap(v) { return Math.round(v / CELL) * CELL; }
 
     // Declared here, constructed in boot(): character() needs app.screen and
     // the layer containers, neither of which exist until PIXI has initialised.
@@ -192,11 +209,37 @@
         return;
       }
       app = new PIXI.Application();
-      await app.init({ background: 0x131722, resizeTo: window, antialias: true });
+      await app.init({ background: 0x131722, resizeTo: window, antialias: false });
       document.getElementById("room").appendChild(app.canvas);
       fallback.textContent = "";
 
+      // KI-046: the room can be dark while every light is green. The count is
+      // incremented by the RENDER loop, so a page whose setInterval still fires
+      // over a dead renderer reports a frozen frame count rather than health.
+      let framesDrawn = 0;
+      app.ticker.add(() => { framesDrawn++; });
+
+      // Below the room: the painted backdrop, when there is one.
+      layers.plate = new PIXI.Container();
       layers.room = new PIXI.Container();
+      // Task 9: additive light (applyGlow) falls ON the room but must never
+      // land over the cast's faces, so it sits above layers.room — and,
+      // since M2's live chart candles (layers.monitors) must never be washed
+      // out by the glow, this sits below that layer too.
+      layers.glow = new PIXI.Container();
+      // M2: the monitors get their OWN container, a stage sibling exactly
+      // like layers.glow — built once (buildMonitorGraphics, called from
+      // drawPlate's success path) and never wiped by anyone else. It does
+      // NOT share layers.props: that container has a per-cycle
+      // wipe-and-rebuild contract (drawPillars calls removeChildren() on
+      // every draw()), which is a different lifecycle than "build once,
+      // never cleared" — putting both contracts in one container is how a
+      // future props consumer forgets to preserve the monitors and the room
+      // goes blank on air with no text-reading test able to see it. Placed
+      // above layers.glow (so it never washes the candles out) and below props
+      // (so pillars/labels still paint over it exactly as before, since they
+      // never spatially overlap the painted screens anyway).
+      layers.monitors = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
       // Shadows are a *child* of the cast layer, not of any character: they
@@ -206,15 +249,43 @@
       // its shadow off the floor with it. Added first, so they stay behind.
       layers.shadows = new PIXI.Container();
       layers.chars.addChild(layers.shadows);
-      app.stage.addChild(layers.room, layers.props, layers.chars);
+      app.stage.addChild(
+        layers.plate, layers.room, layers.glow, layers.monitors,
+        layers.props, layers.chars);
+      // Pixel-art rule: no sub-pixel compositing for anything the cast or its
+      // furniture draws. The plate and the vignette stay off this list on
+      // purpose — they are painted art and a soft light falloff, not part of
+      // the grid. The glow layer is additive light too, for the same reason.
+      layers.chars.roundPixels = true;
+      layers.props.roundPixels = true;
+      layers.monitors.roundPixels = true;
 
-      drawRoom();
+      await drawPlate();
       model = character("MODEL");
       trader = character("TRADER");
       cast.push(model, trader);
       positionCharacters();
       startAmbient();
       bootSucceeded();
+
+      // M2: polled, not streamed (KI-013 — see pollBars's own comment). Runs
+      // regardless of which boot branch follows; pollBars is a no-op with no
+      // plate, so this is as safe on the preview/gallery paths as it is live.
+      pollBars();
+      setInterval(pollBars, BARS_POLL_MS);
+
+      // KI-046: posted every 15s regardless of which boot branch runs below —
+      // the beat is about whether the renderer is alive, which is equally true
+      // of a preview surface as of the on-air room. Keyed by Host server-side,
+      // so a developer tab never covers for a dead on-air shard (see
+      // world_heartbeat's docstring).
+      setInterval(() => {
+        fetch("/world/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ page: "world", frames: framesDrawn }),
+        }).catch(() => {});   // a failed beat is the watchdog's problem, not the room's
+      }, 15000);
 
       // B1 evaluation gate: `?gallery=1` lays out both styles against every
       // mood so the options can be compared in one screenshot. Aesthetics is
@@ -267,6 +338,7 @@
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
       layers.room.visible = false;   // the floor line is scenery, not a specimen
+      layers.plate.visible = false;  // and so is the painted backdrop
       layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
@@ -302,10 +374,20 @@
     // near zero displacement at any phase you'd think to freeze. So the sheet
     // LOOPS them, through `advanceCharacters` — a sheet with its own player
     // would be showing me an animation nobody ships.
+    // C2 review round 1, Finding 2b: this sheet is the ticket's own
+    // prescribed check ("check that in every frame of every trader animation
+    // the figure stays in the chair") - the real query param is `?anims=`,
+    // not the brief's invented `?sheet=1`. Before this fix it was
+    // unperformable: `character(style, style)` passes a BODY-STYLE name
+    // ("figure") where `anchorFor` wants a CHARACTER name ("trader"), so
+    // every sample resolved pose:"standing" and seatedRig never ran here,
+    // and `asleep`/`gesture`/`breathe` aren't ANIM keys at all, so they
+    // could not even be listed.
     function drawAnimationSheet() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
       layers.room.visible = false;
+      layers.plate.visible = false;
       // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
       // and whether that reads as dejected or as a head in a torso is a
       // question about broadcast size. Tier-3 amplitude, for the same reason.
@@ -314,9 +396,33 @@
       // `?anims=slump` narrows to one animation across every body — iterating
       // on a single pose against 32 looping cells is how you miss things.
       const only = new URLSearchParams(location.search).get("anims");
-      const names = ANIM[only] ? [only] : Object.keys(ANIM);
-      const bodies = ANIM[only] ? STYLES : [CAST.MODEL, CAST.TRADER];
-      const total = names.length * bodies.length;
+      // Cells are (character-name, body-style, animation-name) triples, not
+      // a name x style cross product: `gesture`/`breathe`/`asleep` only mean
+      // anything for the trader, and trying them against the model's bars
+      // body would call `SEATED_ANIMATIONS[name] || ANIM[name]` with both
+      // sides undefined and throw.
+      let cells;
+      if (ANIM[only]) {
+        // Unchanged from before this fix: one animation surveyed across
+        // every candidate body, standing, for comparing body TYPES rather
+        // than casting - `style` stays the sample's own name here on purpose.
+        cells = STYLES.map((style) => [style, style, only]);
+      } else if (SEATED_ANIMATIONS[only] && !ANIM[only]) {
+        cells = [["TRADER", CAST.TRADER, only]];
+      } else {
+        cells = [
+          ...Object.keys(ANIM).map((name) => [CAST.MODEL, CAST.MODEL, name]),
+          // "TRADER", not CAST.TRADER twice - the one change that makes
+          // `anchorFor("trader")` resolve `pose: "seated"` and seatedRig run.
+          ...Object.keys(ANIM).map((name) => ["TRADER", CAST.TRADER, name]),
+          // The three names ANIM doesn't have at all - otherwise declared
+          // and never once seen, the exact defect this ticket is about.
+          ...Object.keys(SEATED_ANIMATIONS)
+            .filter((name) => !ANIM[name])
+            .map((name) => ["TRADER", CAST.TRADER, name]),
+        ];
+      }
+      const total = cells.length;
       const cellW = 250;
       const cols = Math.max(1, Math.floor(app.screen.width / cellW));
       const rows = Math.ceil(total / cols);
@@ -324,25 +430,22 @@
       // a local page, so it runs off the bottom of a short window rather than
       // shrinking the thing whose size is the question.
       const rowH = Math.max(330, (app.screen.height - 40) / rows);
-      names.forEach((name, i) => {
-        bodies.forEach((style, b) => {
-          const idx = i * bodies.length + b;
-          const sample = character(style, style);
-          sample.container.x = cellW * ((idx % cols) + 0.5) / CAST_SCALE;
-          sample.container.y =
-            (40 + rowH * Math.floor(idx / cols) + rowH * 0.86) / CAST_SCALE;
-          sample.baseX = sample.container.x;
-          sample.baseY = sample.container.y;
-          sample.headBaseY = sample.head.y;
-          setExpression(sample, "focused");
-          sample.moodTag.text = name;
-          sample.stat.text = "";
-          sample.loopAnim = name;
-          sample.amp = amp;
-          sample.duration = ANIM_DURATION[name] ?? 0.9;
-          sample.phase = (idx * 0.13) % 1;   // stagger, so it isn't a chorus line
-          cast.push(sample);
-        });
+      cells.forEach(([name, style, anim], idx) => {
+        const sample = character(name, style);
+        sample.container.x = cellW * ((idx % cols) + 0.5) / CAST_SCALE;
+        sample.container.y =
+          (40 + rowH * Math.floor(idx / cols) + rowH * 0.86) / CAST_SCALE;
+        sample.baseX = sample.container.x;
+        sample.baseY = sample.container.y;
+        sample.headBaseY = sample.head.y;
+        setExpression(sample, "focused");
+        sample.moodTag.text = anim;
+        sample.stat.text = "";
+        sample.loopAnim = anim;
+        sample.amp = amp;
+        sample.duration = ANIM_DURATION[anim] ?? 0.9;
+        sample.phase = (idx * 0.13) % 1;   // stagger, so it isn't a chorus line
+        cast.push(sample);
       });
     }
 
@@ -384,7 +487,67 @@
       return new PIXI.Sprite(PIXI.Texture.from(canvas));
     }
 
-    function drawRoom() {
+    let plateReady = false;
+
+    // The plate is a new hard on-air dependency, which is precisely the shape
+    // of KI-045 — and KI-047 is the same page going white for 36 hours because
+    // nothing noticed a dead renderer. So the failure path is written first and
+    // the success path is the special case: no plate, no manifest, or a texture
+    // that will not decode all land in the procedural room the stream already
+    // ships.
+    async function drawPlate() {
+      if (!PLATE_SRC) { drawProceduralRoom(); return; }
+      try {
+        const texture = await PIXI.Assets.load(PLATE_SRC);
+        const sprite = new PIXI.Sprite(texture);
+        sprite.width = PLATE.canvas[0];
+        sprite.height = PLATE.canvas[1];
+        // Nearest-neighbour: the plate is pixel art, and smoothing it is the
+        // one thing guaranteed to make it look worse than the room it replaces.
+        texture.source.scaleMode = "nearest";
+        layers.plate.addChild(sprite);
+        // Built once, right here — never inside the per-frame ticker. See
+        // buildGlows's own comment for why.
+        buildGlows();
+        // M2: one Graphics per painted monitor, same "build once" rule —
+        // never inside drawCandles or the poll loop. See buildMonitorGraphics
+        // below.
+        buildMonitorGraphics();
+        // Claimed only once BOTH builders have actually succeeded — not
+        // before them. Every other read of `plateReady` (the vignette gate,
+        // applyGlow, drawCandles) treats it as "the room is safe to light as
+        // painted"; claiming it before the builders ran let a throw inside
+        // either leave the flag true while the catch below drew the
+        // procedural room on top of the still-added plate sprite — plate and
+        // procedural room composited together, a darkened double-exposure.
+        plateReady = true;
+        // The plate reserves a quiet strip at the top for the newcomer line.
+        // Bind the banner to the measurement so a repaint moves the text with
+        // the art instead of hanging it over a painted detail.
+        // The bottom band has no element on this page yet — /world has no
+        // price band — so nothing is bound to PLATE.bands.bottom rather than
+        // shipping a guard that can never fire.
+        const banner = document.getElementById("banner");
+        const bandHeight = bannerMinHeight();
+        if (banner && bandHeight) {
+          banner.style.minHeight = bandHeight + "px";
+        }
+      } catch (err) {
+        // Deliberately NOT retryBoot(): a reload cannot conjure a missing
+        // texture, and a reload storm against a 404 helps nobody (the cap in
+        // retryBoot exists for exactly that). Degrade and carry on.
+        console.warn("plate failed to load", err);
+        // `plateReady` is still false here by construction (see the comment
+        // above) — but the sprite may already be sitting in `layers.plate`
+        // if the throw came from a builder rather than the texture load
+        // itself. Strip it before drawing the fallback, or the room reads as
+        // plate-and-procedural-room composited rather than a clean degrade.
+        layers.plate.removeChildren();
+        drawProceduralRoom();
+      }
+    }
+
+    function drawProceduralRoom() {
       wall = new PIXI.Graphics();
       floorPlane = new PIXI.Graphics();
       floorLine = new PIXI.Graphics();
@@ -443,34 +606,102 @@
     // anything in the room. Now they stand ON the floor the characters stand
     // on, sized from the canvas, behind the cast (`layers.props`), so the room
     // has a background made of the market itself.
+    // --- P5: the layout is read off the plate, not off the canvas ----------
+    // With a plate, every position here is a measurement taken from the
+    // painted room (world/plate.py, checked against the PNG itself). Without
+    // one — a missing manifest, a texture that will not decode, KI-045's shape
+    // — they fall back to the canvas fractions the procedural room has always
+    // used, so the degraded path stays exactly as watchable as it is today.
+    // Both branches are executed in node by tests/api/test_world_page.py;
+    // substring checks over the page could not tell them apart.
+    const CAST_FRACTIONS = { model: 0.32, trader: 0.62 };
+
+    function anchorFor(name) {
+      const painted = plateReady && PLATE && PLATE.cast ? PLATE.cast[name] : null;
+      if (painted) {
+        // `pose` is the plate's answer to "is there a chair here" — the trader
+        // is seated on this plate. C2 rebuilds the rig around it; it is
+        // returned rather than assigned so there is no dead write waiting for
+        // that ticket.
+        return {
+          x: painted.x,
+          baseY: painted.base_y,
+          pose: painted.pose || "standing",
+        };
+      }
+      return {
+        x: app.screen.width * (CAST_FRACTIONS[name] ?? 0.5),
+        baseY: app.screen.height * GROUND,
+        pose: "standing",
+      };
+    }
+
+    // How tall the newcomer banner must be to sit on the strip the plate left
+    // quiet for it. `null` means "no plate — leave the CSS alone". A value
+    // rather than a branch inside drawPlate, because a test can only run a
+    // value: asserting the manifest key appears in the function passed
+    // identically with the height hardcoded.
+    function bannerMinHeight() {
+      if (!plateReady || !PLATE || !PLATE.bands || !PLATE.bands.top) return null;
+      return PLATE.bands.top;
+    }
+
+    function tubeFor(symbol) {
+      if (!plateReady || !PLATE || !PLATE.tubes) return null;
+      return PLATE.tubes.find((tube) => tube.symbol === symbol) || null;
+    }
+
+    // Where one pressure pillar goes. Separated from the drawing so it can be
+    // run without PIXI: an off-by-tens against the painted bore is the whole
+    // risk of this ticket, and it is the kind of thing only arithmetic can
+    // catch before X2 puts it on air.
+    function pillarGeometry(symbol, pressure, index) {
+      const tube = tubeFor(symbol);
+      const ground = app.screen.height * GROUND;
+      const tallest = Math.min(ground - 120, app.screen.height * 0.42);
+      const baseY = tube ? tube.base_y : ground;
+      const width = tube ? tube.width : 54;
+      // A painted tube is a housing with a visible end: the bar may fill it,
+      // never overrun it. Without a plate the old ceiling still applies.
+      const maxHeight = tube ? tube.height : tallest;
+      // Tall enough to be architecture. At 70px they read as bins next to a
+      // 240px cast; a pillar has to give the room a vertical.
+      const height = Math.min(190 + Math.abs(Number(pressure) || 0) * 70, maxHeight);
+      // Right of the cast and marching off toward the corner when procedural,
+      // so they read as depth rather than as a chart; centred in the bore when
+      // the plate painted one.
+      const x = tube ? tube.x - width / 2 : app.screen.width * 0.80 + index * 132;
+      return { x, baseY, width, height };
+    }
+
     function drawPillars(state) {
+      // M2: the monitor Graphics live in their OWN layer (layers.monitors),
+      // never in layers.props — this removeChildren() only ever touches
+      // pillars/caps/labels, the things drawPillars/draw() itself put here.
       layers.props.removeChildren();
       const symbols = Object.entries(state.symbols ?? {})
         .filter(([symbol]) => SYMBOLS.includes(symbol));
       if (!symbols.length) return;
-      const ground = app.screen.height * GROUND;
-      const tallest = Math.min(ground - 120, app.screen.height * 0.42);
-      const width = 54;
-      const gap = 132;
-      // Right of the cast (0.32 / 0.62 of the width) and marching off toward
-      // the corner, so they read as depth rather than as a chart.
-      const first = app.screen.width * 0.80;
       symbols.forEach(([symbol, data], i) => {
-        // Tall enough to be architecture. At 70px they read as bins next to a
-        // 240px cast; a pillar has to give the room a vertical.
-        const height = Math.min(190 + Math.abs(data.pressure) * 70, tallest);
-        const x = first + i * gap;
-        const pillar = new PIXI.Graphics()
-          .roundRect(x, ground - height, width, height, 3)
-          .fill({ color: color(data.mood), alpha: 0.55 });
+        const geo = pillarGeometry(symbol, data.pressure, i);
+        // The tube fill is a column of discrete cells, not a smooth
+        // roundRect — decided 2026-08-25 from the reference image, which
+        // draws it as stacked units. One cell of gap every two blocks so the
+        // column reads as filled units rather than a single bar.
+        const pillar = new PIXI.Graphics();
+        const blocks = Math.floor(geo.height / (CELL * 2));
+        for (let b = 0; b < blocks; b++) {
+          pillar.rect(snap(geo.x), snap(geo.baseY - (b + 1) * CELL * 2), geo.width, CELL)
+                .fill({ color: color(data.mood), alpha: 0.85 });
+        }
         // A cap catches the light: without it a flat column reads as a bar
         // chart, which is the model's body, not the room's furniture.
         const cap = new PIXI.Graphics()
-          .roundRect(x - 4, ground - height - 6, width + 8, 8, 3)
+          .roundRect(geo.x - 4, geo.baseY - geo.height - 6, geo.width + 8, 8, 3)
           .fill({ color: color(data.mood), alpha: 0.8 });
         layers.props.addChild(pillar, cap,
-          label(symbol, x - 6, ground + 12, 13, 0x787b86),
-          label(data.mood, x - 6, ground + 30, 13, 0x5a6472));
+          label(symbol, geo.x - 6, geo.baseY + 12, 13, 0x787b86),
+          label(data.mood, geo.x - 6, geo.baseY + 30, 13, 0x5a6472));
       });
     }
 
@@ -502,7 +733,29 @@
     // of the frame, which on a phone-sized YouTube window is nothing. The
     // LAYER carries the scale, not the characters: half the named animations
     // set `container.scale` themselves and would clobber a per-character one.
-    const CAST_SCALE = 1.35;
+    //
+    // 1.5, not 1.35 (review round 1, Finding 1): `positionCharacters` divides
+    // every anchor by CAST_SCALE before assigning it, and this layer then
+    // re-multiplies by the same factor — rendered position on the painted
+    // plate is provably invariant to CAST_SCALE, so changing it moves nothing
+    // and only resizes the cast. What it DOES change is the on-screen size of
+    // the cast's own 4px local grid: at 1.35 that renders as 5.4 screen px,
+    // which `roundPixels` then rounds to 5 or 6 depending on phase — the step
+    // JITTERS, worse than a fixed off-grid value. At 1.5 it renders as an
+    // exact 6 screen px: integer, uniform, no jitter, and every `snap()` call
+    // site in the cast stays correct with the one CELL/snap definition — no
+    // second snap function for a second coordinate space, which is a second
+    // definition of the same rule that later tickets would have to choose
+    // between.
+    //
+    // Known residual, left deliberate rather than hidden: the cast now renders
+    // on a uniform 6px cell while the props (pillars) render on a true 4px
+    // cell — a consistent grid PER SURFACE, not one 4px grid across the whole
+    // room. Strict single-grid conformance needs CAST_SCALE = 1, a 26% shrink
+    // of the only two figures on screen, which trades this sprint's headline
+    // goal (watchability) for a parenthetical. One constant to reverse after
+    // a visual check, not a redesign.
+    const CAST_SCALE = 1.5;
 
     function styleFor(name) {
       const style = STYLE_OVERRIDE || CAST[name];
@@ -550,12 +803,12 @@
       // A candlestick: real body between two wicks. The project's own glyph,
       // and the one that reads most instantly as "this thing is the market".
       candle(body, accents) {
-        body.roundRect(-27, -104, 54, 84, 8).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-27), snap(-104), 54, 84, 8).fill(BODY_FILL).stroke(BODY_RIM);
         // Wick thick enough to read as a neck at stream distance, and short
         // enough that the head sits ON the candle rather than floating over it.
-        const wickTop = new PIXI.Graphics().roundRect(-3.5, -130, 7, 30, 3.5)
+        const wickTop = new PIXI.Graphics().roundRect(snap(-3.5), snap(-130), 7, 30, 3.5)
           .fill(BODY_FILL).stroke(BODY_RIM);
-        const wickLow = new PIXI.Graphics().roundRect(-3.5, -22, 7, 26, 3.5)
+        const wickLow = new PIXI.Graphics().roundRect(snap(-3.5), snap(-22), 7, 26, 3.5)
           .fill(BODY_FILL).stroke(BODY_RIM);
         // A wick flicks by lengthening. It cannot swing: it's drawn in the
         // character's own space, so rotating it pivots about the feet.
@@ -569,7 +822,7 @@
         const heights = [54, 86, 68, 96, 60];
         heights.forEach((h, i) => {
           const bar = new PIXI.Graphics()
-            .roundRect(-6, -h, 12, h, 4).fill(BODY_FILL).stroke(BODY_RIM);
+            .roundRect(snap(-6), snap(-h), 12, h, 4).fill(BODY_FILL).stroke(BODY_RIM);
           bar.x = -36 + i * 18;
           bar.restHeight = h;
           bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
@@ -578,15 +831,15 @@
         // A static stem, so the head isn't left hovering over the cluster the
         // way it was. It can't be one of the bars: those ripple, and a neck
         // that stretches would pull the face off the body.
-        body.roundRect(-6, -118, 12, 58, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-6), snap(-118), 12, 58, 6).fill(BODY_FILL).stroke(BODY_RIM);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
       // end of the register; a piece that looks like it is thinking.
       monolith(body, accents) {
-        body.roundRect(-26, -104, 52, 78, 20).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-26), snap(-104), 52, 78, 20).fill(BODY_FILL).stroke(BODY_RIM);
         const base = new PIXI.Graphics()
-          .roundRect(-38, -30, 76, 30, 14).fill(BODY_FILL).stroke(BODY_RIM);
+          .roundRect(snap(-38), snap(-30), 76, 30, 14).fill(BODY_FILL).stroke(BODY_RIM);
         base.gestureMode = "shift";   // a weighted column doesn't wave, it leans
         base.restX = 0;
         accents.push(base);
@@ -598,15 +851,15 @@
       figure(body, accents) {
         // The gap has to be wide enough to survive the stream: at 6 units the
         // two legs merged into one column and he read as a pedestal.
-        body.roundRect(-19, -56, 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(6, -56, 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-19), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(6), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
         // Waist under a broader chest. The taper is what reads as a person —
         // one capsule reads as a pill — and the wider shoulders are what stop
         // the head (28px, shared with every other body) looking oversized.
-        body.roundRect(-26, -86, 52, 40, 14).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(-33, -128, 66, 54, 22).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-26), snap(-86), 52, 40, 14).fill(BODY_FILL).stroke(BODY_RIM);
+        body.roundRect(snap(-33), snap(-128), 66, 54, 22).fill(BODY_FILL).stroke(BODY_RIM);
         for (const side of [-1, 1]) {
-          const arm = new PIXI.Graphics().roundRect(-7, -5, 14, 66, 7)
+          const arm = new PIXI.Graphics().roundRect(snap(-7), snap(-5), 14, 66, 7)
             .fill(BODY_FILL).stroke(BODY_RIM);
           arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
           // Not quite straight and not quite matching: dead-symmetrical arms
@@ -625,7 +878,7 @@
       // The original: face on a single disc, no body. Kept as the baseline the
       // others are judged against.
       orb(body) {
-        body.circle(0, -60, 46).fill(BODY_FILL).stroke(BODY_RIM);
+        body.circle(snap(0), snap(-60), 46).fill(BODY_FILL).stroke(BODY_RIM);
         return -66;
       },
     };
@@ -696,6 +949,12 @@
       style = BODIES[style] ? style : styleFor(name);
       const container = new PIXI.Container();
       container.y = app.screen.height * GROUND;
+      // C2: which anchor this name paints against decides the rig. Only the
+      // trader is ever seated — the plate's `pose` is the one thing that says
+      // so, not a second decision made here. Every other `name` this function
+      // is ever called with (moods and styles, from the gallery/sheet eval
+      // surfaces) misses PLATE.cast entirely and gets "standing" back.
+      container.pose = anchorFor(name.toLowerCase()).pose;
 
       const body = new PIXI.Graphics();
       const head = new PIXI.Container();
@@ -708,9 +967,11 @@
       const visor = new PIXI.Graphics();
       const accents = [];
 
-      const headY = BODIES[style](body, accents);
+      const headY = container.pose === "seated"
+        ? seatedRig(body, accents)
+        : BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
-      if (style !== "orb") skull.circle(0, 0, 28).fill(BODY_FILL).stroke(BODY_RIM);
+      if (style !== "orb") skull.circle(snap(0), snap(0), 28).fill(BODY_FILL).stroke(BODY_RIM);
       head.y = headY;
       head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
 
@@ -736,6 +997,14 @@
         rand: rng32(seed || 1),
         shadow, shadowW: SHADOW_WIDTH[style],
       };
+      // The two arms `seatedRig` pushed onto `accents` are real Graphics,
+      // already children of `container` — aliased under their own names so
+      // the seated animations below have one to reach for by name instead of
+      // indexing into the array.
+      if (container.pose === "seated") {
+        char.armNear = accents[0];
+        char.armFar = accents[1];
+      }
       // Two characters breathing on one clock read as one animation played on
       // two puppets — the exact thing the blink seed already avoids. Offset
       // the phase *and* vary the period, so they never drift into step either.
@@ -754,7 +1023,7 @@
     const GESTURE = {
       swing: (a, amt) => { a.rotation = (a.restRotation ?? 0) + amt * 0.35; },
       pump: (a, amt) => { a.scale.y = 1 + Math.abs(amt) * 0.55; },
-      shift: (a, amt) => { a.x = (a.restX ?? 0) + amt * 6; },
+      shift: (a, amt) => { a.x = snap((a.restX ?? 0) + amt * 6); },
     };
 
     function gesture(char, amount, stagger) {
@@ -770,7 +1039,7 @@
         // Rest is not necessarily zero: dead-straight symmetrical arms read as
         // a mannequin, so the figure's hang at a slight, uneven angle.
         accent.rotation = accent.restRotation ?? 0;
-        accent.x = accent.restX ?? accent.x;
+        accent.x = snap(accent.restX ?? accent.x);
         accent.scale.set(1, 1);
       }
     }
@@ -819,15 +1088,15 @@
       // 0.14, not 0.35: the skull is a 0x545862 fill *tinted*, so it already
       // renders at roughly a third of the mood colour — a 0.35 visor came out
       // the same value as the head and was invisible on the real page.
-      char.visor.roundRect(-21, -16, 42, 23, 8).fill(shade(tint, 0.14));
+      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(shade(tint, 0.14));
       machineEyes(char, arousal);
       char.browL.clear();
       char.browR.clear();
       const w = 10 + arousal * 3;
       const step = valence * 6;
       char.mouth.clear()
-        .moveTo(-w, 12).lineTo(-w / 3, 12 + step)
-        .lineTo(w / 3, 12 + step).lineTo(w, 12)
+        .moveTo(snap(-w), snap(12)).lineTo(snap(-w / 3), snap(12 + step))
+        .lineTo(snap(w / 3), snap(12 + step)).lineTo(snap(w), snap(12))
         .stroke({ width: 2.5, color: 0xd1d4dc });
     }
 
@@ -837,7 +1106,7 @@
       const lit = 2 + arousal * 5;
       for (const [eye, side] of [[char.eyeL, -1], [char.eyeR, 1]]) {
         eye.clear();
-        eye.roundRect(side * 10 - 6, -5 - lit / 2, 12, lit, 1.5).fill(0xd1d4dc);
+        eye.roundRect(snap(side * 10 - 6), snap(-5 - lit / 2), 12, lit, 1.5).fill(0xd1d4dc);
       }
     }
 
@@ -849,9 +1118,9 @@
         eye.clear();
         if (arousal < 0.08) {
           // Nearly asleep: a closed lid line reads better than a tiny dot.
-          eye.roundRect(side * dx - 5, eyeY, 10, 2, 1).fill(0xd1d4dc);
+          eye.roundRect(snap(side * dx - 5), snap(eyeY), 10, 2, 1).fill(0xd1d4dc);
         } else {
-          eye.ellipse(side * dx, eyeY, 3.4, open / 2).fill(0xd1d4dc);
+          eye.ellipse(snap(side * dx), snap(eyeY), 3.4, open / 2).fill(0xd1d4dc);
         }
       }
     }
@@ -874,16 +1143,16 @@
         const lift = arousal * 3;
         const inner = eyeY - 9 - lift - worry * 4;
         const outer = eyeY - 9 - lift + worry * 3;
-        brow.moveTo(side * (dx - 7), inner)
-            .lineTo(side * (dx + 7), outer)
+        brow.moveTo(snap(side * (dx - 7)), snap(inner))
+            .lineTo(snap(side * (dx + 7)), snap(outer))
             .stroke({ width: 2, color: 0x9aa4b2 });
       }
       char.mouth.clear();
       const curve = valence * 7;
       const width = 9 + arousal * 3;
       char.mouth
-        .moveTo(-width, 10)
-        .quadraticCurveTo(0, 10 + curve, width, 10)
+        .moveTo(snap(-width), snap(10))
+        .quadraticCurveTo(snap(0), snap(10 + curve), snap(width), snap(10))
         .stroke({ width: 2.5, color: 0xd1d4dc });
     }
 
@@ -933,17 +1202,17 @@
       idle:    (c, p) => { const u = p < 0.4
                               ? Math.sin((p / 0.4) * Math.PI - Math.PI / 2)
                               : Math.sin(((p - 0.4) / 0.6) * Math.PI + Math.PI / 2);
-                           c.container.y = c.baseY - u * 1.6;
+                           c.container.y = snap(c.baseY - u * 1.6);
                            c.container.scale.set(1 - u * 0.006, 1 + u * 0.012); },
       jolt:    (c, p, a) => { const u = EASE.snap(p);
-                              c.container.y = c.baseY - u * 26 * a;
+                              c.container.y = snap(c.baseY - u * 26 * a);
                               c.container.scale.set(1 + u * 0.08 * a); },
-      shake:   (c, p, a) => { c.container.x = c.baseX + Math.sin(p * 42) * 9 * a * (1 - p); },
+      shake:   (c, p, a) => { c.container.x = snap(c.baseX + Math.sin(p * 42) * 9 * a * (1 - p)); },
       // Crouches before it leaves the floor, and the squash was inverted: it
       // went wide-and-short at the apex and tall-and-thin in the crouch, which
       // is backwards on both. A body in the air stretches along its travel.
       hop:     (c, p, a) => { const j = EASE.anticipate(p);
-                              c.container.y = c.baseY - j * 40 * a;
+                              c.container.y = snap(c.baseY - j * 40 * a);
                               c.container.scale.set(1 - j * 0.05 * a, 1 + j * 0.05 * a); },
       pulse:   (c, p, a) => { c.container.scale.set(1 + Math.sin(p * Math.PI * 2) * 0.11 * a); },
       // 0.09, not 0.16: the container pivots at the feet, so a tall body's
@@ -951,28 +1220,28 @@
       lean:    (c, p, a) => { c.container.rotation = Math.sin(p * Math.PI) * 0.09 * a; },
       shrug:   (c, p, a) => { const u = Math.sin(p * Math.PI);
                               gesture(c, u * a, false);
-                              c.container.y = c.baseY - u * 6 * a; },
+                              c.container.y = snap(c.baseY - u * 6 * a); },
       slump:   (c, p, a) => { const u = EASE.settle(p);
-                              c.container.y = c.baseY + u * 12 * a;
-                              c.head.y = c.headBaseY
-                                + u * HEAD_TRAVEL[c.style] * a;
+                              c.container.y = snap(c.baseY + u * 12 * a);
+                              c.head.y = snap(c.headBaseY
+                                + u * HEAD_TRAVEL[c.style] * a);
                               c.container.scale.set(1, 1 - u * 0.07 * a); },
       cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2));
-                              c.container.y = c.baseY - u * 30 * a;
+                              c.container.y = snap(c.baseY - u * 30 * a);
                               gesture(c, u * a, true); },
       wave:    (c, p, a) => { gesture(c, Math.sin(p * Math.PI * 6) * 0.6 * a, false);
                               c.head.rotation = Math.sin(p * Math.PI * 6) * 0.10 * a; },
       sleep:   (c, p) => { const b = Math.sin(p * Math.PI * 2) * 0.02;
                            c.container.scale.set(1 + b, 1 - b); },
       flicker: (c, p) => { c.container.alpha = p % 0.25 < 0.125 ? 0.35 : 1; },
-      step:    (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 26 * a; },
+      step:    (c, p, a) => { c.container.x = snap(c.baseX + Math.sin(p * Math.PI) * 26 * a); },
       // A flat character can't rotate away, but it must not vanish trying: the
       // old cos() passed through zero twice a cycle and collapsed to a sliver.
       // Squash to 40% and turn the head — that reads as looking round.
       turn:    (c, p, a) => { const u = Math.cos(p * Math.PI * 2);
                               c.container.scale.x = 0.4 + 0.6 * Math.abs(u);
                               c.head.rotation = -u * 0.22 * a; },
-      pan:     (c, p, a) => { c.container.x = c.baseX + Math.sin(p * Math.PI) * 10 * a; },
+      pan:     (c, p, a) => { c.container.x = snap(c.baseX + Math.sin(p * Math.PI) * 10 * a); },
       talk:    (c, p) => { const o = Math.abs(Math.sin(p * Math.PI * 8));
                            c.mouth.scale.y = 1 + o * 1.6;
                            gesture(c, o * 0.25, true); },
@@ -994,16 +1263,147 @@
       sleep: 4.0, idle: 3.2, talk: 1.6, wave: 1.4, flicker: 1.0, cheer: 1.2,
     };
 
+    // --- C2: TRADER, seated -------------------------------------------------
+    // Everything from the neck up is untouched — `character()` still builds
+    // the head, the face and the blink the same way for every body. Only
+    // what's below the neck is re-drawn here, hips at the container's own
+    // origin: `positionCharacters` puts that on the seat of the painted
+    // chair, not on a floor 148px below it (Task 7's Override 2).
+    function seatedRig(body, accents) {
+      // Thighs: short and low, at the front edge of the seat rather than
+      // dropping to a floor this plate doesn't give the chair.
+      body.roundRect(snap(-22), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
+      body.roundRect(snap(4), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
+      // Waist and chest, stacked straight up off the hips rather than off a
+      // standing pair of legs. Review round 1, Finding 1: the seat measures
+      // 79 screen px wide (`PLATE.cast.trader.seat.width`), and 58 units of
+      // chest was 87px at CAST_SCALE 1.5 (still 78.3px at the pre-ticket
+      // 1.35 - the rig's own width was the overflow, not the scale). Chest
+      // is 48 (not the naive 50 - snap(-24)=-24 exactly, snap(-25) rounds to
+      // -24 too but off-centre, pushing one edge to 26; picking start/width
+      // that land clean on the 4px grid keeps the shape actually symmetric)
+      // - 48*1.5=72px, inside the seat with margin.
+      // `test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_
+      // backrest` (page) and `test_the_seated_rig_fits_inside_the_manifest_
+      // seat` (manifest) both compute this from the real roundRect calls
+      // against the manifest's measurement, rather than trusting this
+      // comment's arithmetic.
+      body.roundRect(snap(-20), snap(-42), 40, 34, 14).fill(BODY_FILL).stroke(BODY_RIM);
+      body.roundRect(snap(-24), snap(-80), 48, 40, 20).fill(BODY_FILL).stroke(BODY_RIM);
+      // Forearms bent up toward the desk, not hanging at the sides — shorter
+      // than the standing figure's (66 units). Pivot at 14: the arm's own
+      // local rect snaps to [-4, 8], so a wider pivot pushes its outer edge
+      // past the chest and becomes the new widest part.
+      for (const side of [-1, 1]) {
+        const arm = new PIXI.Graphics().roundRect(snap(-6), snap(0), 12, 40, 6)
+          .fill(BODY_FILL).stroke(BODY_RIM);
+        arm.x = side * 14; arm.y = -76;
+        arm.restRotation = side < 0 ? -0.55 : 0.5;
+        arm.shadeFactor = 1.35;
+        accents.push(arm);
+      }
+      // Chair back measures ~220 screen px above the seat (backrest crown at
+      // plate y≈462 vs the seat anchor y≈682) — 147 local units at
+      // CAST_SCALE 1.5. -108 leaves the 42px head crown at screen y≈478:
+      // inside the backrest. Unaffected by the width change - orthogonal axis.
+      return -108;
+    }
+
+    // Every write below moves the torso (`body`), the head, or an arm —
+    // never `container`, the hips, fixed to the chair by
+    // `positionCharacters`. A standing animation moves the whole body, which
+    // is how a seated one sinks through the cushion or slides out of it.
+    const SEATED_ANIMATIONS = {
+      // The rotation leads on purpose: `HEAD_TRAVEL.figure` is exactly one
+      // CELL, so the snapped head-drop alone can round back to nothing for
+      // most of the phase at tier 0. `body.rotation` isn't quantised.
+      slump:   (c, p, a) => { const u = EASE.settle(p);
+                              c.body.rotation = u * 0.16 * a;
+                              c.head.rotation = u * 0.10 * a;
+                              c.head.y = snap(c.headBaseY + u * HEAD_TRAVEL[c.style] * a); },
+      lean:    (c, p, a) => { const u = Math.sin(p * Math.PI) * a;
+                              c.body.x = snap(u * 4);
+                              c.head.x = snap(u * 6); },
+      // No shoulder swing — the desk is in the way. One forearm lifts and
+      // turns instead: the gesture a seated person has room to make.
+      gesture: (c, p, a) => { const u = Math.sin(p * Math.PI) * a;
+                              c.armFar.rotation = (c.armFar.restRotation ?? 0) - u * 0.6; },
+      // The seated ambient loop. Full CELL, not half: `body.y` rests at 0,
+      // already on the grid, so a smaller delta snaps straight back to it.
+      breathe: (c, p) => { c.body.y = snap(Math.sin(p * Math.PI * 2) * CELL); },
+      // Head drops, eyes close via the same closed-lid draw the idle blink
+      // uses (`setBlink`) — not `visible = false`, which reads as empty
+      // sockets rather than a person asleep.
+      asleep:  (c, p, a) => { const u = EASE.settle(p);
+                              c.head.rotation = 0.22 * u;
+                              c.head.y = snap(c.headBaseY + CELL * 3 * u);
+                              setBlink(c, u > 0.5); },
+      // `trader_milestone`'s own beat, not borrowed: both forearms pump up
+      // together, twice within the phase — the double-lift standing `cheer`
+      // uses — kept off `container` so the trader stays seated at the desk
+      // it just closed a profitable position at. `trader_opened` fires on
+      // every cold sidecar start, so unlike the other trader_* reactions
+      // this one is guaranteed to run the moment the opt-in profile is ever
+      // enabled, and "proud" deserves to read as distinct from "resigned".
+      cheer:   (c, p, a) => { const u = Math.abs(Math.sin(p * Math.PI * 2)) * a;
+                              c.armNear.rotation = (c.armNear.restRotation ?? 0) - u * 0.5;
+                              c.armFar.rotation = (c.armFar.restRotation ?? 0) + u * 0.5;
+                              c.body.y = snap(-u * CELL); },
+    };
+    // The registry (world/reactions.py) dispatches `sleep`/`shrug`, never
+    // the literal `asleep`/`gesture` — aliased onto the names that actually
+    // arrive so the re-author is live on real events, not just declared.
+    // `shrug` especially: standing writes `container.y`, the hip-lift this
+    // table exists to stop.
+    SEATED_ANIMATIONS.sleep = SEATED_ANIMATIONS.asleep;
+    SEATED_ANIMATIONS.shrug = SEATED_ANIMATIONS.gesture;
+    // `trader_*` (world/reactions.py: trader_opened -> step, trader_closed ->
+    // turn, trader_milestone -> cheer) is the vocabulary EVERY event routed
+    // to the trader can carry — `react()` sends every trader_* type there,
+    // never through `model`. None of `step`/`turn` had a seated match: a
+    // standing `step` slides the body 26px off the cushion, and `turn`
+    // squashes `scale.x` to 0.4 inside a full-width chair — both landed on
+    // `container`, the exact write this table exists to stop. `step`
+    // ("decisive") reuses the seated lean; `turn` ("weighing") reuses the
+    // seated gesture — a considering forearm motion reads as weighing a
+    // decision at least as well as it reads as a shrug. `cheer` is defined
+    // directly above rather than aliased: milestones are the one distinctly
+    // celebratory trader reaction and deserve their own beat.
+    SEATED_ANIMATIONS.step = SEATED_ANIMATIONS.lean;
+    SEATED_ANIMATIONS.turn = SEATED_ANIMATIONS.gesture;
+
     function restCharacter(char) {
-      char.container.y = char.baseY;
-      char.container.x = char.baseX;
+      if (char.container.pose === "seated") {
+        restSeatedCharacter(char);
+        return;
+      }
+      char.container.y = snap(char.baseY);
+      char.container.x = snap(char.baseX);
       char.container.rotation = 0;
       char.container.alpha = 1;
       char.container.scale.set(1, 1);
       setGaze(char, 0, 0, 0);
       char.mouth.scale.y = 1;
       restAccents(char);
-      if (char.headBaseY != null) char.head.y = char.headBaseY;
+      if (char.headBaseY != null) char.head.y = snap(char.headBaseY);
+    }
+
+    // The seated counterpart: puts back everything SEATED_ANIMATIONS can
+    // touch (body, head, the arms via restAccents, blink), and leaves
+    // `container` alone — it's the chair, not the body, and the standing
+    // reset above would yank the trader back to a floor this pose doesn't
+    // stand on.
+    function restSeatedCharacter(char) {
+      char.body.rotation = 0;
+      char.body.x = 0;
+      char.body.y = 0;
+      char.head.rotation = 0;
+      setGaze(char, 0, 0, 0);
+      char.mouth.scale.y = 1;
+      restAccents(char);
+      if (char.headBaseY != null) char.head.y = snap(char.headBaseY);
+      setBlink(char, false);
+      char.container.alpha = 1;
     }
 
     // --- B7: idle life, and attention -------------------------------------
@@ -1034,17 +1434,36 @@
       },
       shift: {
         every: [7.0, 17.0], dur: 2.6,
-        run: (c, u, dir) => { c.container.x = c.baseX + dir * 3 * u; },
+        run: (c, u, dir) => {
+          // Task 7's Override 3: for a seated character `container` IS the
+          // chair (`positionCharacters` anchors it to the plate's seat), so
+          // the weight-shift this idle action stages moves the torso
+          // instead — same amplitude, same "under one CELL" reasoning C1
+          // used to leave it unsnapped, applied to the write this ticket's
+          // whole table exists to keep off the hips.
+          if (c.container.pose === "seated") { c.body.x = dir * 3 * u; return; }
+          c.container.x = c.baseX + dir * 3 * u;
+        },
       },
     };
 
     // Looking is done with the eyes, not by sliding the skull sideways: a head
     // that translates reads as a part coming loose, on the machine especially,
     // where it sits on a visible stem. The head only rotates.
+    //
+    // Review round 1, Finding 2: the idle glance (IDLE_ACTIONS.glance) and the
+    // B7 deliberate look (watchTick) both drive `dx`/`headShift` through a
+    // continuous sin() ease, and watchTick's amplitude (4) is exactly one
+    // CELL — unsnapped, that is the sub-pixel crawl this ticket exists to
+    // remove. Not literally named in the brief's Step 4 list, but the same
+    // reasoning that put `restCharacter` and the `ANIM` table under `snap()`
+    // reaches every displacement write, and this is one: wrapped once here so
+    // every caller (glance, watchTick, resetIdle) is covered without each of
+    // them having to remember to.
     function setGaze(char, dx, rot, headShift) {
-      char.eyeL.x = char.eyeR.x = dx;
+      char.eyeL.x = char.eyeR.x = snap(dx);
       char.head.rotation = rot;
-      char.head.x = headShift;
+      char.head.x = snap(headShift);
     }
 
     function setBlink(char, closed) {
@@ -1121,11 +1540,29 @@
         if (!char) continue;
         if (char.loopAnim) {        // eval surface: run one animation forever
           char.phase = (char.phase + dt / char.duration) % 1;
-          ANIM[char.loopAnim](char, char.phase, char.amp ?? 1);
+          // C2 review round 1, Finding 2a: this branch was left pointed at
+          // ANIM only - the sheet's trader samples silently played the
+          // standing table (or, for asleep/gesture, called `undefined` and
+          // threw) no matter what `character()` set `pose` to. Same
+          // fallback shape as the main dispatch below.
+          const loopFn = (char.container.pose === "seated" && SEATED_ANIMATIONS[char.loopAnim])
+            || ANIM[char.loopAnim];
+          loopFn(char, char.phase, char.amp ?? 1);
           continue;
         }
+        // `playAnimation` only ever records a string (`char.anim`) — THIS is
+        // the actual per-frame dispatch, so it's where a seated character has
+        // to be pointed at SEATED_ANIMATIONS instead of ANIM. Falls back to
+        // ANIM for any name not yet re-authored for sitting (Task 7's scope
+        // is five animations, not the whole registry), so an unhandled
+        // reaction still plays rather than throwing on a 24/7 stream.
+        const seated = char.container.pose === "seated";
         if (!char.anim) {           // at rest, breathe so nobody is a statue
-          ANIM.idle(char, (ambient.t / char.breath + char.phaseOffset) % 1, 1);
+          if (seated) {
+            SEATED_ANIMATIONS.breathe(char, (ambient.t / char.breath + char.phaseOffset) % 1, 1);
+          } else {
+            ANIM.idle(char, (ambient.t / char.breath + char.phaseOffset) % 1, 1);
+          }
           idleTick(char, dt);
           watchTick(char, dt);      // last: a deliberate look outranks a glance
           continue;
@@ -1136,7 +1573,8 @@
           restCharacter(char);
           continue;
         }
-        ANIM[char.anim](char, char.phase, char.amp ?? 1);
+        const animFn = (seated && SEATED_ANIMATIONS[char.anim]) || ANIM[char.anim];
+        animFn(char, char.phase, char.amp ?? 1);
       }
       // After, never during: a shadow reads the body's final height for this
       // frame, and the loop above leaves by four different paths.
@@ -1161,10 +1599,20 @@
       layers.chars.scale.set(CAST_SCALE);
       // Positions are therefore in layer space, which the scale then maps back
       // onto the screen fractions they're written as.
-      model.container.x = app.screen.width * 0.32 / CAST_SCALE;
-      trader.container.x = app.screen.width * 0.62 / CAST_SCALE;
-      model.baseY = trader.baseY = app.screen.height * GROUND / CAST_SCALE;
-      model.container.y = trader.container.y = model.baseY;
+      // The anchors are the plate's, or the canvas fractions when there is no
+      // plate — anchorFor owns that choice. They are divided by CAST_SCALE
+      // because the layer is scaled, so these are layer coordinates.
+      // NOTE: `character()` also sets a y, and it is dead — this runs on every
+      // draw and overwrites it. The plan pointed this ticket at that write.
+      const anchors = { model: anchorFor("model"), trader: anchorFor("trader") };
+      model.container.x = anchors.model.x / CAST_SCALE;
+      trader.container.x = anchors.trader.x / CAST_SCALE;
+      // The two no longer share a floor: on this plate the trader sits on a
+      // painted chair and the model stands on the floor lane, 148px lower.
+      model.baseY = anchors.model.baseY / CAST_SCALE;
+      trader.baseY = anchors.trader.baseY / CAST_SCALE;
+      model.container.y = model.baseY;
+      trader.container.y = trader.baseY;
       // Animations displace from a remembered rest pose, so it has to be
       // recorded here — a resize must not leave a character drifting.
       for (const char of [model, trader]) {
@@ -1277,12 +1725,27 @@
         // here is the server's own severity_tier, arriving in /world/state —
         // so the room's swell and the director's decision agree by
         // construction rather than by a second scale (KI-019).
-        const want = ROOM_LIGHT[Math.max(0, Math.min(3, Math.round(ambient.tier)))];
+        const tier = Math.max(0, Math.min(3, Math.round(ambient.tier)));
+        const want = ROOM_LIGHT[tier];
         for (const key of ["vignette", "warmth", "lift"]) {
           // ~4s to cross the ramp: a swell you can watch arrive, not a cut.
           ambient.light[key] += (want[key] - ambient.light[key]) * Math.min(1, dt / 4);
         }
-        vignette.alpha = ambient.light.vignette;
+        if (!plateReady) {
+          // `vignette` only exists on the procedural path
+          // (drawProceduralRoom is the only place that builds one) — the
+          // plate is painted, so there is nothing here to dim. B2's
+          // tint/alpha room animation, left exactly as it was.
+          vignette.alpha = ambient.light.vignette;
+        }
+        // The plate can't be tinted (Task 9): applyGlow is a no-op of its
+        // own accord when there is no plate, so it is safe to call every
+        // tick either way. `ambient.light.lift` — the EASED value from the
+        // loop above — not `want.lift`/`ROOM_LIGHT[tier].lift`: reading the
+        // ramp's raw target here would snap the glow to full brightness in
+        // one frame while the vignette/warmth/background dimming beside it
+        // keep easing for four more seconds. Two speeds for one swell.
+        applyGlow(ambient.light.lift);
 
         // Colour temperature: warm as selling pressure builds, cool as it eases.
         // Tier warmth composes on top rather than replacing it — pressure is
@@ -1318,6 +1781,169 @@
           }
         }
       });
+    }
+
+    // Task 9: the plate is painted, so the room can no longer be tinted —
+    // multiplying a pixel-art texture destroys the one detail (the amber
+    // desk lamp) that makes the room feel lived in. The glow instead ADDS
+    // light to the surfaces the plate deliberately left blank: the dark
+    // monitors and the tube housings, listed in the manifest as
+    // `PLATE.glow`. A fixed, room-local accent — never the ramp's colour
+    // temperature — so the lamp's own painted hue can't drift with tier;
+    // only how brightly the room lights it does. Pinned equal to
+    // world.visuals.PALETTE["accent"] by
+    // tests/api/test_world_page.py::test_glow_color_matches_the_shared_accent
+    // rather than injected: this value is deliberately room-local (Override
+    // 1 — the fewer things this canvas reads out of the shared theme
+    // module, the smaller the KI-019 surface), so a test pins the match
+    // instead of a new placeholder wiring the two together at runtime.
+    const GLOW_COLOR = 0xf0b90b;
+    // Room-local scale from the eased `lift` (0 at tier 0, ~0.22 at tier 3)
+    // to a visible additive alpha. Deliberately not a copy of the ramp
+    // itself — retuning this number changes only this canvas, never the
+    // theme vars block or the overlays that read `room_light` directly
+    // (KI-019's family).
+    const GLOW_LIFT_TO_ALPHA = 3;
+
+    // Built once, the moment the plate becomes ready (drawPlate, above) —
+    // never inside the per-frame ticker. `applyGlow` runs ~60x/sec, and a
+    // `new PIXI.Graphics()` per glow rect at that rate is exactly the
+    // "full-canvas Graphics rebuilt per frame" cost B2's own comment (above,
+    // "the room is built ONCE") warns against, on a box that also encodes
+    // 1080p. `ambient.drift`'s dots and the vignette already show the right
+    // shape for this ticker — build once, mutate a property per tick — so
+    // the glow's own Graphics follow the same rule.
+    let glows = [];
+
+    function buildGlows() {
+      // Defensive, not load-bearing today: the only caller is drawPlate's
+      // try block, once. But a half-thrown call (this map throws partway
+      // through, e.g. a bad rect) or a future retry path calling it twice
+      // would otherwise leave orphaned Graphics stacked in layers.glow —
+      // this makes a second call start clean instead of accumulating.
+      layers.glow.removeChildren();
+      glows = PLATE.glow.map((rect) => {
+        const glow = new PIXI.Graphics()
+          .rect(snap(rect.x), snap(rect.y), snap(rect.w), snap(rect.h))
+          .fill({ color: GLOW_COLOR, alpha: 1 });
+        glow.blendMode = "add";
+        glow.alpha = 0;              // applyGlow sets the real value per tick
+        layers.glow.addChild(glow);
+        return glow;
+      });
+    }
+
+    // `lift` must be the EASED `ambient.light.lift`, never `ROOM_LIGHT[tier]
+    // .lift` directly — see the ticker's own call site for why.
+    function applyGlow(lift) {
+      if (!plateReady) return;   // no plate: nothing was ever built to light
+      const alpha = Math.min(1, lift * GLOW_LIFT_TO_ALPHA);
+      for (const glow of glows) glow.alpha = alpha;
+    }
+
+    // --- M2: live candles in the painted monitors -------------------------
+    // The plate paints two central monitors as flat dark glass. The rules for
+    // whether/how much of that glass is worth drawing into — how many candles
+    // fit an irregular painted frame, whether a frame is legible at all, and
+    // when data is too old to be shown as the present — are decided in
+    // world/monitors.py and injected here, both as constants AND as the
+    // functions that read them: injecting only the numbers is the half-fix
+    // that let KI-019 happen (the tier-cuts injection above this block is the
+    // same lesson applied to tiers). This page must not re-derive any of it.
+    //
+    // NOTE: a placeholder token must never be spelled out in a comment below
+    // its own substitution line — `_render_template` string-replaces EVERY
+    // occurrence in the page, comments included, so a token named in prose
+    // gets rewritten into JS mid-sentence. Found by `node --check` on this
+    // exact block while writing it.
+    const MONITOR_RULES = __MONITOR_RULES_JSON__;
+    // The rule-reading functions themselves - barsThatFit, isDrawable and
+    // staleAlpha - generated FROM the constants above by world/monitors.py,
+    // so the page and the server cannot drift on how many candles fit or
+    // when a screen is too old to be believed.
+    __MONITOR_JS__
+
+    // One Graphics per painted screen, created ONCE — on the plate-success
+    // path, right after buildGlows() — and only cleared/redrawn per
+    // poll. Rebuilding Graphics every tick or every poll is exactly what B2
+    // warned would cost the stream frames on a box that also encodes 1080p.
+    const monitorGraphics = {};
+
+    function buildMonitorGraphics() {
+      for (const screen of PLATE.screens || []) {
+        const g = new PIXI.Graphics();
+        // layers.monitors: its own container, built once here and never
+        // wiped by anyone else (see the layer's own comment in boot()).
+        layers.monitors.addChild(g);
+        monitorGraphics[screen.id] = g;
+      }
+    }
+
+    // Procedural pixel candles, on the same 4px grid as the cast. Not
+    // Lightweight Charts: a smooth anti-aliased chart inside a pixel-art
+    // monitor reads as a screenshot pasted into a painting.
+    function drawCandles(screen, bars) {
+      const g = monitorGraphics[screen.id];
+      // A screen absent from monitorGraphics (never built, or a stale
+      // manifest reference) fails closed rather than throwing inside a
+      // render loop the whole page depends on.
+      if (!g) return;
+      g.clear();
+      // barsThatFit / isDrawable are INJECTED from world/monitors.py — the
+      // page must not re-derive them. A screen too small for a legible
+      // candle stays dark glass: the plate's painted state is the honest
+      // rendering of "nothing to say here".
+      const fits = barsThatFit(screen.w);
+      if (!isDrawable(screen)) return;
+      if (!bars || !bars.length) return;
+
+      const shown = bars.slice(-fits);
+      const highs = shown.map((b) => b.high), lows = shown.map((b) => b.low);
+      const top = Math.max(...highs), bottom = Math.min(...lows);
+      const span = top - bottom;
+      if (!(span > 0)) return;      // a flat span would divide by zero and draw a lie
+
+      const newest = Date.parse(shown[shown.length - 1].timestamp);
+      const ageSeconds = (Date.now() - newest) / 1000;
+      g.alpha = staleAlpha(ageSeconds);   // INJECTED from world/monitors.py - see above
+
+      const pad = MONITOR_RULES.pad_cells * CELL;
+      const pitch = (MONITOR_RULES.body_cells + MONITOR_RULES.gap_cells) * CELL;
+      const plotH = screen.h - 2 * pad;
+      const yOf = (price) => snap(screen.y + pad + (top - price) / span * plotH);
+
+      shown.forEach((bar, i) => {
+        const x = snap(screen.x + pad + i * pitch);
+        const up = bar.close >= bar.open;
+        const clr = up ? 0x26a69a : 0xef5350;
+        const bodyTop = yOf(Math.max(bar.open, bar.close));
+        const bodyBottom = yOf(Math.min(bar.open, bar.close));
+        g.rect(x + CELL, yOf(bar.high), CELL, yOf(bar.low) - yOf(bar.high)).fill(clr);
+        g.rect(x, bodyTop, MONITOR_RULES.body_cells * CELL,
+               Math.max(CELL, bodyBottom - bodyTop)).fill(clr);
+      });
+    }
+
+    // Polling, not SSE (KI-013): subscribe() below already spends one of
+    // Chromium's six same-origin connections on this page's live event
+    // stream, and OBS's browser sources all share that one network stack. A
+    // second EventSource here is how the room went blank for a week.
+    // /music/now-playing set this precedent. 20s is well inside a 1m bar and
+    // costs one short-lived fetch per screen per tick.
+    const BARS_POLL_MS = 20000;
+    async function pollBars() {
+      if (!plateReady || !PLATE.screens) return;
+      for (const screen of PLATE.screens) {
+        if (screen.role !== "chart" || !screen.symbol) continue;
+        try {
+          const res = await fetch(`/bars/${screen.symbol}?interval=1m&limit=120`);
+          if (!res.ok) { drawCandles(screen, []); continue; }
+          const body = await res.json();
+          drawCandles(screen, (body.data && body.data.bars) || []);
+        } catch (err) {
+          drawCandles(screen, []);   // dark glass, never a stale claim
+        }
+      }
     }
 
     // --- B9: the always-on now-band ---------------------------------------

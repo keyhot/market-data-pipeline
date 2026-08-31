@@ -24,6 +24,10 @@ RECENT_LIMIT = 12
 # Note what is NOT here: `content_unreachable` (KI-024). A stream whose pages
 # cannot reach the API is pushing pixels at nobody — that is a content outage
 # and it accrues downtime, which is the entire point of recording it.
+# `renderer_blank` (KI-046) is deliberately absent for the same reason. A room
+# that failed to render is a white frame going out over a live RTMP link — dark
+# air, not impaired air — and exempting it would restore the exact blindness the
+# rule was added to end: two hours of blank video at "100% uptime".
 # KI-032: `dropped_frames` is the HISTORICAL name and must stay accepted
 # forever. `world_events` is append-only, so every row written before the
 # rename keeps it; dropping it here would reclassify every past degradation as
