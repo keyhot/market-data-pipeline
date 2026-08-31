@@ -223,11 +223,23 @@
       layers.plate = new PIXI.Container();
       layers.room = new PIXI.Container();
       // Task 9: additive light (applySwell) falls ON the room but must never
-      // land over the cast's faces, so it sits above layers.room — and, since
-      // a later ticket (M2) draws live chart candles into layers.props,
-      // BELOW layers.props too, or the glow would wash the candles out the
-      // moment they exist.
+      // land over the cast's faces, so it sits above layers.room — and,
+      // since M2's live chart candles (layers.monitors) must never be washed
+      // out by the glow, this sits below that layer too.
       layers.swell = new PIXI.Container();
+      // M2: the monitors get their OWN container, a stage sibling exactly
+      // like layers.swell — built once (buildMonitorGraphics, called from
+      // drawPlate's success path) and never wiped by anyone else. It does
+      // NOT share layers.props: that container has a per-cycle
+      // wipe-and-rebuild contract (drawPillars calls removeChildren() on
+      // every draw()), which is a different lifecycle than "build once,
+      // never cleared" — putting both contracts in one container is how a
+      // future props consumer forgets to preserve the monitors and the room
+      // goes blank on air with no text-reading test able to see it. Placed
+      // above swell (so glow never washes the candles out) and below props
+      // (so pillars/labels still paint over it exactly as before, since they
+      // never spatially overlap the painted screens anyway).
+      layers.monitors = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
       // Shadows are a *child* of the cast layer, not of any character: they
@@ -238,13 +250,15 @@
       layers.shadows = new PIXI.Container();
       layers.chars.addChild(layers.shadows);
       app.stage.addChild(
-        layers.plate, layers.room, layers.swell, layers.props, layers.chars);
+        layers.plate, layers.room, layers.swell, layers.monitors,
+        layers.props, layers.chars);
       // Pixel-art rule: no sub-pixel compositing for anything the cast or its
       // furniture draws. The plate and the vignette stay off this list on
       // purpose — they are painted art and a soft light falloff, not part of
       // the grid. The swell layer is additive light too, for the same reason.
       layers.chars.roundPixels = true;
       layers.props.roundPixels = true;
+      layers.monitors.roundPixels = true;
 
       await drawPlate();
       model = character("MODEL");
@@ -648,13 +662,10 @@
     }
 
     function drawPillars(state) {
+      // M2: the monitor Graphics live in their OWN layer (layers.monitors),
+      // never in layers.props — this removeChildren() only ever touches
+      // pillars/caps/labels, the things drawPillars/draw() itself put here.
       layers.props.removeChildren();
-      // M2: layers.props is also where the monitor Graphics live (built once,
-      // at plate-success time) — removeChildren() above detaches them from
-      // the scene graph without destroying them, so put them straight back
-      // before anything early-returns below, or the monitors keep drawing
-      // correctly into Graphics nobody renders again.
-      Object.values(monitorGraphics).forEach((g) => layers.props.addChild(g));
       const symbols = Object.entries(state.symbols ?? {})
         .filter(([symbol]) => SYMBOLS.includes(symbol));
       if (!symbols.length) return;
@@ -1817,9 +1828,9 @@
     function buildMonitorGraphics() {
       for (const screen of PLATE.screens || []) {
         const g = new PIXI.Graphics();
-        // Above the additive swell, below the cast, so glow never washes the
-        // candles out and the cast never stands behind its own market data.
-        layers.props.addChild(g);
+        // layers.monitors: its own container, built once here and never
+        // wiped by anyone else (see the layer's own comment in boot()).
+        layers.monitors.addChild(g);
         monitorGraphics[screen.id] = g;
       }
     }

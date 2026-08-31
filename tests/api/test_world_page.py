@@ -2158,20 +2158,23 @@ def test_the_swell_is_additive_and_never_tints_the_plate():
     assert "layers.plate.tint" not in body
 
 
-def test_the_swell_layer_sits_above_the_room_and_below_props_and_chars():
+def test_the_swell_layer_sits_above_the_room_and_below_monitors_props_and_chars():
     """Additive light must land on the room but never over the cast's faces
     — so `layers.swell` sits above `layers.room` and below `layers.chars` —
-    and, because a later ticket (M2) draws live chart candles into
-    `layers.props`, it must sit below `layers.props` too, or the glow would
-    wash the candles out before anyone draws them.
+    and, because M2's live chart candles live in their OWN layer
+    (`layers.monitors`, a stage sibling with a build-once/never-wiped
+    contract — deliberately not sharing `layers.props`, whose contract is
+    per-cycle wipe-and-rebuild), swell must sit below that layer too, or the
+    glow would wash the candles out.
     """
     boot = _js_block(_world_source(), "async function boot()")
     assert "layers.swell = new PIXI.Container();" in boot
+    assert "layers.monitors = new PIXI.Container();" in boot
     match = re.search(r"app\.stage\.addChild\(([^)]*)\);", boot)
     assert match, "boot() no longer builds the stage in one addChild call"
     order = [name.strip() for name in match.group(1).split(",")]
     assert order == ["layers.plate", "layers.room", "layers.swell",
-                      "layers.props", "layers.chars"], order
+                      "layers.monitors", "layers.props", "layers.chars"], order
 
 
 def test_the_ambient_vignette_is_guarded_for_the_plate_path():
@@ -2590,9 +2593,14 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
 
     build = _js_block(body, "function buildMonitorGraphics(")
     assert "new PIXI.Graphics()" in build
-    assert "layers.props.addChild(" in build, (
-        "monitor graphics must land in layers.props, above swell so glow "
-        "does not wash out the candles"
+    assert "layers.monitors.addChild(" in build, (
+        "monitor graphics must land in their OWN layer (layers.monitors), "
+        "above swell so glow does not wash out the candles, and NOT in "
+        "layers.props - that container is wiped and rebuilt every draw() "
+        "cycle (drawPillars), a different lifecycle than build-once"
+    )
+    assert "layers.props" not in build, (
+        "buildMonitorGraphics must not touch layers.props at all"
     )
 
     # Built alongside buildSwellGlows(), on the plate SUCCESS path only.
@@ -2605,9 +2613,11 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
 def _monitor_driver(*, plate_ready: bool) -> str:
     """The page's own `buildMonitorGraphics`/`drawCandles`/`pollBars`, run
     against the real manifest's `screens`, with only `PIXI.Graphics`,
-    `layers.props` and `fetch` stubbed. The stub records what was actually
+    `layers.monitors` and `fetch` stubbed. The stub records what was actually
     built/drawn/fetched rather than asserting on source text — the
-    `_swell_driver` pattern applied to the monitors.
+    `_swell_driver` pattern applied to the monitors. `layers.monitors` is the
+    monitors' OWN container (Finding 1, review round 1) — not `layers.props`,
+    which has a different, per-cycle wipe-and-rebuild contract.
     """
     source = _world_source()
     screens = _manifest()["screens"]
@@ -2625,7 +2635,7 @@ def _monitor_driver(*, plate_ready: bool) -> str:
         "  fill(color) { this.fills.push(color); return this; }\n"
         "}\n"
         "const PIXI = { Graphics: FakeGraphics };\n"
-        "const layers = { props: { children: [],\n"
+        "const layers = { monitors: { children: [],\n"
         "  removeChildren() { this.children = []; },\n"
         "  addChild(...items) { this.children.push(...items); } } };\n"
         "const monitorGraphics = {};\n"
@@ -2746,45 +2756,61 @@ def test_drawCandles_executed_draws_fresh_candles_and_dims_stale_ones():
 
 
 @needs_node
-def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_props():
+def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
     """Exactly one Graphics per painted screen, keyed by `screen.id`, and
-    parented under `layers.props` — never `layers.swell` (additive glow would
-    wash the candles out) and never `layers.chars`."""
+    parented under its OWN layer, `layers.monitors` — never `layers.swell`
+    (additive glow would wash the candles out), never `layers.chars`, and
+    (Finding 1, review round 1) never `layers.props` either, since that
+    container is wiped and rebuilt every draw() cycle."""
     driver = _monitor_driver(plate_ready=True) + (
         "buildMonitorGraphics();\n"
         "console.log(JSON.stringify({\n"
         "  built: graphicsBuilt,\n"
         "  ids: Object.keys(monitorGraphics).sort(),\n"
-        "  inProps: layers.props.children.length,\n"
+        "  inMonitors: layers.monitors.children.length,\n"
         "  sameRef: monitorGraphics[PLATE.screens[0].id]"
-        " === layers.props.children[0],\n"
+        " === layers.monitors.children[0],\n"
         "}));\n"
     )
     emitted = _run_node(driver)
     manifest_ids = sorted(s["id"] for s in _manifest()["screens"])
     assert emitted["built"] == len(manifest_ids)
     assert emitted["ids"] == manifest_ids
-    assert emitted["inProps"] == len(manifest_ids)
+    assert emitted["inMonitors"] == len(manifest_ids)
     assert emitted["sameRef"] is True
 
 
 @needs_node
-def test_drawPillars_preserves_the_monitor_graphics_across_its_own_wipe():
-    """`drawPillars` is the only other consumer of `layers.props`, and it
-    unconditionally `removeChildren()`s it on every `/world/state` refresh.
-    Without a fix, the monitor Graphics built once at boot would be silently
-    detached from the scene graph the first time the room redraws its
-    pillars - drawn correctly forever after into a Graphics nobody renders.
+def test_drawPillars_never_touches_the_monitors_layer():
+    """Review round 1, Finding 1: the monitor Graphics moved into their OWN
+    container (`layers.monitors`), a stage sibling built once by
+    `buildMonitorGraphics()` and never wiped by anyone else — the same
+    contract `layers.swell` already has via `buildSwellGlows()`. `drawPillars`
+    only ever owns `layers.props` (its per-cycle wipe-and-rebuild container
+    for pillars/caps/labels/the history line); it must never reach into
+    `layers.monitors` at all. This passes because nothing wipes the monitors,
+    not because something puts them back - the earlier version of this test
+    (a re-append patch over the wipe) is exactly the shape the reviewer flagged:
+    it worked, but nothing structurally stopped a future `layers.props`
+    consumer from wiping and forgetting to re-append, with a blank monitor on
+    air as the failure mode.
     """
     source = _world_source()
+    probe = "{ id: 'probe' }"
     driver = (
         "const SYMBOLS = [];\n"
         "const CELL = 4;\n"
         "function snap(v) { return v; }\n"
-        "const monitorGraphics = { probe: { id: 'probe' } };\n"
-        "const layers = { props: { children: [monitorGraphics.probe],\n"
-        "  removeChildren() { this.children = []; },\n"
-        "  addChild(...items) { this.children.push(...items); } } };\n"
+        "let monitorsWiped = false;\n"
+        f"const probe = {probe};\n"
+        "const layers = {\n"
+        "  props: { children: [],\n"
+        "    removeChildren() { this.children = []; },\n"
+        "    addChild(...items) { this.children.push(...items); } },\n"
+        "  monitors: { children: [probe],\n"
+        "    removeChildren() { monitorsWiped = true; this.children = []; },\n"
+        "    addChild(...items) { this.children.push(...items); } },\n"
+        "};\n"
         "function color() { return 0; }\n"
         "function label() { return {}; }\n"
         "function pillarGeometry() {\n"
@@ -2796,13 +2822,25 @@ def test_drawPillars_preserves_the_monitor_graphics_across_its_own_wipe():
         + "\n"
         "drawPillars({ symbols: {} });\n"
         "console.log(JSON.stringify({\n"
-        "  stillThere: layers.props.children.includes(monitorGraphics.probe),\n"
+        "  stillThere: layers.monitors.children.includes(probe),\n"
+        "  monitorsCount: layers.monitors.children.length,\n"
+        "  monitorsWiped,\n"
         "}));\n"
     )
     emitted = _run_node(driver)
     assert emitted["stillThere"] is True, (
-        "drawPillars() wiped the monitor Graphics off layers.props and never "
-        "put them back"
+        "drawPillars() must never disturb layers.monitors' children"
+    )
+    # Not just "the probe is still there somewhere" - exactly the one child it
+    # started with, so a stray non-destructive addChild() onto the wrong layer
+    # (adding without removing) is caught too, not only a wipe.
+    assert emitted["monitorsCount"] == 1, (
+        "drawPillars() added something to layers.monitors - it does not own "
+        "that container"
+    )
+    assert emitted["monitorsWiped"] is False, (
+        "drawPillars() must never call removeChildren() on layers.monitors "
+        "at all - it does not own that container"
     )
 
 
