@@ -115,6 +115,13 @@ class WatchdogConfig:
     # The browser source Task 16 reloads to recover the room. Declared with the
     # rule that decides it; nothing reads it yet.
     renderer_source: str = "world-room"
+    # KI-046's self-heal is "once per outage" only when the press SUCCEEDS —
+    # a press that throws (a renamed source, a flapping obs-websocket) clears
+    # the latch in execute_actions so the outage can try again, and without a
+    # ceiling that retry fires every poll for the entire outage: a new
+    # websocket client built and an exception logged every 30s against a
+    # fault that was never going to clear itself. Capped, not uncapped-but-rare.
+    max_renderer_refresh_attempts: int = 3
 
 
 @dataclass
@@ -153,8 +160,15 @@ class WatchdogState:
     renderer_failures: int = 0
     renderer_down_since: float | None = None
     # When the source was last reloaded in the current outage, and `None` once
-    # it recovers. This IS the rate limit: one refresh per outage.
+    # it recovers. This IS the rate limit: one refresh per outage — but only
+    # while the press keeps succeeding; a failing press clears it back to
+    # `None` (see execute_actions) so the outage can try again.
     renderer_refreshed_at: float | None = None
+    # How many times THIS outage has offered a refresh, success or failure —
+    # the ceiling on the retry `renderer_refreshed_at` alone cannot cap once
+    # the press itself is what's failing. Reset to 0 on recovery, same as
+    # `renderer_refreshed_at`.
+    renderer_refresh_attempts: int = 0
 
 
 def tick(
@@ -452,6 +466,9 @@ def _check_renderer(
                 payload["refreshed"] = True
                 # Re-arm the cheap fix: once per outage, not once per process.
                 state.renderer_refreshed_at = None
+            # The retry ceiling is per-outage too — a recovery (however it
+            # happened) means the NEXT outage starts with a clean budget.
+            state.renderer_refresh_attempts = 0
             state.renderer_ok = True
             return [("record", "stream_started", payload)]
         return []
@@ -489,8 +506,21 @@ def _check_renderer(
     # there, and one transient obs-websocket error would cost the whole outage
     # its cheap fix. Here, an outage with a spent latch re-offers exactly when
     # the attempt did not land.
-    if not state.renderer_ok and state.renderer_refreshed_at is None:
+    #
+    # But a PERMANENTLY failing press (renamed source, an obs-websocket that
+    # never stops flapping) would re-offer every single tick for the rest of
+    # the outage with no ceiling on the latch alone — a new client built and
+    # an exception logged every 30s against a fault that was never going to
+    # clear. `max_renderer_refresh_attempts` bounds it; past the cap the
+    # outage is still recorded and still recovers on its own, it just stops
+    # being hammered with reload attempts that keep not landing.
+    if (
+        not state.renderer_ok
+        and state.renderer_refreshed_at is None
+        and state.renderer_refresh_attempts < config.max_renderer_refresh_attempts
+    ):
         state.renderer_refreshed_at = now
+        state.renderer_refresh_attempts += 1
         actions.append(("refresh_source", config.renderer_source))
     return actions
 
@@ -963,6 +993,15 @@ def renderer_config_warnings(
     reloading a healthy source once per outage, forever. Said out loud at
     startup rather than mis-handled silently, which is what P3 does for a
     watchlist disagreement.
+
+    A third thing has to agree too: `_BROWSER_DEFAULTS["shutdown"]` in
+    stream_scene.py must stay False. OBS tears a `shutdown: True` source down
+    whenever its scene is off program — so every dwell away from world-focus
+    would blank the renderer, `probe_content` would call it unhealthy, and the
+    director would speak a false severity-5 `stream_dropped renderer_blank` on
+    a perfectly healthy stream. A plausible perf tweak to that one shared
+    default silently arms this for all twelve shards at once, so it gets the
+    same loud startup warning as the other two halves.
     """
     if not config.renderer_host:
         return [
@@ -971,25 +1010,33 @@ def renderer_config_warnings(
             f"{config.renderer_source}` loads from (scripts/stream_scene.py)."
         ]
 
-    urls = [
-        (source.get("settings") or {}).get("url")
+    entries = [
+        source.get("settings") or {}
         for scene in (spec if spec is not None else stream_scene.scenes_spec())
         for source in (scene.get("sources") or [])
         if source.get("name") == config.renderer_source
     ]
-    urls = [url for url in urls if url]
-    if not urls:
+    entries = [settings for settings in entries if settings.get("url")]
+    if not entries:
         return [
             f"KI-046: renderer_source `{config.renderer_source}` is not a browser "
             "source in the scene spec, so the self-heal would reload nothing."
         ]
 
-    expected = urllib.parse.urlsplit(urls[0]).netloc
+    expected = urllib.parse.urlsplit(entries[0]["url"]).netloc
     if expected != config.renderer_host:
         return [
             f"KI-046: WATCHDOG_RENDERER_HOST is {config.renderer_host} but "
             f"`{config.renderer_source}` is loaded from {expected} — the watchdog "
             "would judge one page and reload another."
+        ]
+
+    if entries[0].get("shutdown") is not False:
+        return [
+            f"KI-046: `{config.renderer_source}`'s `shutdown` is not False — OBS "
+            "tears the source down whenever its scene is off program, so every "
+            "dwell away from world-focus would read as a dead renderer and the "
+            "self-heal would fire on a perfectly healthy stream."
         ]
     return []
 

@@ -1234,6 +1234,72 @@ def test_the_next_tick_retries_a_refresh_that_failed(monkeypatch):
     assert attempts == ["world-room", "world-room"]
 
 
+def test_a_permanently_failing_refresh_stops_being_retried():
+    """Review round: without a ceiling, a press that keeps throwing (a
+    renamed source, an obs-websocket that never stops flapping) would be
+    retried every single tick for the rest of the outage — execute_actions
+    clears the latch on every failure, and the offer above just re-arms it.
+    Simulated directly at the pure `tick` level: the latch reset to `None`
+    between ticks is exactly the state a permanently failing press leaves
+    behind, without needing to fake stream_ctl for this one. Checks the
+    offers stop once `max_renderer_refresh_attempts` is spent, and stay
+    stopped — not just skip one tick before resuming.
+    """
+    config = WatchdogConfig(
+        renderer_failures_before_drop=1, max_renderer_refresh_attempts=2
+    )
+    state = WatchdogState(streaming=True)
+
+    _s, first = tick(_blank_probe(), state, config, now=10.0)
+    assert ("refresh_source", "world-room") in first
+    state.renderer_refreshed_at = None  # the press failed
+
+    _s, second = tick(_blank_probe(), state, config, now=40.0)
+    assert ("refresh_source", "world-room") in second
+    state.renderer_refreshed_at = None  # the press failed again
+
+    _s, third = tick(_blank_probe(), state, config, now=70.0)
+    assert ("refresh_source", "world-room") not in third, (
+        "the cap must stop the retry, not just slow it down"
+    )
+    state.renderer_refreshed_at = None
+    _s, fourth = tick(_blank_probe(), state, config, now=100.0)
+    assert ("refresh_source", "world-room") not in fourth, (
+        "capped means capped for the rest of the outage, not one more tick"
+    )
+    assert state.renderer_refresh_attempts == 2
+
+
+def test_end_to_end_a_permanently_failing_press_stops_hammering(monkeypatch):
+    """The shape the review actually found, through the real dispatch seam:
+    a press that ALWAYS throws must stop being attempted rather than
+    building a new websocket client and logging an exception every 30s for
+    the whole outage."""
+    from scripts import stream_watchdog as wd
+
+    attempts = []
+
+    def always_fails(client, name):
+        attempts.append(name)
+        raise OSError("obs-websocket went away")
+
+    monkeypatch.setattr(wd.stream_ctl, "make_client", lambda *a, **k: "client")
+    monkeypatch.setattr(wd.stream_ctl, "refresh_browser_source", always_fails)
+
+    config = WatchdogConfig(
+        renderer_failures_before_drop=1, max_renderer_refresh_attempts=2
+    )
+    state = WatchdogState(streaming=True)
+
+    for now in (10.0, 40.0, 70.0, 100.0, 130.0):
+        _s, actions = tick(_blank_probe(), state, config, now=now)
+        wd.execute_actions(actions, config, state)
+
+    assert len(attempts) == 2, (
+        "the press kept being retried past max_renderer_refresh_attempts"
+    )
+
+
 def _scene_spec(name, url):
     """The real `scenes_spec()` shape — the URL lives in `settings`, not at the
     top level. A fake that flattened it passed while the code read the wrong key
@@ -1288,3 +1354,21 @@ def test_the_real_scene_spec_still_carries_the_room_where_the_guard_looks():
 
     config = WatchdogConfig(renderer_host="127.0.0.4:8000")
     assert renderer_config_warnings(config) == []
+
+
+def test_a_shutdown_source_flips_the_guard_to_a_false_outage():
+    """The guard's third half: `_BROWSER_DEFAULTS["shutdown"]` in
+    stream_scene.py must stay False, because OBS tears a `shutdown: True`
+    source down whenever its scene is off program. If someone flips it as a
+    plausible perf tweak, every dwell away from world-focus reads as a dead
+    renderer — a false `stream_dropped renderer_blank` the director then
+    speaks on air. That must be a loud startup warning, not a silent trap."""
+    from scripts.stream_watchdog import renderer_config_warnings
+
+    spec = _scene_spec("world-room", "http://127.0.0.4:8000/world")
+    spec[0]["sources"][0]["settings"]["shutdown"] = True
+    config = WatchdogConfig(
+        renderer_host="127.0.0.4:8000", renderer_source="world-room"
+    )
+    (warning,) = renderer_config_warnings(config, spec=spec)
+    assert "shutdown" in warning
