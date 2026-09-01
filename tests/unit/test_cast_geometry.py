@@ -181,8 +181,8 @@ def test_a_plate_without_a_sit_anchor_keeps_the_standing_anchor():
         + block.group(0)
         + '\nconsole.log(JSON.stringify(sitAnchorFor("trader")));'
     )
-    trader = load_manifest().cast["trader"]
-    assert present == {"x": trader["sit_anchor"]["x"], "baseY": trader["sit_anchor"]["y"]}
+    sit = load_manifest().cast["trader"]["sit_anchor"]
+    assert present == {"x": sit["x"], "baseY": sit["y"]}
 
     for stripped in (_stripped_manifest("sit_anchor"), None):
         emitted = _node(
