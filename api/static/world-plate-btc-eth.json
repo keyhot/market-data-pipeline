@@ -28,5 +28,13 @@
     {"id": "tubes-floor", "x": 515, "y": 380, "w": 175, "h": 380},
     {"id": "tubes-desk", "x": 1160, "y": 120, "w": 122, "h": 340}
   ],
-  "bands": {"top": 60, "bottom": 105}
+  "bands": {"top": 60, "bottom": 105},
+  "light": {
+    "key": [1339, 455],
+    "direction": [-0.55, 0.84],
+    "warmth": "#f0a848",
+    "ambient": "#1a2030",
+    "ramp": { "lit": 0.30, "base": 0.0, "shade": -0.34 },
+    "contact": { "opacity": 0.38, "widthScale": 1.15, "height": 7 }
+  }
 }

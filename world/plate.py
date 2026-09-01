@@ -50,6 +50,7 @@ class PlateManifest:
     glow: tuple[dict, ...]
     bands: dict
     spare_tubes: tuple[dict, ...] = field(default=())
+    light: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -63,6 +64,7 @@ class PlateManifest:
             "screens": [dict(screen) for screen in self.screens],
             "glow": [dict(glow) for glow in self.glow],
             "bands": dict(self.bands),
+            "light": dict(self.light),
         }
 
     def screen_for(self, symbol: str) -> dict | None:
@@ -95,6 +97,7 @@ def load_manifest(path: Path | None = None) -> PlateManifest | None:
             screens=tuple(raw.get("screens", ())),
             glow=tuple(raw.get("glow", ())),
             bands=dict(raw.get("bands", {})),
+            light=dict(raw.get("light", {})),
         )
     except FileNotFoundError:
         logger.warning("plate manifest missing", extra={"path": str(path)})

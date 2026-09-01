@@ -95,6 +95,12 @@
     // put a third party into the on-air load path.
     const PLATE = __PLATE_JSON__;
     const PLATE_SRC = PLATE ? "/static/" + PLATE.plate : null;
+    // The painted key light (the amber desk lamp): direction, warmth and
+    // ramp measured off the plate, or the neutral default when unmeasured.
+    // Distinct from ROOM_LIGHT below, which is the severity-tier ambient
+    // swell — this one shapes the cast. Unread until the shading pass wires
+    // it into shade().
+    const LIGHT = __LIGHT_JSON__;
     const fallback = document.getElementById("fallback");
 
     // Name the room for a newcomer: the symbols in play + the one-line premise.
