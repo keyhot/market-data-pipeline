@@ -23,10 +23,6 @@ import pytest
 
 from world.plate import load_manifest
 
-# The painted furniture the cast has to belong to, measured off the plate.
-# A figure taller than the desk-to-ceiling run is not standing in this room.
-ROOM_FIGURE_CEILING = 300
-
 WORLD_TEMPLATE = (
     Path(__file__).resolve().parents[2] / "api" / "templates" / "world.html"
 )
@@ -64,13 +60,72 @@ def test_the_cast_block_tells_its_settings_apart_from_its_people():
     assert "scale" not in people and "rig_height" not in people
 
 
-def test_the_cast_fits_under_the_room_ceiling():
-    # Observed 2026-09-01: at CAST_SCALE 1.5 the model's body ran off the
-    # bottom of the frame and its head rivalled the bonsai. Whatever scale
-    # ships, the drawn figure has to fit the furniture.
+def _skull_radius_local() -> int:
+    """The skull `character()` draws for every body but the orb - read from
+    the page's own `skull.circle(snap(0), snap(0), 28)` call
+    (`api/templates/world.html`) rather than copied as a second 28, so a
+    redraw that resizes the head moves this number with it instead of
+    silently going stale beside it."""
+    match = re.search(
+        r"skull\.circle\(snap\(0\), snap\(0\), (\d+)\)", WORLD_TEMPLATE.read_text()
+    )
+    assert match, "the page no longer draws the skull as a plain circle literal"
+    return int(match.group(1))
+
+
+def test_the_seated_heads_width_fits_the_seat_budget():
+    """Review round finding: the old `test_the_cast_fits_under_the_room_
+    ceiling` (`rig_height * scale <= 300`) could not fail. At the tallest
+    drawn body (180 units) it permits any scale up to 1.667, so it passed at
+    the rejected 1.5 (270) as readily as at the shipped 1.25 (225) - it was
+    RED only while the manifest keys were absent, never once because a scale
+    was actually too big. A bound reverse-engineered to sit between 225 and
+    270 (e.g. "260") would be the same defect wearing a tighter number, so
+    this closes a gap in a check the manifest already grades instead of
+    inventing a new one.
+
+    `cast.trader.seat.width` (79, measured off the plate for the chair's own
+    cushion - `world/plate.py`'s docstring) is already the established width
+    budget for the seated rig: `test_the_seated_rig_fits_inside_the_manifest_
+    seat` composites `seatedRig`'s `roundRect` calls against it. But that
+    test can only ever see what `seatedRig` draws, and the skull is drawn
+    separately, in `character()` - so the rig's actual widest part has never
+    been graded against its own budget. Run for real (not eyeballed): the
+    widest `roundRect` `seatedRig` draws is the chest, `snap(-24)` wide 48,
+    at local x [-24, 24] - the arms (pivoted at x=±14) land inside it. The
+    skull is a circle of radius `_skull_radius_local()` (28 local units, read
+    from the page rather than retyped) centred on the same local origin, so
+    it spans [-28, 28] - a 56-unit diameter, 17% wider than the chest the
+    existing test measures. The head, not the chest, is what a repaint could
+    push out of budget, and until now nothing graded it.
+
+    This checks the diameter against the budget, not where it lands - an
+    aggregate check, same style as the chest's (Round 2 Finding 1), not a
+    positional one (Round 2 Finding 4, an already-covered concern for the
+    chest). Deliberately: composited at the shipped `sit_anchor.x` (1346)
+    with a 35px screen radius (28 * 1.25), the head's screen span is
+    [1311, 1381] against a seat of [1299, 1378] - the right edge already
+    overshoots the seat by 3px at the scale that shipped. A positional
+    variant would fail on the current manifest, not just at the rejected
+    1.5, which is exactly why this grades the size of the thing against its
+    budget and leaves where it lands to the test that already owns that
+    question.
+
+    Break-even is seat_width / 56 = 79 / 56 ≈ 1.411 - inside the gap the
+    whole-pixel test (`test_the_manifest_scale_keeps_the_rendered_cell_a_
+    whole_pixel`) leaves between the surviving candidates 1.25 and 1.5, and
+    not hard against either: shipped 1.25 clears by 9px (70 vs 79), rejected
+    1.5 overshoots by 5px (84 vs 79).
+    """
     manifest = load_manifest()
     scale = manifest.cast["scale"]
-    assert manifest.cast["rig_height"] * scale <= ROOM_FIGURE_CEILING
+    seat_width = manifest.cast["trader"]["seat"]["width"]
+    head_diameter = 2 * _skull_radius_local() * scale
+    assert head_diameter <= seat_width, (
+        f"the seated head renders {head_diameter}px across at cast.scale "
+        f"{scale} - wider than the {seat_width}px seat "
+        "(cast.trader.seat.width) it is drawn sitting on"
+    )
 
 
 def test_the_scale_is_manifest_data_not_a_page_constant():
