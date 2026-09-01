@@ -291,11 +291,19 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     against the seat rect, not just their difference.
 
     Mutation-checked against a deliberately mis-measured manifest: narrowing
-    `seat.width` below the rig's real extent, and shifting `cast.trader.x`
+    `seat.width` below the rig's real extent, and shifting the anchor
     off-centre, must each fail this test, or the check is decorative.
     (Verified by hand during review, not asserted here - asserting a
     specific mis-measured value would just be a second magic number
     standing in for the first one review round 1 objected to.)
+
+    Sprint 16: the anchor in question is `sit_anchor.x`, not `cast.trader.x`.
+    `positionCharacters` stopped using `x` for a seated pose when the plate
+    started measuring the hips separately from the seat, so shifting `x` now
+    moves nothing and mutating it would prove nothing. At the shipped scale
+    the fit is 17px of slack on the left and **2px on the right** - the band
+    is nearly exhausted, so a wider rig or a further-right anchor needs the
+    seat re-measured rather than nudged.
     """
     manifest = load_manifest()
     # Sprint 16: the rig is composited on `sit_anchor` - where the hips go -
