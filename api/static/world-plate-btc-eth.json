@@ -12,9 +12,12 @@
     {"x": 1252, "base_y": 428, "height": 290, "width": 45}
   ],
   "cast": {
+    "scale": 1.25,
+    "rig_height": 180,
     "model": {"x": 360, "base_y": 830, "pose": "standing"},
     "trader": {"x": 1339, "base_y": 682, "pose": "seated",
-     "seat": {"x": 1299, "y": 682, "width": 79}}
+     "seat": {"x": 1299, "y": 682, "width": 79},
+     "sit_anchor": {"x": 1346, "y": 690}}
   },
   "screens": [
     {"id": "centre-left", "x": 463, "y": 116, "w": 344, "h": 234,

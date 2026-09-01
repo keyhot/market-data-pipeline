@@ -682,6 +682,27 @@
       };
     }
 
+    // Where a seated body's HIPS go, which is a different question from where
+    // a seated body FITS. `seat` is the fit budget — the cushion's painted
+    // span, what the rig's width is checked against. `sit_anchor` is the point
+    // the rig's origin is pinned to. Sprint 15 used one number for both, taking
+    // the seat rect's centre as the anchor, and the figure still landed beside
+    // the chair (KI-054): this plate draws the chair in three-quarter view, so
+    // the cushion's centre and the point a sitter's hips occupy are ~7px and
+    // ~8px apart in different directions, and the backrest is up-and-right of
+    // both. Two measurements now, two fields.
+    //
+    // Returns null — never a throw and never a guess — when the plate has no
+    // `sit_anchor` (an older manifest, a repaint mid-edit). The caller then
+    // keeps the standing anchor, which is exactly the placement that shipped
+    // before this existed: a degrade to the previous look, not to a blank one.
+    function sitAnchorFor(name) {
+      const painted = plateReady && PLATE && PLATE.cast ? PLATE.cast[name] : null;
+      const sit = painted ? painted.sit_anchor : null;
+      if (!sit || sit.x == null || sit.y == null) return null;
+      return { x: sit.x, baseY: sit.y };
+    }
+
     // How tall the newcomer banner must be to sit on the strip the plate left
     // quiet for it. `null` means "no plate — leave the CSS alone". A value
     // rather than a branch inside drawPlate, because a test can only run a
@@ -801,7 +822,19 @@
     // of the only two figures on screen, which trades this sprint's headline
     // goal (watchability) for a parenthetical. One constant to reverse after
     // a visual check, not a redesign.
-    const CAST_SCALE = 1.5;
+    //
+    // Sprint 16: the visual check happened, at the 1920x960 the browser source
+    // actually is. 1.5 puts a 42px-radius head on the model — over half the
+    // height of the painted bonsai beside it — and lifts the trader's crown
+    // 67px clear of its own chair's backrest, which is what "standing in front
+    // of the chair" turned out to mean. So the size of the cast is a
+    // MEASUREMENT against the painted furniture now, not a constant: it lives
+    // in the manifest next to the seat and the tubes, and a repaint re-measures
+    // it instead of re-coding it. The literal is the no-plate fallback, and it
+    // has to keep CELL * CAST_SCALE a whole number of screen pixels (see
+    // test_animation_displacement_actually_quantises_to_the_grid, which grades
+    // exactly this literal): 1.25 renders the 4px cell as an exact 5px.
+    const CAST_SCALE = (PLATE && PLATE.cast && PLATE.cast.scale) || 1.25;
 
     function styleFor(name) {
       const style = STYLE_OVERRIDE || CAST[name];
@@ -1651,6 +1684,14 @@
       // NOTE: `character()` also sets a y, and it is dead — this runs on every
       // draw and overwrites it. The plan pointed this ticket at that write.
       const anchors = { model: anchorFor("model"), trader: anchorFor("trader") };
+      // A seated pose is pinned by the hips, a standing one by the feet — the
+      // plate measures both, and `sitAnchorFor` returns null for any plate that
+      // doesn't, which leaves the standing anchor in place rather than a hole.
+      for (const name of ["model", "trader"]) {
+        if (anchors[name].pose !== "seated") continue;
+        const hips = sitAnchorFor(name);
+        if (hips) { anchors[name].x = hips.x; anchors[name].baseY = hips.baseY; }
+      }
       model.container.x = anchors.model.x / CAST_SCALE;
       trader.container.x = anchors.trader.x / CAST_SCALE;
       // The two no longer share a floor: on this plate the trader sits on a

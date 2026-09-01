@@ -161,7 +161,9 @@ def test_the_cast_stands_clear_of_the_bands():
     inside either one puts a character behind text for the whole broadcast."""
     manifest = load_manifest()
     _, height = manifest.canvas
-    for name, anchor in manifest.cast.items():
+    # `cast` also carries room-wide numbers (`scale`, `rig_height`) since
+    # Sprint 16; `characters()` is the one place that tells them apart.
+    for name, anchor in manifest.characters().items():
         assert anchor["base_y"] > manifest.bands["top"], name
         assert anchor["base_y"] < height - manifest.bands["bottom"], name
 
@@ -241,7 +243,7 @@ def test_every_cast_anchor_stands_inside_the_frame():
     all, and a character anchored off-canvas is invisible rather than wrong."""
     manifest = load_manifest()
     width, _ = manifest.canvas
-    for name, anchor in manifest.cast.items():
+    for name, anchor in manifest.characters().items():
         assert 0 < anchor["x"] < width, name
 
 
@@ -296,11 +298,20 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     standing in for the first one review round 1 objected to.)
     """
     manifest = load_manifest()
-    anchor_x = manifest.cast["trader"]["x"]
+    # Sprint 16: the rig is composited on `sit_anchor` - where the hips go -
+    # not on `x`, which `positionCharacters` stopped using for a seated pose.
+    # Grading the coordinate that no longer renders is grading nothing.
+    anchor_x = manifest.cast["trader"]["sit_anchor"]["x"]
     seat = manifest.cast["trader"]["seat"]
     source = WORLD_TEMPLATE.read_text()
 
     driver = (
+        # The real manifest, not `null`: `CAST_SCALE` reads `cast.scale` now,
+        # and the fallback literal is a different number from the shipped one.
+        # This test is about the rig the room actually draws, so it has to run
+        # the scale the room actually uses.
+        f"const PLATE = {json.dumps(manifest.as_dict())};\n"
+        "const plateReady = true;\n"
         "const CELL = 4;\n"
         "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
         + """

@@ -1844,7 +1844,11 @@ def test_the_sheet_can_actually_reach_seatedrig():
     `ANIM` has no key for (which `advanceCharacters` would throw on)."""
     source = _world_source()
     driver = (
-        _js_block(source, "const ANIM = {")
+        # `CAST_SCALE` reads the manifest now, so the identifier has to exist
+        # in this driver even though the sheet does not care what it is: null
+        # is the honest value here, the same as every other plate-free driver.
+        "const PLATE = null;\n"
+        + _js_block(source, "const ANIM = {")
         + ";\n"
         + _js_range(
             source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.turn"

@@ -67,6 +67,26 @@ class PlateManifest:
             "light": dict(self.light),
         }
 
+    def characters(self) -> dict[str, dict]:
+        """Only the people in `cast` - not the room-wide numbers beside them.
+
+        Sprint 16 put `scale` and `rig_height` in `cast`, where they belong:
+        how big the figures are drawn is a measurement against the painted
+        furniture, the same kind of thing as the seat and the tube bores. That
+        makes `cast` a mixed block, and "is this entry a character" is the
+        question every consumer then has to answer - so it is answered once,
+        here, rather than as an `isinstance` restated at each call site.
+
+        A character is an entry carrying an anchor. A future settings key is
+        excluded by having no `x`, not by being on a list this has to be kept
+        in step with.
+        """
+        return {
+            name: value
+            for name, value in self.cast.items()
+            if isinstance(value, dict) and "x" in value
+        }
+
     def screen_for(self, symbol: str) -> dict | None:
         """The painted monitor a symbol's candles belong in, if it has one."""
         wanted = symbol.upper()
