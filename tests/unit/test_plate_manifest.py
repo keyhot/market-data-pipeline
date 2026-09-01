@@ -372,12 +372,27 @@ def test_no_glow_rect_lands_on_a_chart_screen():
 def test_the_overlap_rule_actually_catches_an_overlap():
     # Mutation check. Without this the assertion above passes on an empty
     # glow list, an empty screen list, and a broken intersection test alike.
+    #
+    # Review round 1: an exact-copy poison rect let an equality-only stand-in
+    # for `_rects_intersect` (`a["x"] == b["x"] and ...`) pass every test in
+    # this file, including this one - because the only overlap this test
+    # exercised was identity. Shifted a few pixels off the chart rect instead:
+    # still unmistakably overlapping, but no longer identical, so a
+    # comparison that only recognises exact copies now has something to fail
+    # on. This is also the shape a real collision actually takes - a glow
+    # rect landing partway across a chart, not painted pixel-for-pixel over
+    # it.
     manifest = load_manifest()
     chart = next(s for s in manifest.screens if s.get("role") == "chart")
     poisoned = dataclasses.replace(
         manifest,
-        glow=manifest.glow + ({"id": "poison", "x": chart["x"], "y": chart["y"],
-                               "w": chart["w"], "h": chart["h"]},),
+        glow=manifest.glow + ({
+            "id": "poison",
+            "x": chart["x"] + 20,
+            "y": chart["y"] + 20,
+            "w": chart["w"],
+            "h": chart["h"],
+        },),
     )
     assert glow_chart_overlaps(poisoned) == ["poison"]
 
