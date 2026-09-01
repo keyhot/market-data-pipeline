@@ -712,8 +712,13 @@ def test_the_swell_preview_surface_opens_no_event_stream():
     log. It must return before subscribe(), which is also what makes it
     screenshottable at all: headless Chrome hangs on the page's SSE."""
     body = _world_source()
+    # {0,13}: the branch's own `window.__worldDrawn = true;` (Task 2, set
+    # after THIS gate's own draw call, not before it) is one more line inside
+    # this early-returning branch than the window used to allow — widen the
+    # bound, not the intent: still a *bounded* window, still failing the
+    # instant an EventSource sneaks in before the return.
     preview = re.search(
-        r'get\("swell"\).*?\n(?:.*\n){0,12}?\s*return;', body
+        r'get\("swell"\).*?\n(?:.*\n){0,13}?\s*return;', body
     )
     assert preview, "no early-returning ?swell=1 branch"
     assert "EventSource" not in preview.group(0)
@@ -3125,23 +3130,9 @@ def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure
     assert "blank" not in emitted["drawnWith"]
 
 
-def _js(page: str, fn: str) -> str:
-    """The body of one JS function, brace-matched — every other test in this
-    file reads the page as TEXT, which is how four can't-fail tests shipped
-    last sprint."""
-    start = page.index(f"function {fn}(")
-    depth, i = 0, page.index("{", start)
-    for j in range(i, len(page)):
-        depth += page[j] == "{"
-        depth -= page[j] == "}"
-        if depth == 0:
-            return page[i : j + 1]
-    raise AssertionError(f"unbalanced braces in {fn}")
-
-
 def test_the_gallery_keeps_the_room_it_is_judged_against():
     page = client.get("/world?gallery=1").text
-    body = _js(page, "drawGallery")
+    body = _js_block(page, "function drawGallery(")
     # The specimens must stand in the room by default. This is KI-051's root
     # cause: the tool used to judge the cast deleted the picture.
     assert "layers.plate.visible = false" not in body
@@ -3150,12 +3141,14 @@ def test_the_gallery_keeps_the_room_it_is_judged_against():
 
 def test_the_gallery_hides_the_live_monitors():
     # Observed 2026-09-01: live candles drew straight over the specimens.
-    body = _js(client.get("/world?gallery=1").text, "drawGallery")
+    body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
     assert "layers.monitors.visible = false" in body
 
 
 def test_the_animation_sheet_keeps_the_room_too():
-    body = _js(client.get("/world?anims=1").text, "drawAnimationSheet")
+    body = _js_block(
+        client.get("/world?anims=1").text, "function drawAnimationSheet("
+    )
     assert "layers.plate.visible = false" not in body
     assert "VOID_MODE" in body
 
@@ -3188,4 +3181,89 @@ def test_void_mode_is_reachable_from_drawgallery_and_drawanimationsheet():
         "VOID_MODE must be a top-level (4-space-indent) const, a sibling of "
         "drawGallery and drawAnimationSheet, not nested inside another "
         "function"
+    )
+
+
+def test_the_page_only_claims_drawn_after_each_gates_own_draw_call():
+    """`window.__worldDrawn` used to be set once, above all four gates, right
+    after the heartbeat interval — true before drawGallery, drawAnimationSheet,
+    the swell rehearsal, or the live refresh had drawn anything. shoot.py polls
+    that flag INSTEAD OF a fixed sleep specifically so a page that has not
+    painted can't report ready; setting it early makes the poll decorative and
+    turns `--settle` into the only real guard — the exact failure Task 1's CDP
+    screenshotter exists to catch.
+
+    Pinned as an ORDERING claim per gate (the same idiom as
+    test_the_heartbeat_is_installed_only_after_the_plate_settles above),
+    because the flag string appearing anywhere in the page proves nothing
+    about when it goes true — this must fail if the assignment moves back
+    above the gate branches, which a plain substring test cannot detect.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+
+    gallery_gate = 'get("gallery") === "1") {'
+    anims_gate = 'get("anims")) {'
+    swell_gate = 'get("swell")) {'
+    live_start = "try {\n        await refresh();"
+
+    gallery = boot[boot.index(gallery_gate) : boot.index(anims_gate)]
+    assert gallery.index("drawGallery();") < gallery.index(
+        "window.__worldDrawn = true;"
+    ), "drawGallery must run before the gallery gate claims it has drawn"
+
+    anims = boot[boot.index(anims_gate) : boot.index(swell_gate)]
+    assert anims.index("drawAnimationSheet();") < anims.index(
+        "window.__worldDrawn = true;"
+    ), "drawAnimationSheet must run before the anims gate claims it has drawn"
+
+    swell = boot[boot.index(swell_gate) : boot.index(live_start)]
+    # The FIRST rehearse() call — the synchronous invocation, not the
+    # `const rehearse = () => {...}` definition or the later recurring
+    # setInterval(rehearse, ...) re-invocation.
+    first_call = swell.index("rehearse();", swell.index("const rehearse ="))
+    assert first_call < swell.index("window.__worldDrawn = true;"), (
+        "the first rehearse() must run before the swell gate claims it has drawn"
+    )
+
+    live = boot[boot.index(live_start) :]
+    assert live.index("await refresh();") < live.index(
+        "window.__worldDrawn = true;"
+    ), "the live path must await refresh() before claiming it has drawn"
+
+
+@needs_node
+def test_worlddrawn_is_still_set_when_refresh_throws():
+    """A failed `/world/state` fetch is a data problem, not a failure to draw
+    the room — the cast is already positioned before this fragment runs — so
+    the flag must go true even if refresh ever stops swallowing its own
+    errors (it currently does, via its own try/catch, but that is refresh's
+    contract to keep, not this one's to assume). Runs the real live-path
+    fragment — `try { await refresh(); } finally { window.__worldDrawn =
+    true; }` — against a `refresh` stub that actually throws, so a future
+    edit that swaps the `finally` for a `.then()` (which would silently skip
+    the flag on a throw and leave shoot.py spinning its full 30s poll on a
+    page that is actually fine) fails here.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    live_start = "try {\n        await refresh();"
+    live = boot[boot.index(live_start) : boot.index("subscribe();")]
+    driver = (
+        "let worldDrawn = false;\n"
+        "const window = {\n"
+        "  get __worldDrawn() { return worldDrawn; },\n"
+        "  set __worldDrawn(v) { worldDrawn = v; },\n"
+        "};\n"
+        "async function refresh() { throw new Error('network down'); }\n"
+        "(async () => {\n"
+        "  try {\n"
+        + live
+        + "\n"
+        "  } catch (e) { /* refresh's own throw must not escape uncaught */ }\n"
+        "  console.log(JSON.stringify({ worldDrawn }));\n"
+        "})();\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["worldDrawn"] is True, (
+        "window.__worldDrawn must be set from a finally (or equivalent), "
+        "not skipped when refresh() throws"
     )

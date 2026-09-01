@@ -295,16 +295,20 @@
         }).catch(() => {});   // a failed beat is the watchdog's problem, not the room's
       }, 15000);
 
-      // scripts/shoot.py polls this. Set after the first real draw, never at
-      // script parse: a flag that is true before anything is painted is the
-      // same lie the `--screenshot` path told.
-      window.__worldDrawn = true;
+      // scripts/shoot.py polls this instead of guessing a duration — readiness
+      // is polled, not timed. That design only holds if the flag actually
+      // means "drawn": set it before any gate's own draw call runs and the
+      // poll is decorative, the settle sleep becomes the only real guard, and
+      // shoot.py can photograph a page that reports ready before it painted
+      // anything. So each gate below sets it itself, immediately after ITS
+      // OWN drawing call, never here up front.
 
       // B1 evaluation gate: `?gallery=1` lays out both styles against every
       // mood so the options can be compared in one screenshot. Aesthetics is
       // the thing no assertion grades, so it needs to be *lookable*.
       if (new URLSearchParams(location.search).get("gallery") === "1") {
         drawGallery();
+        window.__worldDrawn = true;
         return;
       }
       // `?anims=1` — the other half of the eval gate, and the half that was
@@ -313,6 +317,7 @@
       // characters ticking is not something to point a browser source at.
       if (new URLSearchParams(location.search).get("anims")) {
         drawAnimationSheet();
+        window.__worldDrawn = true;
         return;
       }
 
@@ -338,11 +343,25 @@
           });
         };
         rehearse();
+        window.__worldDrawn = true;
         setInterval(rehearse, 12000);
         return;
       }
 
-      await refresh();
+      // Live path: `draw(world)` happens inside refresh(), which already
+      // swallows its own fetch/parse failures to keep the last frame on
+      // screen (see refresh's own comment) — but the flag has to be honest
+      // even if that ever stops being true. A dropped `/world/state` call is
+      // a data problem, not a failure to draw the room (the cast is already
+      // positioned above), so the flag is set from `finally`, not only on
+      // success — otherwise a throwing refresh would leave `__worldDrawn`
+      // false forever and shoot.py would spin its full 30s poll on a page
+      // that is actually fine.
+      try {
+        await refresh();
+      } finally {
+        window.__worldDrawn = true;
+      }
       subscribe();
       setInterval(refresh, 60000);   // projection stays authoritative server-side
     }
