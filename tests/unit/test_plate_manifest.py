@@ -8,6 +8,7 @@ them go further and check the manifest against the PNG itself: numbers measured
 off an image drift the moment the image is replaced, and a candle drawn 6px off
 the painted glass is not something a schema check can see.
 """
+import dataclasses
 import json
 import re
 import shutil
@@ -19,6 +20,7 @@ from PIL import Image
 from world import monitors
 from world.plate import (
     DEFAULT_MANIFEST_PATH,
+    glow_chart_overlaps,
     load_manifest,
     watchlist_disagreements,
 )
@@ -358,3 +360,29 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         f"{right_screen - seat['x'] - seat['width']}px past the seat's "
         f"right edge ({seat['x'] + seat['width']})"
     )
+
+
+def test_no_glow_rect_lands_on_a_chart_screen():
+    # KI-056: the glow rects were byte-identical to the two chart screens, so
+    # the additive swell painted amber over the live candles exactly when
+    # something was happening. The swell lights what is BLANK.
+    assert glow_chart_overlaps(load_manifest()) == []
+
+
+def test_the_overlap_rule_actually_catches_an_overlap():
+    # Mutation check. Without this the assertion above passes on an empty
+    # glow list, an empty screen list, and a broken intersection test alike.
+    manifest = load_manifest()
+    chart = next(s for s in manifest.screens if s.get("role") == "chart")
+    poisoned = dataclasses.replace(
+        manifest,
+        glow=manifest.glow + ({"id": "poison", "x": chart["x"], "y": chart["y"],
+                               "w": chart["w"], "h": chart["h"]},),
+    )
+    assert glow_chart_overlaps(poisoned) == ["poison"]
+
+
+def test_the_tube_housings_still_glow():
+    # The fix removes the monitors, not the swell. A sprint that quietly
+    # deleted the tier swell would also pass the test above.
+    assert {g["id"] for g in load_manifest().glow} == {"tubes-floor", "tubes-desk"}

@@ -107,6 +107,33 @@ def load_manifest(path: Path | None = None) -> PlateManifest | None:
         return None
 
 
+def _rects_intersect(a: dict, b: dict) -> bool:
+    return (
+        a["x"] < b["x"] + b["w"]
+        and b["x"] < a["x"] + a["w"]
+        and a["y"] < b["y"] + b["h"]
+        and b["y"] < a["y"] + a["h"]
+    )
+
+
+def glow_chart_overlaps(manifest: PlateManifest | None) -> list[str]:
+    """Every glow rect that lands on a screen carrying live content (KI-056).
+
+    The swell's job is to light the surfaces the plate deliberately left
+    blank. A monitor with candles in it is no longer blank, and additive amber
+    over dark glass turns it olive - worst at high tiers, i.e. exactly when a
+    viewer is most likely to be looking.
+    """
+    if manifest is None:
+        return []
+    charts = [s for s in manifest.screens if s.get("role") == "chart"]
+    return [
+        str(glow.get("id"))
+        for glow in manifest.glow
+        if any(_rects_intersect(glow, chart) for chart in charts)
+    ]
+
+
 def watchlist_disagreements(
     manifest: PlateManifest | None, symbols: list[str]
 ) -> list[str]:

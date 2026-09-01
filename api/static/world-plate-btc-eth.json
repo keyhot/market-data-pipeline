@@ -25,8 +25,6 @@
      "role": "chart", "symbol": "ETHUSDT"}
   ],
   "glow": [
-    {"id": "centre-left", "x": 463, "y": 116, "w": 344, "h": 234},
-    {"id": "centre-right", "x": 854, "y": 95, "w": 296, "h": 209},
     {"id": "tubes-floor", "x": 515, "y": 380, "w": 175, "h": 380},
     {"id": "tubes-desk", "x": 1160, "y": 120, "w": 122, "h": 340}
   ],
