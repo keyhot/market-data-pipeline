@@ -22,7 +22,12 @@ def test_a_uniformly_dark_frame_is_blank():
 
 def test_a_frame_with_drawn_content_is_not_blank():
     # Bands of light and dark: any real frame of this room has both.
-    assert frame_is_blank(_png(lambda i: (240, 200, 90) if (i // 64) % 2 else (19, 23, 34))) is False
+    assert (
+        frame_is_blank(
+            _png(lambda i: (240, 200, 90) if (i // 64) % 2 else (19, 23, 34))
+        )
+        is False
+    )
 
 
 def test_a_bright_but_flat_frame_is_still_blank():

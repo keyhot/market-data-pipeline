@@ -59,7 +59,9 @@ def target_url(base: str, gate: str) -> str:
     return base.rstrip("/") + GATES[gate]
 
 
-def frame_is_blank(png_bytes: bytes, *, min_stddev: float = 6.0, min_mean: float = 12.0) -> bool:
+def frame_is_blank(
+    png_bytes: bytes, *, min_stddev: float = 6.0, min_mean: float = 12.0
+) -> bool:
     """True when the image carries no drawn content.
 
     Both floors are needed. A frame that shot before Pixi drew is the page
@@ -83,27 +85,36 @@ class _Session:
                 "google-chrome", "--headless=new", "--no-sandbox", "--hide-scrollbars",
                 f"--remote-debugging-port={port}",
                 "--remote-allow-origins=*",     # without this the WS handshake 403s
-                f"--user-data-dir={profile}",   # without this it may attach to a live profile
+                # without this it may attach to a live profile
+                f"--user-data-dir={profile}",
                 "--window-size=1920,960", "about:blank",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        import websocket
+        # Everything below can fail partway (page never appears, the WS
+        # handshake itself raises) -- any failure here must still kill the
+        # subprocess we just spawned, so the whole body is one unit.
+        try:
+            import websocket
 
-        page = None
-        for _ in range(80):
-            try:
-                tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json"))
-                page = next(t for t in tabs if t["type"] == "page")
-                break
-            except Exception:
-                time.sleep(0.25)
-        if page is None:
+            page = None
+            for _ in range(80):
+                try:
+                    tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json"))
+                    page = next(t for t in tabs if t["type"] == "page")
+                    break
+                except Exception:
+                    time.sleep(0.25)
+            if page is None:
+                raise RuntimeError("chrome never exposed a page target")
+            self._ws = websocket.create_connection(
+                page["webSocketDebuggerUrl"], timeout=30
+            )
+            self._id = 0
+        except Exception:
             self.close()
-            raise RuntimeError("chrome never exposed a page target")
-        self._ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=30)
-        self._id = 0
+            raise
 
     def cmd(self, method: str, **params):
         self._id += 1
@@ -131,9 +142,18 @@ _READY_JS = (
 )
 
 
-def shoot(gate: str, out: Path, base: str, *, settle: float = 3.0, port: int = 9333) -> Path:
+def shoot(
+    gate: str, out: Path, base: str, *, settle: float = 3.0, port: int = 9333
+) -> Path:
     profile = Path(tempfile.mkdtemp(prefix="shoot-chrome-"))
-    session = _Session(port, profile)
+    try:
+        session = _Session(port, profile)
+    except Exception:
+        # Construction itself failed (chrome never exposed a page target, the
+        # WS handshake raised, ...) -- the profile dir still needs releasing;
+        # the subprocess is already handled inside _Session.__init__.
+        shutil.rmtree(profile, ignore_errors=True)
+        raise
     try:
         session.cmd("Page.enable")
         session.cmd("Page.navigate", url=target_url(base, gate))
@@ -147,7 +167,9 @@ def shoot(gate: str, out: Path, base: str, *, settle: float = 3.0, port: int = 9
         else:
             raise RuntimeError("page never reported a drawn frame")
         time.sleep(settle)            # let the plate texture and first candles land
-        png = base64.b64decode(session.cmd("Page.captureScreenshot", format="png")["data"])
+        png = base64.b64decode(
+            session.cmd("Page.captureScreenshot", format="png")["data"]
+        )
     finally:
         session.close()
         shutil.rmtree(profile, ignore_errors=True)
@@ -169,7 +191,10 @@ def main() -> int:
     parser.add_argument("--base", default="http://localhost:8000")
     parser.add_argument("--settle", type=float, default=3.0)
     args = parser.parse_args()
-    out = args.out or DEFAULT_OUT_DIR / f"{args.gate}-{time.strftime('%Y%m%d-%H%M%S')}.png"
+    out = (
+        args.out
+        or DEFAULT_OUT_DIR / f"{args.gate}-{time.strftime('%Y%m%d-%H%M%S')}.png"
+    )
     print("wrote", shoot(args.gate, out, args.base, settle=args.settle))
     return 0
 
