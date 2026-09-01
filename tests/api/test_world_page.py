@@ -958,34 +958,35 @@ def test_the_heartbeat_is_installed_only_after_the_plate_settles():
     assert boot.index("await drawPlate()") < boot.index("/world/heartbeat")
 
 
-def test_preview_modes_hide_the_plate_not_just_the_procedural_room():
-    """`?swell=1` (drawGallery) and the cast sheet (drawAnimationSheet) both set
-    layers.room.visible = false. With a plate they must hide layers.plate too,
-    or the character sheet renders over a full pixel-art control room and is
-    unreadable as evidence.
+def test_preview_modes_keep_the_room_and_plate_in_lockstep():
+    """`?gallery=1` (drawGallery) and the cast sheet (drawAnimationSheet) both
+    toggle layers.room and layers.plate together, on the same VOID_MODE flag —
+    KI-051: judging the cast against a background it never stands in. Task 2
+    flipped the default (room+plate visible unless `?void=1`), but the two
+    layers still have to move together, or a preview mode could hide the
+    procedural room while leaving a full pixel-art control room behind the
+    specimens (or the reverse).
 
     A page-wide `body.count(...) >= 2` passes if both copies live in the SAME
     function and the other preview mode hides nothing — this sprint's
     can't-fail shape (`d1ad270`) applied to a count instead of a substring.
     `_js_block` slices each function separately so the two assertions are
-    provably about two different regions, and each pins the plate hidden
-    ALONGSIDE the room (not instead of it) — the point of a specimen sheet is
-    a plain background, not a different piece of scenery.
+    provably about two different regions.
     """
     body = _world_source()
 
     gallery = _js_block(body, "function drawGallery(")
     assert "STYLES.forEach" in gallery, "not actually the gallery body"
-    assert "layers.room.visible = false" in gallery
-    assert "layers.plate.visible = false" in gallery, (
-        "drawGallery must hide the plate, not just the procedural room"
+    assert "layers.room.visible = VOID_MODE ? false : true;" in gallery
+    assert "layers.plate.visible = VOID_MODE ? false : true;" in gallery, (
+        "drawGallery must gate the plate on VOID_MODE alongside the room"
     )
 
     sheet = _js_block(body, "function drawAnimationSheet(")
     assert "sample.loopAnim" in sheet, "not actually the animation-sheet body"
-    assert "layers.room.visible = false" in sheet
-    assert "layers.plate.visible = false" in sheet, (
-        "drawAnimationSheet must hide the plate, not just the procedural room"
+    assert "layers.room.visible = VOID_MODE ? false : true;" in sheet
+    assert "layers.plate.visible = VOID_MODE ? false : true;" in sheet, (
+        "drawAnimationSheet must gate the plate on VOID_MODE alongside the room"
     )
 
 
@@ -1861,9 +1862,12 @@ def test_the_sheet_can_actually_reach_seatedrig():
         }
         function setCharacterVisible() {}
         function setExpression() {}
-        const layers = { room: {}, plate: {}, chars: { scale: { set() {} } } };
+        const layers = {
+          room: {}, plate: {}, monitors: {}, chars: { scale: { set() {} } },
+        };
         const location = { search: "" };
         const model = {}, trader = {};
+        const VOID_MODE = false;
         """
         + _js_block(source, "function drawAnimationSheet(")
         + "\n"
@@ -3119,3 +3123,69 @@ def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure
     assert emitted["drawnWith"]["down"] == [], "a thrown fetch must draw dark glass"
     assert "tube" not in emitted["drawnWith"]
     assert "blank" not in emitted["drawnWith"]
+
+
+def _js(page: str, fn: str) -> str:
+    """The body of one JS function, brace-matched — every other test in this
+    file reads the page as TEXT, which is how four can't-fail tests shipped
+    last sprint."""
+    start = page.index(f"function {fn}(")
+    depth, i = 0, page.index("{", start)
+    for j in range(i, len(page)):
+        depth += page[j] == "{"
+        depth -= page[j] == "}"
+        if depth == 0:
+            return page[i : j + 1]
+    raise AssertionError(f"unbalanced braces in {fn}")
+
+
+def test_the_gallery_keeps_the_room_it_is_judged_against():
+    page = client.get("/world?gallery=1").text
+    body = _js(page, "drawGallery")
+    # The specimens must stand in the room by default. This is KI-051's root
+    # cause: the tool used to judge the cast deleted the picture.
+    assert "layers.plate.visible = false" not in body
+    assert "VOID_MODE" in body
+
+
+def test_the_gallery_hides_the_live_monitors():
+    # Observed 2026-09-01: live candles drew straight over the specimens.
+    body = _js(client.get("/world?gallery=1").text, "drawGallery")
+    assert "layers.monitors.visible = false" in body
+
+
+def test_the_animation_sheet_keeps_the_room_too():
+    body = _js(client.get("/world?anims=1").text, "drawAnimationSheet")
+    assert "layers.plate.visible = false" not in body
+    assert "VOID_MODE" in body
+
+
+def test_the_page_reports_that_it_has_drawn():
+    # scripts/shoot.py polls this instead of guessing a duration.
+    assert "window.__worldDrawn = true" in client.get("/world").text
+
+
+def test_void_mode_is_reachable_from_drawgallery_and_drawanimationsheet():
+    """A `const VOID_MODE` declared inside boot() parses fine and passes every
+    text-substring test above — VOID_MODE still appears, in the source,
+    inside drawGallery's own body — but throws ReferenceError the instant
+    drawGallery runs: it is boot()'s sibling, not its child, and can't see a
+    boot()-local const. boot()'s own `.catch()` turns that into a silent
+    reload loop, and shoot.py photographs an empty page with no other signal
+    that anything is wrong. That took three rounds of debugging-by-screenshot
+    to catch by hand; this pins it at the source level so the next edit that
+    moves the declaration "closer to the other query-flag reads" (i.e. into
+    boot(), where most of them live) can't reintroduce it silently.
+    """
+    source = _world_source()
+    boot_body = _js_block(source, "async function boot(")
+    assert "VOID_MODE" not in boot_body, (
+        "VOID_MODE must not be declared (or read) inside boot() — "
+        "drawGallery and drawAnimationSheet are boot()'s siblings, not its "
+        "children, and a boot()-local const is invisible to them"
+    )
+    assert re.search(r"^    const VOID_MODE = ", source, re.M), (
+        "VOID_MODE must be a top-level (4-space-indent) const, a sibling of "
+        "drawGallery and drawAnimationSheet, not nested inside another "
+        "function"
+    )

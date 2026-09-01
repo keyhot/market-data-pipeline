@@ -203,6 +203,14 @@
       history.replaceState(null, "", clean.toString());
     }
 
+    // The void is a legitimate question — comparing two silhouettes against
+    // each other is easier without a painting behind them — but it is no
+    // longer the default. Judging a cast against a background the cast will
+    // never stand in is how KI-051 shipped. Top-level, not inside boot():
+    // drawGallery and drawAnimationSheet are boot()'s siblings, not its
+    // children, and need to read this too.
+    const VOID_MODE = new URLSearchParams(location.search).get("void") === "1";
+
     async function boot() {
       if (typeof PIXI === "undefined") {
         retryBoot("renderer unavailable");
@@ -287,6 +295,11 @@
         }).catch(() => {});   // a failed beat is the watchdog's problem, not the room's
       }, 15000);
 
+      // scripts/shoot.py polls this. Set after the first real draw, never at
+      // script parse: a flag that is true before anything is painted is the
+      // same lie the `--screenshot` path told.
+      window.__worldDrawn = true;
+
       // B1 evaluation gate: `?gallery=1` lays out both styles against every
       // mood so the options can be compared in one screenshot. Aesthetics is
       // the thing no assertion grades, so it needs to be *lookable*.
@@ -337,8 +350,12 @@
     function drawGallery() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
-      layers.room.visible = false;   // the floor line is scenery, not a specimen
-      layers.plate.visible = false;  // and so is the painted backdrop
+      layers.room.visible = VOID_MODE ? false : true;
+      layers.plate.visible = VOID_MODE ? false : true;
+      // Live candles drew straight over the specimens (observed 2026-09-01).
+      // The monitors are the room's content, not its scenery, so they go in
+      // both modes.
+      layers.monitors.visible = false;
       layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
@@ -386,8 +403,12 @@
     function drawAnimationSheet() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
-      layers.room.visible = false;
-      layers.plate.visible = false;
+      layers.room.visible = VOID_MODE ? false : true;
+      layers.plate.visible = VOID_MODE ? false : true;
+      // Live candles drew straight over the specimens (observed 2026-09-01).
+      // The monitors are the room's content, not its scenery, so they go in
+      // both modes.
+      layers.monitors.visible = false;
       // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
       // and whether that reads as dejected or as a head in a torso is a
       // question about broadcast size. Tier-3 amplitude, for the same reason.
