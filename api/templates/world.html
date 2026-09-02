@@ -164,9 +164,20 @@
 
     // Two colours, blended toward `b` by `t` in [0, 1]. Channel-wise, not a
     // library: this file mixes hex nowhere else.
+    //
+    // Guards its OWN parsed inputs, not its output: `<<`/`|` coerce a NaN
+    // operand to 0 (`NaN << 16` is `0`, not `NaN`), so a bad colour does NOT
+    // make this return a non-finite number — it silently returns a wrong but
+    // perfectly finite one (black, in the simplest case). A `Number.isFinite`
+    // check on the RESULT can never see that; it has to happen here, before
+    // the bitwise math ever runs. A colour that fails to parse degrades to
+    // the OTHER colour, unmixed — "no light contribution from the broken
+    // side" rather than a wrong colour nobody asked for.
     function mixHex(a, b, t) {
       const pa = typeof a === "number" ? a : parseInt(String(a).slice(1), 16);
       const pb = typeof b === "number" ? b : parseInt(String(b).slice(1), 16);
+      if (!Number.isFinite(pa)) return pb;
+      if (!Number.isFinite(pb)) return pa;
       const ch = (v, sh) => (v >> sh) & 0xff;
       const lerp = (x, y) => Math.round(x + (y - x) * t);
       return (lerp(ch(pa, 16), ch(pb, 16)) << 16)
@@ -183,18 +194,18 @@
     // other, the same thing every painted object on the plate already does.
     // `LIGHT` always reaches this page as a complete, validated model
     // (`light_for` never lets a malformed manifest through — see the comment
-    // above `const LIGHT`), so this needs no input guard. What it does guard
-    // is its OWN output: `mixHex` on a non-finite `level` (e.g. `NaN` from a
-    // caller bug) produces `NaN` channels, and `g.fill(NaN)` mid-character
-    // would throw and take the rest of the cast with it — the one path this
-    // sprint's "never a blank canvas" rule reaches inside a single figure.
-    // Falling back to the flat, unshaded `baseHex` is the old look, not a
-    // blank one.
+    // above `const LIGHT`), so this needs no input guard of its own; a
+    // non-finite `level` (the one field a caller could still pass wrong) is
+    // caught below before it reaches `mixHex`, and a non-finite `LIGHT.warmth`
+    // /`LIGHT.ambient` is caught inside `mixHex` itself. Either way the
+    // volume draws in its old flat, unshaded colour rather than `g.fill(...)`
+    // throwing mid-`character()` and taking the rest of the cast with it —
+    // the one path this sprint's "never a blank canvas" rule reaches inside a
+    // single figure.
     function shade(baseHex, level) {
       if (!Number.isFinite(level)) return baseHex;
       const toward = level >= 0 ? LIGHT.warmth : LIGHT.ambient;
-      const mixed = mixHex(baseHex, toward, Math.min(1, Math.abs(level)));
-      return Number.isFinite(mixed) ? mixed : baseHex;
+      return mixHex(baseHex, toward, Math.min(1, Math.abs(level)));
     }
 
     // A rim colour shaded toward the lamp's own warmth rather than a fixed

@@ -274,9 +274,19 @@ def test_the_figures_arms_read_apart_from_its_torso():
     """v1's figure was dropped partly because the arms were the same tint as the
     body: they only existed once shrug/wave/cheer fired, and a resting trader
     read as a capsule. Shading them apart is what makes the arms visible at
-    rest, which is 99% of the airtime."""
+    rest, which is 99% of the airtime.
+
+    Sprint 16 (KI-051): `shade` was renamed to `lightenTint` for this specific
+    multiplicative lighten - `shade` now names the light-mix function
+    `paint()` uses, a different colour rule entirely (mixes toward
+    `LIGHT.warmth`/`LIGHT.ambient` rather than scaling channels by a
+    factor). `"function shade(" in body` is true regardless, since that
+    function still exists under its new job - it proves nothing about THIS
+    feature any more, which is why it was replaced rather than kept as a
+    second assertion alongside the real one.
+    """
     body = client.get("/world").text
-    assert "function shade(" in body
+    assert "function lightenTint(" in body
     assert "shadeFactor" in body
 
 
