@@ -900,6 +900,27 @@ def _js_block(source: str, opening: str) -> str:
     raise AssertionError(f"unbalanced braces after {opening!r}")
 
 
+def _shading_prelude(source: str) -> str:
+    """Everything `seatedRig`/`BODIES.*` need to draw since KI-051 (Task 6):
+    they now call `paint`, which calls `shade`/`mixHex`, and draw their rim
+    via `rimStroke`/`BODY_RIM_SHADED`. Pulled from the real page rather than
+    re-typed, the same reason every driver in this file pulls `snap` from the
+    page instead of restating it - a second definition drifts from the first
+    and stops proving anything about the page that actually ships.
+    """
+    return (
+        _js_block(source, "function mixHex(") + "\n"
+        + _js_block(source, "function shade(") + "\n"
+        + _js_block(source, "function insetSpan(") + "\n"
+        + _js_block(source, "const litRect = ") + "\n"
+        + _js_block(source, "const litCircle = ") + "\n"
+        + _js_const(source, "BODY_RIM_SHADED")
+        + _js_block(source, "function paint(") + "\n"
+        + _js_block(source, "function rimStroke(") + "\n"
+        + _js_block(source, "function rimStrokeCircle(") + "\n"
+    )
+
+
 def test_a_plate_that_fails_to_load_degrades_to_the_procedural_room():
     """KI-045's lesson applied to the asset that repeats its shape, and KI-047's
     applied to the page that already went white for 36 hours: the room must
@@ -2128,15 +2149,19 @@ def test_the_seated_head_stays_under_the_painted_backrest():
     source = _world_source()
     driver = (
         "const PLATE = null;\n"
-        # seatedRig's roundRect calls end in `.fill(BODY_FILL).stroke(BODY_RIM)`
-        # - the fake Graphics below never reads either argument, but JS still
-        # evaluates the expression, so the identifiers have to exist. The
-        # forearm loop builds its own `new PIXI.Graphics()` rather than
-        # reusing the `body` argument, so PIXI needs the same stub.
-        + "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        # seatedRig's roundRect calls now go through `paint`/`rimStroke`
+        # (KI-051, Task 6), which read `BODY_FILL`/`BODY_RIM` and the whole
+        # shading chain below - the fake Graphics never reads a fill/stroke
+        # argument, but JS still evaluates the expressions building them, so
+        # every identifier they touch has to exist. The forearm loop builds
+        # its own `new PIXI.Graphics()` rather than reusing the `body`
+        # argument, so PIXI needs the same stub.
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
           roundRect() { return this; }
+          circle() { return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -2148,11 +2173,12 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
+        + _shading_prelude(source)
         + _js_block(source, "function seatedRig(")
         + "\n"
         + """
-        const fakeGfx = { roundRect() { return this; }, fill() { return this; },
-                           stroke() { return this; } };
+        const fakeGfx = { roundRect() { return this; }, circle() { return this; },
+                           fill() { return this; }, stroke() { return this; } };
         const accents = [];
         const headY = seatedRig(fakeGfx, accents);
         console.log(JSON.stringify({
@@ -2215,11 +2241,18 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     source = _world_source()
     driver = (
         "const PLATE = null;\n"
-        + "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        # KI-051 (Task 6): `BODY_RIM` needs a real `.color` - it feeds
+        # `BODY_RIM_SHADED` via `shade()`. `LIGHT` is the real page's, since
+        # it does not depend on `PLATE` (`__LIGHT_JSON__` is substituted at
+        # render time from the manifest, independent of this driver's own
+        # `const PLATE = null`).
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
           constructor() { this.calls = []; this.x = 0; }
           roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
+          circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -2227,6 +2260,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         const bodyCalls = [];
         const fakeGfx = {
           roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
+          circle(x, y, r) { bodyCalls.push([x - r, 2 * r]); return this; },
           fill() { return this; },
           stroke() { return this; },
         };
@@ -2237,6 +2271,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
+        + _shading_prelude(source)
         + _js_block(source, "function seatedRig(")
         + "\n"
         + """
@@ -3271,3 +3306,152 @@ def test_worlddrawn_is_still_set_when_refresh_throws():
         "window.__worldDrawn must be set from a finally (or equivalent), "
         "not skipped when refresh() throws"
     )
+
+
+# --- Task 6: the cast is lit by the room's lamp (KI-051) --------------------
+#
+# Every volume used to be `roundRect(...).fill(BODY_FILL).stroke(BODY_RIM)` -
+# one flat fill, one hard rim, no light direction. `shade`/`paint` replace the
+# fill rule only; shapes, positions and animations are untouched (pinned by
+# `test_the_animation_layer_is_untouched` below and the SHA check in the task
+# report).
+
+
+@needs_node
+def test_the_cast_is_shaded_rather_than_flat_filled():
+    """KI-051: a figure lit by this room mixes toward the lamp's own warmth
+    when its lit band faces the key, and toward the room's ambient when its
+    shaded band faces away - not toward flat white/black, which would make a
+    figure merely "brighter here" rather than lit by this specific amber lamp
+    in this specific cold room. Every painted object on the plate already
+    does the same amber-highlight / cold-shadow mix; this is what makes the
+    cast belong to it.
+
+    Exercised for real against `LIGHT.warmth`/`LIGHT.ambient` as the page
+    actually declares them, not by grepping the source for the identifier
+    `LIGHT.warmth`: that string can sit in a comment or a dead branch and
+    still satisfy a substring check. This drives the real `shade()` and
+    compares its output to a colour computed independently in Python from
+    the same measured `LIGHT`, then mutation-checks that the comparison is
+    load-bearing by swapping which side of the ramp mixes toward which
+    colour - the one bug `light_for`'s own monotonic-ramp check exists to
+    keep off the Python side, and the one that would light every figure from
+    the wrong side of the room if it ever reached the page.
+    """
+    source = _world_source()
+    light_match = re.search(r"const LIGHT = (\{.*\});", source)
+    assert light_match, "the page no longer declares a one-line const LIGHT"
+    light = json.loads(light_match.group(1))
+
+    def mix_hex(a, b, t):
+        pa = a if isinstance(a, int) else int(str(a).lstrip("#"), 16)
+        pb = b if isinstance(b, int) else int(str(b).lstrip("#"), 16)
+        ch = lambda v, sh: (v >> sh) & 0xFF  # noqa: E731
+        lerp = lambda x, y: round(x + (y - x) * t)  # noqa: E731
+        return (
+            (lerp(ch(pa, 16), ch(pb, 16)) << 16)
+            | (lerp(ch(pa, 8), ch(pb, 8)) << 8)
+            | lerp(ch(pa, 0), ch(pb, 0))
+        )
+
+    base = 0x808080
+    expected_lit = mix_hex(base, light["warmth"], min(1, abs(light["ramp"]["lit"])))
+    expected_shaded = mix_hex(
+        base, light["ambient"], min(1, abs(light["ramp"]["shade"]))
+    )
+
+    shade_block = _js_block(source, "function shade(")
+
+    def run(block):
+        driver = (
+            _js_const(source, "LIGHT")
+            + _js_block(source, "function mixHex(")
+            + "\n"
+            + block
+            + "\n"
+            + f"""
+            console.log(JSON.stringify({{
+              lit: shade({base}, LIGHT.ramp.lit),
+              shaded: shade({base}, LIGHT.ramp.shade),
+              neutral: shade({base}, LIGHT.ramp.base),
+            }}));
+            """
+        )
+        return _run_node(driver)
+
+    emitted = run(shade_block)
+    assert emitted["lit"] == expected_lit, (
+        f"shade(base, LIGHT.ramp.lit) = {emitted['lit']:#x}, expected "
+        f"{expected_lit:#x} - the lit band must mix toward LIGHT.warmth"
+    )
+    assert emitted["shaded"] == expected_shaded, (
+        f"shade(base, LIGHT.ramp.shade) = {emitted['shaded']:#x}, expected "
+        f"{expected_shaded:#x} - the shaded band must mix toward LIGHT.ambient"
+    )
+    assert emitted["neutral"] == base, (
+        "LIGHT.ramp.base (0) must return the tint unchanged"
+    )
+    assert emitted["lit"] != emitted["shaded"], (
+        "the lit and shaded bands rendered the same colour"
+    )
+
+    # Mutation check: swap which colour each side of the ramp mixes toward.
+    mutated = shade_block.replace(
+        "level >= 0 ? LIGHT.warmth : LIGHT.ambient",
+        "level >= 0 ? LIGHT.ambient : LIGHT.warmth",
+    )
+    assert mutated != shade_block, "the mutation did not change the source"
+    broken = run(mutated)
+    assert broken["lit"] != expected_lit or broken["shaded"] != expected_shaded, (
+        "swapping which colour each ramp side mixes toward still produced "
+        "the correct output - these assertions would not catch a "
+        "wrong-side-of-the-room lighting bug"
+    )
+
+
+def test_no_body_volume_is_painted_with_the_bare_flat_fill_any_more():
+    """The exact construct KI-051 is about. `paint(...)` replaces every
+    `roundRect(...).fill(BODY_FILL).stroke(BODY_RIM)` two-tone stamp with
+    three shaded bands and a shaded rim (`BODY_RIM_SHADED`) - so a bare
+    `BODY_FILL`/`BODY_RIM` fill/stroke pair must not survive anywhere a body
+    volume is drawn.
+
+    Covers all three places a volume is drawn, not just the two the brief
+    named: the five `BODIES.*` methods, `seatedRig` (the trader's lower
+    body), AND `character()`, where the skull is built separately for every
+    style but the orb. The skull is the largest single surface carrying mood
+    (`setExpression` paints eyes/brows/mouth onto it) and the easiest to miss
+    a shading pass on precisely because it lives in neither of the other two
+    constructs - a shaded body with a flat sticker head is a half-finished
+    result no assertion scoped to `BODIES`/`seatedRig` alone would catch.
+    """
+    source = _world_source()
+    rig = (
+        _js_block(source, "const BODIES = {")
+        + _js_block(source, "function seatedRig(")
+        + _js_block(source, "function character(")
+    )
+    assert ".fill(BODY_FILL)" not in rig, (
+        "a body volume is still using the bare flat fill KI-051 is about"
+    )
+    assert re.search(r"\.stroke\(BODY_RIM\)", rig) is None, (
+        "a body volume is still stroked with the un-shaded BODY_RIM - "
+        "BODY_RIM_SHADED is the KI-051 rim, this is the sticker outline"
+    )
+    assert rig.count("paint(") >= 15, (
+        "fewer paint() calls than the volumes this rig draws - a body was "
+        "converted to something else, or not converted at all"
+    )
+
+
+def test_the_animation_layer_is_untouched():
+    """The constraint that makes this redesign safe: the tested animation
+    layer survives byte-for-byte (the task report's SHA check covers `ANIM`,
+    `SEATED_ANIMATIONS` and `advanceCharacters`) because only the fill rule
+    changed. This is the page-source half of that claim - `advanceCharacters`
+    and `ANIM` are still there, under their own names, not renamed or
+    inlined away by the shading pass.
+    """
+    page = client.get("/world").text
+    assert "function advanceCharacters(" in page
+    assert "const ANIM = {" in page

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from world.light import as_json, light_for
 from world.plate import load_manifest
 
 WORLD_TEMPLATE = (
@@ -62,14 +63,20 @@ def test_the_cast_block_tells_its_settings_apart_from_its_people():
 
 def _skull_radius_local() -> int:
     """The skull `character()` draws for every body but the orb - read from
-    the page's own `skull.circle(snap(0), snap(0), 28)` call
-    (`api/templates/world.html`) rather than copied as a second 28, so a
-    redraw that resizes the head moves this number with it instead of
-    silently going stale beside it."""
+    the page's own `litCircle(0, 0, 28)` call (`api/templates/world.html`)
+    rather than copied as a second 28, so a redraw that resizes the head
+    moves this number with it instead of silently going stale beside it.
+
+    Sprint 16 (KI-051): the skull used to be a bare `skull.circle(snap(0),
+    snap(0), 28).fill(BODY_FILL).stroke(BODY_RIM)`; it is now shaded like
+    every other volume via `paint(skull, litCircle(0, 0, 28), BODY_FILL)`.
+    The three literal args to `litCircle` are the same (cx, cy, radius) the
+    old bare call took, so the radius still lives at one place in the page.
+    """
     match = re.search(
-        r"skull\.circle\(snap\(0\), snap\(0\), (\d+)\)", WORLD_TEMPLATE.read_text()
+        r"litCircle\(0, 0, (\d+)\)", WORLD_TEMPLATE.read_text()
     )
-    assert match, "the page no longer draws the skull as a plain circle literal"
+    assert match, "the page no longer draws the skull via litCircle(0, 0, r)"
     return int(match.group(1))
 
 
@@ -173,6 +180,51 @@ def _node(driver: str):
     return json.loads(result.stdout)
 
 
+def _js_block(source: str, opening: str) -> str:
+    """The brace-matched source of one JS construct - mirrors
+    tests/api/test_world_page.py's helper of the same name and purpose
+    (kept local rather than imported, matching this project's other
+    plate/geometry test files)."""
+    start = source.index(opening)
+    depth = 0
+    for j in range(source.index("{", start), len(source)):
+        if source[j] == "{":
+            depth += 1
+        elif source[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : j + 1]
+    raise AssertionError(f"unbalanced braces after {opening!r}")
+
+
+def _js_const(source: str, name: str) -> str:
+    """One `const NAME = ...;` line - mirrors tests/api/test_world_page.py's
+    helper of the same name."""
+    match = re.search(rf"^\s*const {name} = .*;$", source, re.M)
+    assert match, f"the page no longer declares a one-line const {name}"
+    return match.group(0).strip() + "\n"
+
+
+def _shading_prelude(source: str) -> str:
+    """Everything `BODIES.*` need to draw since KI-051 (Task 6): each style
+    now calls `paint`, which calls `shade`/`mixHex`, and draws its rim via
+    `rimStroke`/`rimStrokeCircle`/`BODY_RIM_SHADED`. Pulled from the real
+    page rather than re-typed - a second definition drifts from the first
+    and stops proving anything about the page that actually ships.
+    """
+    return (
+        _js_block(source, "function mixHex(") + "\n"
+        + _js_block(source, "function shade(") + "\n"
+        + _js_block(source, "function insetSpan(") + "\n"
+        + _js_block(source, "const litRect = ") + "\n"
+        + _js_block(source, "const litCircle = ") + "\n"
+        + _js_const(source, "BODY_RIM_SHADED")
+        + _js_block(source, "function paint(") + "\n"
+        + _js_block(source, "function rimStroke(") + "\n"
+        + _js_block(source, "function rimStrokeCircle(") + "\n"
+    )
+
+
 def _page_const(name: str) -> str:
     source = WORLD_TEMPLATE.read_text()
     line = re.search(rf"^\s*const {name} = .*;$", source, re.M)
@@ -270,9 +322,16 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
     )
     assert snap_block, "the page no longer declares snap() at one indent level"
 
+    # KI-051 (Task 6): every `BODIES.*` style now calls `paint`, so the driver
+    # needs the whole shading chain - `LIGHT` computed the real way
+    # (`light_for`, the same call `api/main.py` makes) rather than typed as a
+    # literal, since `WORLD_TEMPLATE.read_text()` above reads the raw
+    # template, where `__LIGHT_JSON__` is still the unsubstituted placeholder.
+    manifest = load_manifest()
     driver = (
         "const CELL = 4;\n"
-        "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        f"const LIGHT = {as_json(light_for(manifest))};\n"
         """
         class FakeGraphics {
           constructor() { this.calls = []; this.x = 0; this.y = 0; }
@@ -285,6 +344,7 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
         """
         + snap_block.group(0)
         + "\n"
+        + _shading_prelude(source)
         + body_block.group(0)
         + "\n"
         """
@@ -320,6 +380,6 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
     )
     assert result.returncode == 0, result.stderr
     drawn = json.loads(result.stdout)
-    assert load_manifest().cast["rig_height"] == max(drawn.values()), (
+    assert manifest.cast["rig_height"] == max(drawn.values()), (
         f"rig_height disagrees with what the page draws: {drawn}"
     )

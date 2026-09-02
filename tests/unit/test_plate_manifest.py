@@ -18,6 +18,7 @@ import pytest
 from PIL import Image
 
 from world import monitors
+from world.light import as_json, light_for
 from world.plate import (
     DEFAULT_MANIFEST_PATH,
     glow_chart_overlaps,
@@ -48,6 +49,38 @@ def _js_block(source: str, opening: str) -> str:
             if depth == 0:
                 return source[start : j + 1]
     raise AssertionError(f"unbalanced braces after {opening!r}")
+
+
+def _js_const(source: str, name: str) -> str:
+    """One `const NAME = ...;` line - mirrors tests/api/test_world_page.py's
+    helper of the same name (kept local for the same reason as `_js_block`
+    above)."""
+    match = re.search(rf"^\s*const {name} = .*;$", source, re.M)
+    assert match, f"the page no longer declares a one-line const {name}"
+    return match.group(0).strip() + "\n"
+
+
+def _shading_prelude(source: str) -> str:
+    """Everything `seatedRig`/`BODIES.*` need to draw since KI-051
+    (world.html, Sprint 16 Task 6): they now call `paint`, which calls
+    `shade`/`mixHex`, and draw their rim via `rimStroke`/`BODY_RIM_SHADED`.
+    Pulled from the real page source, not re-typed, for the reason every
+    other driver in this file pulls `snap`/`CAST_SCALE` the same way: a
+    second definition drifts from the first and stops proving anything about
+    the page that actually ships.
+    """
+    return (
+        _js_block(source, "function mixHex(") + "\n"
+        + _js_block(source, "function shade(") + "\n"
+        + _js_block(source, "function insetSpan(") + "\n"
+        + _js_block(source, "const litRect = ") + "\n"
+        + _js_block(source, "const litCircle = ") + "\n"
+        + _js_const(source, "BODY_RIM_SHADED")
+        + _js_block(source, "function paint(") + "\n"
+        + _js_block(source, "function rimStroke(") + "\n"
+        + _js_block(source, "function rimStrokeCircle(") + "\n"
+    )
+
 
 PLATE_PNG = DEFAULT_MANIFEST_PATH.with_suffix(".png")
 
@@ -321,11 +354,21 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         f"const PLATE = {json.dumps(manifest.as_dict())};\n"
         "const plateReady = true;\n"
         "const CELL = 4;\n"
-        "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        # KI-051 (Task 6): `BODY_RIM` needs a real `.color` now - it feeds
+        # `BODY_RIM_SHADED` via `shade()`. A plain `{}` rim (this driver's
+        # value before Task 6) would still run, since `shade()`'s own NaN
+        # guard falls back rather than throwing - but it would silently
+        # exercise nothing of the new rim colour path.
+        "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        # `LIGHT` computed the same way `api/main.py` computes it for the
+        # real page (`light_for(manifest)`), not re-typed as a literal - so
+        # this driver runs the same measured direction the shipped room does.
+        f"const LIGHT = {as_json(light_for(manifest))};\n"
         + """
         class FakeGraphics {
           constructor() { this.calls = []; this.x = 0; }
           roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
+          circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -333,13 +376,15 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         const bodyCalls = [];
         const fakeGfx = {
           roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
+          circle(x, y, r) { bodyCalls.push([x - r, 2 * r]); return this; },
           fill() { return this; },
           stroke() { return this; },
         };
         """
     )
-    for name in ("function snap(", "function seatedRig("):
-        driver += _js_block(source, name) + "\n"
+    driver += _js_block(source, "function snap(") + "\n"
+    driver += _shading_prelude(source)
+    driver += _js_block(source, "function seatedRig(") + "\n"
     cast_scale_line = re.search(r"^\s*const CAST_SCALE = .*;$", source, re.M)
     assert cast_scale_line, "the page no longer declares CAST_SCALE as a one-line const"
     driver += cast_scale_line.group(0).strip() + "\n"

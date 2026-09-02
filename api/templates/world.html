@@ -98,8 +98,18 @@
     // The painted key light (the amber desk lamp): direction, warmth and
     // ramp measured off the plate, or the neutral default when unmeasured.
     // Distinct from ROOM_LIGHT below, which is the severity-tier ambient
-    // swell — this one shapes the cast. Unread until the shading pass wires
-    // it into shade().
+    // swell — this one shapes the cast, via shade()/paint() below.
+    //
+    // AUTHORITATIVE OVER `PLATE.light`. `PLATE` (above) is the raw manifest,
+    // substituted verbatim as `manifest.as_dict()`, so `PLATE.light` is
+    // whatever the JSON file says, unvalidated. `LIGHT` is
+    // `light_for(manifest)`'s output — the same measurement, but only after
+    // it has passed the shape check, the monotonic-ramp check, and the
+    // missing-manifest/missing-block degrade, all of which land on
+    // `DEFAULT_LIGHT` rather than a bad number reaching a draw call
+    // (`world/light.py`). Reaching for `PLATE.light` instead of `LIGHT`
+    // silently steps around that whole contract. Every draw call below reads
+    // `LIGHT`; nothing in this file should ever read `PLATE.light`.
     const LIGHT = __LIGHT_JSON__;
     const fallback = document.getElementById("fallback");
 
@@ -137,6 +147,130 @@
     // it spends its fewest bits on the near-black gradients that used to be the
     // only thing separating the cast from the room.
     const BODY_RIM = { width: 1.5, color: __BODY_RIM_FILL__, alignment: 1 };
+
+    // --- KI-051: light the cast with the room's own lamp -------------------
+    // Every volume used to be one flat fill and one hard rim — the figures
+    // read as stickers laid over the painting rather than objects standing
+    // in it. `shade`/`paint` below replace the fill rule only: the shapes,
+    // positions and animations they are called from are untouched.
+    //
+    // `function` declarations (not `const … = () =>`), deliberately: they
+    // are hoisted, so `BODY_RIM_SHADED` below can call `shade()` regardless
+    // of source order, and no later reordering of this block can reintroduce
+    // a temporal-dead-zone `ReferenceError` — the failure mode that a
+    // `boot().catch()` swallows into a silent reload loop (KI seen in Task 2
+    // of this sprint), invisible to every test that only inspects page
+    // source rather than running it.
+
+    // Two colours, blended toward `b` by `t` in [0, 1]. Channel-wise, not a
+    // library: this file mixes hex nowhere else.
+    function mixHex(a, b, t) {
+      const pa = typeof a === "number" ? a : parseInt(String(a).slice(1), 16);
+      const pb = typeof b === "number" ? b : parseInt(String(b).slice(1), 16);
+      const ch = (v, sh) => (v >> sh) & 0xff;
+      const lerp = (x, y) => Math.round(x + (y - x) * t);
+      return (lerp(ch(pa, 16), ch(pb, 16)) << 16)
+           | (lerp(ch(pa, 8), ch(pb, 8)) << 8)
+           |  lerp(ch(pa, 0), ch(pb, 0));
+    }
+
+    // A volume's colour at a given light level. `level` is the ramp value for
+    // the band being drawn: positive faces the lamp, negative faces away.
+    //
+    // Lit mixes toward the lamp's OWN warmth and shade toward the room's
+    // ambient, rather than toward white and black — a figure that is lit BY
+    // THIS ROOM puts amber on one side and the room's cold ambient on the
+    // other, the same thing every painted object on the plate already does.
+    // `LIGHT` always reaches this page as a complete, validated model
+    // (`light_for` never lets a malformed manifest through — see the comment
+    // above `const LIGHT`), so this needs no input guard. What it does guard
+    // is its OWN output: `mixHex` on a non-finite `level` (e.g. `NaN` from a
+    // caller bug) produces `NaN` channels, and `g.fill(NaN)` mid-character
+    // would throw and take the rest of the cast with it — the one path this
+    // sprint's "never a blank canvas" rule reaches inside a single figure.
+    // Falling back to the flat, unshaded `baseHex` is the old look, not a
+    // blank one.
+    function shade(baseHex, level) {
+      if (!Number.isFinite(level)) return baseHex;
+      const toward = level >= 0 ? LIGHT.warmth : LIGHT.ambient;
+      const mixed = mixHex(baseHex, toward, Math.min(1, Math.abs(level)));
+      return Number.isFinite(mixed) ? mixed : baseHex;
+    }
+
+    // A rim colour shaded toward the lamp's own warmth rather than a fixed
+    // hue. It reads as a bright contour where it sits against the volume's
+    // own shaded (away-from-key) band — the KI-028 contrast the plain
+    // BODY_RIM existed for, now needed most on the side `paint` leaves
+    // darkest — and it recedes into the volume's own lit (toward-key) band,
+    // where a hard ring would sit on top of the brightest part of the shape
+    // and read as a sticker outline rather than an edge lit by the room.
+    const BODY_RIM_SHADED = { width: BODY_RIM.width, color: shade(BODY_RIM.color, LIGHT.ramp.lit), alignment: BODY_RIM.alignment };
+
+    // Draw one volume in three bands, lit toward the key. `shapeFn(g, inset)`
+    // draws the SAME silhouette at three insets (0, 2, 5); `paint` supplies
+    // both the inset and, via `shade`, the colour for each band, so the
+    // shape a caller passes in is unchanged — this adds light to the
+    // existing rig, it does not redraw it.
+    function paint(g, shapeFn, tint) {
+      shapeFn(g, 0);  g.fill(shade(tint, LIGHT.ramp.shade));
+      shapeFn(g, 2);  g.fill(shade(tint, LIGHT.ramp.base));
+      shapeFn(g, 5);  g.fill(shade(tint, LIGHT.ramp.lit));
+    }
+
+    // Shrink the span `[base, base + size]` toward the key on one axis only.
+    // `dirComponent` is `LIGHT.direction`'s component for that axis; the key
+    // sits in the OPPOSITE direction (see the comment on `shade`), so the
+    // edge nearer the key stays fixed at the volume's true (inset 0)
+    // boundary and only the far edge recedes. Both edges therefore only ever
+    // move inward as `inset` grows — every band `paint` draws nests strictly
+    // inside the last, and none of them can draw outside the shape a caller
+    // passed in. A naive "translate the whole rect toward the key, then
+    // shrink `w`/`h`" (the shift and the shrink both moving the SAME corner)
+    // does not have this property: on an axis where the key sits on the
+    // rect's low side, that combination pushes the low edge past the
+    // original boundary rather than toward it — a few pixels of silhouette
+    // growth on exactly the side already measured against the seat and the
+    // backrest to single-digit pixels of slack (Task 5).
+    function insetSpan(base, size, dirComponent, inset) {
+      return dirComponent >= 0
+        ? [base + inset, size - inset]   // far edge is the low side; it recedes
+        : [base, size - inset];          // far edge is the high side; it recedes
+    }
+
+    // A `shapeFn` for `paint`: the SAME rounded rect at every inset, walked
+    // toward the key and shrunk by it. One definition rather than restating
+    // this arithmetic at every one of the volume's call sites — the risk a
+    // hand-copied version runs is a sign flip that lights a figure from the
+    // wrong side, which is exactly the failure `light_for`'s own monotonic
+    // ramp check exists to keep out of `LIGHT` in the first place.
+    const litRect = (x, y, w, h, r) => (g, inset) => {
+      const [rx, rw] = insetSpan(snap(x), w, LIGHT.direction[0], inset);
+      const [ry, rh] = insetSpan(snap(y), h, LIGHT.direction[1], inset);
+      return g.roundRect(rx, ry, rw, rh, r);
+    };
+    // Circles need no such correction: shrinking the radius while sliding the
+    // centre toward the key by the SAME `inset` keeps the key-facing point
+    // of every band fixed on the original circle's boundary (the two moves
+    // exactly cancel there — algebra in the task report), so it already has
+    // the no-overshoot property `insetSpan` exists to give rectangles.
+    const litCircle = (cx, cy, radius) => (g, inset) => {
+      return g.circle(
+        snap(cx) + inset * -LIGHT.direction[0],
+        snap(cy) + inset * -LIGHT.direction[1],
+        radius - inset,
+      );
+    };
+
+    // The rim, kept at the volume's true (un-inset) silhouette so it still
+    // outlines the shape `paint` was called with, not one of its bands.
+    function rimStroke(g, x, y, w, h, r) {
+      g.roundRect(snap(x), snap(y), w, h, r).stroke(BODY_RIM_SHADED);
+    }
+    function rimStrokeCircle(g, cx, cy, radius) {
+      g.circle(snap(cx), snap(cy), radius).stroke(BODY_RIM_SHADED);
+    }
+    // -------------------------------------------------------------------
+
     const bodyTint = (mood) => {
       const hex = BODY_TINT[mood];
       return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
@@ -882,13 +1016,16 @@
       // A candlestick: real body between two wicks. The project's own glyph,
       // and the one that reads most instantly as "this thing is the market".
       candle(body, accents) {
-        body.roundRect(snap(-27), snap(-104), 54, 84, 8).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-27, -104, 54, 84, 8), BODY_FILL);
+        rimStroke(body, -27, -104, 54, 84, 8);
         // Wick thick enough to read as a neck at stream distance, and short
         // enough that the head sits ON the candle rather than floating over it.
-        const wickTop = new PIXI.Graphics().roundRect(snap(-3.5), snap(-130), 7, 30, 3.5)
-          .fill(BODY_FILL).stroke(BODY_RIM);
-        const wickLow = new PIXI.Graphics().roundRect(snap(-3.5), snap(-22), 7, 26, 3.5)
-          .fill(BODY_FILL).stroke(BODY_RIM);
+        const wickTop = new PIXI.Graphics();
+        paint(wickTop, litRect(-3.5, -130, 7, 30, 3.5), BODY_FILL);
+        rimStroke(wickTop, -3.5, -130, 7, 30, 3.5);
+        const wickLow = new PIXI.Graphics();
+        paint(wickLow, litRect(-3.5, -22, 7, 26, 3.5), BODY_FILL);
+        rimStroke(wickLow, -3.5, -22, 7, 26, 3.5);
         // A wick flicks by lengthening. It cannot swing: it's drawn in the
         // character's own space, so rotating it pivots about the feet.
         wickTop.gestureMode = wickLow.gestureMode = "pump";
@@ -900,8 +1037,9 @@
       bars(body, accents) {
         const heights = [54, 86, 68, 96, 60];
         heights.forEach((h, i) => {
-          const bar = new PIXI.Graphics()
-            .roundRect(snap(-6), snap(-h), 12, h, 4).fill(BODY_FILL).stroke(BODY_RIM);
+          const bar = new PIXI.Graphics();
+          paint(bar, litRect(-6, -h, 12, h, 4), BODY_FILL);
+          rimStroke(bar, -6, -h, 12, h, 4);
           bar.x = -36 + i * 18;
           bar.restHeight = h;
           bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
@@ -910,15 +1048,18 @@
         // A static stem, so the head isn't left hovering over the cluster the
         // way it was. It can't be one of the bars: those ripple, and a neck
         // that stretches would pull the face off the body.
-        body.roundRect(snap(-6), snap(-118), 12, 58, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-6, -118, 12, 58, 6), BODY_FILL);
+        rimStroke(body, -6, -118, 12, 58, 6);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
       // end of the register; a piece that looks like it is thinking.
       monolith(body, accents) {
-        body.roundRect(snap(-26), snap(-104), 52, 78, 20).fill(BODY_FILL).stroke(BODY_RIM);
-        const base = new PIXI.Graphics()
-          .roundRect(snap(-38), snap(-30), 76, 30, 14).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-26, -104, 52, 78, 20), BODY_FILL);
+        rimStroke(body, -26, -104, 52, 78, 20);
+        const base = new PIXI.Graphics();
+        paint(base, litRect(-38, -30, 76, 30, 14), BODY_FILL);
+        rimStroke(base, -38, -30, 76, 30, 14);
         base.gestureMode = "shift";   // a weighted column doesn't wave, it leans
         base.restX = 0;
         accents.push(base);
@@ -930,16 +1071,21 @@
       figure(body, accents) {
         // The gap has to be wide enough to survive the stream: at 6 units the
         // two legs merged into one column and he read as a pedestal.
-        body.roundRect(snap(-19), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(snap(6), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-19, -56, 13, 56, 6), BODY_FILL);
+        rimStroke(body, -19, -56, 13, 56, 6);
+        paint(body, litRect(6, -56, 13, 56, 6), BODY_FILL);
+        rimStroke(body, 6, -56, 13, 56, 6);
         // Waist under a broader chest. The taper is what reads as a person —
         // one capsule reads as a pill — and the wider shoulders are what stop
         // the head (28px, shared with every other body) looking oversized.
-        body.roundRect(snap(-26), snap(-86), 52, 40, 14).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(snap(-33), snap(-128), 66, 54, 22).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-26, -86, 52, 40, 14), BODY_FILL);
+        rimStroke(body, -26, -86, 52, 40, 14);
+        paint(body, litRect(-33, -128, 66, 54, 22), BODY_FILL);
+        rimStroke(body, -33, -128, 66, 54, 22);
         for (const side of [-1, 1]) {
-          const arm = new PIXI.Graphics().roundRect(snap(-7), snap(-5), 14, 66, 7)
-            .fill(BODY_FILL).stroke(BODY_RIM);
+          const arm = new PIXI.Graphics();
+          paint(arm, litRect(-7, -5, 14, 66, 7), BODY_FILL);
+          rimStroke(arm, -7, -5, 14, 66, 7);
           arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
           // Not quite straight and not quite matching: dead-symmetrical arms
           // read as a mannequin, and the asymmetry costs two numbers.
@@ -957,7 +1103,8 @@
       // The original: face on a single disc, no body. Kept as the baseline the
       // others are judged against.
       orb(body) {
-        body.circle(snap(0), snap(-60), 46).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litCircle(0, -60, 46), BODY_FILL);
+        rimStrokeCircle(body, 0, -60, 46);
         return -66;
       },
     };
@@ -1050,7 +1197,16 @@
         ? seatedRig(body, accents)
         : BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
-      if (style !== "orb") skull.circle(snap(0), snap(0), 28).fill(BODY_FILL).stroke(BODY_RIM);
+      // Not one of BODIES.*: the orb IS its own face and skips a head
+      // entirely, but every other style's head is built here rather than in
+      // its body method. Shaded the same way as the rest of the cast — the
+      // head is the single largest surface carrying mood (`FACE`/`setExpression`
+      // paint eyes, brows and mouth onto it), and a flat head on an otherwise
+      // lit body is the one inconsistency a gallery grid would show first.
+      if (style !== "orb") {
+        paint(skull, litCircle(0, 0, 28), BODY_FILL);
+        rimStrokeCircle(skull, 0, 0, 28);
+      }
       head.y = headY;
       head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
 
@@ -1126,7 +1282,18 @@
     // Lighten or darken a mood colour without leaving its hue. Accents that
     // sit ON the body (arms) need to be a different value from it, or they
     // vanish into the mass at stream distance.
-    function shade(tint, factor) {
+    //
+    // Renamed from `shade` (KI-051): that name now belongs to the room-light
+    // mix defined near `BODY_RIM` (`shade(baseHex, level)`, blends toward
+    // `LIGHT.warmth`/`LIGHT.ambient`). This one is unrelated — a flat
+    // channel-wise multiply against `factor` — and the two are NOT
+    // interchangeable: `accent.shadeFactor` (`1.35`, a multiplier) fed to
+    // the room-light `shade()` would clamp to a full-strength mix toward
+    // `LIGHT.warmth` instead of a gentle lighten. Kept as its own function
+    // under its own name rather than merged, so `applyTint`'s per-accent
+    // lighten and `paint`'s per-band light direction stay two independent
+    // knobs.
+    function lightenTint(tint, factor) {
       const clamp = (v) => Math.max(0, Math.min(255, Math.round(v * factor)));
       return (clamp((tint >> 16) & 0xff) << 16)
            | (clamp((tint >> 8) & 0xff) << 8)
@@ -1167,7 +1334,7 @@
       // 0.14, not 0.35: the skull is a 0x545862 fill *tinted*, so it already
       // renders at roughly a third of the mood colour — a 0.35 visor came out
       // the same value as the head and was invisible on the real page.
-      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(shade(tint, 0.14));
+      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(lightenTint(tint, 0.14));
       machineEyes(char, arousal);
       char.browL.clear();
       char.browR.clear();
@@ -1239,7 +1406,7 @@
       char.body.tint = tint;
       if (char.skull) char.skull.tint = tint;
       for (const accent of char.accents) {
-        accent.tint = accent.shadeFactor ? shade(tint, accent.shadeFactor) : tint;
+        accent.tint = accent.shadeFactor ? lightenTint(tint, accent.shadeFactor) : tint;
       }
     }
 
@@ -1351,8 +1518,10 @@
     function seatedRig(body, accents) {
       // Thighs: short and low, at the front edge of the seat rather than
       // dropping to a floor this plate doesn't give the chair.
-      body.roundRect(snap(-22), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
-      body.roundRect(snap(4), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
+      paint(body, litRect(-22, -6, 18, 16, 6), BODY_FILL);
+      rimStroke(body, -22, -6, 18, 16, 6);
+      paint(body, litRect(4, -6, 18, 16, 6), BODY_FILL);
+      rimStroke(body, 4, -6, 18, 16, 6);
       // Waist and chest, stacked straight up off the hips rather than off a
       // standing pair of legs. Review round 1, Finding 1: the seat measures
       // 79 screen px wide (`PLATE.cast.trader.seat.width`), and 58 units of
@@ -1367,15 +1536,18 @@
       // seat` (manifest) both compute this from the real roundRect calls
       // against the manifest's measurement, rather than trusting this
       // comment's arithmetic.
-      body.roundRect(snap(-20), snap(-42), 40, 34, 14).fill(BODY_FILL).stroke(BODY_RIM);
-      body.roundRect(snap(-24), snap(-80), 48, 40, 20).fill(BODY_FILL).stroke(BODY_RIM);
+      paint(body, litRect(-20, -42, 40, 34, 14), BODY_FILL);
+      rimStroke(body, -20, -42, 40, 34, 14);
+      paint(body, litRect(-24, -80, 48, 40, 20), BODY_FILL);
+      rimStroke(body, -24, -80, 48, 40, 20);
       // Forearms bent up toward the desk, not hanging at the sides — shorter
       // than the standing figure's (66 units). Pivot at 14: the arm's own
       // local rect snaps to [-4, 8], so a wider pivot pushes its outer edge
       // past the chest and becomes the new widest part.
       for (const side of [-1, 1]) {
-        const arm = new PIXI.Graphics().roundRect(snap(-6), snap(0), 12, 40, 6)
-          .fill(BODY_FILL).stroke(BODY_RIM);
+        const arm = new PIXI.Graphics();
+        paint(arm, litRect(-6, 0, 12, 40, 6), BODY_FILL);
+        rimStroke(arm, -6, 0, 12, 40, 6);
         arm.x = side * 14; arm.y = -76;
         arm.restRotation = side < 0 ? -0.55 : 0.5;
         arm.shadeFactor = 1.35;
