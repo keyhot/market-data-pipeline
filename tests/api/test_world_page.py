@@ -3650,10 +3650,20 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
         f"only found {len(rects)} rect and {len(circles)} circle volumes in the "
         "rig - the call-site shapes changed and this test stopped covering them"
     )
-    # `bars` builds its rects from a loop variable; substitute its real heights.
+    # `bars` builds its rects from a loop variable, so its heights have to be
+    # substituted - read out of the page, never restated here. A literal list
+    # would keep this test green while it checked geometry the page had stopped
+    # drawing, which is the shape of test this sprint exists to stop writing.
+    declared = re.search(r"const heights = \[([\d,\s]+)\];", rig)
+    assert declared, (
+        "BODIES.bars no longer declares `const heights = [...]` - this test "
+        "can no longer see what the bar cluster actually draws"
+    )
+    bar_heights = [float(v) for v in declared.group(1).split(",")]
+    assert len(bar_heights) >= 3, f"only {len(bar_heights)} bar heights found"
     volumes = []
     for x, y, w, h, r in rects:
-        for hh in ([54, 86, 68, 96, 60] if h == "h" else [h]):
+        for hh in (bar_heights if h == "h" else [h]):
             yy = -float(hh) if y == "-h" or h == "h" else float(y)
             volumes.append(["rect", float(x), yy, float(w), float(hh), float(r)])
     for cx, cy, rad in circles:
