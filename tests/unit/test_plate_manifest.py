@@ -72,7 +72,17 @@ def _shading_prelude(source: str) -> str:
     return (
         _js_block(source, "function mixHex(") + "\n"
         + _js_block(source, "function shade(") + "\n"
-        + _js_block(source, "function insetSpan(") + "\n"
+        + _js_block(source, "function rampLevel(") + "\n"
+        + _js_block(source, "function keyAxis(") + "\n"
+        + _js_const(source, "KEY_AXIS")
+        + _js_const(source, "BAND_INSET")
+        + _js_const(source, "BAND_MAX")
+        + _js_block(source, "function circleBand(") + "\n"
+        + _js_block(source, "function bandExtent(") + "\n"
+        + _js_block(source, "function bandInside(") + "\n"
+        + _js_block(source, "function slideToKey(") + "\n"
+        + _js_const(source, "quant")
+        + _js_const(source, "MIN_BAND")
         + _js_block(source, "const litRect = ") + "\n"
         + _js_block(source, "const litCircle = ") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")

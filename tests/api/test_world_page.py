@@ -3,6 +3,7 @@ silently break a 24/7 browser source: substitution, the same-origin rule
 for the renderer (KI-045), the bounded boot retry, and the textContent-only
 rule that keeps event payloads from becoming markup."""
 
+import hashlib
 import json
 import re
 import shutil
@@ -921,7 +922,17 @@ def _shading_prelude(source: str) -> str:
     return (
         _js_block(source, "function mixHex(") + "\n"
         + _js_block(source, "function shade(") + "\n"
-        + _js_block(source, "function insetSpan(") + "\n"
+        + _js_block(source, "function rampLevel(") + "\n"
+        + _js_block(source, "function keyAxis(") + "\n"
+        + _js_const(source, "KEY_AXIS")
+        + _js_const(source, "BAND_INSET")
+        + _js_const(source, "BAND_MAX")
+        + _js_block(source, "function circleBand(") + "\n"
+        + _js_block(source, "function bandExtent(") + "\n"
+        + _js_block(source, "function bandInside(") + "\n"
+        + _js_block(source, "function slideToKey(") + "\n"
+        + _js_const(source, "quant")
+        + _js_const(source, "MIN_BAND")
         + _js_block(source, "const litRect = ") + "\n"
         + _js_block(source, "const litCircle = ") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
@@ -3454,14 +3465,460 @@ def test_no_body_volume_is_painted_with_the_bare_flat_fill_any_more():
     )
 
 
+# The sprint's Global Constraint (plan line 47): `ANIM`, `SEATED_ANIMATIONS`
+# and `advanceCharacters` must be byte-unchanged by Sprint 16. Digests taken
+# from the rendered page at `29c3a96`, this branch's tip before Task 6, and
+# verified equal to `git show 29c3a96:api/templates/world.html`'s own blocks.
+# If one of these fails, either the shading pass reached into the animation
+# layer - the thing the constraint exists to catch - or the constraint is
+# being deliberately lifted, which is a decision, not a test edit.
+PROTECTED_BLOCKS = {
+    "const ANIM = {": (
+        "716d3fb9df6668032c3ee2da1f9eccd2cf5d2580968bc12b09e545b35687d58d", 3783
+    ),
+    "const SEATED_ANIMATIONS = {": (
+        "1977ba1c188c5a701d71422678d66eec929defcab43736d25da76986e5c26673", 2540
+    ),
+    "function advanceCharacters(": (
+        "a4f17050f3d1ca7fbc7790bd192fbeb089353d7d73f556bb73acafb9ec4b5e9e", 2275
+    ),
+}
+
+
 def test_the_animation_layer_is_untouched():
-    """The constraint that makes this redesign safe: the tested animation
-    layer survives byte-for-byte (the task report's SHA check covers `ANIM`,
-    `SEATED_ANIMATIONS` and `advanceCharacters`) because only the fill rule
-    changed. This is the page-source half of that claim - `advanceCharacters`
-    and `ANIM` are still there, under their own names, not renamed or
-    inlined away by the shading pass.
+    """The constraint that makes this redesign safe: the animation layer
+    survives byte-for-byte because only the fill rule changed.
+
+    Review round 1, Important 4: the previous version of this test said
+    "byte-for-byte" in its docstring and then asserted that two substrings
+    were present - nothing in it would have failed if the bodies of those
+    blocks had been rewritten, and it cited the task report as if a report
+    were a test. This grades the actual bytes: each block is brace-matched
+    out of the rendered page and digested, so a single character moved inside
+    `ANIM` fails here rather than in a screenshot three tasks later.
     """
     page = client.get("/world").text
-    assert "function advanceCharacters(" in page
-    assert "const ANIM = {" in page
+    for opening, (digest, size) in PROTECTED_BLOCKS.items():
+        block = _js_block(page, opening)
+        actual = hashlib.sha256(block.encode()).hexdigest()
+        assert (actual, len(block)) == (digest, size), (
+            f"{opening!r} is no longer byte-identical to its Sprint 16 "
+            f"baseline ({len(block)}B/{actual[:16]} vs {size}B/{digest[:16]}) "
+            "- this sprint's Global Constraint says the animation layer does "
+            "not move"
+        )
+
+
+# --- KI-051, review round 1: the light has to land on the lamp's side -------
+#
+# Critical 1 was a sign error that every string-matching test in this file was
+# blind to: `insetSpan`'s two branches were swapped, so rects were lit from the
+# left while the skull - a circle, which never went through that function - was
+# lit from the right. Head and body lit from opposite sides of one figure, and
+# the code comment described the correct behaviour, which is why self-review
+# missed it. The fix deleted the branch rather than correcting it: "toward the
+# key" is now expressed once, as `-KEY_AXIS`, for rects and circles alike.
+#
+# These drive the page's own geometry in node. They are the tests that can see
+# a sign.
+
+
+def _geometry_driver(source: str, body: str) -> str:
+    """The page's real shading geometry, plus a shape recorder."""
+    return (
+        "const PLATE = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _shading_prelude(source)
+        + """
+        const shapes = [];
+        const rec = {
+          roundRect(x, y, w, h, r) {
+            shapes.push({ kind: "rect", x, y, w, h, r }); return this;
+          },
+          circle(x, y, r) { shapes.push({ kind: "circle", x, y, r }); return this; },
+          fill() { return this; },
+          stroke() { return this; },
+        };
+        """
+        + body
+    )
+
+
+@needs_node
+def test_every_band_is_drawn_on_the_lamp_side_of_its_volume():
+    """The measured key sits up and to the right of the cast (`direction =
+    [-0.55, 0.84]`, so `-direction` points at the painted lamp at plate
+    `[1339, 455]`). Every band a volume draws must therefore have its centre
+    displaced from the volume's own centre in that direction - a rect and a
+    circle alike, which is the half of the claim round 1 got wrong.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const vols = {
+          "chest 66x54 r22": litRect(-33, -128, 66, 54, 22),
+          "wick 7x30 r3.5":  litRect(-3.5, -130, 7, 30, 3.5),
+          "bar 12x54 r4":    litRect(-6, -54, 12, 54, 4),
+          "seat chest 48x40 r20": litRect(-24, -80, 48, 40, 20),
+          "skull r28":       litCircle(0, 0, 28),
+          "orb r46":         litCircle(0, -60, 46),
+        };
+        const out = {};
+        for (const [name, vol] of Object.entries(vols)) {
+          out[name] = [];
+          for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+            shapes.length = 0;
+            vol.band(rec, band);
+            const s = shapes[0];
+            const cx = s.kind === "rect" ? s.x + s.w / 2 : s.x;
+            const cy = s.kind === "rect" ? s.y + s.h / 2 : s.y;
+            out[name].push({ cx, cy, s });
+          }
+        }
+        console.log(JSON.stringify({ out, axis: KEY_AXIS }));
+        """,
+    )
+    emitted = _run_node(driver)
+    ux, uy = -emitted["axis"][0], -emitted["axis"][1]
+    assert ux > 0 and uy < 0, (
+        f"the key axis no longer points up and to the right: ({ux}, {uy}) - "
+        "this test's premise is the painted lamp's measured position"
+    )
+    for name, bands in emitted["out"].items():
+        origin = bands[0]  # the inset-0 band IS the volume's own silhouette
+        for label, band in zip(("base", "lit"), bands[1:]):
+            dx = band["cx"] - origin["cx"]
+            dy = band["cy"] - origin["cy"]
+            mag = (dx * dx + dy * dy) ** 0.5
+            assert mag > 0.5, (
+                f"{name}: the {label} band sits on the volume's own centre "
+                f"({dx:+.3f}, {dy:+.3f}) - it carries no light direction"
+            )
+            # Asserted PER AXIS, because an axis is where a sign error lives.
+            # A band cannot always travel the full key direction: a long thin
+            # volume runs out of room across its short axis long before its
+            # long one, and forcing the diagonal anyway is what left a 12x96
+            # bar with its bright part in the middle. So what is pinned is
+            # that NEITHER axis moves away from the lamp, and that the result
+            # still points broadly at it.
+            assert dx * ux >= 0 and dy * uy >= 0, (
+                f"{name}: the {label} band is displaced ({dx:+.2f}, {dy:+.2f}), "
+                f"which moves it AWAY from the lamp on one axis (the key is at "
+                f"({ux:+.2f}, {uy:+.2f})) - a sign is inverted"
+            )
+            cos = (dx * ux + dy * uy) / mag
+            assert cos > 0.7, (
+                f"{name}: the {label} band is displaced ({dx:+.2f}, {dy:+.2f}), "
+                f"which agrees with the key direction by cos={cos:+.4f} - the "
+                "band is not on the lamp's side of the volume"
+            )
+
+
+@needs_node
+def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
+    """The property `insetSpan` was written to protect, made checkable.
+
+    The first version of this rule kept every band inside the volume's
+    BOUNDING BOX and still leaked out through its rounded corner, because a
+    small band's corner is squarer than the silhouette's: rasterised against
+    the real call sites, the seated chest (48x40, r20 - a stadium) spilled
+    15.3% of its lit band outside its own outline. A figure whose silhouette
+    grows when the lamp is measured is exactly what the seat- and
+    backrest-fit budgets (Task 5: 9px and 50px) cannot afford.
+
+    Checked by sampling the band's own area on a fine grid and testing each
+    point against the volume's real rounded rect - every volume the page
+    actually draws, read out of the page source rather than re-typed.
+    """
+    source = _world_source()
+    rig = (
+        _js_block(source, "const BODIES = {")
+        + _js_block(source, "function seatedRig(")
+        + _js_block(source, "function character(")
+    )
+    rects = re.findall(
+        r"litRect\(([-\d.]+), ([-\d.]+), (\w+|[\d.]+), (\w+|[\d.]+), ([\d.]+)\)", rig
+    )
+    circles = re.findall(r"litCircle\(([-\d.]+), ([-\d.]+), ([\d.]+)\)", rig)
+    assert len(rects) + len(circles) >= 15, (
+        f"only found {len(rects)} rect and {len(circles)} circle volumes in the "
+        "rig - the call-site shapes changed and this test stopped covering them"
+    )
+    # `bars` builds its rects from a loop variable; substitute its real heights.
+    volumes = []
+    for x, y, w, h, r in rects:
+        for hh in ([54, 86, 68, 96, 60] if h == "h" else [h]):
+            yy = -float(hh) if y == "-h" or h == "h" else float(y)
+            volumes.append(["rect", float(x), yy, float(w), float(hh), float(r)])
+    for cx, cy, rad in circles:
+        volumes.append(["circle", float(cx), float(cy), float(rad)])
+
+    driver = _geometry_driver(
+        source,
+        "const VOLUMES = " + json.dumps(volumes) + ";\n"
+        + """
+        function insideRR(px, py, hw, hh, r) {
+          const ax = Math.abs(px), ay = Math.abs(py);
+          if (ax > hw + 1e-9 || ay > hh + 1e-9) return false;
+          const dx = Math.max(0, ax - (hw - r)), dy = Math.max(0, ay - (hh - r));
+          return dx * dx + dy * dy <= r * r + 1e-9;
+        }
+        const worst = [];
+        VOLUMES.forEach((spec, i) => {
+          // The volume's TRUE silhouette, in the same snapped space the page
+          // draws it in: litRect snaps its origin, litCircle its centre.
+          let vol, sx, sy, w, h, r;
+          if (spec[0] === "rect") {
+            w = spec[3]; h = spec[4]; r = spec[5];
+            vol = litRect(spec[1], spec[2], w, h, r);
+            sx = snap(spec[1]); sy = snap(spec[2]);
+          } else {
+            r = spec[3]; w = h = 2 * r;
+            vol = litCircle(spec[1], spec[2], r);
+            sx = snap(spec[1]) - r; sy = snap(spec[2]) - r;
+          }
+          for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+            shapes.length = 0;
+            vol.band(rec, band);
+            const s = shapes[0];
+            const br = s.r;
+            const bw = s.kind === "rect" ? s.w : 2 * s.r;
+            const bh = s.kind === "rect" ? s.h : 2 * s.r;
+            const bx = s.kind === "rect" ? s.x : s.x - s.r;
+            const by = s.kind === "rect" ? s.y : s.y - s.r;
+            if (bw <= 0 || bh <= 0 || br < 0) {
+              worst.push({ i, band, leak: 1, bw, bh, br, note: "non-positive band" });
+              continue;
+            }
+            let out = 0, tot = 0;
+            const step = Math.min(bw, bh) / 40;
+            for (let py = by + step / 2; py < by + bh; py += step) {
+              for (let px = bx + step / 2; px < bx + bw; px += step) {
+                const inBand = insideRR(
+                  px - bx - bw / 2, py - by - bh / 2, bw / 2, bh / 2, br);
+                if (!inBand) continue;
+                tot += 1;
+                const inVol = insideRR(
+                  px - sx - w / 2, py - sy - h / 2, w / 2, h / 2, r);
+                if (!inVol) out += 1;
+              }
+            }
+            worst.push(
+              { i, kind: spec[0], band, leak: tot ? out / tot : 0, bw, bh, br });
+          }
+        });
+        worst.sort((a, b) => b.leak - a.leak);
+        console.log(JSON.stringify(worst.slice(0, 4)));
+        """,
+    )
+    emitted = _run_node(driver)
+    top = emitted[0]
+    assert top["leak"] == 0, (
+        f"volume {top['i']} band {top['band']} draws {100 * top['leak']:.2f}% of "
+        f"its own area outside the silhouette it belongs to ({top}) - the "
+        "figure's shape changes with the light instead of only its colour"
+    )
+    for row in emitted:
+        assert row["bw"] > 0 and row["bh"] > 0 and row["br"] >= 0, (
+            f"a band came out non-positive: {row} - a roundRect of negative "
+            "width is a silent geometry failure, not an exception"
+        )
+
+
+@needs_node
+def test_the_band_offsets_scale_with_the_volume_rather_than_being_fixed_px():
+    """Review round 1's ruling. The shipped rule used absolute insets of
+    0/2/5 against volumes spanning 12 to 66 local units, so a bar got a ~1px
+    shade band and 85% of every figure came out one flat colour - a tint,
+    which is the defect KI-051 names, not light. Two volumes five times apart
+    in size must get band insets five times apart, and a band that ate a
+    constant number of units would fail this.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const out = {};
+        for (const [name, w] of [["small", 12], ["large", 60]]) {
+          shapes.length = 0;
+          litRect(-w / 2, -100, w, 100, 2).band(rec, BAND_INSET.lit);
+          out[name] = shapes[0].w;
+        }
+        // and the clamp: an absurd band must not invert or vanish a volume
+        shapes.length = 0;
+        litRect(-6, -54, 12, 54, 4).band(rec, 5.0);
+        out.absurdRect = shapes[0];
+        shapes.length = 0;
+        litCircle(0, 0, 28).band(rec, 5.0);
+        out.absurdCircle = shapes[0];
+        console.log(JSON.stringify(out));
+        """,
+    )
+    e = _run_node(driver)
+    small_eaten, large_eaten = 12 - e["small"], 60 - e["large"]
+    ratio = large_eaten / small_eaten
+    assert 4.5 < ratio < 5.5, (
+        f"a 60-unit volume's lit band eats {large_eaten:.2f} units and a "
+        f"12-unit one eats {small_eaten:.2f} - a ratio of {ratio:.2f}, not the "
+        "5.0 that makes the offset a fraction of the volume's own extent"
+    )
+    for label in ("absurdRect", "absurdCircle"):
+        s = e[label]
+        dims = [s["r"]] + ([s["w"], s["h"]] if s["kind"] == "rect" else [])
+        assert all(d > 0 for d in dims), (
+            f"a band fraction of 5.0 produced {s} - BAND_MAX must clamp every "
+            "band to a positive width, height and radius"
+        )
+
+
+@needs_node
+def test_a_head_and_the_body_under_it_get_the_same_share_of_light():
+    """A rect loses one linear fraction per axis; a circle shrinks on both at
+    once, so the SAME fraction costs a circle far more of itself - at `lit`,
+    uncorrected, a rect keeps ~25% of its area and a circle 9%. That is a
+    skull visibly darker than the chest under it: head and body disagreeing
+    about the light, which is the shape Critical 1 took. `circleBand` solves
+    for the inset that leaves a circle the area share the rect keeps, so this
+    pins the outcome rather than the formula.
+
+    Caught by mutation: with `circleBand` reduced to `return band`, every
+    other test in this file still passed.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const area = (w, h, r) => w * h - (4 - Math.PI) * r * r;
+        function shares(vol, circle) {
+          const a = [];
+          for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+            shapes.length = 0;
+            vol.band(rec, band);
+            const s = shapes[0];
+            a.push(circle ? Math.PI * s.r * s.r : area(s.w, s.h, s.r));
+          }
+          return [a[2] / a[0], (a[1] - a[2]) / a[0], (a[0] - a[1]) / a[0]];
+        }
+        console.log(JSON.stringify({
+          skull: shares(litCircle(0, 0, 28), true),
+          orb: shares(litCircle(0, -60, 46), true),
+          chest: shares(litRect(-33, -128, 66, 54, 22), false),
+          seatChest: shares(litRect(-24, -80, 48, 40, 20), false),
+          bar: shares(litRect(-6, -96, 12, 96, 4), false),
+          wick: shares(litRect(-3.5, -130, 7, 30, 3.5), false),
+        }));
+        """,
+    )
+    e = _run_node(driver)
+    lit = {k: v[0] for k, v in e.items()}
+    lo, hi = min(lit.values()), max(lit.values())
+    assert hi - lo < 0.06, (
+        "the lit band covers a different share of a circle than of a rect: "
+        + ", ".join(f"{k} {100 * v:.1f}%" for k, v in sorted(lit.items()))
+        + " - a head shaded on a different rule from the body under it"
+    )
+    for name, (hi_, mid_, lo_) in e.items():
+        assert 0.15 < hi_ < 0.40 and 0.30 < mid_ < 0.55 and 0.20 < lo_ < 0.45, (
+            f"{name} came out {100 * hi_:.0f}/{100 * mid_:.0f}/{100 * lo_:.0f} "
+            "lit/mid/shade - that is not a three-tone form shade any more"
+        )
+
+
+@needs_node
+def test_a_circle_is_the_closed_form_of_the_same_slide_rule():
+    """One rule, two shapes. `litCircle` solves its slide in closed form
+    (`radius - rb`, the tangency point) instead of bisecting, and that is only
+    legitimate if it is the same answer `slideToKey` gives for a square volume
+    with a half-extent radius. Pinning the identity is what stops the head and
+    the body drifting into two different lighting rules again - the shape
+    Critical 1 took.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const out = [];
+        for (const [R, rb] of [[28, 8], [46, 20], [46, 45.5], [10, 1]]) {
+          const got = slideToKey(2 * R, 2 * R, R, 2 * rb, 2 * rb, rb);
+          const want = [(R - rb) * -KEY_AXIS[0], (R - rb) * -KEY_AXIS[1]];
+          out.push([R, rb, got, want]);
+        }
+        console.log(JSON.stringify(out));
+        """,
+    )
+    for R, rb, got, want in _run_node(driver):
+        gap = max(abs(a - b) for a, b in zip(got, want))
+        assert gap < 1e-3, (
+            f"slideToKey for a circle of radius {R} with band radius {rb} "
+            f"returned {got}, but the tangency offset is {want} (off by "
+            f"{gap:.4f}) - litCircle's closed form and litRect's bisected "
+            "placement are no longer the same rule"
+        )
+
+
+@needs_node
+def test_a_light_without_a_ramp_degrades_instead_of_blanking_the_page():
+    """Review round 1, Important 5. `BODY_RIM_SHADED` is a TOP-LEVEL const
+    that reads the ramp, so a `LIGHT` without one threw a TypeError before
+    `boot()` was ever called - a blank page that every page-source test in
+    this file still passes (Task 2's failure mode), and strictly worse than
+    the pre-ticket code, where the same dereference lived inside `paint()`
+    and could only spoil one figure.
+
+    `rampLevel()` is the one guarded accessor, used by the top-level const
+    AND by `paint()` - guarding only the loud one leaves the inner path open.
+    A missing rung degrades to 0, which `shade()` turns back into the volume's
+    own flat colour: the pre-KI-051 look, not a broken room.
+    """
+    source = _world_source()
+    stripped = re.sub(
+        r'^(\s*const LIGHT = )\{.*\};$',
+        r'\1{ "key": [0, 0], "direction": [-0.55, 0.84], '
+        r'"warmth": "#f0a848", "ambient": "#1a2030" };',
+        _js_const(source, "LIGHT").rstrip("\n"),
+        flags=re.M,
+    )
+    assert '"ramp"' not in stripped and "ramp" not in stripped, (
+        "the stand-in LIGHT still carries a ramp - this test would prove nothing"
+    )
+    driver = (
+        "const PLATE = null;\n"
+        + "const BODY_FILL = 0xd0d0d0, BODY_RIM = "
+        + "{ width: 1.5, color: 0xffffff, alignment: 1 };\n"
+        + stripped
+        + "\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _shading_prelude(source)
+        + """
+        const shapes = [];
+        const fills = [];
+        const rec = {
+          roundRect(x, y, w, h, r) { shapes.push([x, y, w, h, r]); return this; },
+          circle(x, y, r) { shapes.push([x, y, r]); return this; },
+          fill(c) { fills.push(c); return this; },
+          stroke() { return this; },
+        };
+        paint(rec, litRect(-24, -80, 48, 40, 20), BODY_FILL);
+        console.log(JSON.stringify(
+          { rim: BODY_RIM_SHADED.color, fills, shapes: shapes.length }));
+        """
+    )
+    e = _run_node(driver)
+    assert e["rim"] == 0xFFFFFF, (
+        f"BODY_RIM_SHADED came out {e['rim']:#x} with no ramp to read - it "
+        "must degrade to the plain rim colour, not to a mixed one"
+    )
+    assert e["fills"] == [0xD0D0D0, 0xD0D0D0, 0xD0D0D0], (
+        f"a ramp-less LIGHT painted {[hex(f) for f in e['fills']]} - every "
+        "band must fall back to the volume's own flat colour"
+    )
+    assert e["shapes"] == 4, "paint must still draw three bands and a rim"

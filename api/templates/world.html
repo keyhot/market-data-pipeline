@@ -208,72 +208,267 @@
       return mixHex(baseHex, toward, Math.min(1, Math.abs(level)));
     }
 
+    // The ONE way this file reads the ramp. `LIGHT.ramp.lit` written inline is
+    // a `TypeError` the moment `LIGHT` arrives without a `ramp` — and one of
+    // those inline reads sits at TOP LEVEL (`BODY_RIM_SHADED` below), which
+    // throws before `boot()` is ever called and leaves the page blank with
+    // every page-source test still green (the Task 2 failure mode). The inner
+    // reads inside `paint()` are the softer version of the same class, so
+    // both go through here rather than only the loud one: a missing or
+    // non-numeric rung degrades to 0, which `shade()` turns back into the
+    // volume's own flat colour — the pre-KI-051 look, not a broken page.
+    function rampLevel(rung) {
+      const ramp = LIGHT && LIGHT.ramp;
+      const level = ramp ? ramp[rung] : undefined;
+      return Number.isFinite(level) ? level : 0;
+    }
+
+    // The measured direction, normalised, and safe to divide by. Not read raw
+    // from `LIGHT.direction` at each draw call, for two reasons: `litCircle`'s
+    // no-overshoot property holds EXACTLY only for a unit vector (this plate
+    // measures |d| = 1.004, which walks each band's key-facing point outward
+    // by 0.4% of its own inset), and a `[0, 0]` direction — which `light_for`
+    // accepts, since it validates the ramp and not the vector — would put NaN
+    // into every roundRect on the page. Anything unusable falls back to
+    // DEFAULT_LIGHT's straight-down axis rather than throwing.
+    function keyAxis() {
+      const raw = (LIGHT && LIGHT.direction) || [];
+      const dx = Number(raw[0]), dy = Number(raw[1]);
+      const len = Math.hypot(dx, dy);
+      return Number.isFinite(len) && len > 0 ? [dx / len, dy / len] : [0, 1];
+    }
+    const KEY_AXIS = keyAxis();
+
+    // How much of a volume each band eats, as a FRACTION of that volume's own
+    // extent — never as a fixed number of units.
+    //
+    // Review round 1's ruling, measured rather than argued: the first version
+    // used absolute insets of 0/2/5 against volumes spanning 12 to 66 local
+    // units, so a 15-unit bar got a ~1px shade band and a ~4px base band and
+    // the remaining ~85% of EVERY figure came out one flat colour. That is a
+    // tint, not light — the exact thing KI-051 names as the defect. Raising
+    // the absolute numbers cannot fix it either: what shades a torso would
+    // collapse or invert a wick.
+    //
+    // Measured at these values over every volume the page draws — the 66x54
+    // chest, the 12x96 bar, the 7x30 wick, the r28 skull, the r46 orb — each
+    // one comes out 25-27% lit, 39-43% mid, 30-35% shade by area. One
+    // three-tone form shade, the same on the biggest volume and the smallest,
+    // which is the whole point of expressing the offsets as fractions. The
+    // VALUES are an art call made off a frame, not a derivation; the SHAPE of
+    // the rule (proportional, clamped) is the load-bearing part.
+    const BAND_INSET = { shade: 0, base: 0.25, lit: 0.70 };
+    // No band may eat more than this share of its volume, whatever the
+    // fractions above or a future manifest's direction say. A `roundRect` of
+    // negative width is a silent geometry failure, not an exception — nothing
+    // throws, the volume just stops being drawn — so the clamp is what keeps a
+    // retune from quietly deleting the smallest bodies.
+    const BAND_MAX = 0.85;
+
+    // The same band, for a circle. A rect loses one linear fraction per axis;
+    // a circle shrinks on BOTH axes at once, so the identical fraction costs
+    // it far more of itself — at `lit` a rect keeps ~25% of its area and a
+    // circle only 9%. Left uncorrected that is a skull visibly darker than the
+    // chest under it: head and body disagreeing about the light, which is the
+    // the same defect class as the sign error review round 1 shipped. So:
+    // solve for the linear inset leaving a circle the AREA share a rect keeps
+    // — rect keeps `(1 - band·|dx|)(1 - band·|dy|)`, circle keeps `(1 - f)²`.
+    // Derived from the same measured axis rather than hardcoded, so a repaint
+    // that moves the lamp keeps the head and the body agreeing.
+    function circleBand(band) {
+      if (!Number.isFinite(band) || band <= 0) return 0;
+      const kept = (1 - band * Math.abs(KEY_AXIS[0]))
+                 * (1 - band * Math.abs(KEY_AXIS[1]));
+      return 1 - Math.sqrt(Math.max(0, kept));
+    }
+
     // A rim colour shaded toward the lamp's own warmth rather than a fixed
     // hue. It reads as a bright contour where it sits against the volume's
     // own shaded (away-from-key) band — the KI-028 contrast the plain
     // BODY_RIM existed for, now needed most on the side `paint` leaves
-    // darkest — and it recedes into the volume's own lit (toward-key) band,
-    // where a hard ring would sit on top of the brightest part of the shape
-    // and read as a sticker outline rather than an edge lit by the room.
-    const BODY_RIM_SHADED = { width: BODY_RIM.width, color: shade(BODY_RIM.color, LIGHT.ramp.lit), alignment: BODY_RIM.alignment };
+    // darkest.
+    const BODY_RIM_SHADED = { width: BODY_RIM.width, color: shade(BODY_RIM.color, rampLevel("lit")), alignment: BODY_RIM.alignment };
 
-    // Draw one volume in three bands, lit toward the key. `shapeFn(g, inset)`
-    // draws the SAME silhouette at three insets (0, 2, 5); `paint` supplies
-    // both the inset and, via `shade`, the colour for each band, so the
-    // shape a caller passes in is unchanged — this adds light to the
+    // Draw one volume in three bands, lit toward the key. A `volume` is what
+    // `litRect`/`litCircle` return: `band(g, inset)` draws the SAME silhouette
+    // shrunk to a given band, `rim(g)` strokes its true (un-inset) outline.
+    // `paint` supplies the insets and, via `shade`, the colour of each band,
+    // so the shape a caller passes in is unchanged — this adds light to the
     // existing rig, it does not redraw it.
-    function paint(g, shapeFn, tint) {
-      shapeFn(g, 0);  g.fill(shade(tint, LIGHT.ramp.shade));
-      shapeFn(g, 2);  g.fill(shade(tint, LIGHT.ramp.base));
-      shapeFn(g, 5);  g.fill(shade(tint, LIGHT.ramp.lit));
+    //
+    // The brief asks for a rim that "survives only away from the key", and the
+    // mechanism for it — draw the rim, then let the lit band overpaint it on
+    // the lamp side — does not work here, measured rather than assumed:
+    // `BODY_RIM.alignment` is 1, which in PixiJS v8 strokes OUTSIDE the shape
+    // (scanned off the delivered frame: on 96 rows through the trader, a rim
+    // pixel sat outside the outermost band pixel 192 times and strictly
+    // inside it 0). Nothing drawn inside the silhouette can occlude a stroke
+    // drawn outside it, and the alternative — moving the rim to an inner
+    // alignment — shrinks the very silhouette KI-028's contrast fix was
+    // measured against. So the rim stays whole and goes on last, and the
+    // measurement lives in the task report instead of an aesthetic claim.
+    function paint(g, volume, tint) {
+      volume.band(g, BAND_INSET.shade);  g.fill(shade(tint, rampLevel("shade")));
+      volume.band(g, BAND_INSET.base);   g.fill(shade(tint, rampLevel("base")));
+      volume.band(g, BAND_INSET.lit);    g.fill(shade(tint, rampLevel("lit")));
+      volume.rim(g);
     }
 
-    // Shrink the span `[base, base + size]` toward the key on one axis only.
-    // `dirComponent` is `LIGHT.direction`'s component for that axis; the key
-    // sits in the OPPOSITE direction (see the comment on `shade`), so the
-    // edge nearer the key stays fixed at the volume's true (inset 0)
-    // boundary and only the far edge recedes. Both edges therefore only ever
-    // move inward as `inset` grows — every band `paint` draws nests strictly
-    // inside the last, and none of them can draw outside the shape a caller
-    // passed in. A naive "translate the whole rect toward the key, then
-    // shrink `w`/`h`" (the shift and the shrink both moving the SAME corner)
-    // does not have this property: on an axis where the key sits on the
-    // rect's low side, that combination pushes the low edge past the
-    // original boundary rather than toward it — a few pixels of silhouette
-    // growth on exactly the side already measured against the seat and the
-    // backrest to single-digit pixels of slack (Task 5).
-    function insetSpan(base, size, dirComponent, inset) {
-      return dirComponent >= 0
-        ? [base + inset, size - inset]   // far edge is the low side; it recedes
-        : [base, size - inset];          // far edge is the high side; it recedes
+    // How much of a volume's own extent a band keeps on one axis. `band` is
+    // the fraction from `BAND_INSET`; how many UNITS that costs is a property
+    // of this volume and this axis, so it is computed where the size is known
+    // rather than handed down as a fixed number of pixels. Weighting by the
+    // key's own component on the axis is what makes an overhead lamp band a
+    // shape across its height and leave its width alone, and a side lamp do
+    // the reverse — a light straight down the y axis produces full-width
+    // horizontal bands, which is the correct picture and also exactly what the
+    // neutral DEFAULT_LIGHT degrades to.
+    function bandExtent(size, axisComponent, band) {
+      const fraction = Number.isFinite(band) ? Math.max(0, band) : 0;
+      return size * (1 - Math.min(fraction * Math.abs(axisComponent), BAND_MAX));
     }
 
-    // A `shapeFn` for `paint`: the SAME rounded rect at every inset, walked
-    // toward the key and shrunk by it. One definition rather than restating
-    // this arithmetic at every one of the volume's call sites — the risk a
-    // hand-copied version runs is a sign flip that lights a figure from the
-    // wrong side, which is exactly the failure `light_for`'s own monotonic
-    // ramp check exists to keep out of `LIGHT` in the first place.
-    const litRect = (x, y, w, h, r) => (g, inset) => {
-      const [rx, rw] = insetSpan(snap(x), w, LIGHT.direction[0], inset);
-      const [ry, rh] = insetSpan(snap(y), h, LIGHT.direction[1], inset);
-      return g.roundRect(rx, ry, rw, rh, r);
+    // Can a `bw × bh` band with corner radius `rb`, sitting `cx, cy` from the
+    // volume's own centre, be drawn without any part of it leaving a `w × h`
+    // rounded rect of radius `r`?
+    //
+    // Exact, not a margin heuristic — and the check the FIRST version of this
+    // rule was missing. Bands placed flush against the volume's key-facing
+    // edges nest correctly in the BOUNDING BOX and still leak out through the
+    // rounded corner, because a small band's corner is squarer than the
+    // silhouette's: rasterised against the real call sites, the seated chest
+    // (48×40, r20 — a stadium) spilled 15.3% of its lit band outside its own
+    // outline, which is a figure whose shape changes when the lamp moves.
+    //
+    // The statement below is the whole of it: a rounded rect contains a
+    // rounded rect exactly when each of the inner shape's four corner DISCS
+    // lies inside the outer shape eroded by that disc's radius — and the
+    // erosion of a rounded rect by a disc is the same rounded rect with both
+    // dimensions and the radius reduced by it.
+    function bandInside(cx, cy, w, h, r, bw, bh, rb) {
+      if (Math.abs(cx) > (w - bw) / 2) return false;
+      if (Math.abs(cy) > (h - bh) / 2) return false;
+      const room = r - rb;
+      if (room <= 0) return true;
+      const ax = bw / 2 - rb, ay = bh / 2 - rb;   // the band's own arc centres
+      const hx = w / 2 - r, hy = h / 2 - r;       // the volume's arc centres
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          const dx = Math.max(0, Math.abs(cx + sx * ax) - hx);
+          const dy = Math.max(0, Math.abs(cy + sy * ay) - hy);
+          if (dx * dx + dy * dy > room * room) return false;
+        }
+      }
+      return true;
+    }
+
+    // Where a band sits: as far toward the lamp as this volume allows, as an
+    // offset from the volume's own centre.
+    //
+    // The direction is the key axis scaled by how much ROOM each axis has
+    // (half the difference between the volume and its band). Walking the raw
+    // key vector instead is wrong for anything long and thin, and wrong in a
+    // way the frame shows immediately: a 12x96 bar has 2.3 units of
+    // horizontal room and 28 of vertical, so a straight diagonal walk runs out
+    // of width after 4 units and the band ends up vertically CENTRED — a bar
+    // lit from above with its bright part in the middle. Scaling by the room
+    // turns that into an almost-vertical walk, while a SQUARE volume (which
+    // every circle is, 2R x 2R) still walks exactly along the key axis — which
+    // is what keeps `litCircle`'s closed form below the same rule and not a
+    // second one.
+    //
+    // The magnitude is bisected rather than solved: the feasible set is convex
+    // (an erosion of one convex shape by another) and contains the centre, so
+    // the feasible offsets along a ray are an interval from 0 and bisection
+    // lands on its edge — which leaves `bandInside` as the only geometry that
+    // has to be right. The centred band always fits, because `rb` is capped at
+    // `min(r, bw/2, bh/2)`, which is exactly the condition that makes the
+    // centred case pass; the search always has that floor.
+    //
+    // This is also the ONE place "toward the lamp" is expressed for a rect.
+    // Review round 1 shipped a figure lit from two directions at once because
+    // that phrase had two separate expressions — a per-axis sign branch for
+    // rects and `-LIGHT.direction` for circles — and only one of them was
+    // right. There is no sign branch left to get backwards.
+    function slideToKey(w, h, r, bw, bh, rb) {
+      const ux = -KEY_AXIS[0], uy = -KEY_AXIS[1];
+      const scale = Math.max(Math.abs(ux), Math.abs(uy)) || 1;
+      const tx = ux * ((w - bw) / 2) / scale;
+      const ty = uy * ((h - bh) / 2) / scale;
+      let lo = 0, hi = 1;
+      for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        if (bandInside(mid * tx, mid * ty, w, h, r, bw, bh, rb)) lo = mid;
+        else hi = mid;
+      }
+      return [lo * tx, lo * ty];
+    }
+
+    // Band edges land on a 1/64 unit — a power of two, so they stay exact in
+    // binary floating point against the whole (CELL-snapped) coordinates every
+    // call site passes, and the final `Math.max`/`Math.min` below can then
+    // pin a band inside its volume's box EXACTLY rather than to within 1e-15.
+    // Task 5 measured the seated rig clearing the painted seat by 9px and the
+    // backrest by 50px; those checks are worth being able to state without a
+    // tolerance.
+    const quant = (v) => Math.round(v * 64) / 64;
+    // The floor is one quantum, not zero: `band()` must always leave a path
+    // for the `g.fill()` that follows it, and a zero-area `roundRect` is a
+    // silent no-op rather than an error.
+    const MIN_BAND = 1 / 64;
+
+    // A volume for `paint`: the same rounded rect shrunk to each band and slid
+    // toward the lamp, plus the rim at its true silhouette. One definition
+    // rather than restating the arithmetic at every one of the nineteen call
+    // sites.
+    const litRect = (x, y, w, h, r) => {
+      return {
+        band: (g, band) => {
+          const x0 = snap(x), y0 = snap(y);
+          const bw = bandExtent(w, KEY_AXIS[0], band);
+          const bh = bandExtent(h, KEY_AXIS[1], band);
+          // A corner cannot stay absolute while the rect shrinks: a radius
+          // wider than the band it rounds is where a renderer starts guessing.
+          const rb = Math.max(0, Math.min(r, bw / 2, bh / 2));
+          const [ox, oy] = slideToKey(w, h, r, bw, bh, rb);
+          const bx = Math.min(Math.max(x0, quant(x0 + (w - bw) / 2 + ox)), x0 + w);
+          const by = Math.min(Math.max(y0, quant(y0 + (h - bh) / 2 + oy)), y0 + h);
+          const bwq = Math.max(MIN_BAND, Math.min(quant(bw), x0 + w - bx));
+          const bhq = Math.max(MIN_BAND, Math.min(quant(bh), y0 + h - by));
+          return g.roundRect(bx, by, bwq, bhq, Math.min(rb, bwq / 2, bhq / 2));
+        },
+        rim: (g) => rimStroke(g, x, y, w, h, r),
+      };
     };
-    // Circles need no such correction: shrinking the radius while sliding the
-    // centre toward the key by the SAME `inset` keeps the key-facing point
-    // of every band fixed on the original circle's boundary (the two moves
-    // exactly cancel there — algebra in the task report), so it already has
-    // the no-overshoot property `insetSpan` exists to give rectangles.
-    const litCircle = (cx, cy, radius) => (g, inset) => {
-      return g.circle(
-        snap(cx) + inset * -LIGHT.direction[0],
-        snap(cy) + inset * -LIGHT.direction[1],
-        radius - inset,
-      );
+    // A circle is the closed-form case of the same rule, not a second one:
+    // `slideToKey(2R, 2R, R, 2rb, 2rb, rb)` is exactly `(R - rb)·-KEY_AXIS`,
+    // the offset that leaves the band internally tangent to the original
+    // circle at its key-facing point — which is why a square volume walking
+    // along the key axis matters above. `tests/api/test_world_page.py` asserts
+    // that identity rather than leaving it as a claim in a comment. Solving it
+    // here keeps the skull exact and saves 24 bisection steps per band.
+    const litCircle = (cx, cy, radius) => {
+      return {
+        band: (g, band) => {
+          const kept = radius * (1 - Math.min(circleBand(band), BAND_MAX));
+          const rb = Math.max(MIN_BAND, quant(kept));
+          const slide = radius - rb;
+          return g.circle(
+            snap(cx) + slide * -KEY_AXIS[0],
+            snap(cy) + slide * -KEY_AXIS[1],
+            rb,
+          );
+        },
+        rim: (g) => rimStrokeCircle(g, cx, cy, radius),
+      };
     };
 
     // The rim, kept at the volume's true (un-inset) silhouette so it still
     // outlines the shape `paint` was called with, not one of its bands.
+    // Reached only through a volume's own `rim(g)`, never from a body method:
+    // a rim is not something a call site can forget, mis-order, or hand the
+    // wrong rectangle — `paint` owns the whole fill rule for a volume, which
+    // is the one thing this ticket was allowed to change.
     function rimStroke(g, x, y, w, h, r) {
       g.roundRect(snap(x), snap(y), w, h, r).stroke(BODY_RIM_SHADED);
     }
@@ -1028,15 +1223,12 @@
       // and the one that reads most instantly as "this thing is the market".
       candle(body, accents) {
         paint(body, litRect(-27, -104, 54, 84, 8), BODY_FILL);
-        rimStroke(body, -27, -104, 54, 84, 8);
         // Wick thick enough to read as a neck at stream distance, and short
         // enough that the head sits ON the candle rather than floating over it.
         const wickTop = new PIXI.Graphics();
         paint(wickTop, litRect(-3.5, -130, 7, 30, 3.5), BODY_FILL);
-        rimStroke(wickTop, -3.5, -130, 7, 30, 3.5);
         const wickLow = new PIXI.Graphics();
         paint(wickLow, litRect(-3.5, -22, 7, 26, 3.5), BODY_FILL);
-        rimStroke(wickLow, -3.5, -22, 7, 26, 3.5);
         // A wick flicks by lengthening. It cannot swing: it's drawn in the
         // character's own space, so rotating it pivots about the feet.
         wickTop.gestureMode = wickLow.gestureMode = "pump";
@@ -1050,7 +1242,6 @@
         heights.forEach((h, i) => {
           const bar = new PIXI.Graphics();
           paint(bar, litRect(-6, -h, 12, h, 4), BODY_FILL);
-          rimStroke(bar, -6, -h, 12, h, 4);
           bar.x = -36 + i * 18;
           bar.restHeight = h;
           bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
@@ -1060,17 +1251,14 @@
         // way it was. It can't be one of the bars: those ripple, and a neck
         // that stretches would pull the face off the body.
         paint(body, litRect(-6, -118, 12, 58, 6), BODY_FILL);
-        rimStroke(body, -6, -118, 12, 58, 6);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
       // end of the register; a piece that looks like it is thinking.
       monolith(body, accents) {
         paint(body, litRect(-26, -104, 52, 78, 20), BODY_FILL);
-        rimStroke(body, -26, -104, 52, 78, 20);
         const base = new PIXI.Graphics();
         paint(base, litRect(-38, -30, 76, 30, 14), BODY_FILL);
-        rimStroke(base, -38, -30, 76, 30, 14);
         base.gestureMode = "shift";   // a weighted column doesn't wave, it leans
         base.restX = 0;
         accents.push(base);
@@ -1083,20 +1271,15 @@
         // The gap has to be wide enough to survive the stream: at 6 units the
         // two legs merged into one column and he read as a pedestal.
         paint(body, litRect(-19, -56, 13, 56, 6), BODY_FILL);
-        rimStroke(body, -19, -56, 13, 56, 6);
         paint(body, litRect(6, -56, 13, 56, 6), BODY_FILL);
-        rimStroke(body, 6, -56, 13, 56, 6);
         // Waist under a broader chest. The taper is what reads as a person —
         // one capsule reads as a pill — and the wider shoulders are what stop
         // the head (28px, shared with every other body) looking oversized.
         paint(body, litRect(-26, -86, 52, 40, 14), BODY_FILL);
-        rimStroke(body, -26, -86, 52, 40, 14);
         paint(body, litRect(-33, -128, 66, 54, 22), BODY_FILL);
-        rimStroke(body, -33, -128, 66, 54, 22);
         for (const side of [-1, 1]) {
           const arm = new PIXI.Graphics();
           paint(arm, litRect(-7, -5, 14, 66, 7), BODY_FILL);
-          rimStroke(arm, -7, -5, 14, 66, 7);
           arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
           // Not quite straight and not quite matching: dead-symmetrical arms
           // read as a mannequin, and the asymmetry costs two numbers.
@@ -1115,7 +1298,6 @@
       // others are judged against.
       orb(body) {
         paint(body, litCircle(0, -60, 46), BODY_FILL);
-        rimStrokeCircle(body, 0, -60, 46);
         return -66;
       },
     };
@@ -1216,7 +1398,6 @@
       // lit body is the one inconsistency a gallery grid would show first.
       if (style !== "orb") {
         paint(skull, litCircle(0, 0, 28), BODY_FILL);
-        rimStrokeCircle(skull, 0, 0, 28);
       }
       head.y = headY;
       head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
@@ -1530,9 +1711,7 @@
       // Thighs: short and low, at the front edge of the seat rather than
       // dropping to a floor this plate doesn't give the chair.
       paint(body, litRect(-22, -6, 18, 16, 6), BODY_FILL);
-      rimStroke(body, -22, -6, 18, 16, 6);
       paint(body, litRect(4, -6, 18, 16, 6), BODY_FILL);
-      rimStroke(body, 4, -6, 18, 16, 6);
       // Waist and chest, stacked straight up off the hips rather than off a
       // standing pair of legs. Review round 1, Finding 1: the seat measures
       // 79 screen px wide (`PLATE.cast.trader.seat.width`), and 58 units of
@@ -1548,9 +1727,7 @@
       // against the manifest's measurement, rather than trusting this
       // comment's arithmetic.
       paint(body, litRect(-20, -42, 40, 34, 14), BODY_FILL);
-      rimStroke(body, -20, -42, 40, 34, 14);
       paint(body, litRect(-24, -80, 48, 40, 20), BODY_FILL);
-      rimStroke(body, -24, -80, 48, 40, 20);
       // Forearms bent up toward the desk, not hanging at the sides — shorter
       // than the standing figure's (66 units). Pivot at 14: the arm's own
       // local rect snaps to [-4, 8], so a wider pivot pushes its outer edge
@@ -1558,7 +1735,6 @@
       for (const side of [-1, 1]) {
         const arm = new PIXI.Graphics();
         paint(arm, litRect(-6, 0, 12, 40, 6), BODY_FILL);
-        rimStroke(arm, -6, 0, 12, 40, 6);
         arm.x = side * 14; arm.y = -76;
         arm.restRotation = side < 0 ? -0.55 : 0.5;
         arm.shadeFactor = 1.35;
