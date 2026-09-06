@@ -185,6 +185,35 @@
            |  lerp(ch(pa, 0), ch(pb, 0));
     }
 
+    // PixiJS's container tint, as arithmetic instead of a shader stage.
+    //
+    // The page used to let the GPU do this: `char.body.tint = tint` multiplied
+    // the mood over every pixel the container had already drawn — which, once
+    // `paint()` existed, meant it multiplied the mood over the room's LIGHT as
+    // well as over the body. The lit band mixes toward `LIGHT.warmth` and the
+    // shade band toward `LIGHT.ambient`, so a red mood did not put a red object
+    // under the amber lamp; it turned the lamp red. Doing the multiply HERE, on
+    // one colour, before any light is applied, is the whole of the change: the
+    // product is the body's own colour, and `shade()` then lights it with the
+    // room's lamp exactly as it lights every other volume.
+    //
+    // Guards its own inputs for the same reason `mixHex` does, and to the same
+    // rule: `<<`/`|` coerce NaN to 0, so an unparseable colour would come back
+    // finite and wrong (black) rather than detectably broken. A side that fails
+    // to parse degrades to the other side unmultiplied — "no contribution from
+    // the broken side", not a body nobody asked for.
+    function mulHex(a, b) {
+      const pa = typeof a === "number" ? a : parseInt(String(a).slice(1), 16);
+      const pb = typeof b === "number" ? b : parseInt(String(b).slice(1), 16);
+      if (!Number.isFinite(pa)) return pb;
+      if (!Number.isFinite(pb)) return pa;
+      const ch = (v, sh) => (v >> sh) & 0xff;
+      const mul = (x, y) => Math.round((x * y) / 255);
+      return (mul(ch(pa, 16), ch(pb, 16)) << 16)
+           | (mul(ch(pa, 8), ch(pb, 8)) << 8)
+           |  mul(ch(pa, 0), ch(pb, 0));
+    }
+
     // A volume's colour at a given light level. `level` is the ramp value for
     // the band being drawn: positive faces the lamp, negative faces away.
     //
@@ -341,11 +370,72 @@
     // alignment — shrinks the very silhouette KI-028's contrast fix was
     // measured against. So the rim stays whole and goes on last, and the
     // measurement lives in the task report instead of an aesthetic claim.
-    function paint(g, volume, tint) {
-      volume.band(g, BAND_INSET.shade);  g.fill(shade(tint, rampLevel("shade")));
-      volume.band(g, BAND_INSET.base);   g.fill(shade(tint, rampLevel("base")));
-      volume.band(g, BAND_INSET.lit);    g.fill(shade(tint, rampLevel("lit")));
-      volume.rim(g);
+    //
+    // Each volume is REMEMBERED on the Graphics it was drawn into, so the same
+    // rig can be re-lit in another colour without the call site having to hand
+    // its rects over a second time. That is what makes mood a colour `paint()`
+    // receives rather than a multiply laid over its output (`repaint` below) —
+    // and it is why the nineteen `BODIES.*`/`seatedRig`/`character()` call
+    // sites are untouched by this ticket: they still describe the shape once,
+    // in `BODY_FILL`, and the mood arrives afterwards.
+    // `rim` is the volume's EDGE colour, and it is a second base colour rather
+    // than a decoration derived from the first. `world/visuals.py` states the
+    // invariant this ticket has to carry: "the rim is drawn brighter than the
+    // fill so the difference SURVIVES tinting (both get multiplied by the same
+    // tint, so the ratio between them is fixed here and nowhere else)". The
+    // container tint used to be what kept that ratio; with the tint gone the
+    // mood has to reach the rim's own albedo the same way it reaches the
+    // body's, or every figure is outlined in the lamp's cream regardless of
+    // what colour it is. Measured on the first frame of this ticket: 11,491
+    // pixels of flat `#fbe5c8` keyline, and a 14-unit arm at 1.5px of rim lost
+    // its colour almost entirely — a die-cut sticker outline, which is the
+    // KI-051 read this whole sprint exists to remove.
+    //
+    // Omitted, it falls back to `BODY_RIM_SHADED`: the un-mooded edge, which
+    // is what the nineteen construction-time call sites want and what a
+    // volume drawn outside a character gets.
+    function paint(g, volume, fill, rim) {
+      (g.volumes || (g.volumes = [])).push(volume);
+      volume.band(g, BAND_INSET.shade);  g.fill(shade(fill, rampLevel("shade")));
+      volume.band(g, BAND_INSET.base);   g.fill(shade(fill, rampLevel("base")));
+      volume.band(g, BAND_INSET.lit);    g.fill(shade(fill, rampLevel("lit")));
+      volume.rim(g, rimStyle(rim));
+    }
+
+    // A rim's stroke style at a given base colour, lit like the volume's own
+    // lamp-facing band — the rim IS the lit edge, so it takes `rampLevel("lit")`
+    // and nothing else. `BODY_RIM_SHADED` (the same computation over the
+    // un-mooded `BODY_RIM.color`) is what a caller with no colour to offer
+    // gets, so the constant stays the single definition of the default edge.
+    function rimStyle(rim) {
+      if (!Number.isFinite(rim)) return BODY_RIM_SHADED;
+      return {
+        width: BODY_RIM.width,
+        color: shade(rim, rampLevel("lit")),
+        alignment: BODY_RIM.alignment,
+      };
+    }
+
+    // The same volumes, lit again in a new colour.
+    //
+    // `g.clear()` first, so the bands REPLACE the old ones rather than stacking
+    // a second opaque set on top of them — and the recorded list is emptied
+    // before the re-paint, because `paint` re-records as it goes and an
+    // unreset list would double on every mood change for as long as the stream
+    // is up. Nothing here touches the Graphics' transform, which is where
+    // every animation's state lives (`scale`, `rotation`, `x`/`y`): a mood
+    // change mid-gesture re-colours the figure without interrupting it.
+    //
+    // A Graphics with nothing recorded is left exactly as it is. That is not
+    // only defensive: faces (eyes, brows, mouth, visor) are drawn by
+    // `setExpression`'s own primitives, never through `paint`, and clearing
+    // one of those here would wipe a face and draw nothing back.
+    function repaint(g, fill, rim) {
+      const volumes = g.volumes;
+      if (!volumes || !volumes.length) return;
+      g.clear();
+      g.volumes = [];
+      for (const volume of volumes) paint(g, volume, fill, rim);
     }
 
     // How much of a volume's own extent a band keeps on one axis. `band` is
@@ -471,7 +561,7 @@
           const bhq = Math.max(MIN_BAND, Math.min(quant(bh), y0 + h - by));
           return g.roundRect(bx, by, bwq, bhq, Math.min(rb, bwq / 2, bhq / 2));
         },
-        rim: (g) => rimStroke(g, x, y, w, h, r),
+        rim: (g, style) => rimStroke(g, x, y, w, h, r, style),
       };
     };
     // A circle is the closed-form case of the same rule, not a second one:
@@ -493,7 +583,7 @@
             rb,
           );
         },
-        rim: (g) => rimStrokeCircle(g, cx, cy, radius),
+        rim: (g, style) => rimStrokeCircle(g, cx, cy, radius, style),
       };
     };
 
@@ -503,18 +593,53 @@
     // a rim is not something a call site can forget, mis-order, or hand the
     // wrong rectangle — `paint` owns the whole fill rule for a volume, which
     // is the one thing this ticket was allowed to change.
-    function rimStroke(g, x, y, w, h, r) {
-      g.roundRect(snap(x), snap(y), w, h, r).stroke(BODY_RIM_SHADED);
+    function rimStroke(g, x, y, w, h, r, style) {
+      g.roundRect(snap(x), snap(y), w, h, r).stroke(style || BODY_RIM_SHADED);
     }
-    function rimStrokeCircle(g, cx, cy, radius) {
-      g.circle(snap(cx), snap(cy), radius).stroke(BODY_RIM_SHADED);
+    function rimStrokeCircle(g, cx, cy, radius, style) {
+      g.circle(snap(cx), snap(cy), radius).stroke(style || BODY_RIM_SHADED);
     }
     // -------------------------------------------------------------------
 
-    const bodyTint = (mood) => {
+    // The colour a body of this mood is PAINTED in — the thing `paint()` then
+    // lights, not a multiplier laid over the result.
+    //
+    // `BODY_TINT` is the mood palette lifted to `SILHOUETTE_MIN_CONTRAST`
+    // (KI-028), and it is still a *tint*: the contrast floor was measured in
+    // `world/visuals.py` on `_rendered()`, "what the canvas actually shows: the
+    // base fill multiplied by the tint". So the colour that clears the floor is
+    // the PRODUCT, and that is what gets painted. Handing `paint()` the raw
+    // `BODY_TINT` entry instead would ship every body 1/0.816 = 1.23x brighter
+    // than the number `body_contrast()` asserts and a screenshot is compared
+    // back to — a measured quantity moved silently, which is exactly the shape
+    // of the defect KI-028 was.
+    //
+    // `MOOD_COLOR` is deliberately NOT what this reads. That map is the
+    // identity palette for chrome — labels, the gallery's mood swatch — and it
+    // is the pre-lift colour; reaching for it here is KI-028 reverted, which
+    // sinks fourteen of the twenty-two moods back under the floor.
+    //
+    // Unknown moods fall back to NEUTRAL *inside* the multiply. `neutral` is
+    // the live case, not a hypothetical: `character()` builds every figure at
+    // mood "neutral", which `visuals.MOOD_COLORS` does not claim, and
+    // returning the bare tint there would make un-mooded figures the brightest
+    // thing in the room.
+    function moodTint(mood) {
       const hex = BODY_TINT[mood];
       return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
-    };
+    }
+    function moodFill(mood) {
+      return mulHex(BODY_FILL, moodTint(mood));
+    }
+    // The same mood on the RIM's own albedo — not a lighter `moodFill`, but the
+    // second base colour the container tint used to multiply alongside the
+    // first. `BODY_RIM_FILL` is white, so this comes out as the lifted tint
+    // itself, i.e. `BODY_FILL`'s 0xd0 stretched to 0xff: the fixed
+    // rim-over-fill ratio `world/visuals.py` says lives "here and nowhere
+    // else", preserved by construction instead of by a number restated here.
+    function moodRim(mood) {
+      return mulHex(BODY_RIM.color, moodTint(mood));
+    }
 
     // Shared severity -> tier bands (mirror the overlay + world/state tiers) so
     // the "swell" reads the same on every surface: tier 0 barely stirs, tier 3
@@ -1558,9 +1683,14 @@
     // interchangeable: `accent.shadeFactor` (`1.35`, a multiplier) fed to
     // the room-light `shade()` would clamp to a full-strength mix toward
     // `LIGHT.warmth` instead of a gentle lighten. Kept as its own function
-    // under its own name rather than merged, so `applyTint`'s per-accent
+    // under its own name rather than merged, so `applyMood`'s per-accent
     // lighten and `paint`'s per-band light direction stay two independent
     // knobs.
+    //
+    // It is now applied to a body's own FILL rather than to a tint (Task 8),
+    // which is a rename of what it receives and not a change to what it does:
+    // the arm is a lighter version of whatever colour the torso is painted,
+    // and `paint()` lights both from the same lamp afterwards.
     function lightenTint(tint, factor) {
       const clamp = (v) => Math.max(0, Math.min(255, Math.round(v * factor)));
       return (clamp((tint >> 16) & 0xff) << 16)
@@ -1576,6 +1706,11 @@
     // "floor" was not the quantity anyone measures. Both are now done in
     // world/visuals.py against the rendered colour, and the answer arrives
     // precomputed in BODY_TINT (KI-028).
+    //
+    // Task 8 finished the same thought one step further along: the rendered
+    // colour is no longer something the GPU arrives at per pixel, it is what
+    // `moodFill()` computes and `paint()` is handed. Nothing on this page
+    // multiplies a mood over a drawn figure any more.
 
     // Faces are redrawn rather than tweened: a handful of primitives per mood
     // change is far cheaper than keeping a rig, and OBS renders in software.
@@ -1586,23 +1721,28 @@
       // exactly as the mood had them.
       char.face = { valence, arousal };
       char.blinkClosed = false;
-      const tint = bodyTint(mood);
+      const fill = moodFill(mood);
       char.visor.clear();
       if (char.faceKind === "machine") {
-        machineFace(char, valence, arousal, tint);
+        machineFace(char, valence, arousal, fill);
       } else {
         humanFace(char, valence, arousal);
       }
-      applyTint(char, tint);
+      applyMood(char, mood);
     }
 
     // A readout, not an expression: the same two axes, computed. Arousal lights
     // more of the LED; valence steps the mouth. No brows — a brow is a muscle.
-    function machineFace(char, valence, arousal, tint) {
-      // 0.14, not 0.35: the skull is a 0x545862 fill *tinted*, so it already
-      // renders at roughly a third of the mood colour — a 0.35 visor came out
-      // the same value as the head and was invisible on the real page.
-      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(lightenTint(tint, 0.14));
+    function machineFace(char, valence, arousal, fill) {
+      // 0.14, not 0.35: a dark inset of the head's own colour. The original
+      // number was picked when the skull was a 0x545862 fill being *tinted*,
+      // so it rendered at roughly a third of the mood colour and a 0.35 visor
+      // came out the same value as the head — invisible on the real page.
+      // KI-028 raised the base fill and this ticket replaced the tint with a
+      // paint, so the head now renders at ~0.82 of the mood colour and 0.14
+      // sits further below it than it ever did. Kept, deliberately: the visor
+      // reads as a recess, and moving it is an art call with no frame behind it.
+      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(lightenTint(fill, 0.14));
       machineEyes(char, arousal);
       char.browL.clear();
       char.browR.clear();
@@ -1670,11 +1810,44 @@
         .stroke({ width: 2.5, color: 0xd1d4dc });
     }
 
-    function applyTint(char, tint) {
-      char.body.tint = tint;
-      if (char.skull) char.skull.tint = tint;
+    // A mood, applied to every volume the figure is made of.
+    //
+    // This used to be three container-tint assignments — `char.body.tint =
+    // tint` and friends. A container tint is a shader multiply over pixels
+    // that have ALREADY been drawn, so once `paint()` started mixing the lit
+    // band toward `LIGHT.warmth` and the shade band toward `LIGHT.ambient`,
+    // the tint multiplied the room's own lamp along with the body. Every mood
+    // came out as the same figure under a differently coloured light, which is
+    // precisely why the gallery read as "the same figure, but red".
+    //
+    // Now the mood goes in as `paint()`'s own colour argument — the seam Task 6
+    // built and, until this ticket, only ever handed `BODY_FILL`. The lamp stays
+    // amber and the room stays cold in every mood; what changes is the colour
+    // they fall on. Nothing here writes `.tint` any more, on purpose.
+    // Takes the MOOD, not two colours. Both surfaces are derived here, in one
+    // place, because a call site that can pass a fill and forget a rim is a
+    // call site that eventually does: the first frame of this ticket shipped
+    // exactly that — bodies correctly re-lit, every silhouette outlined in the
+    // lamp's cream — and it was invisible to a test that drove this function
+    // with both colours already in hand. There is no argument left to omit.
+    //
+    // Both surfaces move together on the accents too: an arm's `shadeFactor`
+    // lightened its fill AND its rim before, because the container tint it was
+    // handed had already been lightened and was multiplied over both.
+    // Lightening only the fill leaves a bright arm inside a rim struck for a
+    // darker body.
+    function applyMood(char, mood) {
+      const fill = moodFill(mood);
+      const rim = moodRim(mood);
+      repaint(char.body, fill, rim);
+      if (char.skull) repaint(char.skull, fill, rim);
       for (const accent of char.accents) {
-        accent.tint = accent.shadeFactor ? lightenTint(tint, accent.shadeFactor) : tint;
+        const factor = accent.shadeFactor;
+        repaint(
+          accent,
+          factor ? lightenTint(fill, factor) : fill,
+          factor ? lightenTint(rim, factor) : rim,
+        );
       }
     }
 

@@ -63,7 +63,9 @@ def _js_const(source: str, name: str) -> str:
 def _shading_prelude(source: str) -> str:
     """Everything `seatedRig`/`BODIES.*` need to draw since KI-051
     (world.html, Sprint 16 Task 6): they now call `paint`, which calls
-    `shade`/`mixHex`, and draw their rim via `rimStroke`/`BODY_RIM_SHADED`.
+    `shade`/`mixHex`, and draw their rim via
+    `rimStyle`/`rimStroke`/`BODY_RIM_SHADED` (Task 8 put `rimStyle` between
+    `paint` and the stroke, so a mood can reach the rim's own albedo).
     Pulled from the real page source, not re-typed, for the reason every
     other driver in this file pulls `snap`/`CAST_SCALE` the same way: a
     second definition drifts from the first and stops proving anything about
@@ -86,6 +88,7 @@ def _shading_prelude(source: str) -> str:
         + _js_block(source, "const litRect = ") + "\n"
         + _js_block(source, "const litCircle = ") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
+        + _js_block(source, "function rimStyle(") + "\n"
         + _js_block(source, "function paint(") + "\n"
         + _js_block(source, "function rimStroke(") + "\n"
         + _js_block(source, "function rimStrokeCircle(") + "\n"

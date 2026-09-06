@@ -336,7 +336,13 @@ def test_a_character_does_not_sink_into_the_background():
     expression = re.search(
         r"function setExpression\(char, mood\) \{(.*?)\n    \}", body, re.S
     ).group(1)
-    assert "bodyTint(" in expression, "the table is injected but never applied"
+    # Task 8 renamed `bodyTint` to `moodFill`, because what it returns stopped
+    # being a tint: the mood is now the colour `paint()` lights (the product
+    # `visuals._rendered()` models) rather than a multiplier laid over an
+    # already-shaded figure. That the product is the RIGHT one is graded in
+    # node by `test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_
+    # multiplier`; this line only holds the wiring.
+    assert "moodFill(" in expression, "the table is injected but never applied"
     # The floor is the point, and it holds for every mood the room can show —
     # not just the two that happened to be on screen when it was measured.
     for mood in MOOD_COLORS:
@@ -915,10 +921,12 @@ def _js_block(source: str, opening: str) -> str:
 def _shading_prelude(source: str) -> str:
     """Everything `seatedRig`/`BODIES.*` need to draw since KI-051 (Task 6):
     they now call `paint`, which calls `shade`/`mixHex`, and draw their rim
-    via `rimStroke`/`BODY_RIM_SHADED`. Pulled from the real page rather than
-    re-typed, the same reason every driver in this file pulls `snap` from the
-    page instead of restating it - a second definition drifts from the first
-    and stops proving anything about the page that actually ships.
+    via `rimStyle`/`rimStroke`/`BODY_RIM_SHADED` (Task 8 put `rimStyle` between
+    `paint` and the stroke, so the mood can reach the rim's own albedo).
+    Pulled from the real page rather than re-typed, the same reason every
+    driver in this file pulls `snap` from the page instead of restating it - a
+    second definition drifts from the first and stops proving anything about
+    the page that actually ships.
     """
     return (
         _js_block(source, "function mixHex(") + "\n"
@@ -937,6 +945,7 @@ def _shading_prelude(source: str) -> str:
         + _js_block(source, "const litRect = ") + "\n"
         + _js_block(source, "const litCircle = ") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
+        + _js_block(source, "function rimStyle(") + "\n"
         + _js_block(source, "function paint(") + "\n"
         + _js_block(source, "function rimStroke(") + "\n"
         + _js_block(source, "function rimStrokeCircle(") + "\n"
@@ -4262,4 +4271,480 @@ def test_a_light_with_no_contact_block_degrades_instead_of_blanking_the_page():
     )
     assert abs(rest["dx"]) < 1e-9 and abs(rest["dy"]) < 1e-9, (
         "a contact-less LIGHT still threw a shadow somewhere"
+    )
+
+
+# --- Task 8: mood shifts the light, not the paint ---------------------------
+#
+# Until this ticket a mood was a PixiJS container tint set on an ALREADY-shaded
+# figure (`char.body.tint = tint`). A container tint is a shader multiply over
+# every pixel the container drew, so it did not only recolour the body: it
+# recoloured the light. `paint()`'s lit band mixes toward `LIGHT.warmth` and its
+# shade band toward `LIGHT.ambient`, and both of those came out multiplied by
+# the mood — an amber desk lamp that turned red when the market fell. That is
+# what made every mood read as "the same figure, but red".
+#
+# The seam Task 6 built for this is `paint(g, volume, tint)`'s third argument,
+# which until now only ever received `BODY_FILL`. The mood now goes in THERE, so
+# the room's lamp stays the room's lamp and what changes is the colour it falls
+# on.
+#
+# `BODY_TINT` (not `MOOD_COLOR`) stays the source: `world.visuals.body_tints()`
+# is the identity palette lifted to `SILHOUETTE_MIN_CONTRAST`, which is KI-028's
+# measured fix. But it is a *tint*, and the floor was measured on
+# `visuals._rendered()` — "what the canvas actually shows: the base fill
+# multiplied by the tint". So the colour a body is now painted with is that
+# product, computed once as a colour instead of per-pixel by the GPU. Handing
+# `paint()` the raw tint instead would ship every body 1/0.816 = 1.23x brighter
+# than the number `body_contrast()` asserts, i.e. silently move a measured
+# quantity on a ticket that must not.
+#
+# The RIM is the second half, and it is here because a frame caught it and these
+# tests did not. Dropping the container multiply also dropped it from the rim,
+# which `BODY_RIM_SHADED` computes once from the lamp over a white base — so the
+# first frame of this ticket outlined every figure in the lamp's cream #fbe5c8
+# (11,491 pixels, and most of a 14-unit arm), a die-cut sticker keyline, which
+# is the KI-051 read this sprint exists to remove. `world/visuals.py` names the
+# invariant that broke: the rim is brighter than the fill and "the ratio between
+# them is fixed here and nowhere else". The container tint was what held it. So
+# the mood now reaches each material's OWN albedo before the light —
+# `moodFill = BODY_FILL x tint`, `moodRim = BODY_RIM.color x tint` — and, because
+# the rim's base is white, `moodRim` comes out as the lifted tint itself: the
+# same ratio, by construction rather than by a number restated on the page.
+#
+# The tests missed it because `applyMood` used to take two colours and these
+# drivers supplied both, so the seam that could forget one was `setExpression`,
+# which no driver ran. `applyMood(char, mood)` now derives both itself; there is
+# no argument left to omit, and the mutation that reproduces the shipped bug
+# fails here.
+
+
+def _half_up(value: float) -> int:
+    """`Math.round`, for the non-negative channel values here.
+
+    Python's `round` is banker's (`round(0.5) == 0`) and JS's is half-up
+    (`Math.round(0.5) === 1`). Channel products land exactly on .5 often
+    enough that reusing `round` here would produce a one-mood mismatch that
+    looks like a flake and is really a rounding-mode bug in the test.
+    """
+    return int(value + 0.5)
+
+
+def _mul_channels(a: tuple, b: tuple) -> tuple:
+    """`base x tint / 255` — `visuals._rendered`, quantised to what ships."""
+    return tuple(_half_up(a[i] * b[i] / 255) for i in range(3))
+
+
+def _mix_channels(a: tuple, b: tuple, t: float) -> tuple:
+    """`mixHex` in Python. Independent of the page, by design."""
+    return tuple(_half_up(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _rgb(value) -> tuple:
+    if isinstance(value, str):
+        value = int(value.lstrip("#"), 16)
+    return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+
+
+def _int(rgb: tuple) -> int:
+    return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
+
+
+def _page_face_moods(source: str) -> set:
+    """Every mood the cast can actually be put into — the keys of the page's
+    own `FACE` table, which is what `setExpression` is called with."""
+    face = _js_block(source, "const FACE = {")
+    return set(re.findall(r"^\s*(\w+):\s*\{", face, re.M))
+
+
+def _mood_fill_driver(source: str, mood_fill: str, emit: str) -> str:
+    return (
+        _js_const(source, "MOOD_COLOR")
+        + _js_const(source, "NEUTRAL")
+        + _js_const(source, "BODY_TINT")
+        + _js_const(source, "BODY_FILL")
+        + _js_const(source, "BODY_RIM")
+        + _js_block(source, "function mulHex(")
+        + "\n"
+        + _js_block(source, "function moodTint(")
+        + "\n"
+        + mood_fill
+        + "\n"
+        + _js_block(source, "function moodRim(")
+        + "\n"
+        + emit
+    )
+
+
+@needs_node
+def test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_multiplier():
+    """The mood's body colour is `BODY_FILL x BODY_TINT[mood]` — the product
+    `visuals._rendered()` names as "what the canvas actually shows", and the
+    exact quantity `SILHOUETTE_MIN_CONTRAST` was measured on (KI-028).
+
+    Driven for real in node over every mood in the page's own table and
+    compared against a product computed here from `visuals.BODY_BASE_FILL`
+    and `visuals.body_tint()`, not against a copy of the page's arithmetic.
+    Two mutations follow, and each one is a bug that has a name.
+    """
+    from world.visuals import (
+        BODY_BASE_FILL,
+        BODY_RIM_FILL,
+        MOOD_COLORS,
+        body_tint,
+    )
+
+    source = _world_source()
+    mood_fill = _js_block(source, "function moodFill(")
+    emit = (
+        "const out = {};\n"
+        "for (const mood of Object.keys(BODY_TINT)) {\n"
+        "  out[mood] = { fill: moodFill(mood), rim: moodRim(mood) };\n"
+        "}\n"
+        'const u = "no-such-mood-was-ever-emitted";\n'
+        'out["__unknown__"] = { fill: moodFill(u), rim: moodRim(u) };\n'
+        "console.log(JSON.stringify(out));\n"
+    )
+    emitted = _run_node(_mood_fill_driver(source, mood_fill, emit))
+
+    base = _rgb(BODY_BASE_FILL)
+    rim_base = _rgb(BODY_RIM_FILL)
+    expected = {
+        mood: _int(_mul_channels(base, _rgb(body_tint(mood))))
+        for mood in MOOD_COLORS
+    }
+    expected_rim = {
+        mood: _int(_mul_channels(rim_base, _rgb(body_tint(mood))))
+        for mood in MOOD_COLORS
+    }
+    for mood, want in expected.items():
+        assert emitted[mood]["fill"] == want, (
+            f"moodFill({mood!r}) = {emitted[mood]['fill']:#08x}, expected "
+            f"{want:#08x} — the page is not shipping BODY_FILL x BODY_TINT[mood]"
+        )
+        # The rim is a SECOND base colour carrying the same mood, not a
+        # decoration: `visuals` says the rim-over-fill ratio "is fixed here and
+        # nowhere else", and the container tint used to be what held it. Losing
+        # it outlines every figure in the lamp's cream — measured at 11,491
+        # keyline pixels on this ticket's first frame.
+        assert emitted[mood]["rim"] == expected_rim[mood], (
+            f"moodRim({mood!r}) = {emitted[mood]['rim']:#08x}, expected "
+            f"{expected_rim[mood]:#08x} — the mood is not reaching the rim's "
+            "own albedo"
+        )
+    # An unknown mood must still resolve THROUGH the multiply on BOTH surfaces,
+    # or every un-mooded figure in the room gets brighter than every mooded one.
+    neutral_tint = int(
+        re.search(r"const NEUTRAL = (0x[0-9a-fA-F]+);", source).group(1), 16
+    )
+    assert emitted["__unknown__"]["fill"] == _int(
+        _mul_channels(base, _rgb(neutral_tint))
+    ), (
+        "an unknown mood skipped the multiply — the neutral fallback must be "
+        "the neutral FILL, not the neutral tint"
+    )
+    assert emitted["__unknown__"]["rim"] == _int(
+        _mul_channels(rim_base, _rgb(neutral_tint))
+    ), "an unknown mood's rim skipped the multiply"
+
+    # Mutation 1: hand `paint()` the raw tint (the shape the brief's own text
+    # suggests). Every mood ships ~1.23x brighter than the measured number.
+    raw = mood_fill.replace("mulHex(BODY_FILL, moodTint(mood))", "moodTint(mood)")
+    assert raw != mood_fill, "the multiply mutation did not change the source"
+    broken = _run_node(_mood_fill_driver(source, raw, emit))
+    assert any(broken[m]["fill"] != expected[m] for m in expected), (
+        "dropping the BODY_FILL multiply still produced the measured colours — "
+        "this assertion would not notice a body 1.23x brighter than KI-028's "
+        "own arithmetic"
+    )
+
+    # Mutation 2: read the raw identity palette instead of the lifted one.
+    # This is KI-028 itself, reverted: `MOOD_COLORS` is the palette BEFORE the
+    # contrast lift, so bodies sink back into the room.
+    mood_tint = _js_block(source, "function moodTint(")
+    reverted = mood_tint.replace("BODY_TINT[mood]", "MOOD_COLOR[mood]")
+    assert reverted != mood_tint, "the palette mutation did not change the source"
+    sunk = _run_node(
+        _mood_fill_driver(source, mood_fill, emit).replace(mood_tint, reverted)
+    )
+    assert any(sunk[m]["fill"] != expected[m] for m in expected), (
+        "swapping BODY_TINT for the un-lifted MOOD_COLOR changed nothing — "
+        "the page is not reading the contrast-lifted table at all"
+    )
+    from world.visuals import PALETTE, SILHOUETTE_MIN_CONTRAST, contrast_ratio
+
+    room = _rgb(PALETTE["bg"])
+    below = [
+        m for m in expected
+        if contrast_ratio(_rgb(sunk[m]["fill"]), room) < SILHOUETTE_MIN_CONTRAST
+    ]
+    assert below, (
+        "reverting to MOOD_COLOR left every mood above the contrast floor, so "
+        "this test cannot tell the lifted table from the raw one"
+    )
+
+
+@needs_node
+def test_every_mood_the_cast_can_wear_resolves_to_a_body_colour():
+    """The registry invariant, in the shape the reaction registries use: a mood
+    the world can emit but the cast cannot paint is a silent grey figure.
+
+    Graded against `BODY_TINT`'s own key set — deliberately NOT `MOOD_COLOR`'s.
+    They hold the same moods, but only one of them is the contrast-lifted table
+    KI-028 resolved, and pointing this invariant at the other one is how that
+    fix gets quietly reverted by a test.
+
+    `neutral` is the one mood in `FACE` with no entry, and that is on purpose:
+    it is `character()`'s pre-mood default and `visuals.MOOD_COLORS` does not
+    claim it. It has to resolve to the neutral FILL rather than to `undefined`,
+    which is checked by running it.
+    """
+    from world.visuals import MOOD_COLORS
+
+    source = _world_source()
+    table = json.loads(re.search(r"const BODY_TINT = (\{.*?\});", source).group(1))
+    assert set(table) == set(MOOD_COLORS), (
+        "the page's body-colour table and world.visuals.MOOD_COLORS disagree: "
+        f"page-only {sorted(set(table) - set(MOOD_COLORS))}, "
+        f"module-only {sorted(set(MOOD_COLORS) - set(table))}"
+    )
+
+    face_moods = _page_face_moods(source)
+    assert face_moods, "the page no longer declares a FACE table"
+    assert face_moods - set(table) == {"neutral"}, (
+        "a mood the cast can be put into has no body colour of its own: "
+        f"{sorted(face_moods - set(table) - {'neutral'})}"
+    )
+
+    mood_fill = _js_block(source, "function moodFill(")
+    emit = (
+        f"const moods = {json.dumps(sorted(face_moods))};\n"
+        "const out = {};\n"
+        "for (const mood of moods) {\n"
+        "  out[mood] = { fill: moodFill(mood), rim: moodRim(mood) };\n"
+        "}\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    emitted = _run_node(_mood_fill_driver(source, mood_fill, emit))
+    for mood in sorted(face_moods):
+        for surface in ("fill", "rim"):
+            value = emitted[mood][surface]
+            assert isinstance(value, int) and 0 <= value <= 0xFFFFFF, (
+                f"moodFill/{surface} for {mood!r} returned {value!r}, not a "
+                "colour — this mood renders as whatever PixiJS does with a "
+                "non-colour"
+            )
+
+    # Mutation: remove the fallback. `neutral` has no table entry, so it is the
+    # mood that proves the fallback is real rather than decorative.
+    mood_tint = _js_block(source, "function moodTint(")
+    unguarded = mood_tint.replace(": NEUTRAL", ": NaN")
+    assert unguarded != mood_tint, "the fallback mutation did not change the source"
+    broken = _run_node(
+        _mood_fill_driver(source, mood_fill, emit).replace(mood_tint, unguarded)
+    )
+    assert broken["neutral"] != emitted["neutral"], (
+        "breaking the unknown-mood fallback left `neutral` unchanged — nothing "
+        "here would notice an un-mooded figure losing its colour"
+    )
+
+
+def _mood_paint_driver(source: str, apply_block: str, repaint_block: str) -> str:
+    """The real shading rig, plus Graphics recorders that also trap `tint`.
+
+    The trap is the point: the defect this ticket removes is invisible to a
+    fill recorder (the fills never change, the GPU does the recolouring), so
+    the test has to be able to see a container tint being written.
+    """
+    return (
+        "const PLATE = null;\n"
+        + _js_const(source, "MOOD_COLOR")
+        + _js_const(source, "NEUTRAL")
+        + _js_const(source, "BODY_TINT")
+        + _js_const(source, "BODY_FILL")
+        + _js_const(source, "BODY_RIM")
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + _shading_prelude(source)
+        + _js_block(source, "function mulHex(")
+        + "\n"
+        + _js_block(source, "function moodTint(")
+        + "\n"
+        + _js_block(source, "function moodFill(")
+        + "\n"
+        + _js_block(source, "function moodRim(")
+        + "\n"
+        + _js_block(source, "function lightenTint(")
+        + "\n"
+        + repaint_block
+        + "\n"
+        + apply_block
+        + "\n"
+        + """
+        function makeG() {
+          const g = { fills: [], strokes: [], cleared: 0, tintWrites: [] };
+          g.roundRect = () => g;
+          g.circle = () => g;
+          g.fill = (c) => { g.fills.push(c); return g; };
+          g.stroke = (s) => { g.strokes.push(s); return g; };
+          g.clear = () => { g.cleared++; g.fills = []; g.strokes = []; return g; };
+          Object.defineProperty(g, "tint", {
+            get() { return 0xffffff; },
+            set(v) { g.tintWrites.push(v); },
+          });
+          return g;
+        }
+        const body = makeG(), skull = makeG(), arm = makeG();
+        arm.shadeFactor = 1.35;
+        // The figure's chest, the shared skull, and one of its arms - three
+        // real call sites, copied from BODIES.figure/character().
+        paint(body, litRect(-33, -128, 66, 54, 22), BODY_FILL);
+        paint(skull, litCircle(0, 0, 28), BODY_FILL);
+        paint(arm, litRect(-7, -5, 14, 66, 7), BODY_FILL);
+        const rims = (g) => g.strokes.map((s) => (s && s.color) ?? null);
+        const snapshot = () => ({
+          body: body.fills.slice(), bodyRim: rims(body),
+          skull: skull.fills.slice(), skullRim: rims(skull),
+          arm: arm.fills.slice(), armRim: rims(arm),
+        });
+        const built = snapshot();
+        const char = { body, skull, accents: [arm] };
+        applyMood(char, "dejected");
+        const dejected = snapshot();
+        applyMood(char, "elated");
+        const elated = snapshot();
+        console.log(JSON.stringify({
+          built, dejected, elated,
+          tintWrites: body.tintWrites.concat(skull.tintWrites, arm.tintWrites),
+          cleared: body.cleared,
+        }));
+        """
+    )
+
+
+@needs_node
+def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
+    """The call-site change, graded on the colours that actually reach
+    `g.fill()` and `g.stroke()`.
+
+    Runs the page's real `applyMood` over the page's real `paint`, and
+    checks the three bands of a body against band colours computed here from
+    `visuals` and the plate's measured `LIGHT` — so the lit band has to be the
+    mood mixed toward the LAMP's amber and the shade band the mood mixed
+    toward the ROOM's cold ambient. Under the old container tint those two
+    were the lamp and the room multiplied by the mood, and no colour a fill
+    recorder saw ever changed at all.
+    """
+    from world.visuals import BODY_BASE_FILL, BODY_RIM_FILL, body_tint
+
+    source = _world_source()
+    light = json.loads(re.search(r"const LIGHT = (\{.*\});", source).group(1))
+    apply_block = _js_block(source, "function applyMood(")
+    repaint_block = _js_block(source, "function repaint(")
+    emitted = _run_node(_mood_paint_driver(source, apply_block, repaint_block))
+
+    base = _rgb(BODY_BASE_FILL)
+    warmth, ambient = _rgb(light["warmth"]), _rgb(light["ambient"])
+    ramp = light["ramp"]
+
+    def bands(fill: tuple) -> list:
+        """`paint()`'s three fills, in the order it draws them."""
+        out = []
+        for rung in ("shade", "base", "lit"):
+            level = ramp[rung]
+            toward = warmth if level >= 0 else ambient
+            out.append(_int(_mix_channels(fill, toward, min(1, abs(level)))))
+        return out
+
+    def lighten(fill: tuple, factor: float) -> tuple:
+        return tuple(max(0, min(255, _half_up(c * factor))) for c in fill)
+
+    def rim_of(fill: tuple) -> int:
+        """A rim is the lit edge: the same base colour at `rampLevel("lit")`."""
+        return _int(_mix_channels(fill, warmth, min(1, abs(ramp["lit"]))))
+
+    for mood in ("dejected", "elated"):
+        tint = _rgb(body_tint(mood))
+        fill = _mul_channels(base, tint)
+        rim = _mul_channels(_rgb(BODY_RIM_FILL), tint)
+        assert emitted[mood]["bodyRim"] == [rim_of(rim)], (
+            f"the {mood} body's rim is {emitted[mood]['bodyRim']}, expected "
+            f"[{rim_of(rim):#08x}] — the mood must reach the rim's own albedo, "
+            "or every figure is outlined in the lamp's cream"
+        )
+        assert emitted[mood]["armRim"] == [rim_of(lighten(rim, 1.35))], (
+            f"the {mood} arm's rim did not follow its own lightened fill"
+        )
+        assert emitted[mood]["body"] == bands(fill), (
+            f"the {mood} body's bands are {[hex(c) for c in emitted[mood]['body']]}, "
+            f"expected {[hex(c) for c in bands(fill)]} — the mood is not what "
+            "paint() is lighting"
+        )
+        assert emitted[mood]["skull"] == bands(fill), (
+            f"the {mood} skull did not follow its body — a flat sticker head "
+            "on a lit figure is the KI-051 defect, one volume up"
+        )
+        assert emitted[mood]["arm"] == bands(lighten(fill, 1.35)), (
+            f"the {mood} arm lost its shadeFactor lighten — the figure's arms "
+            "read as part of the torso at rest again"
+        )
+
+    # No container tint anywhere. The one assertion the old code fails.
+    assert emitted["tintWrites"] == [], (
+        f"a mood was still written as a container tint ({emitted['tintWrites']}) "
+        "— that multiplies the room's own lamp by the mood"
+    )
+    # The mood must actually have moved the paint, and the repaint must
+    # REPLACE the construction fills rather than stack a second set on top.
+    assert emitted["built"]["body"] != emitted["dejected"]["body"], (
+        "the mood change left the body painted in the un-mooded BODY_FILL"
+    )
+    assert emitted["dejected"]["body"] != emitted["elated"]["body"], (
+        "two different moods painted the body the same colour"
+    )
+    assert len(emitted["elated"]["body"]) == len(emitted["built"]["body"]), (
+        "a repaint left more fills on the body than paint() drew — the bands "
+        "are stacking rather than being redrawn"
+    )
+    assert emitted["cleared"] >= 2, "the body was repainted without being cleared"
+    assert emitted["dejected"]["bodyRim"] != emitted["elated"]["bodyRim"], (
+        "two different moods struck the same rim colour — this is the cream "
+        "keyline this ticket's first frame shipped, before it was looked at"
+    )
+
+    # Mutation 1: the bug this ticket actually shipped and a frame caught.
+    # Strike the rim from its own un-mooded constant instead of from the mood,
+    # and every figure is outlined in the lamp's cream regardless of colour.
+    keyline = apply_block.replace("const rim = moodRim(mood);",
+                                  "const rim = BODY_RIM.color;")
+    assert keyline != apply_block, "the keyline mutation did not apply"
+    outlined = _run_node(_mood_paint_driver(source, keyline, repaint_block))
+    assert outlined["dejected"]["bodyRim"] == outlined["elated"]["bodyRim"], (
+        "dropping the mood from the rim did not collapse the rim colours — "
+        "the keyline assertion above is not load-bearing"
+    )
+
+    # Mutation 2: put the container tint back. This is the pre-ticket code.
+    tinted = apply_block.replace(
+        "repaint(char.body, fill, rim);", "char.body.tint = fill;"
+    )
+    assert tinted != apply_block, "the container-tint mutation did not apply"
+    broken = _run_node(_mood_paint_driver(source, tinted, repaint_block))
+    assert broken["tintWrites"] != [] and (
+        broken["dejected"]["body"] == broken["built"]["body"]
+    ), (
+        "restoring `char.body.tint = fill` produced the same result as "
+        "repainting — these assertions cannot see the defect this ticket "
+        "exists to remove"
+    )
+
+    # Mutation 3: repaint without clearing. Bands stack instead of replacing.
+    stacking = repaint_block.replace("g.clear();", "")
+    assert stacking != repaint_block, "the clear mutation did not apply"
+    stacked = _run_node(_mood_paint_driver(source, apply_block, stacking))
+    assert len(stacked["elated"]["body"]) != len(emitted["elated"]["body"]), (
+        "dropping g.clear() from repaint changed nothing observable — the "
+        "stacking check is not load-bearing"
     )
