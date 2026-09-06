@@ -59,6 +59,12 @@ class PlateManifest:
     bands: dict
     spare_tubes: tuple[dict, ...] = field(default=())
     light: dict = field(default_factory=dict)
+    # Sprint 16 Task 9: where text is allowed to sit. `text_surfaces` is the
+    # measured places the plate actually has (a plinth, a desk plate) — NOT
+    # the two bands, which `world.text_layout` derives from `bands` + canvas
+    # instead of restating. `text` is the placements, each naming one surface.
+    text_surfaces: tuple[dict, ...] = field(default=())
+    text: tuple[dict, ...] = field(default=())
 
     def as_dict(self) -> dict:
         return {
@@ -73,6 +79,8 @@ class PlateManifest:
             "glow": [dict(glow) for glow in self.glow],
             "bands": dict(self.bands),
             "light": dict(self.light),
+            "text_surfaces": [dict(s) for s in self.text_surfaces],
+            "text": [dict(t) for t in self.text],
         }
 
     def characters(self) -> dict[str, dict]:
@@ -126,6 +134,8 @@ def load_manifest(path: Path | None = None) -> PlateManifest | None:
             glow=tuple(raw.get("glow", ())),
             bands=dict(raw.get("bands", {})),
             light=dict(raw.get("light", {})),
+            text_surfaces=tuple(raw.get("text_surfaces", ())),
+            text=tuple(raw.get("text", ())),
         )
     except FileNotFoundError:
         logger.warning("plate manifest missing", extra={"path": str(path)})
