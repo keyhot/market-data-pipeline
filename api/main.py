@@ -52,7 +52,7 @@ from storage.writes import (
     write_news,
     write_price_bars,
 )
-from world import light, monitors, reactions, visuals
+from world import light, monitors, reactions, text_layout, visuals
 from world.plate import load_manifest, watchlist_disagreements
 from world.reactions import attach_reactions
 from world.renderer_health import record_beat, renderer_status
@@ -811,6 +811,7 @@ def world_page():
                 "__SYMBOLS__": json.dumps(deduped),
                 "__PLATE_JSON__": json.dumps(manifest.as_dict() if manifest else None),
                 "__LIGHT_JSON__": light.as_json(light.light_for(manifest)),
+                "__TEXT_JSON__": text_layout.as_json(manifest),
             },
         )
     )
