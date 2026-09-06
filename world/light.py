@@ -37,7 +37,20 @@ DEFAULT_LIGHT = LightModel(
     # A flat ramp is the honest neutral: no block means no measured light, and
     # inventing a direction would put shadows on the wrong side of the room.
     ramp={"lit": 0.0, "base": 0.0, "shade": 0.0},
-    contact={"opacity": 0.0, "widthScale": 1.0, "height": 0},
+    # `height: 0` is the same rule as the flat ramp — no measurement, so no
+    # invented direction: with no throw the page draws the centred contact
+    # patch it drew before there was a light model at all.
+    #
+    # `opacity` is NOT zero, and that is deliberate. What the neutral default
+    # withholds is the *direction*, not the shadow. A contact shadow is the
+    # only thing telling a viewer where the floor is, and the room that
+    # reaches this default is the procedural fallback — the one that has
+    # already lost its painting and can least afford a cast floating in front
+    # of nothing (KI-045/KI-047). 0.55 is what the page drew for that room
+    # before Sprint 16 measured this plate's floor; a plate that genuinely
+    # wants no contact shadow says so by measuring `opacity: 0`, which is a
+    # statement and reaches the page intact.
+    contact={"opacity": 0.55, "widthScale": 1.0, "height": 0},
 )
 
 

@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
+from world.light import DEFAULT_LIGHT, as_json
 
 client = TestClient(app)
 
@@ -3932,3 +3933,333 @@ def test_a_light_without_a_ramp_degrades_instead_of_blanking_the_page():
         "band must fall back to the volume's own flat colour"
     )
     assert e["shapes"] == 4, "paint must still draw three bands and a rim"
+
+
+# --- P7: the shadow is cast, not pooled ------------------------------------
+#
+# The brief's three checks for this ticket were `"LIGHT.direction" in body`,
+# `"LIGHT.contact" in body` and `"lift" in body` over the whole `shadowTick`
+# block — each satisfied by a comment or a dead branch, which is the fifth
+# such test this sprint has found and rewritten. These drive the real
+# `shadowTick` in node against a fake `char` and compare the numbers it
+# writes to values computed here from the page's own `LIGHT`, then
+# mutation-check that the comparison is load-bearing.
+
+
+def _shadow_driver(source: str, body: str, *, light: dict | None = None,
+                   tick: str | None = None) -> str:
+    """The page's real contact-shadow arithmetic, lifted out and run in node.
+
+    `light` substitutes a stand-in `LIGHT` (an unmeasured room, or a lamp
+    twice as high) in place of the page's own; `tick` substitutes a mutated
+    `shadowTick` body, which is how these assertions prove they can fail.
+    """
+    return (
+        (f"const LIGHT = {json.dumps(light)};\n" if light is not None
+         else _js_const(source, "LIGHT"))
+        + _js_block(source, "function keyAxis(") + "\n"
+        + _js_const(source, "KEY_AXIS")
+        + _js_block(source, "function contactLight(") + "\n"
+        + _js_const(source, "CONTACT")
+        + _js_const(source, "SHADOW_ASPECT")
+        + _js_const(source, "SHADOW_THROW")
+        + (tick if tick is not None else _js_block(source, "function shadowTick("))
+        + "\n"
+        + """
+        // A body's whole contact with this function: where it stands, how far
+        // off the floor it is, and how wide its own patch is. Nothing else in
+        // `character()` is involved, so nothing else is stubbed.
+        function fakeChar(lift) {
+          return {
+            baseY: 400, shadowW: 34,
+            container: { x: 200, y: 400 - lift },
+            shadow: { x: 0, y: 0, width: 0, height: 0, alpha: 0 },
+          };
+        }
+        function run(lift) {
+          const c = fakeChar(lift || 0);
+          shadowTick(c);
+          return {
+            dx: c.shadow.x - c.container.x,
+            dy: c.shadow.y - (c.baseY + 3),
+            width: c.shadow.width, height: c.shadow.height,
+            alpha: c.shadow.alpha,
+            // The edge nearest the lamp: the one thing a cast shadow must
+            // not move, or it stops touching the foot it belongs to.
+            lampEdgeX: c.shadow.x + c.shadow.width / 2,
+            lampEdgeY: c.shadow.y - c.shadow.height / 2,
+          };
+        }
+        """
+        + body
+    )
+
+
+def _page_light(source: str) -> dict:
+    match = re.search(r"const LIGHT = (\{.*\});", source)
+    assert match, "the page no longer declares a one-line const LIGHT"
+    return json.loads(match.group(1))
+
+
+@needs_node
+def test_the_contact_shadow_is_thrown_away_from_the_lamp():
+    """A shadow centred under a figure the room lights hard from one side is a
+    puddle, and a puddle is the loudest "pasted on" cue in the before-frame.
+
+    `-KEY_AXIS` is where the lamp is — it is the direction every lit band
+    slides in (`litCircle`'s `slide * -KEY_AXIS[i]`), and
+    `test_every_band_is_drawn_on_the_lamp_side_of_its_volume` pins that it
+    points up and to the right. So a shadow goes the OTHER way, `+KEY_AXIS`.
+    The plan's own snippet had this backwards (it subtracted
+    `LIGHT.direction`, which throws the shadow back under the lamp), which is
+    why this is asserted on the real displacement rather than on the presence
+    of the string `LIGHT.direction`.
+    """
+    source = _world_source()
+    emitted = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0), axis: KEY_AXIS }));"
+    ))
+    ux, uy = -emitted["axis"][0], -emitted["axis"][1]
+    assert ux > 0 and uy < 0, (
+        f"the key axis no longer points up and to the right: ({ux}, {uy}) - "
+        "this test's premise is the painted lamp's measured position"
+    )
+    rest = emitted["rest"]
+    dx, dy = rest["dx"], rest["dy"]
+    assert (dx * dx + dy * dy) ** 0.5 > 1.0, (
+        f"the shadow is displaced ({dx:+.3f}, {dy:+.3f}) - it still sits on "
+        "the figure's own centre, which is the puddle this ticket is about"
+    )
+    assert dx * ux < 0 and dy * uy < 0, (
+        f"the shadow is displaced ({dx:+.2f}, {dy:+.2f}), which moves it "
+        f"TOWARD the lamp at ({ux:+.2f}, {uy:+.2f}) on at least one axis - "
+        "the sign is inverted and every figure is lit from behind its own "
+        "shadow"
+    )
+
+    # Mutation: throw it toward the lamp instead. If these assertions still
+    # pass, they are not reading the sign.
+    block = _js_block(source, "function shadowTick(")
+    mutated = block.replace("KEY_AXIS[0] *", "-KEY_AXIS[0] *").replace(
+        "KEY_AXIS[1] *", "-KEY_AXIS[1] *"
+    )
+    assert mutated != block, "the mutation did not change the source"
+    broken = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", tick=mutated
+    ))["rest"]
+    assert not (broken["dx"] * ux < 0 and broken["dy"] * uy < 0), (
+        "throwing the shadow toward the lamp still satisfied the away-from-"
+        "the-lamp assertion - it would not catch an inverted sign"
+    )
+
+
+@needs_node
+def test_the_throw_is_the_measured_lamp_height_and_nothing_else():
+    """`LIGHT.contact.height` is the plate's own measurement of how far this
+    room throws a shadow, so doubling it must double the throw and zeroing it
+    must give the centred patch back — an unmeasured room gets no invented
+    direction, which is the same rule `DEFAULT_LIGHT` states in Python.
+
+    Driven against the page's own `LIGHT` and two edits of it, so the
+    measured values stay under test instead of being restated here.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    assert light["contact"]["height"] > 0, (
+        "the shipped plate measures no contact height - this test's premise "
+        "is that it does"
+    )
+
+    def throw(**contact):
+        edited = json.loads(json.dumps(light))
+        edited["contact"].update(contact)
+        rest = _run_node(_shadow_driver(
+            source, "console.log(JSON.stringify({ rest: run(0) }));", light=edited
+        ))["rest"]
+        return (rest["dx"] ** 2 + rest["dy"] ** 2) ** 0.5
+
+    base = throw()
+    doubled = throw(height=light["contact"]["height"] * 2)
+    assert 1.98 < doubled / base < 2.02, (
+        f"doubling the measured lamp height scaled the throw by "
+        f"{doubled / base:.3f}x, not 2x - the offset is not the measurement"
+    )
+    assert throw(height=0) < 1e-9, (
+        "a plate that measures no throw still displaced its shadow - the "
+        "offset carries a constant of its own"
+    )
+
+
+@needs_node
+def test_the_shadow_still_touches_the_foot_that_casts_it():
+    """The throw moves the shadow AND grows it, so its lamp-side edge stays
+    exactly where the foot is and only the far edge travels. Offsetting alone
+    would walk the whole ellipse off the feet, and a shadow that no longer
+    touches the body reads as a second figure rather than a grounded one -
+    the failure this ticket would most easily trade for the one it fixes.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    no_throw = json.loads(json.dumps(light))
+    no_throw["contact"]["height"] = 0
+
+    thrown = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));"
+    ))["rest"]
+    centred = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", light=no_throw
+    ))["rest"]
+
+    grew = (thrown["width"] > centred["width"]
+            and thrown["height"] > centred["height"])
+    assert grew, (
+        "the thrown shadow is no bigger than the centred one - it was moved "
+        "without being stretched, so it has left the feet behind"
+    )
+    assert abs(thrown["lampEdgeX"] - centred["lampEdgeX"]) < 1e-9, (
+        f"the lamp-side edge moved from {centred['lampEdgeX']:.4f} to "
+        f"{thrown['lampEdgeX']:.4f} - the shadow no longer starts at the foot"
+    )
+    assert abs(thrown["lampEdgeY"] - centred["lampEdgeY"]) < 1e-9, (
+        f"the lamp-side edge moved from {centred['lampEdgeY']:.4f} to "
+        f"{thrown['lampEdgeY']:.4f} - the shadow no longer starts at the foot"
+    )
+
+    # Mutation: move without growing. The edge check is the only assertion
+    # here that can see it.
+    block = _js_block(source, "function shadowTick(")
+    mutated = re.sub(r" \+ 2 \* Math\.abs\(throw[XY]\)", "", block)
+    assert mutated != block, "the mutation did not change the source"
+    broken = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", tick=mutated
+    ))["rest"]
+    assert abs(broken["lampEdgeX"] - centred["lampEdgeX"]) > 1e-6, (
+        "a shadow that slid without stretching still kept its lamp-side edge "
+        "- this assertion cannot see the failure it exists for"
+    )
+
+
+@needs_node
+def test_the_shadow_is_as_dark_and_as_wide_as_the_plate_measured():
+    """0.55 was tuned against the old dark canvas; this floor is painted.
+    Opacity and width both come from `LIGHT.contact` now, compared against
+    the manifest's own numbers rather than against a copy of them.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    block = _js_block(source, "function shadowTick(")
+    assert "0.55" not in block, (
+        "shadowTick still carries the hardcoded alpha tuned for the old "
+        "dark canvas"
+    )
+    rest = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));"
+    ))["rest"]
+    assert rest["alpha"] == pytest.approx(light["contact"]["opacity"]), (
+        f"a resting shadow drew at alpha {rest['alpha']} - the plate measures "
+        f"{light['contact']['opacity']}"
+    )
+    # 34 is `SHADOW_WIDTH.bars`, which `fakeChar` hands in; the width scale is
+    # the manifest's. The throw widens it further, so this is a floor.
+    assert rest["width"] >= 34 * 2 * light["contact"]["widthScale"] - 1e-9, (
+        f"a resting shadow drew {rest['width']:.2f} wide - narrower than the "
+        f"measured widthScale {light['contact']['widthScale']} allows"
+    )
+    assert light["contact"]["widthScale"] != 1.0, (
+        "the plate measures widthScale 1.0, so the assertion above proves "
+        "nothing about whether the page reads it"
+    )
+
+
+@needs_node
+def test_the_shadow_still_spreads_and_fades_as_a_figure_leaves_the_floor():
+    """The one behaviour of the old `shadowTick` that was already right, and
+    the one a rewrite would silently drop: height off the floor spreads a
+    shadow and thins it. Without it a jump is a body sliding up the screen.
+    """
+    source = _world_source()
+    emitted = _run_node(_shadow_driver(
+        source,
+        "console.log(JSON.stringify({ down: run(0), up: run(100) }));",
+    ))
+    down, up = emitted["down"], emitted["up"]
+    assert up["width"] > down["width"] and up["height"] > down["height"], (
+        f"a figure 100 units off the floor cast a {up['width']:.1f}-wide "
+        f"shadow against {down['width']:.1f} on the floor - it does not spread"
+    )
+    assert up["alpha"] < down["alpha"], (
+        f"a lifted figure's shadow drew at alpha {up['alpha']:.3f} against "
+        f"{down['alpha']:.3f} on the floor - it does not fade"
+    )
+
+    block = _js_block(source, "function shadowTick(")
+    mutated = block.replace(
+        "const lift = Math.max(0, char.baseY - char.container.y);",
+        "const lift = 0;",
+    )
+    assert mutated != block, "the mutation did not change the source"
+    broken = _run_node(_shadow_driver(
+        source,
+        "console.log(JSON.stringify({ down: run(0), up: run(100) }));",
+        tick=mutated,
+    ))
+    assert broken["up"] == broken["down"], (
+        "a shadowTick that ignores lift still passed - these assertions do "
+        "not read the lift response"
+    )
+
+
+@needs_node
+def test_an_unmeasured_room_still_puts_a_shadow_under_its_cast():
+    """The procedural fallback room has no plate and therefore no measured
+    lamp, so `light_for` hands the page `DEFAULT_LIGHT`. That default must
+    still ground the cast: a shadow is the only thing telling a viewer where
+    the floor is, and the room that has lost its painting is the last one
+    that can afford figures floating in front of nothing (KI-045/KI-047).
+
+    What the neutral default withholds is the DIRECTION, not the shadow -
+    with `height: 0` the throw is zero, so the fallback gets the centred
+    patch it had before this ticket rather than a made-up cast direction.
+    `DEFAULT_LIGHT` is imported rather than retyped, so this cannot drift
+    from what `world/light.py` actually serves.
+    """
+    source = _world_source()
+    neutral = json.loads(as_json(DEFAULT_LIGHT))
+    rest = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", light=neutral
+    ))["rest"]
+    assert rest["alpha"] > 0, (
+        "a room with no measured light drew its cast with alpha 0 - every "
+        "figure in the fallback room floats"
+    )
+    assert rest["width"] > 0 and rest["height"] > 0, (
+        "a room with no measured light drew a zero-sized shadow"
+    )
+    assert abs(rest["dx"]) < 1e-9 and abs(rest["dy"]) < 1e-9, (
+        f"a room with no measured light threw its shadow ({rest['dx']:+.3f}, "
+        f"{rest['dy']:+.3f}) - it invented a lamp direction"
+    )
+
+
+@needs_node
+def test_a_light_with_no_contact_block_degrades_instead_of_blanking_the_page():
+    """`CONTACT` is read at TOP LEVEL, which is the flavour of TypeError that
+    throws before `boot()` is ever called and leaves a blank page that every
+    page-source test still passes (the Task 2 failure mode). A `LIGHT` with
+    no `contact` — which `light_for` cannot produce, but a hand-edited page
+    or a future injection bug could — must degrade, not throw.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    stripped = {k: v for k, v in light.items() if k != "contact"}
+    assert "contact" not in stripped
+    rest = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", light=stripped
+    ))["rest"]
+    assert rest["width"] > 0 and rest["height"] > 0, (
+        "a contact-less LIGHT drew a zero-sized shadow rather than degrading "
+        "to the body's own patch"
+    )
+    assert abs(rest["dx"]) < 1e-9 and abs(rest["dy"]) < 1e-9, (
+        "a contact-less LIGHT still threw a shadow somewhere"
+    )

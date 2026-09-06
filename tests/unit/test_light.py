@@ -106,3 +106,27 @@ def test_a_light_block_missing_a_required_field_degrades_rather_than_raising():
         },
     )
     assert light_for(poisoned) is DEFAULT_LIGHT
+
+
+def test_the_neutral_default_withholds_a_direction_but_not_the_shadow():
+    """What a light model degrades to still has to put a floor under the cast.
+
+    The flat ramp and `height: 0` are the honest neutral — no measurement, so
+    no invented direction, and the page draws the centred contact patch it
+    drew before there was a light model at all. `opacity` is deliberately not
+    part of that: a contact shadow is the only thing telling a viewer where
+    the floor is, and the room that reaches this default is the *procedural
+    fallback* — the one that has already lost its painting and can least
+    afford a cast floating in front of nothing (KI-045/KI-047).
+
+    A plate that genuinely wants no contact shadow says so by measuring
+    `opacity: 0`, which is a statement and reaches the page intact.
+    """
+    contact = DEFAULT_LIGHT.contact
+    assert contact["height"] == 0, (
+        "the neutral default measures a throw - it has invented a lamp"
+    )
+    assert contact["opacity"] > 0, (
+        "the neutral default draws no contact shadow at all, so every figure "
+        "in the procedural fallback room floats"
+    )

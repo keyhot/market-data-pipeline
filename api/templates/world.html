@@ -239,6 +239,40 @@
     }
     const KEY_AXIS = keyAxis();
 
+    // The measured contact patch — how dark a shadow this room casts, how wide
+    // it sits under a body, and how far the lamp's height throws it. Guarded
+    // for the same reason `rampLevel` and `keyAxis` above are: `LIGHT.contact
+    // .opacity` written inline is a TypeError the moment `LIGHT` arrives
+    // without a `contact`, and THIS one is read at top level (`CONTACT`
+    // below), which is the flavour that throws before `boot()` is ever called
+    // and leaves a blank page every page-source test still passes.
+    //
+    // The fallback numbers here are deliberately NOT a copy of
+    // `DEFAULT_LIGHT`'s: `light_for` always supplies a complete `contact`
+    // block, including for a missing or malformed manifest, so what an
+    // unmeasured room's shadow looks like is decided in `world/light.py` and
+    // nowhere else. What is left here is the structural degrade — no throw,
+    // no NaN reaching a sprite — for a state that contract cannot produce.
+    function contactLight() {
+      const c = (LIGHT && LIGHT.contact) || {};
+      const num = (v, dflt) => (Number.isFinite(Number(v)) ? Number(v) : dflt);
+      return {
+        opacity: Math.min(1, Math.max(0, num(c.opacity, 0))),
+        widthScale: Math.max(0, num(c.widthScale, 1)),
+        height: Math.max(0, num(c.height, 0)),
+      };
+    }
+    const CONTACT = contactLight();
+
+    // How far this room lays its shadows down: a cast shadow's throw is the
+    // lamp's measured height above the contact plane (`CONTACT.height`, in
+    // plate pixels) times this. The one number in the shadow that is an art
+    // call rather than a measurement, and kept out of the manifest for that
+    // reason — a repaint re-measures the lamp, it does not re-decide how far
+    // a shadow should read as being thrown. Chosen from frames, not from
+    // arithmetic; the comparison is in the Task 7 report.
+    const SHADOW_THROW = 3.0;
+
     // How much of a volume each band eats, as a FRACTION of that volume's own
     // extent — never as a fixed number of units.
     //
@@ -1318,6 +1352,20 @@
     // body that silently inherits someone else's footprint reads as floating.
     const SHADOW_WIDTH = { bars: 34, figure: 30, candle: 22, monolith: 26, orb: 20 };
 
+    // How tall a contact patch is against its own width: a roughly circular
+    // patch on the floor, seen from the room's viewpoint. So this number is
+    // not just the ellipse's proportions — it IS this room's foreshortening,
+    // the factor by which the floor squashes anything measured across it. The
+    // shadow's height and the y half of its throw both read it, because they
+    // are the same fact, and writing the throw's squash as its own literal is
+    // how the two would silently drift apart.
+    //
+    // Taken against the patch's own 2:1 base, NOT against its drawn width:
+    // `CONTACT.widthScale` widens the blob that is DRAWN — an art call about
+    // how far a body's contact spills — while the floor's foreshortening is a
+    // property of the room, unchanged by how wide the plate wants the smudge.
+    const SHADOW_ASPECT = 0.46;
+
     // One soft blob, built once and shared. A hard ellipse reads as a sticker
     // and three stacked ellipses band visibly (the same thing that made the
     // first vignette look like a wireframe) — and `FillGradient` cannot do a
@@ -1354,14 +1402,42 @@
     }
 
     function shadowTick(char) {
+      // First, always: `CONTACT` is a top-level read, so a character with no
+      // shadow must leave before anything touches it.
       if (!char.shadow) return;
       const lift = Math.max(0, char.baseY - char.container.y);
       const spread = 1 + lift * 0.004;
-      char.shadow.x = char.container.x;
-      char.shadow.y = char.baseY + 3;
-      char.shadow.width = char.shadowW * 2 * spread;
-      char.shadow.height = char.shadowW * 0.46 * spread;
-      char.shadow.alpha = 0.55 / (1 + lift * 0.014);
+      // Thrown AWAY from the key, which is `+KEY_AXIS`. `-KEY_AXIS` is where
+      // the lamp is — it is the direction every lit band slides in
+      // (`litCircle`'s `slide * -KEY_AXIS[i]` above) — so a shadow goes the
+      // other way, and on this plate that is down and to the LEFT. Centred,
+      // which is what this did until Sprint 16, a figure the room lights hard
+      // from one side gets a puddle under its feet; a puddle is the loudest
+      // "pasted on" cue in the before-frame, and the whole of KI-051's
+      // complaint about the cast not belonging to its room.
+      //
+      // The y half is squashed by `SHADOW_ASPECT / 2` because the throw lies
+      // ON the floor, and the floor is exactly that foreshortened — it is the
+      // same fact that makes a round contact patch draw as a flat ellipse, so
+      // it is read from the same constant rather than restated as a number of
+      // its own. Unsquashed, the measured direction (steeply downward) walks
+      // the shadow clear of the feet and the figure floats again, having
+      // gained a direction and lost its floor.
+      const throwX = KEY_AXIS[0] * CONTACT.height * SHADOW_THROW;
+      const throwY = KEY_AXIS[1] * CONTACT.height * SHADOW_THROW * (SHADOW_ASPECT / 2);
+      // The throw moves the patch AND grows it by the same amount, so the
+      // half-extent gains exactly what the centre gave up: the lamp-side edge
+      // stays where the foot is and only the far edge travels. Offsetting
+      // alone is the trade this ticket would most easily make by accident —
+      // a shadow that no longer touches the body it belongs to reads as a
+      // second figure, which is a worse floating than the one being fixed.
+      char.shadow.x = char.container.x + throwX;
+      char.shadow.y = char.baseY + 3 + throwY;
+      char.shadow.width =
+        (char.shadowW * 2 * CONTACT.widthScale + 2 * Math.abs(throwX)) * spread;
+      char.shadow.height =
+        (char.shadowW * SHADOW_ASPECT + 2 * Math.abs(throwY)) * spread;
+      char.shadow.alpha = CONTACT.opacity / (1 + lift * 0.014);
     }
 
     function character(name, style) {
