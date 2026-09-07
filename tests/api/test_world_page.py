@@ -2390,7 +2390,11 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
     (`layers.monitors`, a stage sibling with a build-once/never-wiped
     contract — deliberately not sharing `layers.props`, whose contract is
     per-cycle wipe-and-rebuild), the glow layer must sit below that layer
-    too, or it would wash the candles out.
+    too, or it would wash the candles out. `layers.nameplates` (Sprint 16
+    Task 10) sits LAST — a name tag hidden behind the very figure it names
+    (the trader's seated head covers all but ~15px of `desk-plate-trader`
+    at this cast scale, found by actually rendering the room) is as much
+    "text where it is not necessary" as hovering in mid-air was.
     """
     boot = _js_block(_world_source(), "async function boot()")
     assert "layers.glow = new PIXI.Container();" in boot
@@ -2399,7 +2403,8 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
     assert match, "boot() no longer builds the stage in one addChild call"
     order = [name.strip() for name in match.group(1).split(",")]
     assert order == ["layers.plate", "layers.room", "layers.glow",
-                      "layers.monitors", "layers.props", "layers.chars"], order
+                      "layers.monitors", "layers.props", "layers.chars",
+                      "layers.nameplates"], order
 
 
 def test_the_ambient_vignette_is_guarded_for_the_plate_path():
@@ -4955,3 +4960,43 @@ def test_a_label_whose_text_would_overflow_its_box_is_caught():
     placements = _text_placements()
     p = placements["name-trader"]
     assert glyph_overflow("A NAME NO REASONABLE DESK PLATE COULD HOLD", p["size"], p)
+
+
+@needs_node
+def test_a_built_characters_nametag_is_reachable_from_outside_character():
+    """Real bug this ticket shipped once, caught only by `scripts/shoot.py`'s
+    screenshot, not by any Node-block test above: `character()` builds
+    `nameTag` and adds it to the container, but the returned tracking object
+    (`const char = {...}`) never listed it - `model.nameTag.text = ""`
+    (this ticket's own new code, run right after `character("MODEL")`)
+    threw `Cannot set properties of undefined` in a real browser, because
+    every other test here reads fields OFF the extracted function's own
+    source rather than off a value the function actually returns.
+
+    Runs the real `const char = {...}` object literal with every free
+    variable it references pre-stubbed, and asserts the built object
+    actually carries `nameTag` - the same field `model.nameTag.text = ""`
+    depends on.
+    """
+    source = _world_source()
+    char_literal = _js_block(source, "const char = {")
+    driver = f"""
+    const container = {{ y: 5 }}, body = {{}}, head = {{}}, skull = {{}},
+      eyeL = {{}}, eyeR = {{}}, mouth = {{}}, browL = {{}}, browR = {{}},
+      visor = {{}}, accents = [], style = "bars", stat = {{}}, moodTag = {{}},
+      nameTag = {{ text: "TRADER" }}, seed = 1, shadow = {{}};
+    const FACE_KIND = {{ bars: "circle" }};
+    const SHADOW_WIDTH = {{ bars: 10 }};
+    function rng32() {{ return () => 0; }}
+    {char_literal};
+    // The exact call site this ticket added, against the RETURNED object -
+    // not the free `nameTag` variable, which would trivially succeed either
+    // way and prove nothing about what character() actually hands back.
+    char.nameTag.text = "";
+    console.log(JSON.stringify({{ hasNameTag: "nameTag" in char }}));
+    """
+    emitted = _run_node(driver)
+    assert emitted["hasNameTag"], (
+        "character()'s returned object no longer exposes nameTag - "
+        "model.nameTag.text = \"\" / trader.nameTag.text = \"\" would throw"
+    )

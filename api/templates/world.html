@@ -764,6 +764,17 @@
       layers.monitors = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
+      // Sprint 16 Task 10: `name-trader` sits on real, clean desk paint
+      // (Task 9 verified it) that the SEATED RIG's own head happens to
+      // render almost entirely in front of, at this cast scale/anchor — a
+      // fact nothing before this ticket had ever rendered the room live
+      // enough to see. A surface can be exactly where the plate says and
+      // still be unreadable if a layer above it paints over it, which is as
+      // much "text where it is not necessary" as hovering in the air was.
+      // `nameplates` is its own layer, added to `app.stage` LAST (after
+      // `layers.chars`), so the room's two names are never hidden behind the
+      // very figures they identify.
+      layers.nameplates = new PIXI.Container();
       // Shadows are a *child* of the cast layer, not of any character: they
       // inherit CAST_SCALE and the layer's coordinate space for free, so a
       // shadow's x is just the character's x — but they are siblings of the
@@ -773,7 +784,7 @@
       layers.chars.addChild(layers.shadows);
       app.stage.addChild(
         layers.plate, layers.room, layers.glow, layers.monitors,
-        layers.props, layers.chars);
+        layers.props, layers.chars, layers.nameplates);
       // Pixel-art rule: no sub-pixel compositing for anything the cast or its
       // furniture draws. The plate and the vignette stay off this list on
       // purpose — they are painted art and a soft light falloff, not part of
@@ -781,6 +792,7 @@
       layers.chars.roundPixels = true;
       layers.props.roundPixels = true;
       layers.monitors.roundPixels = true;
+      layers.nameplates.roundPixels = true;
 
       await drawPlate();
       model = character("MODEL");
@@ -789,11 +801,22 @@
       // eval surfaces (`?gallery=1`/`?anims=1`), which legitimately float a
       // label beside a diagnostic specimen — the design rule ("no text in
       // the air") is about the ROOM, never those. The room's own name is
-      // drawn separately, from TEXT_PLACEMENTS, in `draw()` below; the
-      // constructor's floating copy is blanked here rather than removed from
-      // `character()` itself, which both eval surfaces still need.
+      // drawn separately below, from TEXT_PLACEMENTS, into `layers.nameplates`
+      // rather than nested in each character's own (scaled, animated)
+      // container — both live on furniture that does not move when a
+      // reaction shakes or hops the figure above it, so the label must not
+      // inherit that animation either. The constructor's floating copy is
+      // blanked here rather than removed from `character()` itself, which
+      // both eval surfaces still need. Built ONCE: the content never
+      // changes per-frame, unlike the history line below.
       model.nameTag.text = "";
       trader.nameTag.text = "";
+      layers.nameplates.addChild(
+        ...[
+          placedLabel(TEXT_PLACEMENTS["name-model"], "MODEL"),
+          placedLabel(TEXT_PLACEMENTS["name-trader"], "TRADER"),
+        ].filter(Boolean),
+      );
       cast.push(model, trader);
       positionCharacters();
       startAmbient();
@@ -1668,7 +1691,7 @@
 
       const char = {
         container, body, head, skull, eyeL, eyeR, mouth, browL, browR, visor,
-        accents, style, stat, moodTag, faceKind: FACE_KIND[style],
+        accents, style, stat, moodTag, nameTag, faceKind: FACE_KIND[style],
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
         rand: rng32(seed || 1),
         shadow, shadowW: SHADOW_WIDTH[style],
@@ -2383,21 +2406,14 @@
       drawPillars(state);
 
       const h = state.history ?? {};
-      // Every canvas label the room still draws sits on a surface the
-      // manifest actually measured (Sprint 16 Task 10) — never at a fixed
-      // offset off app.screen, which is why the history line used to run
-      // across the tubes at some window sizes. `name-trader`/`name-model`
-      // are drawn HERE rather than nested in each character's own container:
-      // both live on furniture (the desk plate, the floor lane) that does
-      // not move when a reaction animation shakes or hops the figure above
-      // it, so the label must not inherit that animation either.
-      layers.props.addChild(
-        ...[
-          placedLabel(TEXT_PLACEMENTS.history, historyLine(h), 0x787b86),
-          placedLabel(TEXT_PLACEMENTS["name-model"], "MODEL"),
-          placedLabel(TEXT_PLACEMENTS["name-trader"], "TRADER"),
-        ].filter(Boolean),
-      );
+      // The history line sits on a surface the manifest actually measured
+      // (Sprint 16 Task 10) — never at a fixed offset off app.screen, which
+      // is why it used to run across the tubes at some window sizes.
+      // `name-trader`/`name-model` are NOT rebuilt here: they are static
+      // text built once at boot into `layers.nameplates` (see boot()'s own
+      // comment for why that is a separate, un-scaled, top-most layer).
+      const historyLabel = placedLabel(TEXT_PLACEMENTS.history, historyLine(h), 0x787b86);
+      if (historyLabel) layers.props.addChild(historyLabel);
 
       renderNowBand(state);
       readAmbient(state);
