@@ -478,3 +478,122 @@ def test_the_tube_housings_still_glow():
     # The fix removes the monitors, not the swell. A sprint that quietly
     # deleted the tier swell would also pass the test above.
     assert {g["id"] for g in load_manifest().glow} == {"tubes-floor", "tubes-desk"}
+
+
+# --- Task 9 review, Important 1: text_surfaces had no re-derivation check ---
+#
+# Sibling in shape to `test_every_screen_rect_lands_on_glass_the_intake_
+# actually_flattened` above: the two colour-scan methods `text_surfaces`
+# were measured with, re-run here against the plate PNG itself, so a repaint
+# that moves a plinth or the desk lamp's pool of light leaves something to
+# catch the drift instead of only a script pasted into a task report.
+#
+# Same honest scope as that sibling: each check re-derives whether the
+# DECLARED rect is still valid material by the rule that measured it. It can
+# fail if a repaint shrinks the surface, or opens a seam inside it — the
+# failure modes that actually matter, since either one would put a caption on
+# top of the wrong thing. It does not prove the declared rect is the largest
+# rect the plate could support (the plate might now support more); that is a
+# left-on-the-table case, not a wrong one.
+
+
+def _dist(a, b):
+    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+
+def _clean_rect(pixels, x, y, w, h, ok):
+    return all(ok(pixels[i, j]) for j in range(y, y + h) for i in range(x, x + w))
+
+
+def _plinth_face_ok(rgb):
+    """The plinths' matte cylinder-wall colour, as an absolute RGB box —
+    the same rule `world/text_layout.py`'s task-9 measurement script used.
+    Distinct from the disc's backlit glow (much brighter) and the floor
+    beyond the plinth (darker)."""
+    r, g, b = rgb
+    return 35 <= r <= 55 and 50 <= g <= 72 and 62 <= b <= 90
+
+
+def test_the_tube_plinth_text_surfaces_are_the_plates_own_clean_faces():
+    """Both `tube-plinth-*` `text_surfaces` must still be a fully clean
+    rectangle of matte plinth colour — zero stray pixels — on the plate this
+    manifest names. A repaint that moves either tube (and so its plinth)
+    without re-measuring this block would leave a rect that is no longer the
+    plinth at all, and this is what would catch it."""
+    manifest = load_manifest()
+    with Image.open(PLATE_PNG) as im:
+        pixels = im.convert("RGB").load()
+        plinths = [
+            s for s in manifest.text_surfaces if s["id"].startswith("tube-plinth-")
+        ]
+        assert plinths, "no tube-plinth-* text_surfaces to check"
+        for surface in plinths:
+            assert _clean_rect(
+                pixels, surface["x"], surface["y"], surface["w"], surface["h"],
+                _plinth_face_ok,
+            ), f"{surface['id']}: not a clean plinth-face rect on the plate"
+
+
+def _smoothed_column(pixels, height, x, y0, y1, win=3):
+    out = []
+    for y in range(y0, y1):
+        lo, hi = max(0, y - win // 2), min(height, y + win // 2 + 1)
+        rows = range(lo, hi)
+        r = sum(pixels[x, yy][0] for yy in rows) / len(rows)
+        g = sum(pixels[x, yy][1] for yy in rows) / len(rows)
+        b = sum(pixels[x, yy][2] for yy in rows) / len(rows)
+        out.append((r, g, b))
+    return out
+
+
+def _smoothed_down_run(pixels, size, x, y0, max_delta=6, win=3, sustain=2):
+    """How far a locally-smoothed walk gets below `y0` at column `x` before
+    two CONSECUTIVE smoothed steps exceed `max_delta` — gradient-tolerant
+    (a slow lamp falloff never trips it) but still edge-sensitive (a real
+    seam does), and resistant to the plate's own dithering (a single
+    speckled pixel needs a second bad step right behind it to count,
+    since dithering alone rarely produces two in a row)."""
+    width, height = size
+    col = _smoothed_column(pixels, height, x, y0, min(y0 + 120, height), win=win)
+    bad_streak = 0
+    extend = 0
+    for i in range(1, len(col)):
+        if _dist(col[i], col[i - 1]) > max_delta:
+            bad_streak += 1
+            if bad_streak >= sustain:
+                return extend - (sustain - 1)
+        else:
+            bad_streak = 0
+            extend = i
+    return extend
+
+
+def test_the_desk_plate_text_surface_is_the_plates_own_smooth_desktop():
+    """Task 9 review, Important 2: the first `desk-plate-trader` measurement
+    used the plinths' absolute-RGB method, which is blind to the desk lamp's
+    own lighting gradient across what is actually one continuous flat
+    desktop — it measured a threshold artifact (9px), not the surface's real
+    ceiling. This re-derives the surface with the gradient-tolerant method
+    that replaced it: at every column the declared rect spans, a smoothed
+    downward walk from its own top edge must reach at least its own height
+    before hitting a sustained edge. A repaint that opened a seam through the
+    middle of the desk, or shrank the lit pool the rect sits in, would leave
+    some column short of that and fail here.
+    """
+    manifest = load_manifest()
+    surface = next(
+        s for s in manifest.text_surfaces if s["id"] == "desk-plate-trader"
+    )
+    with Image.open(PLATE_PNG) as im:
+        pixels = im.convert("RGB").load()
+        size = im.size
+        shortfalls = [
+            (x, run)
+            for x in range(surface["x"], surface["x"] + surface["w"])
+            for run in [_smoothed_down_run(pixels, size, x, surface["y"])]
+            if run < surface["h"]
+        ]
+        assert shortfalls == [], (
+            f"desk-plate-trader: {len(shortfalls)} column(s) fall short of "
+            f"the declared height {surface['h']}, e.g. {shortfalls[:3]}"
+        )
