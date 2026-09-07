@@ -1924,7 +1924,8 @@ def test_the_sheet_can_actually_reach_seatedrig():
         function setCharacterVisible() {}
         function setExpression() {}
         const layers = {
-          room: {}, plate: {}, monitors: {}, chars: { scale: { set() {} } },
+          room: {}, plate: {}, monitors: {}, nameplates: {},
+          chars: { scale: { set() {} } },
         };
         const location = { search: "" };
         const model = {}, trader = {};
@@ -3220,12 +3221,31 @@ def test_the_gallery_hides_the_live_monitors():
     assert "layers.monitors.visible = false" in body
 
 
+def test_the_gallery_hides_the_rooms_own_nameplates():
+    # Observed 2026-09-07 (this ticket's own screenshot): `layers.nameplates`
+    # is built once at fixed canvas coordinates, independent of the room
+    # characters `setCharacterVisible` hides here — left visible, "MODEL"/
+    # "TRADER" drew straight over whichever grid cell happened to land on
+    # that spot. Same failure shape, same fix, as the monitors sibling above.
+    body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
+    assert "layers.nameplates.visible = false" in body
+
+
 def test_the_animation_sheet_keeps_the_room_too():
     body = _js_block(
         client.get("/world?anims=1").text, "function drawAnimationSheet("
     )
     assert "layers.plate.visible = false" not in body
     assert "VOID_MODE" in body
+
+
+def test_the_animation_sheet_hides_the_rooms_own_nameplates():
+    # Sibling of the gallery's own check above - the same static-content leak
+    # observed on this ticket's `?anims=1` screenshot.
+    body = _js_block(
+        client.get("/world?anims=1").text, "function drawAnimationSheet("
+    )
+    assert "layers.nameplates.visible = false" in body
 
 
 def test_the_page_reports_that_it_has_drawn():

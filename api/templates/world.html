@@ -921,6 +921,13 @@
       // The monitors are the room's content, not its scenery, so they go in
       // both modes.
       layers.monitors.visible = false;
+      // Sprint 16 Task 10: `layers.nameplates` is independent of the room
+      // characters `setCharacterVisible` above hides — it is built once at
+      // fixed canvas coordinates, so left visible it draws "MODEL"/"TRADER"
+      // over whichever grid cell happens to land on that spot (observed
+      // 2026-09-07, this ticket's own screenshot). Same "eval surface hides
+      // the room's content" rule the monitors line above already follows.
+      layers.nameplates.visible = false;
       layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
@@ -974,6 +981,9 @@
       // The monitors are the room's content, not its scenery, so they go in
       // both modes.
       layers.monitors.visible = false;
+      // See drawGallery's own comment: `layers.nameplates` is fixed-position
+      // and independent of the room characters this sheet already hides.
+      layers.nameplates.visible = false;
       // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
       // and whether that reads as dejected or as a head in a torso is a
       // question about broadcast size. Tier-3 amplitude, for the same reason.
