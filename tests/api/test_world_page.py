@@ -4748,3 +4748,210 @@ def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
         "dropping g.clear() from repaint changed nothing observable — the "
         "stacking check is not load-bearing"
     )
+
+
+# --- Sprint 16 Task 10: the page moves onto the surfaces Task 9 declared ---
+#
+# Task 9 made text placement DATA and proved the data is internally
+# consistent (`tests/unit/test_text_layout.py`): every placement lands
+# inside the surface it names. It could not prove two things only the PAGE
+# can answer, which is what this section is for:
+#
+#   1. That the page actually READS that data instead of a redefinition
+#      that happens to mention `TEXT_PLACEMENTS` somewhere nearby. "Reading
+#      a placement does not prove landing inside a surface" - the
+#      dispatcher's own ruling against this ticket's brief.
+#   2. That the GLYPHS the page draws into a placement's box actually fit
+#      it. A placement can be a perfectly valid rectangle, fully inside a
+#      perfectly real surface, and still have no room for its own text -
+#      Task 9's first-pass `tube-plinth-*` sizing (9-10px surfaces for an
+#      8px line) is the shipped example of exactly that failure.
+#
+# Scope, stated plainly: `banner`/`prices`/`record` are DOM (`#banner`,
+# `#nowband`), not single-line canvas text - `banner`'s position is checked
+# below (bound via inline style), but none of the three get the glyph-fit
+# check, because CSS wraps them and the single-line glyph estimate does not
+# apply to wrapped text. `history`, `name-trader` and `name-model` are the
+# room's only canvas-drawn labels left after this ticket, and get both
+# checks in full.
+
+
+def _text_placements():
+    """The resolved `__TEXT_JSON__` this page was actually served - read
+    from the same function `api/main.py` calls, not re-parsed out of the
+    HTML, matching `_manifest()`'s own convention above."""
+    from world.plate import load_manifest
+    from world.text_layout import as_json
+
+    return json.loads(as_json(load_manifest()))
+
+
+def _text_driver(body: str) -> str:
+    """`label`/`placedLabel`, run for real against a stub `PIXI.Text` that
+    records what it was given rather than rendering anything - the same
+    "real arithmetic, stubbed renderer" shape `_layout_driver` already uses
+    for `anchorFor`/`pillarGeometry` above."""
+    return (
+        "class FakeText {\n"
+        "  constructor(opts) {\n"
+        "    this.text = opts.text; this._size = opts.style.fontSize;\n"
+        "  }\n"
+        "}\n"
+        "const PIXI = { Text: FakeText };\n"
+        + _js_block(body, "function label(")
+        + "\n"
+        + _js_block(body, "function placedLabel(")
+        + "\n"
+    )
+
+
+def test_the_room_no_longer_floats_a_symbol_or_mood_label_at_a_fixed_offset():
+    """The room's own floating labels, observed 2026-09-01, by call site:
+    two per painted tube (symbol, mood) and three writes into the cast's
+    `moodTag` (the model's live mood, the trader's live mood, a reaction's
+    live mood). `moodTag` itself is NOT deleted - ruling: it is shared with
+    the gallery and animation-sheet eval surfaces (`?gallery=1`/`?anims=1`),
+    where labelling a specimen by mood is legitimate diagnostic use and
+    never goes on air - only the ROOM's own writes into it are gone."""
+    body = client.get("/world").text
+    assert "label(data.mood" not in body
+    assert "label(symbol," not in body
+    assert "model.moodTag.text =" not in body
+    assert "trader.moodTag.text =" not in body
+    assert "target.moodTag.text =" not in body
+    # Still shared machinery for the gallery/sheet - not deleted wholesale.
+    assert "sample.moodTag.text = mood;" in body
+    assert "sample.moodTag.text = anim;" in body
+    assert "TEXT_PLACEMENTS" in body
+
+
+def test_the_history_line_sits_on_the_bottom_band():
+    body = client.get("/world").text
+    draw_fn = _js_block(body, "function draw(")
+    assert "TEXT_PLACEMENTS.history" in draw_fn
+    # Was `app.screen.height - 86`, which is why it ran across the tubes.
+    # A page-wide ban on `app.screen.height` would be over-broad - other
+    # functions legitimately use it for non-text layout - so this is scoped
+    # to `draw()` itself, which after this change has no remaining reason to
+    # read it at all.
+    assert "app.screen.height" not in draw_fn
+
+
+def test_the_banner_is_bound_to_its_placement_not_only_its_bar_height():
+    """`bannerMinHeight()` already sized the bar's own background from
+    `PLATE.bands.top` (Task 4) - that is not text, so it is untouched. This
+    is the new half: the READABLE line inside that bar binds to
+    `TEXT_PLACEMENTS.banner` directly, the same rule every canvas label now
+    follows."""
+    body = client.get("/world").text
+    assert "TEXT_PLACEMENTS.banner" in body
+    assert "banner.style.paddingLeft" in body
+    assert "banner.style.paddingTop" in body
+
+
+@needs_node
+def test_placedLabel_positions_and_sizes_a_label_from_its_placement_alone():
+    body = client.get("/world").text
+    driver = _text_driver(body) + """
+    const drawn = placedLabel({ x: 12, y: 34, size: 16 }, "HELLO", 0);
+    const missing = placedLabel(null, "HELLO", 0);
+    console.log(JSON.stringify({
+      x: drawn.x, y: drawn.y, size: drawn._size, text: drawn.text,
+      missingIsNull: missing === null,
+    }));
+    """
+    emitted = _run_node(driver)
+    assert emitted == {
+        "x": 12, "y": 34, "size": 16, "text": "HELLO", "missingIsNull": True,
+    }
+
+
+@needs_node
+def test_placedLabel_trusts_its_placement_so_the_manifest_check_is_the_real_guard():
+    """`placedLabel` must not silently clamp a bad position - if it did, a
+    regression in `floating_text` (the manifest-level guard) could break
+    with nothing on the page able to show it. Corrupts a real placement
+    exactly the way `test_a_label_nudged_off_its_surface_is_caught`
+    (`tests/unit/test_text_layout.py`) does - `name-trader` nudged off
+    `desk-plate-trader` - resolves it exactly as `as_json` would, and
+    confirms the page's own function reproduces the escaped position
+    verbatim. That is the proof this ticket's brief was missing: not that
+    the page mentions `TEXT_PLACEMENTS`, but that a bad value in it reaches
+    the screen unmodified, which is what makes the manifest-level check the
+    thing actually protecting the room rather than a redundant assertion
+    nothing depends on.
+    """
+    import dataclasses
+
+    from world.plate import load_manifest
+    from world.text_layout import as_json, floating_text
+
+    manifest = load_manifest()
+    placements = [dict(p) for p in manifest.text]
+    idx = next(i for i, p in enumerate(placements) if p["id"] == "name-trader")
+    placements[idx] = dict(placements[idx], y=placements[idx]["y"] - 400)
+    poisoned = dataclasses.replace(manifest, text=tuple(placements))
+
+    # Sanity: the manifest-level guard does catch it (established already by
+    # test_text_layout.py; re-asserted here only to anchor the claim below).
+    assert floating_text(poisoned) == ["name-trader"]
+
+    resolved = json.loads(as_json(poisoned))["name-trader"]
+    body = client.get("/world").text
+    driver = _text_driver(body) + f"""
+    const drawn = placedLabel({json.dumps(resolved)}, "TRADER", 0);
+    console.log(JSON.stringify({{ x: drawn.x, y: drawn.y }}));
+    """
+    emitted = _run_node(driver)
+    assert emitted == {"x": resolved["x"], "y": resolved["y"]}, (
+        "placedLabel did not draw exactly where the (deliberately bad) "
+        "resolved placement said - if it clamped or ignored the escaped "
+        "value, the manifest-level check above would not be load-bearing"
+    )
+
+
+@needs_node
+def test_no_room_label_the_page_actually_draws_overflows_its_own_box():
+    """The gap Task 9 could not close: a placement can be a valid box,
+    fully inside a real surface, and still have no room for the text it is
+    asked to hold. Runs the page's own `historyLine` for a busy-but-
+    realistic world (not an adversarial string - see task-10-report.md for
+    why an adversarial one was rejected), and checks every canvas label the
+    room still draws against `glyph_overflow`
+    (`tests/unit/test_text_layout.py` covers the estimate itself)."""
+    from world.text_layout import glyph_overflow
+
+    placements = _text_placements()
+    body = client.get("/world").text
+    driver = _js_block(body, "function historyLine(") + """
+    const h = {
+      total_events: 12345,
+      longest_streak: { bars: 9999 },
+      worst_loss: { realized_return: -0.9999 },
+      outages: 99,
+    };
+    console.log(JSON.stringify({ history: historyLine(h) }));
+    """
+    emitted = _run_node(driver)
+
+    drawn = {
+        "history": emitted["history"],
+        "name-model": "MODEL",
+        "name-trader": "TRADER",
+    }
+    for label_id, text in drawn.items():
+        p = placements[label_id]
+        assert not glyph_overflow(text, p["size"], p), (
+            f"{label_id}: {text!r} at size {p['size']} does not fit its own "
+            f"{p['w']}x{p['h']} box"
+        )
+
+
+def test_a_label_whose_text_would_overflow_its_box_is_caught():
+    # Mutation check for the check above: the same real, shipped box, with
+    # text no reasonable margin would ever fit.
+    from world.text_layout import glyph_overflow
+
+    placements = _text_placements()
+    p = placements["name-trader"]
+    assert glyph_overflow("A NAME NO REASONABLE DESK PLATE COULD HOLD", p["size"], p)

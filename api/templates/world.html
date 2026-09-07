@@ -95,6 +95,15 @@
     // put a third party into the on-air load path.
     const PLATE = __PLATE_JSON__;
     const PLATE_SRC = PLATE ? "/static/" + PLATE.plate : null;
+    // Sprint 16 Task 10: where text is allowed to sit, already resolved to
+    // absolute canvas coordinates by `world/text_layout.py::as_json` — read
+    // THIS, never `PLATE.text`/`PLATE.text_surfaces` (Task 9's own surface
+    // union is inside `PLATE` too, but re-deriving band-top/band-bottom from
+    // it here would restate `_band_surfaces`' arithmetic in a second
+    // language). A placement whose surface could not be resolved is already
+    // dropped by `as_json` before this page ever sees it, so a missing key
+    // here just means "nothing is drawn there" — never a throw.
+    const TEXT_PLACEMENTS = __TEXT_JSON__;
     // The painted key light (the amber desk lamp): direction, warmth and
     // ramp measured off the plate, or the neutral default when unmeasured.
     // Distinct from ROOM_LIGHT below, which is the severity-tier ambient
@@ -776,6 +785,15 @@
       await drawPlate();
       model = character("MODEL");
       trader = character("TRADER");
+      // `character()`'s nameTag is shared with the gallery/animation-sheet
+      // eval surfaces (`?gallery=1`/`?anims=1`), which legitimately float a
+      // label beside a diagnostic specimen — the design rule ("no text in
+      // the air") is about the ROOM, never those. The room's own name is
+      // drawn separately, from TEXT_PLACEMENTS, in `draw()` below; the
+      // constructor's floating copy is blanked here rather than removed from
+      // `character()` itself, which both eval surfaces still need.
+      model.nameTag.text = "";
+      trader.nameTag.text = "";
       cast.push(model, trader);
       positionCharacters();
       startAmbient();
@@ -1002,6 +1020,21 @@
       return t;
     }
 
+    // Sprint 16 Task 10: the room's own text is never positioned by a
+    // literal offset any more (KI-054's sibling failure, one layer up — a
+    // label that hovers near a character instead of sitting on the surface
+    // the room actually painted for it). `placement` is a resolved
+    // `TEXT_PLACEMENTS.*` entry, so the caller always names the const field
+    // directly (`TEXT_PLACEMENTS.history`, `TEXT_PLACEMENTS["name-model"]`)
+    // rather than routing through a second lookup this function would have
+    // to trust. A placement that did not resolve (surface repainted away,
+    // manifest missing) is `undefined` here, same contract as `as_json`
+    // itself: the label is omitted, never a throw into the render loop.
+    function placedLabel(placement, text, tint) {
+      if (!placement) return null;
+      return label(text, placement.x, placement.y, placement.size, tint);
+    }
+
     // B2: the room is built ONCE and only its alpha and tint are animated.
     // OBS renders this in software on a box that also encodes 1080p, and a
     // full-canvas Graphics rebuilt per frame is the one way this ticket could
@@ -1076,6 +1109,18 @@
         const bandHeight = bannerMinHeight();
         if (banner && bandHeight) {
           banner.style.minHeight = bandHeight + "px";
+        }
+        // Sprint 16 Task 10: the bar's own height above binds to the full
+        // quiet strip (a background choice, not text); the READABLE line
+        // inside it binds to `TEXT_PLACEMENTS.banner` directly, so the rule
+        // ("no text in the air") covers this DOM element the same way it
+        // covers every canvas label — a repaint that moved the placement
+        // moves where the sentence actually sits, not just how tall its bar is.
+        const bannerText = TEXT_PLACEMENTS.banner;
+        if (banner && bannerText) {
+          banner.style.paddingLeft = bannerText.x + "px";
+          banner.style.paddingTop = bannerText.y + "px";
+          banner.style.fontSize = bannerText.size + "px";
         }
       } catch (err) {
         // Deliberately NOT retryBoot(): a reload cannot conjure a missing
@@ -1265,9 +1310,12 @@
         const cap = new PIXI.Graphics()
           .roundRect(geo.x - 4, geo.baseY - geo.height - 6, geo.width + 8, 8, 3)
           .fill({ color: color(data.mood), alpha: 0.8 });
-        layers.props.addChild(pillar, cap,
-          label(symbol, geo.x - 6, geo.baseY + 12, 13, 0x787b86),
-          label(data.mood, geo.x - 6, geo.baseY + 30, 13, 0x5a6472));
+        // Sprint 16 Task 10: no per-tube symbol/mood label any more — both
+        // floated at a fixed offset off the tube's own base, with no
+        // declared surface (Task 9 deleted `symbol-BTCUSDT`/`symbol-ETHUSDT`
+        // from `text` for exactly that reason), and #nowband already prints
+        // every symbol's price and mood on every frame.
+        layers.props.addChild(pillar, cap);
       });
     }
 
@@ -2321,30 +2369,35 @@
       const m = state.model ?? {};
       const mood = m.reaction?.mood ?? "neutral";
       setExpression(model, mood);
-      model.moodTag.text = mood;
-      // KI-012: show the same last-N-resolved record as the overlay strips
-      // (m.accuracy), labelled with its window, so the room and strips agree.
-      const acc = m.accuracy ?? {};
-      const rate = acc.hit_rate == null ? "—" : `${(acc.hit_rate * 100).toFixed(1)}%`;
-      model.stat.text =
-        `${acc.wins ?? 0}W ${acc.losses ?? 0}L · ${rate} · last ${acc.window ?? 0}`;
+      // Sprint 16 Task 10: no floating mood/record text beside the cast any
+      // more. Mood is readable from the figure itself (Tasks 6/8's shading);
+      // the win/loss record is `#nowband`'s own `record` span (KI-012) and a
+      // second copy here had no declared surface to sit on.
 
       // The trader stays dormant until trader_* events exist, so the room is
       // complete whether or not the freqtrade sidecar is running.
       const traderState = state.trader ?? null;
       // No sidecar running means asleep, not dead: a closed-eye idle face.
       setExpression(trader, traderState ? traderState.mood : "idle");
-      trader.moodTag.text = traderState ? traderState.mood : "";
-      trader.stat.text = traderState
-        ? `${traderState.open_trades} open · ${traderState.profit_pct}%`
-        : "asleep";
 
       drawPillars(state);
 
       const h = state.history ?? {};
-      // Sits above the now-band (B9), which owns the bottom strip of the page.
-      layers.props.addChild(label(historyLine(h), 24, app.screen.height - 86, 14,
-        0x787b86));
+      // Every canvas label the room still draws sits on a surface the
+      // manifest actually measured (Sprint 16 Task 10) — never at a fixed
+      // offset off app.screen, which is why the history line used to run
+      // across the tubes at some window sizes. `name-trader`/`name-model`
+      // are drawn HERE rather than nested in each character's own container:
+      // both live on furniture (the desk plate, the floor lane) that does
+      // not move when a reaction animation shakes or hops the figure above
+      // it, so the label must not inherit that animation either.
+      layers.props.addChild(
+        ...[
+          placedLabel(TEXT_PLACEMENTS.history, historyLine(h), 0x787b86),
+          placedLabel(TEXT_PLACEMENTS["name-model"], "MODEL"),
+          placedLabel(TEXT_PLACEMENTS["name-trader"], "TRADER"),
+        ].filter(Boolean),
+      );
 
       renderNowBand(state);
       readAmbient(state);
@@ -2863,7 +2916,8 @@
       // only decides how big it reads.
       const reaction = reactionFor(event);
       setExpression(target, reaction.mood);
-      target.moodTag.text = reaction.mood;
+      // Sprint 16 Task 10: no floating mood text on a live reaction either —
+      // `setExpression` is the room's only mood channel now.
       playAnimation(target, reaction.animation, tier);
       // B7: the one who didn't act notices the one who did. Only from tier 1 —
       // at tier 0 the pair would spend the day turning to look at each other,

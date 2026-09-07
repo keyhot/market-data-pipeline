@@ -114,3 +114,66 @@ def as_json(manifest) -> str:
             "size": placement.get("size", 14),
         }
     return json.dumps(resolved)
+
+
+# --- Task 10: glyphs, not just the box -------------------------------------
+#
+# `floating_text` proves a placement's declared rectangle sits inside its
+# surface. It cannot see whether the TEXT that actually lands in that
+# rectangle fits it: a placement can be a perfectly valid box, fully inside a
+# perfectly real surface, and still have no room for its own label —
+# Task 9's own first pass shipped exactly that (`tube-plinth-*` at 9-10px
+# tall, sized for an 8px line that a naive box check would have waved
+# through). This closes that gap without a browser: there is none here to
+# measure a real glyph with, so the two ratio tables below are a deliberately
+# conservative estimate, not a rendered fact.
+#
+# Calibrated against three real desktop sans fonts (DejaVu Sans, Liberation
+# Sans, Arial — none of them "system-ui", because nothing on this host *is*
+# system-ui; they stand in for it) at a range of sizes, per README-style
+# character class, then rounded UP to the widest class-average observed
+# across the three, plus a flat 5% margin on the summed estimate. The
+# result over-estimates every sample checked against those fonts (see
+# task-10-report.md) — the direction that matters, since the failure mode
+# this exists to catch is invisible text, not an over-cautious warning.
+GLYPH_WIDTH_RATIO = {
+    "upper": 0.74,   # "MODEL", "BTCUSDT" — this room's short labels are caps
+    "digit": 0.66,
+    "lower": 0.60,
+    "space": 0.30,
+    "punct": 0.50,   # · % - . , : the history line's own separators
+}
+GLYPH_WIDTH_DEFAULT = 0.65
+LINE_HEIGHT_RATIO = 1.2   # CSS/Canvas's usual single-line default
+WIDTH_MARGIN = 1.05
+
+
+def _glyph_class(ch: str) -> str | None:
+    if ch.isupper():
+        return "upper"
+    if ch.isdigit():
+        return "digit"
+    if ch.islower():
+        return "lower"
+    if ch.isspace():
+        return "space"
+    if ch in "·%-.,:!?'\"()":
+        return "punct"
+    return None
+
+
+def glyph_bounds(text: str, size: float) -> tuple[float, float]:
+    """A conservative (x,y)-independent estimate of the box `text` needs to
+    render on one line at `size`, in the same pixels placements are
+    declared in."""
+    width = sum(
+        GLYPH_WIDTH_RATIO.get(_glyph_class(ch), GLYPH_WIDTH_DEFAULT) for ch in text
+    ) * size * WIDTH_MARGIN
+    return width, size * LINE_HEIGHT_RATIO
+
+
+def glyph_overflow(text: str, size: float, box: dict) -> bool:
+    """True when `text` at `size` cannot be trusted to fit inside `box`'s own
+    declared `w`/`h` — the check `floating_text` does not make."""
+    width, height = glyph_bounds(text, size)
+    return width > box["w"] or height > box["h"]

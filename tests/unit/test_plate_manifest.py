@@ -597,3 +597,59 @@ def test_the_desk_plate_text_surface_is_the_plates_own_smooth_desktop():
             f"desk-plate-trader: {len(shortfalls)} column(s) fall short of "
             f"the declared height {surface['h']}, e.g. {shortfalls[:3]}"
         )
+
+
+# --- Task 10: the model gets a name surface too -----------------------------
+#
+# The trader sits at a painted desk, which has a plate; the model stands on
+# open floor, which the plate never singled out as anything. "no name surface
+# for the model" was an artifact of what got painted, not a decision — so
+# this measures a floor rect directly under the model's own feet
+# (`cast.model`: x=360, base_y=830), the same gradient-tolerant method the
+# desk plate above was re-measured with. Full measurement + evidence that no
+# smaller, tighter rect was needed is in task-10-report.md.
+
+
+def test_the_model_floor_text_surface_is_the_plates_own_clean_floor():
+    """`floor-model` must still be real, seamless floor on the plate this
+    manifest names — the same one-directional shape as the desk-plate
+    sibling above: this can fail if a repaint opens a seam through the
+    surface or shrinks the clear floor lane below the model's feet, not if
+    the plate could now support something bigger than currently claimed.
+    """
+    manifest = load_manifest()
+    surface = next(s for s in manifest.text_surfaces if s["id"] == "floor-model")
+    with Image.open(PLATE_PNG) as im:
+        pixels = im.convert("RGB").load()
+        size = im.size
+        shortfalls = [
+            (x, run)
+            for x in range(surface["x"], surface["x"] + surface["w"])
+            for run in [_smoothed_down_run(pixels, size, x, surface["y"])]
+            if run < surface["h"]
+        ]
+        assert shortfalls == [], (
+            f"floor-model: {len(shortfalls)} column(s) fall short of the "
+            f"declared height {surface['h']}, e.g. {shortfalls[:3]}"
+        )
+
+
+def test_the_model_floor_surface_does_not_collide_with_the_tube_glow():
+    """The one piece of context Task 9's own report flagged forward for
+    whoever adds the next surface: it must not land on `tubes-floor`, the
+    additive glow rect the swell paints over the open floor lane by the
+    tubes (KI-056's sibling risk - amber light under a name tag would be the
+    same washed-out-content failure, one surface over)."""
+
+    def _intersects(a, b):
+        return (
+            a["x"] < b["x"] + b["w"]
+            and b["x"] < a["x"] + a["w"]
+            and a["y"] < b["y"] + b["h"]
+            and b["y"] < a["y"] + a["h"]
+        )
+
+    manifest = load_manifest()
+    floor_model = next(s for s in manifest.text_surfaces if s["id"] == "floor-model")
+    tubes_floor = next(g for g in manifest.glow if g["id"] == "tubes-floor")
+    assert not _intersects(floor_model, tubes_floor)
