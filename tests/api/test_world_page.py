@@ -2345,6 +2345,141 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     )
 
 
+def _seated_rig_bounds():
+    """The trader's full rendered bounding box, in screen pixels: every real
+    `roundRect`/`circle` call `seatedRig` makes (torso, thighs, each arm at
+    its own `arm.x` offset — the sibling test above's own recorder, extended
+    from an X-only range to a full 2D box) UNIONED with the head circle
+    `character()` paints separately (`litCircle(0, 0, 28)`, offset by
+    `seatedRig`'s own returned `headY` the same way `head.y = headY` does)
+    — then composited at the manifest's real `sit_anchor` through the real
+    `CAST_SCALE`, exactly as `positionCharacters` does for a seated pose.
+    Nothing here is a magic number: every input is read out of the page or
+    the manifest, the same discipline `test_the_seated_rig_fits_inside_the_
+    painted_seat_not_just_the_backrest` above already established for the
+    X-only, seat-only version of this same claim.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + """
+        function makeRecorder(calls) {
+          return {
+            roundRect(x, y, w, h, r) { calls.push([x, y, w, h]); return this; },
+            circle(x, y, r) { calls.push([x - r, y - r, 2 * r, 2 * r]); return this; },
+            fill() { return this; },
+            stroke() { return this; },
+          };
+        }
+        // `new PIXI.Graphics()` (each arm) needs the same interface as the
+        // plain recorder above, on an instance with its own `.calls`.
+        class FakeGraphics {
+          constructor() {
+            this.calls = []; this.x = 0; this.y = 0;
+            const r = makeRecorder(this.calls);
+            this.roundRect = r.roundRect; this.circle = r.circle;
+            this.fill = r.fill; this.stroke = r.stroke;
+          }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const bodyCalls = [];
+        const fakeGfx = makeRecorder(bodyCalls);
+        const skullCalls = [];
+        const fakeSkull = makeRecorder(skullCalls);
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _shading_prelude(source)
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        const headY = seatedRig(fakeGfx, accents);
+        // `character()`'s own line, verbatim: the skull is painted once per
+        // non-orb style, at local (0,0,28) within `head`, which is then
+        // shifted by `head.y = headY`.
+        paint(fakeSkull, litCircle(0, 0, 28), BODY_FILL);
+        function box(calls, offX, offY) {
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const [x, y, w, h] of calls) {
+            x0 = Math.min(x0, offX + x); y0 = Math.min(y0, offY + y);
+            x1 = Math.max(x1, offX + x + w); y1 = Math.max(y1, offY + y + h);
+          }
+          return [x0, y0, x1, y1];
+        }
+        let [x0, y0, x1, y1] = box(bodyCalls, 0, 0);
+        for (const accent of accents) {
+          const [ax0, ay0, ax1, ay1] = box(accent.calls, accent.x, accent.y);
+          x0 = Math.min(x0, ax0); y0 = Math.min(y0, ay0);
+          x1 = Math.max(x1, ax1); y1 = Math.max(y1, ay1);
+        }
+        const [hx0, hy0, hx1, hy1] = box(skullCalls, 0, headY);
+        x0 = Math.min(x0, hx0); y0 = Math.min(y0, hy0);
+        x1 = Math.max(x1, hx1); y1 = Math.max(y1, hy1);
+        console.log(JSON.stringify({ x0, y0, x1, y1, castScale: CAST_SCALE }));
+        """
+    )
+    emitted = _run_node(driver)
+    manifest = _manifest()
+    sit_anchor = manifest["cast"]["trader"]["sit_anchor"]
+    scale = emitted["castScale"]
+    return {
+        "x": sit_anchor["x"] + emitted["x0"] * scale,
+        "y": sit_anchor["y"] + emitted["y0"] * scale,
+        "w": (emitted["x1"] - emitted["x0"]) * scale,
+        "h": (emitted["y1"] - emitted["y0"]) * scale,
+    }
+
+
+def _rects_intersect(a, b):
+    return (
+        a["x"] < b["x"] + b["w"]
+        and b["x"] < a["x"] + a["w"]
+        and a["y"] < b["y"] + b["h"]
+        and b["y"] < a["y"] + a["h"]
+    )
+
+
+@needs_node
+def test_the_name_trader_surface_does_not_intersect_the_seated_rig():
+    """Review round 2's own criterion, made measurable: the surface
+    `name-trader` sits on must not intersect the trader's rendered bounds.
+    `desk-plate-trader` failed this (the rig's real geometry, composited at
+    the manifest's own anchor, lands squarely inside it) - that is why
+    `name-trader` now names `desk-face-trader` instead. Checked here from
+    the rendering side, with the real seated-rig geometry and CAST_SCALE
+    (`_seated_rig_bounds` above), not eyeballed from a screenshot.
+    """
+    rig = _seated_rig_bounds()
+    manifest = _manifest()
+    surface = next(
+        s for s in manifest["text_surfaces"] if s["id"] == "desk-face-trader"
+    )
+    assert not _rects_intersect(rig, surface), (
+        f"the seated rig's rendered bounds {rig} intersect desk-face-trader "
+        f"{surface} — the fix this ticket exists to make did not land"
+    )
+
+    # Mutation check: the SAME rendered rig, against the surface this fix
+    # replaced, must be caught as intersecting — proving this check actually
+    # distinguishes a bad surface from a good one, not just returning False
+    # for everything.
+    old_surface = next(
+        s for s in manifest["text_surfaces"] if s["id"] == "desk-plate-trader"
+    )
+    assert _rects_intersect(rig, old_surface), (
+        "desk-plate-trader no longer reads as intersecting the rig — either "
+        "the plate or the rig changed, and this mutation check is no longer "
+        "anchored to a real, known-bad surface"
+    )
+
+
 # --- Task 9: the glow goes additive -----------------------------------------
 #
 # Tinting a painted plate multiplies every pixel by the tint colour, so the
@@ -2393,9 +2528,12 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
     per-cycle wipe-and-rebuild), the glow layer must sit below that layer
     too, or it would wash the candles out. `layers.nameplates` (Sprint 16
     Task 10) sits LAST — a name tag hidden behind the very figure it names
-    (the trader's seated head covers all but ~15px of `desk-plate-trader`
-    at this cast scale, found by actually rendering the room) is as much
-    "text where it is not necessary" as hovering in mid-air was.
+    (the trader's seated head covered all but ~15px of `desk-plate-trader`
+    at this cast scale, found by actually rendering the room — `name-trader`
+    has since moved to `desk-face-trader`, review round 2, but the layer
+    stays last regardless: it is what keeps a label from inheriting a
+    reaction's shake/hop) is as much "text where it is not necessary" as
+    hovering in mid-air was.
     """
     boot = _js_block(_world_source(), "async function boot()")
     assert "layers.glow = new PIXI.Container();" in boot

@@ -764,16 +764,20 @@
       layers.monitors = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
-      // Sprint 16 Task 10: `name-trader` sits on real, clean desk paint
-      // (Task 9 verified it) that the SEATED RIG's own head happens to
-      // render almost entirely in front of, at this cast scale/anchor — a
-      // fact nothing before this ticket had ever rendered the room live
-      // enough to see. A surface can be exactly where the plate says and
-      // still be unreadable if a layer above it paints over it, which is as
-      // much "text where it is not necessary" as hovering in the air was.
-      // `nameplates` is its own layer, added to `app.stage` LAST (after
-      // `layers.chars`), so the room's two names are never hidden behind the
-      // very figures they identify.
+      // Sprint 16 Task 10: `name-trader` originally sat on `desk-plate-trader`,
+      // real clean desk paint (Task 9 verified it) that the seated rig's own
+      // head rendered almost entirely in front of at this cast scale/anchor —
+      // a fact nothing had ever rendered the room live enough to see. A
+      // surface can be exactly where the plate says and still be unreadable
+      // if a layer above it paints over it, which is as much "text where it
+      // is not necessary" as hovering in the air was. Fix round: `name-trader`
+      // moved to `desk-face-trader` (the desk's front panel, well clear of
+      // the rig — see `world/plate.py`'s docstring and
+      // `test_the_name_trader_surface_does_not_intersect_the_seated_rig`).
+      // `nameplates` stays its own layer, added to `app.stage` LAST (after
+      // `layers.chars`) regardless: it is what keeps a label from inheriting
+      // a reaction's shake/hop, and it is cheap insurance against the next
+      // surface ever landing under a figure again.
       layers.nameplates = new PIXI.Container();
       // Shadows are a *child* of the cast layer, not of any character: they
       // inherit CAST_SCALE and the layer's coordinate space for free, so a

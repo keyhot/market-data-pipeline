@@ -653,3 +653,69 @@ def test_the_model_floor_surface_does_not_collide_with_the_tube_glow():
     floor_model = next(s for s in manifest.text_surfaces if s["id"] == "floor-model")
     tubes_floor = next(g for g in manifest.glow if g["id"] == "tubes-floor")
     assert not _intersects(floor_model, tubes_floor)
+
+
+# --- Task 10 review round 2: the trader's name comes off the trader's own
+# face --------------------------------------------------------------------
+#
+# `desk-plate-trader` (x=1298, y=543, w=80, h=27) is real, clean desk paint —
+# verified above — but the seated rig's own head renders almost entirely in
+# front of it at the shipped cast scale/anchor (only ~15px of the 80px width
+# is ever clear of the head; see task-10-report.md's "Two more defects"
+# section). A surface that is correct-per-manifest and invisible-behind-the-
+# figure is still "text where it is not necessary." `desk-plate-trader`
+# stays in `text_surfaces`, unreferenced now, for the same reason
+# `tube-plinth-*` do: real, verified, measured paint a future task could
+# still use (a re-anchored trader, a repaint) — see task-10-report.md.
+#
+# `desk-face-trader` (x=1109, y=655, w=100, h=30) is the desk's own front
+# panel — the same continuous piece of furniture, a different face of it —
+# well clear of the rig on the X axis (the rig's own rendered bounds start
+# at x≈1298; this surface ends at x=1209, 89px of margin) as well as
+# measured clean by the same gradient-tolerant method. The literal "does
+# not land under the figure" claim is checked from the rendering side, not
+# here — `tests/api/test_world_page.py::
+# test_the_name_trader_surface_does_not_intersect_the_seated_rig` — since
+# that requires the real seated-rig geometry and CAST_SCALE, which only the
+# page source carries.
+
+
+def test_the_desk_face_trader_text_surface_is_the_plates_own_clean_panel():
+    """Same one-directional shape as every sibling in this file: this can
+    fail if a repaint opens a seam through the desk's front panel or shrinks
+    the clean run below the declared height, not if the plate could now
+    support something bigger than currently claimed."""
+    manifest = load_manifest()
+    surface = next(s for s in manifest.text_surfaces if s["id"] == "desk-face-trader")
+    with Image.open(PLATE_PNG) as im:
+        pixels = im.convert("RGB").load()
+        size = im.size
+        shortfalls = [
+            (x, run)
+            for x in range(surface["x"], surface["x"] + surface["w"])
+            for run in [_smoothed_down_run(pixels, size, x, surface["y"])]
+            if run < surface["h"]
+        ]
+        assert shortfalls == [], (
+            f"desk-face-trader: {len(shortfalls)} column(s) fall short of "
+            f"the declared height {surface['h']}, e.g. {shortfalls[:3]}"
+        )
+
+
+def test_the_desk_face_trader_surface_does_not_collide_with_the_tube_glow():
+    """Sibling of the floor-model check above — `desk-face-trader` sits far
+    from `tubes-floor` (x:515-690 vs x:1109-1209), but the rule is checked,
+    not assumed, the same way every new surface in this sprint has been."""
+
+    def _intersects(a, b):
+        return (
+            a["x"] < b["x"] + b["w"]
+            and b["x"] < a["x"] + a["w"]
+            and a["y"] < b["y"] + b["h"]
+            and b["y"] < a["y"] + a["h"]
+        )
+
+    manifest = load_manifest()
+    desk_face = next(s for s in manifest.text_surfaces if s["id"] == "desk-face-trader")
+    tubes_floor = next(g for g in manifest.glow if g["id"] == "tubes-floor")
+    assert not _intersects(desk_face, tubes_floor)

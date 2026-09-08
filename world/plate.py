@@ -30,6 +30,19 @@ anchor needs `seat` re-measured off the plate, not nudged.
 
 Pure and DB-free by design: this is read during a page render, and a broken
 manifest must degrade to the procedural room rather than raise into it.
+
+`text_surfaces["desk-plate-trader"]` (Sprint 16 Task 9) is real, clean desk
+paint - and, at the shipped `cast.scale`/`sit_anchor`, almost entirely
+covered by the seated rig's own head (`y=543..570` sits inside the head's
+rendered `y=520..705`). It stays in the manifest, unreferenced by any `text`
+placement, for the same reason `spare_tubes` and `tube-plinth-*` do: real,
+measured paint a re-anchored trader or a repaint could use later - but
+anyone reaching for it for a NEW placement should re-check it against the
+rig first (`tests/api/test_world_page.py::
+test_the_name_trader_surface_does_not_intersect_the_seated_rig` is the
+check that caught this the first time). `name-trader` itself now sits on
+`desk-plate-trader`'s sibling `desk-face-trader` - the same desk unit's
+front panel, well clear of the rig.
 """
 
 from __future__ import annotations
