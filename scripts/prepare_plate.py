@@ -76,20 +76,34 @@ POT_SHADOW = (1794, 866, 1842, 886)  # the pot's contact shadow: content, not gl
 COUNTER_EDGE = ((1772, 928), (1826, 910))   # (x, y), (x, y) - slope -1/3
 
 # The painted glass is not an axis-aligned rectangle: both monitors are drawn
-# in slight perspective, with vertical left and right edges but top edges that
-# rise ~1px per 20px to the right while the bottoms stay flat.
+# in slight perspective, with vertical left and right edges. The top edges
+# were measured off the source art (rising ~1px per 20px to the right); the
+# bottom edges were originally left flat (KI-052) - candles, laid out in the
+# axis-aligned rect this quad bounds, spilled off the bottom-right of the
+# painted bezel.
 #
-# These are the frames themselves - the inner dark line the bezel draws around
-# the glass, found per column as the luminance minimum and fitted robustly.
-# `top` is (slope, intercept) of that line; every other edge is constant. The
-# fill quads are DERIVED from them, so the frame is stated once: P4 and P5 need
-# the same numbers, and re-deriving them means redoing the measurement.
+# `top` is (slope, intercept) of the frame's inner dark line, found per column
+# as the luminance minimum and fitted robustly against the source art. That
+# art is gone by the time `bottom` needed the same treatment: `darken_screens`
+# below overwrites everything inside the OLD flat-bottomed quad on the shipped
+# PNG, so re-measuring the true bottom edge off the shipped asset is not
+# possible (checked directly - the pixels below the old flat line are desk
+# clutter, not a bezel line). `bottom` is instead DERIVED to keep both edges
+# parallel (same slope as `top`) and anchored at the existing bottom-left
+# corner, so the quad only ever shrinks relative to the old flat bug, never
+# claims glass the plate does not have.
+#
+# Every other edge is a scalar. The fill quads are DERIVED from these, so the
+# frame is stated once: P4 and P5 need the same numbers, and re-deriving them
+# means redoing the measurement (or, for `bottom`, redoing the derivation).
 SCREEN_FRAMES = {
     "centre-left": {
-        "left": 461, "right": 809, "top": (-0.0506, 137.0), "bottom": 352,
+        "left": 461, "right": 809,
+        "top": (-0.0506, 137.0), "bottom": (-0.0506, 375.4278),
     },
     "centre-right": {
-        "left": 852, "right": 1152, "top": (-0.0541, 138.8), "bottom": 306,
+        "left": 852, "right": 1152,
+        "top": (-0.0541, 138.8), "bottom": (-0.0541, 352.2014),
     },
 }
 SCREEN_INSET = 2   # px inside the frame line, so a fill never overruns the bezel
@@ -101,6 +115,14 @@ def frame_top(frame: dict, x: int) -> int:
     return round(slope * x + intercept)
 
 
+def frame_bottom(frame: dict, x: int) -> int:
+    """Where the frame's inner dark line runs at column `x`, bottom edge.
+    See the derivation note above `SCREEN_FRAMES` - unlike `frame_top`, this
+    is not an independent measurement of the source art."""
+    slope, intercept = frame["bottom"]
+    return round(slope * x + intercept)
+
+
 def screen_quad(frame: dict, inset: int = SCREEN_INSET) -> tuple:
     """The glass inside a frame, as corners clockwise from top-left."""
     left = frame["left"] + inset
@@ -108,8 +130,8 @@ def screen_quad(frame: dict, inset: int = SCREEN_INSET) -> tuple:
     return (
         (left, frame_top(frame, left) + inset),
         (right, frame_top(frame, right) + inset),
-        (right, frame["bottom"] - inset),
-        (left, frame["bottom"] - inset),
+        (right, frame_bottom(frame, right) - inset),
+        (left, frame_bottom(frame, left) - inset),
     )
 
 

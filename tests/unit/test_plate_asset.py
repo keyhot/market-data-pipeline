@@ -20,6 +20,7 @@ from scripts.prepare_plate import (
     WATERMARK_LUMA,
     WATERMARK_WINDOW,
     _is_terracotta,
+    frame_bottom,
     frame_top,
 )
 
@@ -40,7 +41,7 @@ def _glass(frame):
     fail, so it is the part that has to be measured.
     """
     for x in range(frame["left"] + 1, frame["right"]):
-        for y in range(frame_top(frame, x) + 1, frame["bottom"]):
+        for y in range(frame_top(frame, x) + 1, frame_bottom(frame, x)):
             yield x, y
 
 

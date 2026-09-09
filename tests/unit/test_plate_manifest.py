@@ -243,6 +243,42 @@ def test_every_screen_quad_lands_on_glass_the_intake_actually_flattened():
             )
 
 
+def test_the_manifests_chart_screens_match_the_intakes_own_derivation():
+    """The manifest's `quad`/`x`/`y`/`w`/`h` are a COPY of what
+    scripts/prepare_plate.py's SCREEN_FRAMES + screen_quad() emit - the
+    intake's own `main()` prints exactly this so Task 2 could paste it
+    rather than re-measure by hand (see its docstring: "two hand-kept copies
+    of one rect is how a candle ends up drawn 6px off the painted glass").
+    KI-052 was exactly that: the manifest and the intake agreed with each
+    other, both flat-bottomed, because both were hand-derived from the same
+    wrong assumption. This pins the two sources together so a future
+    edit to one without the other - including a repaint that re-runs the
+    intake and regenerates the old flat bottom - fails here instead of
+    shipping quietly."""
+    from scripts.prepare_plate import SCREEN_FRAMES, screen_quad
+
+    manifest = load_manifest()
+    charts = [s for s in manifest.screens if s.get("role") == "chart"]
+    assert charts, "no chart screens to check"
+    for screen in charts:
+        assert screen["id"] in SCREEN_FRAMES, (
+            f"{screen['id']}: no matching frame in scripts.prepare_plate"
+        )
+        quad = screen_quad(SCREEN_FRAMES[screen["id"]])
+        assert [list(corner) for corner in quad] == screen["quad"], (
+            f"{screen['id']}: manifest quad disagrees with the intake's own "
+            "screen_quad(SCREEN_FRAMES[...])"
+        )
+        xs = [c[0] for c in quad]
+        x, w = min(xs), max(xs) - min(xs)
+        y = max(quad[0][1], quad[1][1])
+        h = min(quad[2][1], quad[3][1]) - y
+        assert (screen["x"], screen["y"], screen["w"], screen["h"]) == (x, y, w, h), (
+            f"{screen['id']}: manifest rect disagrees with the intake's own "
+            "rect-from-quad formula"
+        )
+
+
 def test_the_cast_stands_clear_of_the_bands():
     """The banner and the price band are drawn over the room. A cast anchor
     inside either one puts a character behind text for the whole broadcast."""
