@@ -10,6 +10,7 @@ the painted glass is not something a schema check can see.
 """
 import dataclasses
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -177,28 +178,68 @@ def test_every_chart_screen_is_a_rect_inside_the_canvas():
         assert screen["y"] + screen["h"] <= height
 
 
-def test_every_screen_rect_lands_on_glass_the_intake_actually_flattened():
-    """The rect a candle is drawn in must contain no painted schematic.
-
-    Scope, stated honestly: this rect is derived to sit INSIDE the quad the
-    intake flattens, so it can only fail when the manifest is edited to claim
-    more glass than the plate has - which is exactly the hand-edit a repaint
-    invites. The complementary direction, an intake that under-fills, is
-    checked against the frame itself in tests/unit/test_plate_asset.py."""
+def test_each_screen_quad_slants_at_both_edges():
+    """KI-052: the top edge was measured and the bottom was left flat, so
+    candles (laid out in the axis-aligned rect, clipped to the quad) spilled
+    off the bottom-right of the painted bezel."""
     manifest = load_manifest()
+    charts = [s for s in manifest.screens if s.get("role") == "chart"]
+    assert charts, "no chart screens to check"
+    for screen in charts:
+        (_, ty0), (_, ty1) = screen["quad"][0], screen["quad"][1]
+        (_, by0), (_, by1) = screen["quad"][3], screen["quad"][2]
+        assert ty0 != ty1, f"{screen['id']} top is flat"
+        assert by0 != by1, f"{screen['id']} bottom is flat"
+        # Both edges recede the same way or the screen is not a plane.
+        assert (ty1 - ty0) * (by1 - by0) > 0
+
+
+def _quad_pixels(quad):
+    """Rasterize the quad as a trapezoid: vertical left/right sides, top and
+    bottom edges each linearly interpolated between their own two corners.
+    Pure geometry over `quad` itself - no dependency on `x/y/w/h`, which is
+    exactly what makes this independent of the rect the old version of this
+    test scanned."""
+    (tlx, tly), (trx, try_), (brx, bry), (blx, bly) = quad
+    assert tlx == blx and trx == brx, "quad sides are not vertical"
+    left, right = tlx, trx
+    for x in range(left, right):
+        frac = (x - left) / (right - left)
+        top_y = tly + (try_ - tly) * frac
+        bottom_y = bly + (bry - bly) * frac
+        for y in range(math.ceil(top_y), math.floor(bottom_y) + 1):
+            yield x, y
+
+
+def test_every_screen_quad_lands_on_glass_the_intake_actually_flattened():
+    """The glass a candle is clipped to (the quad, KI-052) must contain no
+    painted schematic.
+
+    This replaces a rect-scoped version of the same check. Scope, stated
+    honestly, same as before but sharper: `quad` is exactly the polygon the
+    intake fills flat and the page now masks candles to, so this can only
+    fail when the manifest is hand-edited to claim more glass than the plate
+    has. It is green both before and after KI-052's re-measurement (a smaller
+    quad is still a subset of what was flattened) - the TDD evidence for the
+    KI-052 fix itself is `test_each_screen_quad_slants_at_both_edges` above,
+    which is genuinely red on the bug and genuinely green after. The
+    complementary direction, an intake that under-fills, is checked against
+    the frame itself in tests/unit/test_plate_asset.py."""
+    manifest = load_manifest()
+    charts = [s for s in manifest.screens if s.get("role") == "chart"]
+    assert charts, "no chart screens to check"
     with Image.open(PLATE_PNG) as im:
         pixels = im.convert("RGB").load()
-        for screen in manifest.screens:
+        for screen in charts:
             ink = [
                 (x, y)
-                for y in range(screen["y"], screen["y"] + screen["h"])
-                for x in range(screen["x"], screen["x"] + screen["w"])
+                for x, y in _quad_pixels(screen["quad"])
                 if pixels[x, y][1] > pixels[x, y][0] + 15
                 and pixels[x, y][2] > pixels[x, y][0] + 10
                 and pixels[x, y][1] > 50
             ]
             assert ink == [], (
-                f"{screen['id']}: {len(ink)} painted px inside the chart rect"
+                f"{screen['id']}: {len(ink)} painted px inside the chart quad"
             )
 
 
