@@ -3041,6 +3041,12 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
     assert "new PIXI.Graphics()" not in draw, (
         "drawCandles must reuse a Graphics keyed by screen.id, not build one"
     )
+    assert "addChild" not in draw, (
+        "KI-052: drawCandles runs once per screen per poll, forever - "
+        "anything it adds to a layer (e.g. a quad mask) leaks unboundedly. "
+        "The mask belongs in buildMonitorGraphics, built once, like `g` "
+        "itself"
+    )
     poll = _js_block(body, "async function pollBars(")
     assert "new PIXI.Graphics()" not in poll
 
@@ -3085,6 +3091,7 @@ def _monitor_driver(*, plate_ready: bool) -> str:
         "  }\n"
         "  clear() { this.cleared++; this.rects = []; this.fills = []; return this; }\n"
         "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
+        "  poly(points) { this.polyPoints = points; return this; }\n"
         "  fill(color) { this.fills.push(color); return this; }\n"
         "}\n"
         "const PIXI = { Graphics: FakeGraphics };\n"
@@ -3210,11 +3217,18 @@ def test_drawCandles_executed_draws_fresh_candles_and_dims_stale_ones():
 
 @needs_node
 def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
-    """Exactly one Graphics per painted screen, keyed by `screen.id`, and
-    parented under its OWN layer, `layers.monitors` — never `layers.glow`
+    """Exactly one candle Graphics per painted screen, keyed by `screen.id`,
+    and parented under its OWN layer, `layers.monitors` — never `layers.glow`
     (additive glow would wash the candles out), never `layers.chars`, and
     (Finding 1, review round 1) never `layers.props` either, since that
-    container is wiped and rebuilt every draw() cycle."""
+    container is wiped and rebuilt every draw() cycle.
+
+    KI-052: each screen also gets a quad mask, built once here alongside its
+    candle Graphics (never inside drawCandles, which runs every poll forever
+    - see test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick).
+    That doubles the Graphics/children counts below; the mask itself is
+    checked against the manifest's own `quad`, not just counted.
+    """
     driver = _monitor_driver(plate_ready=True) + (
         "buildMonitorGraphics();\n"
         "console.log(JSON.stringify({\n"
@@ -3223,14 +3237,24 @@ def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
         "  inMonitors: layers.monitors.children.length,\n"
         "  sameRef: monitorGraphics[PLATE.screens[0].id]"
         " === layers.monitors.children[0],\n"
+        "  masks: Object.fromEntries(Object.entries(monitorGraphics).map(\n"
+        "    ([id, g]) => [id, g.mask ? g.mask.polyPoints : null])),\n"
         "}));\n"
     )
     emitted = _run_node(driver)
-    manifest_ids = sorted(s["id"] for s in _manifest()["screens"])
-    assert emitted["built"] == len(manifest_ids)
+    manifest_screens = {s["id"]: s for s in _manifest()["screens"]}
+    manifest_ids = sorted(manifest_screens)
     assert emitted["ids"] == manifest_ids
-    assert emitted["inMonitors"] == len(manifest_ids)
+    # One candle Graphics + one quad mask per screen, all built exactly
+    # once, all landing in layers.monitors.
+    assert emitted["built"] == 2 * len(manifest_ids)
+    assert emitted["inMonitors"] == 2 * len(manifest_ids)
     assert emitted["sameRef"] is True
+    for screen_id in manifest_ids:
+        quad = manifest_screens[screen_id]["quad"]
+        assert emitted["masks"][screen_id] == [c for point in quad for c in point], (
+            f"{screen_id}: candle Graphics mask does not match its own quad"
+        )
 
 
 @needs_node

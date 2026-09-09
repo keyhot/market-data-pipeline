@@ -2671,6 +2671,22 @@
         // wiped by anyone else (see the layer's own comment in boot()).
         layers.monitors.addChild(g);
         monitorGraphics[screen.id] = g;
+        // KI-052: clip candles to the painted glass's own quad, not the
+        // bounding rect drawCandles lays them out in - the rect can (and,
+        // before this fix, did) reach past the quad's slanted bottom edge
+        // at the bottom-right. Built once here, exactly like `g` itself:
+        // drawCandles runs once per screen per poll, forever, so anything
+        // it added to a layer would leak without bound (see that
+        // function's own comment, and
+        // test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick).
+        // Guarded on `screen.quad` so a manifest entry with no quad (never
+        // shipped today, but not schema-forbidden) fails closed to an
+        // unmasked screen rather than throwing inside boot().
+        if (screen.quad) {
+          const glass = new PIXI.Graphics().poly(screen.quad.flat()).fill(0xffffff);
+          g.mask = glass;
+          layers.monitors.addChild(glass);
+        }
       }
     }
 
