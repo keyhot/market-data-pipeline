@@ -4,12 +4,12 @@
   "cell": 4,
   "symbols": ["BTCUSDT", "ETHUSDT"],
   "tubes": [
-    {"symbol": "BTCUSDT", "x": 552, "base_y": 719, "height": 315, "width": 57},
-    {"symbol": "ETHUSDT", "x": 650, "base_y": 691, "height": 300, "width": 57}
+    {"symbol": "BTCUSDT", "x": 552, "base_y": 719, "height": 315, "width": 57, "bore_ry": 7.5},
+    {"symbol": "ETHUSDT", "x": 650, "base_y": 691, "height": 300, "width": 57, "bore_ry": 7.0}
   ],
   "spare_tubes": [
-    {"x": 1191, "base_y": 449, "height": 280, "width": 46},
-    {"x": 1252, "base_y": 428, "height": 290, "width": 45}
+    {"x": 1191, "base_y": 449, "height": 280, "width": 46, "bore_ry": 5.5},
+    {"x": 1252, "base_y": 428, "height": 290, "width": 45, "bore_ry": 5.5}
   ],
   "cast": {
     "scale": 1.25,

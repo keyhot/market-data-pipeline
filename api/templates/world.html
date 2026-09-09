@@ -1319,7 +1319,17 @@
       // so they read as depth rather than as a chart; centred in the bore when
       // the plate painted one.
       const x = tube ? tube.x - width / 2 : app.screen.width * 0.80 + index * 132;
-      return { x, baseY, width, height };
+      // KI-055: the tube is a cylinder seen slightly from above, so the fill's
+      // top and base are ellipses, not flat caps - `bore_ry` is that ellipse's
+      // measured squash (Docs/world-room-plate.md). Read here, not re-derived
+      // in drawPillars, for the same reason this whole function exists:
+      // off-by-tens against the painted bore is arithmetic, checkable without
+      // PIXI. No painted tube means no measured squash either, so this falls
+      // back to a fixed fraction of the (also-fallback) width rather than
+      // reaching into a null tube - the same degrade-not-throw rule
+      // rampLevel/CONTACT use above.
+      const boreRy = tube && Number.isFinite(tube.bore_ry) ? tube.bore_ry : width * 0.13;
+      return { x, baseY, width, height, boreRy };
     }
 
     function drawPillars(state) {
@@ -1342,11 +1352,18 @@
           pillar.rect(snap(geo.x), snap(geo.baseY - (b + 1) * CELL * 2), geo.width, CELL)
                 .fill({ color: color(data.mood), alpha: 0.85 });
         }
-        // A cap catches the light: without it a flat column reads as a bar
-        // chart, which is the model's body, not the room's furniture.
-        const cap = new PIXI.Graphics()
-          .roundRect(geo.x - 4, geo.baseY - geo.height - 6, geo.width + 8, 8, 3)
-          .fill({ color: color(data.mood), alpha: 0.8 });
+        // KI-055: the tubes are painted cylinders seen slightly from above,
+        // so the surface of what fills them is an ellipse. A flat cap
+        // contradicts the perspective of the art it sits inside — it reads
+        // as a bar chart, which is the model's BODY, not the room's
+        // furniture. The base gets the same treatment: it is the tube's own
+        // floor, always visible under the fill, never a flat edge either.
+        const cap = new PIXI.Graphics();
+        const fillColour = color(data.mood);
+        cap.ellipse(geo.x + geo.width / 2, geo.baseY - geo.height, geo.width / 2, geo.boreRy)
+           .fill(shade(fillColour, rampLevel("lit")));
+        cap.ellipse(geo.x + geo.width / 2, geo.baseY, geo.width / 2, geo.boreRy)
+           .fill(shade(fillColour, rampLevel("shade")));
         // Sprint 16 Task 10: no per-tube symbol/mood label any more — both
         // floated at a fixed offset off the tube's own base, with no
         // declared surface (Task 9 deleted `symbol-BTCUSDT`/`symbol-ETHUSDT`

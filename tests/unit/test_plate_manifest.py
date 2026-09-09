@@ -719,3 +719,103 @@ def test_the_desk_face_trader_surface_does_not_collide_with_the_tube_glow():
     desk_face = next(s for s in manifest.text_surfaces if s["id"] == "desk-face-trader")
     tubes_floor = next(g for g in manifest.glow if g["id"] == "tubes-floor")
     assert not _intersects(desk_face, tubes_floor)
+
+
+# --- Task 11: KI-055, the tube fill gets a round top ------------------------
+#
+# The tubes are painted cylinders seen slightly from above, so the surface of
+# whatever fills them is an ellipse - a `roundRect` cap is why they read as
+# progress bars. `bore_ry` is the bore's perspective squash: half the vertical
+# span between the cap's back-rim and front-rim highlight peaks, the same
+# measurement `scan_bore_ry.py` (task-11-12-report.md) makes off the plate.
+# Every entry that can stand a pillar needs one - `tubes` AND `spare_tubes`,
+# since a symbol promoted from a spare inherits whatever it was given.
+
+
+def test_every_tube_carries_its_bore_foreshortening():
+    # The cap's height is the bore's perspective squash. Measured, not
+    # guessed — a repaint at a different camera angle changes it.
+    manifest = load_manifest()
+    for tube in list(manifest.tubes) + list(manifest.spare_tubes):
+        assert "bore_ry" in tube, tube
+        assert 0 < tube["bore_ry"] < tube["width"] / 2, tube
+
+
+def _luminance(rgb):
+    r, g, b = rgb
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _smoothed_column_luminance(pixels, height, x, y0, y1, win=3):
+    """Same 3-row smoothing `_smoothed_column` above uses, but returning
+    luminance rather than a colour triple: gradient-tolerant, so the desk
+    lamp's own falloff across the frame does not bias which row reads as the
+    peak."""
+    out = []
+    for y in range(y0, y1):
+        lo, hi = max(0, y - win // 2), min(height, y + win // 2 + 1)
+        rows = range(lo, hi)
+        out.append(sum(_luminance(pixels[x, yy]) for yy in rows) / len(rows))
+    return out
+
+
+def _measured_bore_ry(pixels, height, tube):
+    """Re-derive `bore_ry` from the plate itself.
+
+    The painted cap is a flattened ellipse: a bright rim highlight traces its
+    far (back) edge and its near (front) edge, with the lit disc FACE between
+    them sitting at a lower, flatter luminance than either rim, and the
+    vertical tube wall below the front rim sitting lower still. `bore_ry` is
+    half the vertical distance between those two rim peaks - the same span
+    PIXI's `ellipse(cx, cy, rx, ry)` draws when `cy` sits between them.
+    """
+    top = tube["base_y"] - tube["height"]
+    x = tube["x"]
+    y0, y1 = top - 20, top + 40
+    col = _smoothed_column_luminance(pixels, height, x, y0, y1)
+    ys = list(range(y0, y1))
+    background = sum(col[:8]) / 8
+    back_i = next(
+        (
+            i
+            for i in range(1, len(col) - 1)
+            if col[i] - background > 40
+            and col[i] >= col[i - 1]
+            and col[i] >= col[i + 1]
+        ),
+        None,
+    )
+    assert back_i is not None, (
+        f"no back-rim peak found for tube at x={x} in rows {y0}..{top}"
+    )
+    front_i = next(
+        (
+            i
+            for i in range(back_i + 2, len(col) - 1)
+            if col[i] >= col[i - 1]
+            and col[i] >= col[i + 1]
+            and min(col[back_i:i]) < col[i] - 15
+        ),
+        None,
+    )
+    assert front_i is not None, (
+        f"no front-rim peak found for tube at x={x} in rows {ys[back_i]}..{top + 40}"
+    )
+    return (ys[front_i] - ys[back_i]) / 2
+
+
+def test_every_tubes_bore_ry_matches_the_plates_own_cap_highlight():
+    """KI-055: `bore_ry` is a measurement, not a guess. Re-derive it from the
+    plate's own painted cap (the back-rim/front-rim highlight peaks) for
+    every tube AND spare_tubes entry, so a repaint that moves a tube without
+    re-measuring this leaves a cap that no longer matches its own housing."""
+    manifest = load_manifest()
+    with Image.open(PLATE_PNG) as im:
+        pixels = im.convert("RGB").load()
+        _, height = im.size
+        for tube in list(manifest.tubes) + list(manifest.spare_tubes):
+            measured = _measured_bore_ry(pixels, height, tube)
+            assert abs(tube["bore_ry"] - measured) <= 0.6, (
+                f"{tube.get('symbol', tube)}: manifest bore_ry="
+                f"{tube['bore_ry']} but the plate measures {measured}"
+            )

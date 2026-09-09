@@ -1202,6 +1202,10 @@ def test_a_pillar_is_drawn_inside_the_tube_the_plate_painted():
     assert btc["x"] == tubes["BTCUSDT"]["x"] - tubes["BTCUSDT"]["width"] / 2
     assert btc_full["height"] == tubes["BTCUSDT"]["height"], "a full tube overflows"
     assert eth["baseY"] == tubes["ETHUSDT"]["base_y"]
+    # KI-055: the cap's squash is the painted bore's own, not a guess -
+    # pillarGeometry carries it so drawPillars never has to re-derive a tube.
+    assert btc["boreRy"] == tubes["BTCUSDT"]["bore_ry"]
+    assert eth["boreRy"] == tubes["ETHUSDT"]["bore_ry"]
 
 
 @needs_node
@@ -1220,6 +1224,11 @@ def test_without_a_plate_the_pillars_march_off_toward_the_corner_as_before():
     assert second["x"] == pytest.approx(1920 * 0.80 + 132)
     assert first["width"] == 54
     assert first["baseY"] == pytest.approx(960 * 0.66)
+    # No painted tube means no measured squash either - this must degrade to
+    # a finite fraction of the (also-fallback) width, never NaN/undefined
+    # reaching g.ellipse(), the same "no plate, no throw" rule CONTACT/
+    # rampLevel hold above.
+    assert first["boreRy"] == pytest.approx(54 * 0.13)
 
 
 def test_the_cast_is_placed_from_its_anchor_every_frame():
@@ -1504,6 +1513,27 @@ def test_the_pillar_fill_is_a_stack_of_blocks_not_a_smooth_rect():
     ), "the tube fill is still one smooth rounded rect"
     assert re.search(r"for\s*\(let b = 0", draw_pillars), "the fill is not a block loop"
     assert "CELL" in draw_pillars and "snap(" in draw_pillars
+
+
+def test_the_tube_fill_is_capped_with_an_ellipse():
+    """KI-055: the tubes are painted cylinders seen slightly from above, so
+    the surface of whatever fills them is an ellipse - a `roundRect` cap is
+    why they read as progress bars. `boreRy` (pillarGeometry's own measured
+    field, see test_a_pillar_is_drawn_inside_the_tube_the_plate_painted) is
+    what stands in for the guessed constant a comment-only check could not
+    tell apart from the real fix."""
+    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    assert "roundRect(geo.x - 4" not in draw_pillars, (
+        "the cap is still a flat roundRect"
+    )
+    assert "ellipse(" in draw_pillars
+    assert "geo.boreRy" in draw_pillars, "the cap's squash must be the measured one"
+
+
+def test_the_stacked_cell_fill_survives():
+    # Deliberate from Sprint 15 (C1 Step 3b): the cells are the texture that
+    # makes the fill read as volume. This ticket is the cap only.
+    assert "CELL" in _js_block(_world_source(), "function drawPillars(")
 
 
 @needs_node
