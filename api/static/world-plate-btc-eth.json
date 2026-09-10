@@ -31,6 +31,15 @@
     {"id": "tubes-floor", "x": 515, "y": 380, "w": 175, "h": 380},
     {"id": "tubes-desk", "x": 1160, "y": 120, "w": 122, "h": 340}
   ],
+  "ambient_lights": [
+    {"x": 1675, "y": 102, "w": 6, "h": 7, "colour": "#ff3b30", "period": 2.6},
+    {"x": 1437, "y": 221, "w": 23, "h": 10, "colour": "#ff6a5c", "period": 4.8},
+    {"x": 1606, "y": 129, "w": 5, "h": 4, "colour": "#ff453a", "period": 3.3},
+    {"x": 1758, "y": 302, "w": 7, "h": 8, "colour": "#ff2d55", "period": 5.5},
+    {"x": 1462, "y": 387, "w": 10, "h": 19, "colour": "#ff3b30", "period": 3.9},
+    {"x": 1722, "y": 357, "w": 10, "h": 15, "colour": "#e0303f", "period": 4.3},
+    {"x": 1659, "y": 402, "w": 39, "h": 25, "colour": "#ff5a4d", "period": 6.2}
+  ],
   "bands": {"top": 60, "bottom": 105},
   "light": {
     "key": [1339, 455],

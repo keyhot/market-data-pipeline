@@ -78,6 +78,12 @@ class PlateManifest:
     # instead of restating. `text` is the placements, each naming one surface.
     text_surfaces: tuple[dict, ...] = field(default=())
     text: tuple[dict, ...] = field(default=())
+    # Sprint 16 Task 14 (STRETCH): the painted city's own window lights, each
+    # a small rect measured over painted glass with a colour and a blink
+    # period. Optional, like `text_surfaces`/`text` above — an older
+    # manifest or a repaint that dropped it degrades to a dark, still
+    # skyline, never a throw.
+    ambient_lights: tuple[dict, ...] = field(default=())
 
     def as_dict(self) -> dict:
         return {
@@ -90,6 +96,7 @@ class PlateManifest:
             "cast": dict(self.cast),
             "screens": [dict(screen) for screen in self.screens],
             "glow": [dict(glow) for glow in self.glow],
+            "ambient_lights": [dict(light) for light in self.ambient_lights],
             "bands": dict(self.bands),
             "light": dict(self.light),
             "text_surfaces": [dict(s) for s in self.text_surfaces],
@@ -145,6 +152,7 @@ def load_manifest(path: Path | None = None) -> PlateManifest | None:
             cast=dict(raw.get("cast", {})),
             screens=tuple(raw.get("screens", ())),
             glow=tuple(raw.get("glow", ())),
+            ambient_lights=tuple(raw.get("ambient_lights", ())),
             bands=dict(raw.get("bands", {})),
             light=dict(raw.get("light", {})),
             text_surfaces=tuple(raw.get("text_surfaces", ())),

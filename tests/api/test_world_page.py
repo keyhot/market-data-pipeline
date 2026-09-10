@@ -5302,3 +5302,197 @@ def test_a_built_characters_nametag_is_reachable_from_outside_character():
         "character()'s returned object no longer exposes nameTag - "
         "model.nameTag.text = \"\" / trader.nameTag.text = \"\" would throw"
     )
+
+
+# --- Task 14 (STRETCH): the painted city's window lights blink -------------
+#
+# The plate already paints a skyline of window lights outside the room's own
+# window; this animates what is there rather than inventing anything new.
+# Ruling 2 (controller pre-flight): the brief's own two tests were substring
+# checks over the whole page source - `"phase" in body` passes on an English
+# sentence, and the `plateReady` check passes on a comment describing a
+# MISSING guard. These run the real `buildAmbientLights`/`tickAmbientLights`
+# in node, the same way `_glow_driver`'s tests run the real
+# `buildGlows`/`applyGlow` above - against the manifest's own `ambient_lights`
+# rects, with only `PIXI.Graphics` and `layers.plate` stubbed.
+
+
+def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> str:
+    """The page's own `buildAmbientLights`/`tickAmbientLights`, run against
+    the real manifest's `ambient_lights` rects - only `PIXI.Graphics` and
+    `layers.plate` are stubbed, and the stub records what was actually
+    drawn/mutated rather than asserting on source text. Mirrors
+    `_glow_driver` above, one layer over (`layers.plate`, not `layers.glow` -
+    these lights are painted-city detail sitting on the plate itself, not
+    additive light over blank paint)."""
+    source = _world_source()
+    ambient_lights = lights if lights is not None else _manifest()["ambient_lights"]
+    return (
+        f"const PLATE = {json.dumps({'ambient_lights': ambient_lights})};\n"
+        f"const plateReady = {str(plate_ready).lower()};\n"
+        "class FakeGraphics {\n"
+        "  constructor() {\n"
+        "    this.rects = []; this.fills = []; this.alpha = 1;\n"
+        "  }\n"
+        "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
+        "  fill(opts) { this.fills.push(opts); return this; }\n"
+        "}\n"
+        "const PIXI = { Graphics: FakeGraphics };\n"
+        "const layers = { plate: { children: [],\n"
+        "  addChild(c) { this.children.push(c); } } };\n"
+        "let ambientLightSprites = [];\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_block(source, "function rng32(")
+        + "\n"
+        + _js_const(source, "AMBIENT_LIGHTS")
+        + "\n"
+        + _js_const(source, "AMBIENT_LIGHT_MIN_ALPHA")
+        + "\n"
+        + _js_block(source, "function buildAmbientLights(")
+        + "\n"
+        + _js_block(source, "function tickAmbientLights(")
+        + "\n"
+    )
+
+
+@needs_node
+def test_the_window_lights_blink_on_independent_cycles():
+    """A shared phase makes the whole skyline pulse in unison, which reads
+    as a fault rather than as a city - the same "vary AND offset" rule
+    `char.phaseOffset`/`char.breath` already follow for the cast, just above
+    this ticket's own code. Runs the real builder/ticker and checks what got
+    painted at three different instants, not a claim about the source text.
+    """
+    lights = _manifest()["ambient_lights"]
+    assert len(lights) >= 2, "not enough lights in the manifest to prove independence"
+
+    driver = _ambient_lights_driver(plate_ready=True) + (
+        "buildAmbientLights();\n"
+        "const phases = ambientLightSprites.map((l) => l.phase);\n"
+        "const snapshots = [0, 1.3, 4.7].map((t) => {\n"
+        "  tickAmbientLights(t);\n"
+        "  return ambientLightSprites.map((l) => l.graphics.alpha);\n"
+        "});\n"
+        "console.log(JSON.stringify({ phases, snapshots }));\n"
+    )
+    emitted = _run_node(driver)
+
+    assert len(emitted["phases"]) == len(lights)
+    assert len(set(emitted["phases"])) == len(emitted["phases"]), (
+        "every light must carry its own phase, not a shared clock"
+    )
+
+    # At any single instant the lights must not all read the same
+    # brightness - that is what "independent phase" has to mean in practice.
+    for snapshot in emitted["snapshots"]:
+        assert len(set(snapshot)) > 1, (
+            "every light reported the same alpha at one instant - "
+            "the skyline pulsed in unison"
+        )
+
+    # And each light must actually move between two different instants - a
+    # phase that never advances is a fixed dim window, not a blink.
+    for i in range(len(lights)):
+        trace = [snapshot[i] for snapshot in emitted["snapshots"]]
+        assert len(set(trace)) > 1, f"light {i} never changes brightness over time"
+
+
+@needs_node
+def test_ambient_life_is_guarded_for_the_no_plate_path():
+    """The KI-050 shape, exactly: an ambient ticker that writes to something
+    only the plate path creates kills the renderer on every load. Two claims,
+    both run rather than pattern-matched: (1) the realistic no-plate call
+    pattern never builds anything to tick in the first place, and (2) even if
+    something HAD been built (a future edit, a stale call), `tickAmbientLights`
+    must still refuse to touch it while `plateReady` is false - so the
+    guard's own behaviour is pinned, not just its presence in a comment.
+    """
+    # Realistic pattern: buildAmbientLights is never called without a plate
+    # (see the drawPlate wiring test below), so there is nothing to tick.
+    realistic = _run_node(
+        _ambient_lights_driver(plate_ready=False)
+        + (
+            "tickAmbientLights(3.0);\n"
+            "console.log(JSON.stringify(ambientLightSprites.length));\n"
+        )
+    )
+    assert realistic == 0
+
+    # Adversarial: build unconditionally, then prove the GUARD - not just
+    # caller discipline - is what stops tickAmbientLights from touching it.
+    result = _run_node(
+        _ambient_lights_driver(plate_ready=False)
+        + (
+            "buildAmbientLights();\n"
+            "const before = ambientLightSprites.map((l) => l.graphics.alpha);\n"
+            "tickAmbientLights(3.0);\n"
+            "const after = ambientLightSprites.map((l) => l.graphics.alpha);\n"
+            "console.log(JSON.stringify({ before, after }));\n"
+        )
+    )
+    assert result["before"], "buildAmbientLights built nothing to test the guard against"
+    assert result["before"] == result["after"], (
+        "tickAmbientLights must leave the lights exactly as buildAmbientLights "
+        "left them when plateReady is false - it changed them instead"
+    )
+
+
+def test_ambient_lights_build_their_graphics_once_not_inside_the_ticker():
+    """RULING 3 (controller pre-flight): this file already carries the scar -
+    `buildMonitorGraphics`'s own comment records that rebuilding `Graphics`
+    every tick "is exactly what B2 warned would cost the stream frames on a
+    box that also encodes 1080p", and Task 12's central ruling was a
+    per-poll `Graphics` leak caught before it shipped. Ambient lights tick
+    far more often than either. Built once (`buildAmbientLights`, called from
+    `drawPlate`'s success path alongside `buildGlows`/`buildMonitorGraphics`);
+    the ticker (`tickAmbientLights`, called from `startAmbient`'s
+    `app.ticker.add`) only mutates `.alpha`.
+    """
+    body = _world_source()
+    draw_plate = _js_block(body, "async function drawPlate(")
+    assert "buildAmbientLights();" in draw_plate, (
+        "buildAmbientLights must be called once, when the plate becomes ready"
+    )
+
+    ambient_fn = _js_block(body, "function startAmbient()")
+    ticker = _js_block(ambient_fn, "app.ticker.add(")
+    assert "tickAmbientLights(" in ticker, (
+        "the per-frame ticker must actually drive the lights"
+    )
+    assert "new PIXI.Graphics()" not in ticker, (
+        "a Graphics allocation inside the per-frame ticker rebuilds "
+        "geometry ~60x/sec"
+    )
+    assert "buildAmbientLights(" not in ticker, (
+        "buildAmbientLights must not be called from inside the ticker"
+    )
+
+    tick_fn = _js_block(body, "function tickAmbientLights(")
+    assert "new PIXI.Graphics()" not in tick_fn, (
+        "tickAmbientLights must only mutate .alpha on the pre-built lights"
+    )
+    assert "buildAmbientLights(" not in tick_fn, (
+        "tickAmbientLights must not call buildAmbientLights() itself either - "
+        "that would rebuild the geometry every tick just as surely as "
+        "inlining the allocation would"
+    )
+
+
+def test_the_manifest_carries_a_small_list_of_ambient_lights():
+    """Schema-level pin: `ambient_lights` is a small list of rects measured
+    over painted windows, each with its own colour and blink period - the
+    shape `buildAmbientLights`/the node drivers above assume."""
+    lights = _manifest()["ambient_lights"]
+    assert 2 <= len(lights) <= 12, "expected a SMALL list, not a new effect"
+    canvas_w, canvas_h = _manifest()["canvas"]
+    for light in lights:
+        for key in ("x", "y", "w", "h", "colour", "period"):
+            assert key in light, f"ambient light missing {key!r}: {light}"
+        assert 0 <= light["x"] <= canvas_w
+        assert 0 <= light["y"] <= canvas_h
+        assert light["w"] > 0 and light["h"] > 0
+        assert re.match(r"^#[0-9a-fA-F]{6}$", light["colour"])
+        assert light["period"] > 0

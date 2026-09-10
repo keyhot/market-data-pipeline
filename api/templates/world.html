@@ -1128,13 +1128,17 @@
         // never inside drawCandles or the poll loop. See buildMonitorGraphics
         // below.
         buildMonitorGraphics();
-        // Claimed only once BOTH builders have actually succeeded — not
-        // before them. Every other read of `plateReady` (the vignette gate,
-        // applyGlow, drawCandles) treats it as "the room is safe to light as
-        // painted"; claiming it before the builders ran let a throw inside
-        // either leave the flag true while the catch below drew the
-        // procedural room on top of the still-added plate sprite — plate and
-        // procedural room composited together, a darkened double-exposure.
+        // Task 14: the painted city's window lights, same "build once" rule
+        // — never inside the per-frame ticker. See buildAmbientLights above.
+        buildAmbientLights();
+        // Claimed only once ALL THREE builders have actually succeeded —
+        // not before them. Every other read of `plateReady` (the vignette
+        // gate, applyGlow, tickAmbientLights, drawCandles) treats it as "the
+        // room is safe to light as painted"; claiming it before the builders
+        // ran let a throw inside any of them leave the flag true while the
+        // catch below drew the procedural room on top of the still-added
+        // plate sprite — plate and procedural room composited together, a
+        // darkened double-exposure.
         plateReady = true;
         // The plate reserves a quiet strip at the top for the newcomer line.
         // Bind the banner to the measurement so a repaint moves the text with
@@ -2557,6 +2561,11 @@
         // one frame while the vignette/warmth/background dimming beside it
         // keep easing for four more seconds. Two speeds for one swell.
         applyGlow(ambient.light.lift);
+        // Task 14: the city's window lights, off the same running clock —
+        // a no-op of its own accord when there is no plate (see
+        // tickAmbientLights's own guard), so it is safe to call every tick
+        // either way, same as applyGlow above.
+        tickAmbientLights(ambient.t);
 
         // Colour temperature: warm as selling pressure builds, cool as it eases.
         // Tier warmth composes on top rather than replacing it — pressure is
@@ -2650,6 +2659,50 @@
       if (!plateReady) return;   // no plate: nothing was ever built to light
       const alpha = Math.min(1, lift * GLOW_LIFT_TO_ALPHA);
       for (const glow of glows) glow.alpha = alpha;
+    }
+
+    // --- Task 14 (STRETCH): the painted city's window lights blink --------
+    // The plate already paints a skyline through the room's own window; this
+    // animates what is there rather than inventing anything new. A small
+    // list of rects measured over painted glass, each fading on its own
+    // phase and period — a shared clock would pulse the whole skyline in
+    // unison, which reads as a fault rather than as a city.
+    const AMBIENT_LIGHTS = (PLATE && PLATE.ambient_lights) || [];
+    // The floor of the fade: dim, not off. A light that reaches alpha 0
+    // reads as a rendering glitch (a window that vanished) rather than one
+    // that is simply dark for a moment — the plate's own paint stays
+    // visible underneath at every point in the cycle.
+    const AMBIENT_LIGHT_MIN_ALPHA = 0.12;
+
+    // Built once, exactly like buildGlows/buildMonitorGraphics beside it —
+    // never inside the per-frame ticker. Each light gets its own Graphics
+    // (mutated only on .alpha per tick) and its own phase, seeded off the
+    // light's index with the same rng32 the cast's breathing uses, so a
+    // reload is reproducible but no two lights start in lockstep.
+    let ambientLightSprites = [];
+
+    function buildAmbientLights() {
+      ambientLightSprites = AMBIENT_LIGHTS.map((light, i) => {
+        const graphics = new PIXI.Graphics()
+          .rect(snap(light.x), snap(light.y), snap(light.w), snap(light.h))
+          .fill({ color: parseInt(light.colour.slice(1), 16), alpha: 1 });
+        layers.plate.addChild(graphics);
+        return {
+          graphics,
+          period: light.period > 0 ? light.period : 4,
+          phase: rng32(i + 1)(),
+        };
+      });
+    }
+
+    // `t` is `ambient.t`, the same running clock the swell/drift/breathing
+    // already read — never a second clock of its own (KI-019's family).
+    function tickAmbientLights(t) {
+      if (!plateReady) return;   // no plate: nothing was ever built to light
+      for (const light of ambientLightSprites) {
+        const u = 0.5 + 0.5 * Math.sin((t / light.period + light.phase) * Math.PI * 2);
+        light.graphics.alpha = AMBIENT_LIGHT_MIN_ALPHA + (1 - AMBIENT_LIGHT_MIN_ALPHA) * u;
+      }
     }
 
     // --- M2: live candles in the painted monitors -------------------------
