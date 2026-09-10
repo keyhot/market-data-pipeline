@@ -42,11 +42,14 @@ def test_health_includes_world_liveness():
         response = client.get("/health")
 
     assert response.status_code == 200
-    world = response.json()["data"]["world"]
+    data = response.json()["data"]
+    world = data["world"]
     assert world["stale"] is False
     # Wall-clock read inside the handler, so bound it rather than pin it.
     assert 175 <= world["signal_age_s"] <= 185
     assert 55 <= world["event_age_s"] <= 65
+    # Healthy means no reason to explain (MINOR-8's discriminator).
+    assert data["world_unavailable_reason"] is None
 
 
 def test_health_degrades_world_to_none_on_database_error():
@@ -66,7 +69,13 @@ def test_health_degrades_world_to_none_on_database_error():
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json()["data"]["world"] is None
+    data = response.json()["data"]
+    assert data["world"] is None
+    # MINOR-8: distinguishes "Postgres answered but the read itself broke"
+    # from "the gate never opened" (the next test) — KI-057's alerting
+    # ticket needs to tell "we don't know right now" from "this has been
+    # broken since deploy" apart, and a bare null cannot.
+    assert data["world_unavailable_reason"] == "reader_error"
 
 
 def test_health_skips_the_world_read_when_postgres_is_not_readable():
@@ -84,7 +93,9 @@ def test_health_skips_the_world_read_when_postgres_is_not_readable():
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json()["data"]["world"] is None
+    data = response.json()["data"]
+    assert data["world"] is None
+    assert data["world_unavailable_reason"] == "not_connected"
     reader.assert_not_called()
 
 
@@ -110,9 +121,10 @@ def test_health_reads_world_liveness_when_writes_are_disabled_but_db_is_reachabl
         response = client.get("/health")
 
     assert response.status_code == 200
-    world = response.json()["data"]["world"]
-    assert world is not None
-    assert world["stale"] is False
+    data = response.json()["data"]
+    assert data["world"] is not None
+    assert data["world"]["stale"] is False
+    assert data["world_unavailable_reason"] is None
 
 
 def test_metrics_includes_scheduler_status():

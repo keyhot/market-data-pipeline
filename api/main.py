@@ -277,7 +277,18 @@ def health():
     # avoids the naive/aware TypeError, but the broad except is what
     # actually keeps the 200-through-an-outage guarantee even if a future
     # caller gets that wrong, or the reader fails for any other reason.
+    # `world` and `world_unavailable_reason` are a pair, not two independent
+    # fields: `null`/`null` means the field itself is healthy (see the dict
+    # below), and whenever `world` is `null` the reason is exactly one of
+    # "not_connected" (the gate never opened — this ping-equivalent failed,
+    # or writes are off and the DB didn't answer either) or "reader_error"
+    # (Postgres answered the gate but the read itself then raised — e.g. it
+    # dropped between the two, or a bug like a naive/aware TypeError). KI-057's
+    # own alerting ticket is the consumer of this: "we don't know right now"
+    # and "this has been broken since deploy" are different alerts, and a
+    # bare `null` cannot tell them apart.
     world = None
+    world_unavailable_reason = None
     if postgres_readable(postgres):
         try:
             latest_signal_at, latest_event_at = world_liveness_times()
@@ -290,6 +301,9 @@ def health():
                 extra={"error": f"{type(e).__name__}: {e}"},
             )
             world = None
+            world_unavailable_reason = "reader_error"
+    else:
+        world_unavailable_reason = "not_connected"
     return ApiResponse(
         status=200,
         message="API is healthy",
@@ -301,6 +315,7 @@ def health():
             # `pages` — see Task 15. The API cannot know which source is on air.
             "renderer": renderer,
             "world": world,
+            "world_unavailable_reason": world_unavailable_reason,
         },
     )
 
