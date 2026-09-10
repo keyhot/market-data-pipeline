@@ -1530,6 +1530,41 @@ def test_the_tube_fill_is_capped_with_an_ellipse():
     assert "geo.boreRy" in draw_pillars, "the cap's squash must be the measured one"
 
 
+def test_the_tube_fill_has_a_base_ellipse_too():
+    """Review round 2, mutation M-B: the brief's Step 4 required the tube's
+    BASE - its own floor, always visible under the fill - to get the same
+    elliptical treatment as the cap, but nothing pinned it: deleting the
+    base ellipse and keeping only the cap left 15 tests green.
+    `test_the_tube_fill_is_capped_with_an_ellipse` above is satisfied by
+    either ellipse alone, so it cannot tell one from two. `drawPillars` must
+    draw exactly two ellipses per tube."""
+    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    assert draw_pillars.count("ellipse(") == 2, (
+        "drawPillars must draw exactly two ellipses per tube - the cap AND "
+        "the base"
+    )
+
+
+def test_drawPillars_reads_the_ramp_through_rampLevel_not_raw():
+    """Review round 2, mutation M-C: swapping `rampLevel("lit")` for the
+    banned raw `LIGHT.ramp.lit` inside `drawPillars` left 20 tests green.
+    `rampLevel()` exists so a missing/malformed ramp degrades to 0 (the
+    volume's own flat colour, via `shade()`) instead of throwing
+    (world.html:249's rule) - a raw `LIGHT.ramp.*` read here is exactly the
+    class of inline read that rule exists to prevent, just inside a
+    per-poll draw cycle instead of at top level. Scoped to `drawPillars`'s
+    own source slice, not the whole file, because the rule's comment block
+    legitimately mentions `LIGHT.ramp.lit` in prose."""
+    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    assert "LIGHT.ramp" not in draw_pillars, (
+        "drawPillars reads LIGHT.ramp directly instead of through rampLevel()"
+    )
+    assert draw_pillars.count("rampLevel(") == 2, (
+        "drawPillars must read both the lit and shaded rungs through "
+        "rampLevel()"
+    )
+
+
 def test_the_stacked_cell_fill_survives():
     # Deliberate from Sprint 15 (C1 Step 3b): the cells are the texture that
     # makes the fill read as volume. This ticket is the cap only.
