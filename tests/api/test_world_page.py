@@ -3260,6 +3260,55 @@ def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
 
 
 @needs_node
+def test_a_screen_with_no_quad_still_gets_a_graphics_but_no_mask():
+    """KI-052 review round 1, MINOR 4: `screen.quad` is optional in the
+    manifest schema (nothing forbids a future screen without one, and
+    `screen.quad.flat()` on `undefined` would throw), so
+    `buildMonitorGraphics` guards on it with `if (screen.quad)`. Every other
+    degrade path on this page (`rampLevel`, `CONTACT`, the no-plate
+    fallbacks) has a test, because the failure path is the one that runs
+    unattended at 3am - this drives the real `buildMonitorGraphics` against
+    a manifest with one quad-less screen and one normal one, and checks both
+    still get their candle Graphics (nothing throws, nothing is skipped)
+    while only the quad-less one is left unmasked."""
+    source = _world_source()
+    driver = (
+        "const PLATE = { screens: [\n"
+        "  { id: 'no-quad', x: 0, y: 0, w: 200, h: 100, role: 'chart' },\n"
+        "  { id: 'has-quad', x: 0, y: 0, w: 200, h: 100, role: 'chart',\n"
+        "    quad: [[0, 0], [200, 0], [200, 100], [0, 100]] },\n"
+        "] };\n"
+        "class FakeGraphics {\n"
+        "  poly(points) { this.polyPoints = points; return this; }\n"
+        "  fill() { return this; }\n"
+        "}\n"
+        "const PIXI = { Graphics: FakeGraphics };\n"
+        "const layers = { monitors: { children: [],\n"
+        "  addChild(...items) { this.children.push(...items); } } };\n"
+        "const monitorGraphics = {};\n"
+        + _js_block(source, "function buildMonitorGraphics(")
+        + "\n"
+        + "buildMonitorGraphics();\n"
+        + "console.log(JSON.stringify({\n"
+        + "  inMonitors: layers.monitors.children.length,\n"
+        + "  ids: Object.keys(monitorGraphics).sort(),\n"
+        + "  noQuadMask: monitorGraphics['no-quad'].mask || null,\n"
+        + "  hasQuadMask: !!monitorGraphics['has-quad'].mask,\n"
+        + "}));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["ids"] == ["has-quad", "no-quad"], (
+        "both screens must still get a candle Graphics, guard or not"
+    )
+    # One candle Graphics for the quad-less screen, plus a candle Graphics
+    # AND a mask for the other - the guard skips only the mask, not the
+    # screen.
+    assert emitted["inMonitors"] == 3
+    assert emitted["noQuadMask"] is None, "a quad-less screen must not get a mask"
+    assert emitted["hasQuadMask"] is True
+
+
+@needs_node
 def test_drawPillars_never_touches_the_monitors_layer():
     """Review round 1, Finding 1: the monitor Graphics moved into their OWN
     container (`layers.monitors`), a stage sibling built once by
