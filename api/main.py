@@ -44,6 +44,7 @@ from storage.postgres_store import (
     get_signal_accuracy,
     get_signals,
     get_world_events,
+    world_liveness_times,
 )
 from storage.writes import (
     postgres_status,
@@ -53,6 +54,7 @@ from storage.writes import (
     write_price_bars,
 )
 from world import light, monitors, reactions, text_layout, visuals
+from world.liveness import world_liveness
 from world.plate import load_manifest, watchlist_disagreements
 from world.reactions import attach_reactions
 from world.renderer_health import record_beat, renderer_status
@@ -253,6 +255,25 @@ def health():
         renderer = renderer_status(
             _RENDERER_BEATS, now=time.monotonic(), started_at=_PROCESS_STARTED_AT
         )
+    # KI-057: a drawing page is not proof the world is running — the model
+    # went silent for three days while ingestion and every container stayed
+    # green. This must degrade to None rather than ever fail the request:
+    # `/health` answers 200 through a Postgres outage by design (the stream
+    # watchdog probes it for content health, KI-024), and `signal_timestamp`
+    # / `occurred_at` are TIMESTAMPTZ — an aware `now` avoids the naive/aware
+    # TypeError, but the broad except is what actually keeps that guarantee
+    # even if a future caller gets it wrong.
+    try:
+        latest_signal_at, latest_event_at = world_liveness_times()
+        world = world_liveness(
+            latest_signal_at, latest_event_at, datetime.now(timezone.utc)
+        )
+    except Exception as e:
+        logger.warning(
+            "world_liveness_times failed; /health's world field degrades to None",
+            extra={"error": f"{type(e).__name__}: {e}"},
+        )
+        world = None
     return ApiResponse(
         status=200,
         message="API is healthy",
@@ -263,6 +284,7 @@ def health():
             # tabs, so it is advisory. The watchdog judges one host out of
             # `pages` — see Task 15. The API cannot know which source is on air.
             "renderer": renderer,
+            "world": world,
         },
     )
 
