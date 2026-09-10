@@ -805,8 +805,9 @@ def test_the_desk_face_trader_surface_does_not_collide_with_the_tube_glow():
 # The tubes are painted cylinders seen slightly from above, so the surface of
 # whatever fills them is an ellipse - a `roundRect` cap is why they read as
 # progress bars. `bore_ry` is the bore's perspective squash: half the vertical
-# span between the cap's back-rim and front-rim highlight peaks, the same
-# measurement `scan_bore_ry.py` (task-11-12-report.md) makes off the plate.
+# span between the cap's back-rim and front-rim highlight peaks - the same
+# measurement `_measured_bore_ry` below makes off the plate directly. There is
+# no separate script or report: the measurement IS the test.
 # Every entry that can stand a pillar needs one - `tubes` AND `spare_tubes`,
 # since a symbol promoted from a spare inherits whatever it was given.
 

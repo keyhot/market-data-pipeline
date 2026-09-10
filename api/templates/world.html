@@ -1321,7 +1321,7 @@
       const x = tube ? tube.x - width / 2 : app.screen.width * 0.80 + index * 132;
       // KI-055: the tube is a cylinder seen slightly from above, so the fill's
       // top and base are ellipses, not flat caps - `bore_ry` is that ellipse's
-      // measured squash (Docs/world-room-plate.md). Read here, not re-derived
+      // measured squash (KI-055, Docs/known-issues.md). Read here, not re-derived
       // in drawPillars, for the same reason this whole function exists:
       // off-by-tens against the painted bore is arithmetic, checkable without
       // PIXI. No painted tube means no measured squash either, so this falls
