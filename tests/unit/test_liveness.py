@@ -30,3 +30,28 @@ def test_a_live_event_stream_does_not_excuse_a_dead_model():
     # the model was silent, so ANY-event freshness would have read healthy.
     out = world_liveness(NOW - timedelta(days=2), NOW - timedelta(seconds=30), NOW)
     assert out["stale"] is True
+
+
+def test_a_future_timestamp_is_stale_not_brand_new():
+    # A DB clock ahead of the API's would otherwise clamp to age 0.0 and read
+    # healthy — the one false-healthy path in this module (MINOR-6), and
+    # KI-057 recreated inside the field built to catch it.
+    out = world_liveness(NOW + timedelta(hours=2), NOW + timedelta(hours=2), NOW)
+    assert out["stale"] is True
+    # Not hidden behind a 0.0 clamp — a legible negative number instead.
+    assert out["signal_age_s"] == -7200
+    assert out["event_age_s"] == -7200
+
+
+def test_just_under_the_default_threshold_is_not_stale():
+    # Brackets stale_after_s from below: a 16x-looser default (86400) would
+    # still pass this, but it pins the boundary tightly together with the
+    # test below (MINOR-1 — nothing previously pinned 5400 to within two
+    # days of itself).
+    out = world_liveness(NOW - timedelta(minutes=89), NOW - timedelta(minutes=89), NOW)
+    assert out["stale"] is False
+
+
+def test_just_over_the_default_threshold_is_stale():
+    out = world_liveness(NOW - timedelta(minutes=91), NOW - timedelta(minutes=91), NOW)
+    assert out["stale"] is True
