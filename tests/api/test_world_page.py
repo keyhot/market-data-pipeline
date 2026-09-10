@@ -5322,9 +5322,12 @@ def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> 
     the real manifest's `ambient_lights` rects - only `PIXI.Graphics` and
     `layers.plate` are stubbed, and the stub records what was actually
     drawn/mutated rather than asserting on source text. Mirrors
-    `_glow_driver` above, one layer over (`layers.plate`, not `layers.glow` -
-    these lights are painted-city detail sitting on the plate itself, not
-    additive light over blank paint)."""
+    `_glow_driver` above: additive light laid ON TOP of the plate's own
+    painted lights, not a substitute for them - an opaque fill at alpha 1
+    would flatten the painted sign's own detail into a solid block the
+    moment a light reached peak brightness, which is the opposite of what
+    "the city already has the lights, animate them" asks for.
+    """
     source = _world_source()
     ambient_lights = lights if lights is not None else _manifest()["ambient_lights"]
     return (
@@ -5332,7 +5335,7 @@ def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> 
         f"const plateReady = {str(plate_ready).lower()};\n"
         "class FakeGraphics {\n"
         "  constructor() {\n"
-        "    this.rects = []; this.fills = []; this.alpha = 1;\n"
+        "    this.rects = []; this.fills = []; this.blendMode = null; this.alpha = 1;\n"
         "  }\n"
         "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
         "  fill(opts) { this.fills.push(opts); return this; }\n"
@@ -5355,6 +5358,31 @@ def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> 
         + "\n"
         + _js_block(source, "function tickAmbientLights(")
         + "\n"
+    )
+
+
+@needs_node
+def test_ambient_lights_use_additive_blend_so_the_paint_survives():
+    """An opaque fill at high alpha replaces the pixels underneath rather
+    than lighting them - the exact failure a sighted check caught: light G
+    (the 39x25 sign at 1659,402) paints a small arrow/icon inside its red
+    field, and an opaque rect at alpha~1 flattens that into a featureless
+    block, which is the opposite of "the city already has the lights,
+    animate them". `buildGlows` (just above this ticket's own code) already
+    solves the identical problem the identical way - `glow.blendMode =
+    "add"` - so each light must match it.
+    """
+    driver = _ambient_lights_driver(plate_ready=True) + (
+        "buildAmbientLights();\n"
+        "console.log(JSON.stringify("
+        "ambientLightSprites.map((l) => l.graphics.blendMode)));\n"
+    )
+    blends = _run_node(driver)
+    lights = _manifest()["ambient_lights"]
+    assert len(blends) == len(lights)
+    assert all(b == "add" for b in blends), (
+        "every ambient light must blend additively, or it paints over the "
+        "plate's own detail instead of lighting it"
     )
 
 
@@ -5496,3 +5524,30 @@ def test_the_manifest_carries_a_small_list_of_ambient_lights():
         assert light["w"] > 0 and light["h"] > 0
         assert re.match(r"^#[0-9a-fA-F]{6}$", light["colour"])
         assert light["period"] > 0
+
+
+@needs_node
+def test_a_malformed_ambient_light_degrades_that_one_light_not_the_room():
+    """Every degrade path on this page has a test, because it is what runs
+    unattended at 3am. `buildAmbientLights` runs inside `drawPlate`'s try
+    block, so an uncaught throw here would degrade the ENTIRE room to
+    procedural over one bad manifest entry - the same shape
+    `buildMonitorGraphics`'s `if (screen.quad)` guard exists to prevent for
+    a missing quad. A hand-edited manifest with no `colour` on one entry
+    must lose only that light, not crash the builder.
+    """
+    lights = [
+        {"x": 100, "y": 100, "w": 8, "h": 8, "period": 3.0},   # no colour
+        {"x": 200, "y": 200, "w": 8, "h": 8, "colour": "#ff3b30", "period": 3.0},
+    ]
+    emitted = _run_node(
+        _ambient_lights_driver(plate_ready=True, lights=lights)
+        + (
+            "buildAmbientLights();\n"
+            "console.log(JSON.stringify(ambientLightSprites.length));\n"
+        )
+    )
+    assert emitted == 1, (
+        "the malformed entry must be skipped, and the well-formed one "
+        "still built"
+    )

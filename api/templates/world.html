@@ -2668,31 +2668,46 @@
     // phase and period — a shared clock would pulse the whole skyline in
     // unison, which reads as a fault rather than as a city.
     const AMBIENT_LIGHTS = (PLATE && PLATE.ambient_lights) || [];
-    // The floor of the fade: dim, not off. A light that reaches alpha 0
-    // reads as a rendering glitch (a window that vanished) rather than one
-    // that is simply dark for a moment — the plate's own paint stays
-    // visible underneath at every point in the cycle.
+    // The floor of the fade: dim, not zero. Additive light at alpha 0 IS the
+    // plate's own painted light — correctly "off" — but never literal zero,
+    // so a light is never left fully unlit for the low point of its cycle
+    // either (a light that vanishes entirely reads as a rendering glitch,
+    // not a window that is briefly dark).
     const AMBIENT_LIGHT_MIN_ALPHA = 0.12;
 
     // Built once, exactly like buildGlows/buildMonitorGraphics beside it —
     // never inside the per-frame ticker. Each light gets its own Graphics
     // (mutated only on .alpha per tick) and its own phase, seeded off the
     // light's index with the same rng32 the cast's breathing uses, so a
-    // reload is reproducible but no two lights start in lockstep.
+    // reload is reproducible but no two lights start in lockstep. Additive
+    // blend, the same as buildGlows: an opaque fill at alpha near 1 would
+    // paint FLAT OVER the plate's own painted detail (several of these
+    // signs have an icon drawn inside the red field) the moment a light
+    // reached peak brightness — the opposite of animating what is already
+    // there. `filter` skips any entry missing a usable colour rather than
+    // throwing mid-map — a malformed manifest entry degrades that ONE light
+    // to unlit, never the whole room to procedural (buildMonitorGraphics's
+    // `if (screen.quad)` guard is the same idea for a different builder).
     let ambientLightSprites = [];
 
     function buildAmbientLights() {
-      ambientLightSprites = AMBIENT_LIGHTS.map((light, i) => {
-        const graphics = new PIXI.Graphics()
-          .rect(snap(light.x), snap(light.y), snap(light.w), snap(light.h))
-          .fill({ color: parseInt(light.colour.slice(1), 16), alpha: 1 });
-        layers.plate.addChild(graphics);
-        return {
-          graphics,
-          period: light.period > 0 ? light.period : 4,
-          phase: rng32(i + 1)(),
-        };
-      });
+      ambientLightSprites = AMBIENT_LIGHTS
+        .filter((light) => (
+          light && /^#[0-9a-fA-F]{6}$/.test(light.colour || "")
+          && light.w > 0 && light.h > 0
+        ))
+        .map((light, i) => {
+          const graphics = new PIXI.Graphics()
+            .rect(snap(light.x), snap(light.y), snap(light.w), snap(light.h))
+            .fill({ color: parseInt(light.colour.slice(1), 16), alpha: 1 });
+          graphics.blendMode = "add";
+          layers.plate.addChild(graphics);
+          return {
+            graphics,
+            period: light.period > 0 ? light.period : 4,
+            phase: rng32(i + 1)(),
+          };
+        });
     }
 
     // `t` is `ambient.t`, the same running clock the swell/drift/breathing
