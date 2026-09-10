@@ -943,7 +943,10 @@ def _pillar_ellipse_driver(source, manifest_dict, symbol):
         class FakeGraphics {{
           constructor() {{ this.rects = []; this.ellipses = []; this.fills = []; }}
           rect(x, y, w, h) {{ this.rects.push([x, y, w, h]); return this; }}
-          ellipse(cx, cy, rx, ry) {{ this.ellipses.push([cx, cy, rx, ry]); return this; }}
+          ellipse(cx, cy, rx, ry) {{
+            this.ellipses.push([cx, cy, rx, ry]);
+            return this;
+          }}
           fill(f) {{ this.fills.push(f); return this; }}
         }}
         const PIXI = {{ Graphics: FakeGraphics }};
@@ -953,7 +956,9 @@ def _pillar_ellipse_driver(source, manifest_dict, symbol):
           removeChildren() {{ this.children = []; }},
           addChild(...items) {{ this.children.push(...items); built.push(...items); }},
         }} }};
-        const state = {{ symbols: {{ "{symbol}": {{ pressure: 99, mood: "bullish" }} }} }};
+        const state = {{
+          symbols: {{ "{symbol}": {{ pressure: 99, mood: "bullish" }} }}
+        }};
         drawPillars(state);
         const [pillar, cap] = built;
         console.log(JSON.stringify({{

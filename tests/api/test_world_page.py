@@ -5461,7 +5461,9 @@ def test_ambient_life_is_guarded_for_the_no_plate_path():
             "console.log(JSON.stringify({ before, after }));\n"
         )
     )
-    assert result["before"], "buildAmbientLights built nothing to test the guard against"
+    assert result["before"], (
+        "buildAmbientLights built nothing to test the guard against"
+    )
     assert result["before"] == result["after"], (
         "tickAmbientLights must leave the lights exactly as buildAmbientLights "
         "left them when plateReady is false - it changed them instead"
