@@ -14,7 +14,7 @@ import pandas as pd
 
 from config.exceptions import StorageWriteError
 from storage import postgres_store
-from storage.db import ping
+from storage.db import DATABASE_URL_ENV, ping
 
 POSTGRES_WRITE_ENABLED_ENV = "POSTGRES_WRITE_ENABLED"
 
@@ -56,11 +56,28 @@ def postgres_readable(status: dict) -> bool:
     available, rather than always pinging, avoids stacking a second bounded
     connection-acquire wait onto the same request when writes are on and
     Postgres is down (KI-024's 5s `/health` content-timeout budget — see
-    `tests/unit/test_db_deploy_guard.py::TestRoleProbeLatency`)."""
+    `tests/unit/test_db_deploy_guard.py::TestRoleProbeLatency`).
+
+    When `connected` is `None`, that still splits into two different
+    situations, and only one of them is worth a network round trip:
+    "database configured, writes just turned off" (a read-only deployment —
+    exactly MINOR-3's case, must still be probed) versus "no database at
+    all" (this module's own docstring: `POSTGRES_WRITE_ENABLED=0` is "for
+    offline development without a database" — there is nothing to probe).
+    `DATABASE_URL` being unset is the honest signal for the second case: every
+    deployed config sets it explicitly (`docker-compose.yml`,
+    `.env.example`); it is unset only in ad-hoc local/test runs with no
+    database at all. Skipping the probe there restores the fast path that
+    genuine offline development had before MINOR-3 — a real, measured
+    regression that fix introduced (2ms-16ms → ~2s per `/health` call,
+    every call) precisely because it could not tell the two situations
+    apart."""
     connected = status.get("connected")
-    if connected is None:
-        return ping()
-    return bool(connected)
+    if connected is not None:
+        return bool(connected)
+    if os.environ.get(DATABASE_URL_ENV) is None:
+        return False
+    return ping()
 
 
 def write_metrics() -> dict:

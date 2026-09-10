@@ -120,13 +120,32 @@ def test_postgres_readable_reuses_a_known_down_result():
     ping.assert_not_called()
 
 
-def test_postgres_readable_probes_when_writes_are_disabled():
+def test_postgres_readable_probes_when_writes_are_disabled(monkeypatch):
     # This is MINOR-3: writes off means postgres_status() never pinged, so
     # `connected` is None — unprobed, not unreachable. A read-only deployment
     # (writes off, database perfectly readable) must still get an answer.
+    # DATABASE_URL set: this is the "database configured, writes off"
+    # scenario, not the "no database at all" one below.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db:5432/d")
     with patch("storage.writes.ping", return_value=True) as ping:
         assert writes.postgres_readable({"enabled": False, "connected": None}) is True
     ping.assert_called_once()
+
+
+def test_postgres_readable_skips_the_probe_when_no_database_is_configured(
+    monkeypatch,
+):
+    # The regression this closes: gating on readability (MINOR-3) meant
+    # `ping()` ran even for genuine offline development with no database at
+    # all — this module's own docstring says POSTGRES_WRITE_ENABLED=0 is
+    # "for offline development without a database" — costing ~2s per
+    # /health call where there had been none (measured 0.004-0.016s before,
+    # ~2s after). DATABASE_URL unset is the signal: every deployed config
+    # sets it explicitly, so unset means there is nothing to probe.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with patch("storage.writes.ping") as ping:
+        assert writes.postgres_readable({"enabled": False, "connected": None}) is False
+    ping.assert_not_called()
 
 
 def test_postgres_readable_reports_unreachable_when_disabled_and_down():
