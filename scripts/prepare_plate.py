@@ -135,6 +135,30 @@ def screen_quad(frame: dict, inset: int = SCREEN_INSET) -> tuple:
     )
 
 
+def rect_from_quad(quad) -> tuple[int, int, int, int]:
+    """The axis-aligned rect a candle is laid out in, inside a quad whose
+    left/right edges are vertical: `x`/`w` from those edges directly, `y`
+    the LOWER of the two top corners (so the rect starts below both, not
+    just its own side's), `h` down to the HIGHER of the two bottom corners
+    (so it stops above both). The result sits entirely inside the quad
+    regardless of which corner is tightest.
+
+    One definition - `main()` below and
+    `tests/unit/test_plate_manifest.py::test_the_manifests_chart_screens_
+    match_the_intakes_own_derivation` both import this rather than restate
+    it (review round 1, MINOR 2: two hand-kept copies of this exact formula
+    is the bug class KI-052 itself is an instance of - `main()`'s own
+    comment on the print statement below already names it: "two hand-kept
+    copies of one rect is how a candle ends up drawn 6px off the painted
+    glass")."""
+    (tlx, tly), (trx, try_), (brx, bry), (blx, bly) = quad
+    assert tlx == blx and trx == brx, "quad sides are not vertical"
+    x, w = tlx, trx - tlx
+    y = max(tly, try_)
+    h = min(bry, bly) - y
+    return x, y, w, h
+
+
 SCREEN_QUADS = {name: screen_quad(frame) for name, frame in SCREEN_FRAMES.items()}
 GLASS = (26, 32, 46)  # between the plate's wall (21,26,40) and its lit glass (33,40,54)
 SHEEN = (34, 41, 57)      # one band along the top edge, so the glass reads as glass
@@ -357,10 +381,7 @@ def main(source: Path) -> None:
     # ends up drawn 6px off the painted glass.
     print("screens for the manifest (rect = the axis-aligned rect inside the quad):")
     for name, corners in SCREEN_QUADS.items():
-        xs = [c[0] for c in corners]
-        x, w = min(xs), max(xs) - min(xs)
-        y = max(corners[0][1], corners[1][1])      # the lower of the two top corners
-        h = min(corners[2][1], corners[3][1]) - y  # the higher of the two bottom ones
+        x, y, w, h = rect_from_quad(corners)
         print(
             f'  {{"id": "{name}", "x": {x}, "y": {y}, "w": {w}, "h": {h}, '
             f'"quad": {[list(c) for c in corners]}, "role": "chart"}}'

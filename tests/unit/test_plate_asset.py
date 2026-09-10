@@ -92,6 +92,17 @@ def test_the_generators_watermark_is_gone():
     assert survivors == []
 
 
+# KI-052 review round 1, MINOR 3: `_glass()` narrows silently otherwise. This
+# ticket itself narrowed its yield 3.5% (centre-left) and 3.6% (centre-right)
+# by fixing the flat-bottom bug (`frame_bottom` now recedes on the right
+# instead of running level) - a legitimate, measured shrink, but nothing
+# caught it as anything other than "still zero ink," which is exactly the
+# coverage gap that let the two derivations drift into KI-066. These floors
+# are 90% of what `_glass()` yields today (82390 / 63508 px) - room for
+# another honest re-measurement, not for a silent collapse.
+MIN_GLASS_PIXELS = {"centre-left": 74000, "centre-right": 57000}
+
+
 def test_no_painted_schematic_survives_where_live_candles_go():
     """The central monitors carry live data (Task 11), so a painted circuit
     left in a corner of the glass would be a baked claim under a live chart.
@@ -100,8 +111,14 @@ def test_no_painted_schematic_survives_where_live_candles_go():
     with Image.open(PLATE) as im:
         pixels = im.convert("RGB").load()
         for name, frame in SCREEN_FRAMES.items():
+            glass_pixels = list(_glass(frame))
+            assert len(glass_pixels) >= MIN_GLASS_PIXELS[name], (
+                f"{name}: _glass() yielded only {len(glass_pixels)} px, "
+                f"below the floor of {MIN_GLASS_PIXELS[name]} - narrowed too "
+                "far, or a frame edge regressed"
+            )
             ink = [
-                (x, y) for x, y in _glass(frame) if _is_schematic_ink(pixels[x, y])
+                (x, y) for x, y in glass_pixels if _is_schematic_ink(pixels[x, y])
             ]
             assert ink == [], (
                 f"{name}: {len(ink)} schematic pixels survived, e.g. {ink[:5]}"

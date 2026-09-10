@@ -255,7 +255,12 @@ def test_the_manifests_chart_screens_match_the_intakes_own_derivation():
     edit to one without the other - including a repaint that re-runs the
     intake and regenerates the old flat bottom - fails here instead of
     shipping quietly."""
-    from scripts.prepare_plate import SCREEN_FRAMES, screen_quad
+    # review round 1, MINOR 2: this used to re-derive x/y/w/h from `quad`
+    # with its own hand-rolled copy of the formula `main()` below already
+    # states - exactly the "two hand-kept copies of one rect" bug class
+    # this ticket exists to fix. `rect_from_quad` is now the one definition,
+    # imported here rather than restated.
+    from scripts.prepare_plate import SCREEN_FRAMES, rect_from_quad, screen_quad
 
     manifest = load_manifest()
     charts = [s for s in manifest.screens if s.get("role") == "chart"]
@@ -269,10 +274,7 @@ def test_the_manifests_chart_screens_match_the_intakes_own_derivation():
             f"{screen['id']}: manifest quad disagrees with the intake's own "
             "screen_quad(SCREEN_FRAMES[...])"
         )
-        xs = [c[0] for c in quad]
-        x, w = min(xs), max(xs) - min(xs)
-        y = max(quad[0][1], quad[1][1])
-        h = min(quad[2][1], quad[3][1]) - y
+        x, y, w, h = rect_from_quad(quad)
         assert (screen["x"], screen["y"], screen["w"], screen["h"]) == (x, y, w, h), (
             f"{screen['id']}: manifest rect disagrees with the intake's own "
             "rect-from-quad formula"

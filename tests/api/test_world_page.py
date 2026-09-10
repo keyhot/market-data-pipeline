@@ -3250,7 +3250,9 @@ def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
     assert emitted["built"] == 2 * len(manifest_ids)
     assert emitted["inMonitors"] == 2 * len(manifest_ids)
     assert emitted["sameRef"] is True
-    for screen_id in manifest_ids:
+    masked_ids = [sid for sid in manifest_ids if manifest_screens[sid].get("quad")]
+    assert masked_ids, "no manifest screens carry a quad to check for a mask"
+    for screen_id in masked_ids:
         quad = manifest_screens[screen_id]["quad"]
         assert emitted["masks"][screen_id] == [c for point in quad for c in point], (
             f"{screen_id}: candle Graphics mask does not match its own quad"
