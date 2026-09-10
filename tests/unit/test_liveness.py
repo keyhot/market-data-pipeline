@@ -43,6 +43,22 @@ def test_a_future_timestamp_is_stale_not_brand_new():
     assert out["event_age_s"] == -7200
 
 
+def test_a_future_signal_alone_is_stale_even_with_a_fresh_event():
+    # Pins signal_age < 0 independently: with the event well inside the
+    # threshold, only the signal's own future stamp can be what trips
+    # `stale` here. Deleting just this OR-term (leaving event_age < 0 in
+    # place) would let this case slip through as stale: False, since
+    # nothing else in the predicate fires for it.
+    out = world_liveness(NOW + timedelta(hours=1), NOW - timedelta(seconds=10), NOW)
+    assert out["stale"] is True
+
+
+def test_a_future_event_alone_is_stale_even_with_a_fresh_signal():
+    # The mirror of the test above: pins event_age < 0 independently.
+    out = world_liveness(NOW - timedelta(seconds=10), NOW + timedelta(hours=1), NOW)
+    assert out["stale"] is True
+
+
 def test_just_under_the_default_threshold_is_not_stale():
     # Brackets stale_after_s from below: a 16x-looser default (86400) would
     # still pass this, but it pins the boundary tightly together with the
