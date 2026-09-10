@@ -838,15 +838,16 @@ def _smoothed_column_luminance(pixels, height, x, y0, y1, win=3):
     return out
 
 
-def _measured_bore_ry(pixels, height, tube):
-    """Re-derive `bore_ry` from the plate itself.
+def _measured_bore_peaks(pixels, height, tube):
+    """Re-derive the plate's own back-rim/front-rim highlight peak ROWS for
+    this tube's painted cap - the one scan both `_measured_bore_ry` (the
+    squash) and the cap-placement pin below (the centre) read from, so they
+    cannot silently disagree about where the peaks are.
 
     The painted cap is a flattened ellipse: a bright rim highlight traces its
     far (back) edge and its near (front) edge, with the lit disc FACE between
     them sitting at a lower, flatter luminance than either rim, and the
-    vertical tube wall below the front rim sitting lower still. `bore_ry` is
-    half the vertical distance between those two rim peaks - the same span
-    PIXI's `ellipse(cx, cy, rx, ry)` draws when `cy` sits between them.
+    vertical tube wall below the front rim sitting lower still.
     """
     top = tube["base_y"] - tube["height"]
     x = tube["x"]
@@ -880,7 +881,16 @@ def _measured_bore_ry(pixels, height, tube):
     assert front_i is not None, (
         f"no front-rim peak found for tube at x={x} in rows {ys[back_i]}..{top + 40}"
     )
-    return (ys[front_i] - ys[back_i]) / 2
+    return ys[back_i], ys[front_i]
+
+
+def _measured_bore_ry(pixels, height, tube):
+    """Re-derive `bore_ry` from the plate itself: half the vertical distance
+    between the two rim peaks - the same span PIXI's `ellipse(cx, cy, rx,
+    ry)` draws when `cy` sits between them.
+    """
+    back_y, front_y = _measured_bore_peaks(pixels, height, tube)
+    return (front_y - back_y) / 2
 
 
 def test_every_tubes_bore_ry_matches_the_plates_own_cap_highlight():
@@ -897,4 +907,144 @@ def test_every_tubes_bore_ry_matches_the_plates_own_cap_highlight():
             assert abs(tube["bore_ry"] - measured) <= 0.6, (
                 f"{tube.get('symbol', tube)}: manifest bore_ry="
                 f"{tube['bore_ry']} but the plate measures {measured}"
+            )
+
+
+# --- Review round 2: the cap/base ellipses, run for real -------------------
+#
+# Both tests below drive the SHIPPED `drawPillars` (not a re-typed formula)
+# with only `PIXI.Graphics` and `layers.props` faked. The fake records every
+# `rect()`/`ellipse()`/`fill()` call it is given, so what is asserted below is
+# what `drawPillars` actually drew on this run, not a paraphrase of its
+# source. `shade`/`rampLevel`/`color` are stubbed to trivial pass-throughs —
+# their own contracts (the ramp-accessor rule, WCAG contrast) are covered
+# elsewhere; this is about the ellipse geometry and fill shape.
+
+
+def _pillar_ellipse_driver(source, manifest_dict, symbol):
+    """One fully-pressured tube's `drawPillars` output: the stripe it drew
+    and the two ellipses (cap, base) drawn over it."""
+    return (
+        f"const PLATE = {json.dumps(manifest_dict)};\n"
+        "const plateReady = true;\n"
+        "const app = { screen: { height: 960 } };\n"
+        + _js_const(source, "GROUND")
+        + _js_block(source, "function snap(") + "\n"
+        + _js_const(source, "CELL")
+        + _js_block(source, "function tubeFor(") + "\n"
+        + _js_block(source, "function pillarGeometry(") + "\n"
+        + "function shade(base, level) { return base; }\n"
+        + "function rampLevel(rung) { return 0; }\n"
+        + "const color = () => 0x123456;\n"
+        + _js_block(source, "function drawPillars(") + "\n"
+        + f"""
+        const SYMBOLS = ["{symbol}"];
+        class FakeGraphics {{
+          constructor() {{ this.rects = []; this.ellipses = []; this.fills = []; }}
+          rect(x, y, w, h) {{ this.rects.push([x, y, w, h]); return this; }}
+          ellipse(cx, cy, rx, ry) {{ this.ellipses.push([cx, cy, rx, ry]); return this; }}
+          fill(f) {{ this.fills.push(f); return this; }}
+        }}
+        const PIXI = {{ Graphics: FakeGraphics }};
+        const built = [];
+        const layers = {{ props: {{
+          children: [],
+          removeChildren() {{ this.children = []; }},
+          addChild(...items) {{ this.children.push(...items); built.push(...items); }},
+        }} }};
+        const state = {{ symbols: {{ "{symbol}": {{ pressure: 99, mood: "bullish" }} }} }};
+        drawPillars(state);
+        const [pillar, cap] = built;
+        console.log(JSON.stringify({{
+          stripe: pillar.rects[0],
+          ellipses: cap.ellipses,
+          fills: cap.fills,
+        }}));
+        """
+    )
+
+
+@needs_node
+def test_the_cap_and_base_ellipses_are_snapped_to_the_stripes_and_translucent():
+    """Review round 2, MINOR 6 and finding (d): the cap ellipse (both the lit
+    top and the shaded base) was the only geometry in `drawPillars` not
+    snapped to the CELL grid - measured ~2px right of the stripes it caps -
+    and it was opaque while the fill it caps is `alpha: 0.85`. Checks the
+    ellipses `drawPillars` actually drew against the stripe it actually drew
+    in the SAME run, so this does not restate `snap()`'s own arithmetic to
+    grade it - it compares two outputs of one execution.
+
+    Mutation-checked: reverting `capX` to the old `geo.x + geo.width / 2`
+    fails the centring assertion for ETH (650 vs a stripe centre of 648.5);
+    dropping `alpha: 0.85` from either `.fill()` fails the alpha assertion.
+    """
+    source = WORLD_TEMPLATE.read_text()
+    manifest = load_manifest()
+    for tube in manifest.tubes:
+        driver = _pillar_ellipse_driver(source, manifest.as_dict(), tube["symbol"])
+        result = subprocess.run(
+            [NODE, "-e", driver], capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode == 0, result.stderr
+        emitted = json.loads(result.stdout)
+        stripe_x, _, stripe_w, _ = emitted["stripe"]
+        stripe_centre = stripe_x + stripe_w / 2
+        assert len(emitted["ellipses"]) == 2, (
+            f"{tube['symbol']}: expected exactly the cap and the base"
+        )
+        for cx, _cy, _rx, _ry in emitted["ellipses"]:
+            assert cx == pytest.approx(stripe_centre), (
+                f"{tube['symbol']}: ellipse centred at x={cx}, but its own "
+                f"stripes are centred at {stripe_centre}"
+            )
+        assert len(emitted["fills"]) == 2, (
+            f"{tube['symbol']}: expected a fill call for the cap and the base"
+        )
+        for fill in emitted["fills"]:
+            assert fill.get("alpha") == 0.85, (
+                f"{tube['symbol']}: cap/base fill alpha={fill.get('alpha')}, "
+                "but the column it caps fills at 0.85"
+            )
+
+
+@needs_node
+def test_the_caps_offset_from_the_painted_bores_centre_is_pinned():
+    """Review round 2, MINOR 2: `drawPillars`' cap centre sits a few px above
+    the painted bore's own measured centre at full fill. The reviewer looked
+    at the frame and judged this correct - a full tube's surface sitting just
+    under the lip - and explicitly declined to move it, asking only that the
+    gap be PINNED so it cannot drift silently. Pinned against the real
+    `drawPillars` call (not the formula re-typed), so a change to where the
+    cap is actually drawn - not just to the comment describing it - is what
+    this test would catch.
+
+    Mutation-checked: changing `geo.baseY - geo.height` in `drawPillars` to
+    `geo.baseY - geo.height + 3` moves BTC's measured offset from -4.5px to
+    -7.5px, which fails the pin.
+    """
+    source = WORLD_TEMPLATE.read_text()
+    manifest = load_manifest()
+    # Pinned 2026-09-10 (review round 2): each tube's painted bore centre
+    # minus the cap's drawn centre, in px. Not a formula - the art and the
+    # code agree by measurement, not by construction. Same 0.6px tolerance
+    # as the bore_ry measurement above (both read the same peak scan).
+    pinned_offset_px = {"BTCUSDT": -4.5, "ETHUSDT": -2.0}
+    with Image.open(PLATE_PNG) as im:
+        pixels = im.convert("RGB").load()
+        _, height = im.size
+        for tube in manifest.tubes:
+            driver = _pillar_ellipse_driver(source, manifest.as_dict(), tube["symbol"])
+            result = subprocess.run(
+                [NODE, "-e", driver], capture_output=True, text=True, timeout=30
+            )
+            assert result.returncode == 0, result.stderr
+            emitted = json.loads(result.stdout)
+            cap_cy = emitted["ellipses"][0][1]
+            back_y, front_y = _measured_bore_peaks(pixels, height, tube)
+            centre = (back_y + front_y) / 2
+            offset = centre - cap_cy
+            expected = pinned_offset_px[tube["symbol"]]
+            assert offset == pytest.approx(expected, abs=0.6), (
+                f"{tube['symbol']}: cap-to-bore-centre offset drifted from "
+                f"the pinned {expected}px to {offset}px"
             )

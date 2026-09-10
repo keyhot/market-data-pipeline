@@ -1360,10 +1360,26 @@
         // floor, always visible under the fill, never a flat edge either.
         const cap = new PIXI.Graphics();
         const fillColour = color(data.mood);
-        cap.ellipse(geo.x + geo.width / 2, geo.baseY - geo.height, geo.width / 2, geo.boreRy)
-           .fill(shade(fillColour, rampLevel("lit")));
-        cap.ellipse(geo.x + geo.width / 2, geo.baseY, geo.width / 2, geo.boreRy)
-           .fill(shade(fillColour, rampLevel("shade")));
+        // Review round 2, MINOR 6: every other draw in this function snaps
+        // its POSITION but not its size (`pillar.rect` above snaps `geo.x`,
+        // never `geo.width`) — the cap's centre-x is the one coordinate that
+        // skipped it, ~2px off the stripes it caps. `snap(geo.x)` is the
+        // exact value the stripes themselves are drawn from, so adding half
+        // the (unsnapped) width lands the cap dead-centre on the column it
+        // caps, not just closer to it. `cy` is deliberately NOT snapped here
+        // — review round 2, MINOR 2: the cap already sits a few px above the
+        // painted bore's own measured centre (pinned in
+        // tests/unit/test_plate_manifest.py), and that gap looked right
+        // in-frame; snapping cy would nudge it without anyone having asked
+        // to move it.
+        const capX = snap(geo.x) + geo.width / 2;
+        // Review round 2, finding (d): opaque caps over an alpha:0.85 fill
+        // read as a different, harder material sitting on top of the liquid
+        // rather than its own surface. Same alpha as the column it caps.
+        cap.ellipse(capX, geo.baseY - geo.height, geo.width / 2, geo.boreRy)
+           .fill({ color: shade(fillColour, rampLevel("lit")), alpha: 0.85 });
+        cap.ellipse(capX, geo.baseY, geo.width / 2, geo.boreRy)
+           .fill({ color: shade(fillColour, rampLevel("shade")), alpha: 0.85 });
         // Sprint 16 Task 10: no per-tube symbol/mood label any more — both
         // floated at a fixed offset off the tube's own base, with no
         // declared surface (Task 9 deleted `symbol-BTCUSDT`/`symbol-ETHUSDT`
