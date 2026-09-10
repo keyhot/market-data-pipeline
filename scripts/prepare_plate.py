@@ -88,10 +88,30 @@ COUNTER_EDGE = ((1772, 928), (1826, 910))   # (x, y), (x, y) - slope -1/3
 # below overwrites everything inside the OLD flat-bottomed quad on the shipped
 # PNG, so re-measuring the true bottom edge off the shipped asset is not
 # possible (checked directly - the pixels below the old flat line are desk
-# clutter, not a bezel line). `bottom` is instead DERIVED to keep both edges
-# parallel (same slope as `top`) and anchored at the existing bottom-left
-# corner, so the quad only ever shrinks relative to the old flat bug, never
-# claims glass the plate does not have.
+# clutter, not a bezel line).
+#
+# `bottom` is instead DERIVED - review round 1, MINOR 5: say what this
+# actually establishes, not more. It is NOT a claim that the derived line
+# matches the plate's true bezel; it is two separate, weaker (and both true)
+# claims:
+#
+# 1. Same slope as `top`, not merely a plausible guess: a THIRD screen in
+#    this room still has both its edges intact (never flattened), and
+#    measuring both off it finds them nearly equal (-0.1347 top, -0.1335
+#    bottom, review round 1's own measurement) - this room is drawn in
+#    OBLIQUE projection, both edges receding at the same rate, not
+#    perspective converging to a vanishing point (which would need a
+#    separately fitted, generally different, bottom slope). That is why
+#    "parallel to `top`" is the principled choice here and not just the
+#    conservative one.
+# 2. Anchored at the existing bottom-left corner with a slope that is <= 0
+#    for every x from left to right, so the derived line is monotonically
+#    at or above the old flat value across the whole width: the quad only
+#    ever SHRINKS relative to the old flat-bottom bug, never grows past what
+#    that bug already declared safe. This holds regardless of whether the
+#    derived slope is exactly the room's true one - it is a property of
+#    "unchanged left corner, non-positive slope", not of getting the number
+#    right.
 #
 # Every other edge is a scalar. The fill quads are DERIVED from these, so the
 # frame is stated once: P4 and P5 need the same numbers, and re-deriving them
