@@ -135,6 +135,30 @@ def latest_bar_timestamp(symbol: str, interval: str = BAR_INTERVAL) -> datetime 
     return row[0] if row else None
 
 
+# /health must answer even through an outage (KI-024: the watchdog gives it
+# 5s before counting a content failure) — the pool's default connect-acquire
+# timeout is 30s, which would blow that budget on its own, so this reader
+# bounds it the same way `storage.writes.ping()` bounds its own probe.
+_HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
+
+
+def world_liveness_times(
+    timeout_seconds: float = _HEALTH_PROBE_TIMEOUT_SECONDS,
+) -> tuple[datetime | None, datetime | None]:
+    """Newest signal, and newest world event that is NOT a stream_* lifecycle
+    row. The exclusion is the point: during KI-057 the only events still being
+    written were the watchdog's own."""
+    with get_pool().connection(timeout=timeout_seconds) as conn:
+        (latest_signal,) = conn.execute(
+            "SELECT max(signal_timestamp) FROM signals"
+        ).fetchone()
+        (latest_event,) = conn.execute(
+            "SELECT max(occurred_at) FROM world_events"
+            " WHERE event_type NOT LIKE 'stream\\_%'"
+        ).fetchone()
+    return latest_signal, latest_event
+
+
 def record_ingestion_run(
     job_id: str,
     started_at: datetime,
