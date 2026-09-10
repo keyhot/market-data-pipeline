@@ -3280,13 +3280,17 @@ def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
     manifest_screens = {s["id"]: s for s in _manifest()["screens"]}
     manifest_ids = sorted(manifest_screens)
     assert emitted["ids"] == manifest_ids
-    # One candle Graphics + one quad mask per screen, all built exactly
-    # once, all landing in layers.monitors.
-    assert emitted["built"] == 2 * len(manifest_ids)
-    assert emitted["inMonitors"] == 2 * len(manifest_ids)
-    assert emitted["sameRef"] is True
+    # One candle Graphics per screen, plus one quad mask per screen THAT
+    # CARRIES A QUAD - not every screen, per review round 1's own
+    # test_a_screen_with_no_quad_still_gets_a_graphics_but_no_mask, which
+    # blesses a quad-less screen as legitimate. `2 * len(manifest_ids)`
+    # silently assumed every screen has a quad; it and that test contradict
+    # each other the moment a real manifest ships a quad-less screen.
     masked_ids = [sid for sid in manifest_ids if manifest_screens[sid].get("quad")]
     assert masked_ids, "no manifest screens carry a quad to check for a mask"
+    assert emitted["built"] == len(manifest_ids) + len(masked_ids)
+    assert emitted["inMonitors"] == len(manifest_ids) + len(masked_ids)
+    assert emitted["sameRef"] is True
     for screen_id in masked_ids:
         quad = manifest_screens[screen_id]["quad"]
         assert emitted["masks"][screen_id] == [c for point in quad for c in point], (
