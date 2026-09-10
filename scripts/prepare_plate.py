@@ -98,12 +98,14 @@ COUNTER_EDGE = ((1772, 928), (1826, 910))   # (x, y), (x, y) - slope -1/3
 # 1. Same slope as `top`, not merely a plausible guess: a THIRD screen in
 #    this room still has both its edges intact (never flattened), and
 #    measuring both off it finds them nearly equal (-0.1347 top, -0.1335
-#    bottom, review round 1's own measurement) - this room is drawn in
-#    OBLIQUE projection, both edges receding at the same rate, not
-#    perspective converging to a vanishing point (which would need a
-#    separately fitted, generally different, bottom slope). That is why
-#    "parallel to `top`" is the principled choice here and not just the
-#    conservative one.
+#    bottom, review round 1's own measurement) - consistent with this room
+#    being drawn in OBLIQUE projection, both edges receding at the same
+#    rate, rather than perspective converging to a vanishing point (which
+#    would need a separately fitted, generally different, bottom slope).
+#    That is one screen's evidence, not a room-wide measurement (the two
+#    CENTRAL screens' own top/bottom slopes, -0.0506/-0.0541, are nothing
+#    like this peripheral one's -0.134) - but it is why "parallel to `top`"
+#    is the principled choice here and not just the conservative one.
 # 2. Anchored at the existing bottom-left corner with a slope that is <= 0
 #    for every x from left to right, so the derived line is monotonically
 #    at or above the old flat value across the whole width: the quad only
