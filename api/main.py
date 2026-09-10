@@ -47,6 +47,7 @@ from storage.postgres_store import (
     world_liveness_times,
 )
 from storage.writes import (
+    postgres_readable,
     postgres_status,
     write_events,
     write_metrics,
@@ -260,19 +261,24 @@ def health():
     # went silent for three days while ingestion and every container stayed
     # green. This must degrade to None rather than ever fail the request:
     # `/health` answers 200 through a Postgres outage by design (the stream
-    # watchdog probes it for content health, KI-024). `postgres["connected"]`
-    # is already known here — `postgres_status()` just paid for it — so this
-    # only attempts the read once Postgres has actually answered; a second,
-    # unconditional connection attempt on an unreachable host would stack
-    # its own bounded wait on top of `ping()`'s and blow the 5s budget
-    # `storage/db.py` measured at 4.01s cold with 1s of headroom (see
-    # `TestRoleProbeLatency` in `tests/unit/test_db_deploy_guard.py`).
+    # watchdog probes it for content health, KI-024). Gate on
+    # `postgres_readable()`, not on `postgres["connected"]` directly:
+    # `connected` only reflects reachability when POSTGRES_WRITE_ENABLED is
+    # on (`postgres_status()` skips its own ping otherwise), so a read-only
+    # deployment — writes off, database perfectly readable — would see
+    # `connected: None` forever and this field would never report.
+    # `postgres_readable()` reuses that ping's result when it already ran and
+    # probes on its own only when it didn't, so this still never stacks a
+    # second bounded connection-acquire wait onto the same request when
+    # writes are on and Postgres is down — the 5s budget `storage/db.py`
+    # measured at 4.01s cold with 1s of headroom (see `TestRoleProbeLatency`
+    # in `tests/unit/test_db_deploy_guard.py`) is unchanged either way.
     # `signal_timestamp` / `occurred_at` are TIMESTAMPTZ — an aware `now`
     # avoids the naive/aware TypeError, but the broad except is what
     # actually keeps the 200-through-an-outage guarantee even if a future
     # caller gets that wrong, or the reader fails for any other reason.
     world = None
-    if postgres.get("connected"):
+    if postgres_readable(postgres):
         try:
             latest_signal_at, latest_event_at = world_liveness_times()
             world = world_liveness(

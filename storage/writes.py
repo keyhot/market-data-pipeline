@@ -42,6 +42,27 @@ def postgres_status() -> dict:
     return {"enabled": enabled, "connected": ping() if enabled else None}
 
 
+def postgres_readable(status: dict) -> bool:
+    """Whether Postgres answers right now, independent of whether this
+    process may *write* to it.
+
+    `status["connected"]` (from `postgres_status()`) already reflects
+    reachability when `POSTGRES_WRITE_ENABLED` is on — that call already paid
+    for a `ping()`. When writes are off, `postgres_status()` skips its own
+    ping and reports `connected: None` — unprobed, not unreachable — so a
+    read-only deployment (writes off, database perfectly readable) would
+    otherwise see this as "not connected" forever. Only probe here when the
+    write path didn't already answer the question: reusing its result when
+    available, rather than always pinging, avoids stacking a second bounded
+    connection-acquire wait onto the same request when writes are on and
+    Postgres is down (KI-024's 5s `/health` content-timeout budget — see
+    `tests/unit/test_db_deploy_guard.py::TestRoleProbeLatency`)."""
+    connected = status.get("connected")
+    if connected is None:
+        return ping()
+    return bool(connected)
+
+
 def write_metrics() -> dict:
     with _counts_lock:
         return dict(_counts)

@@ -69,19 +69,50 @@ def test_health_degrades_world_to_none_on_database_error():
     assert response.json()["data"]["world"] is None
 
 
-def test_health_skips_the_world_read_when_postgres_is_not_known_connected():
+def test_health_skips_the_world_read_when_postgres_is_not_readable():
     # KI-024: `world_liveness_times()` opens its own bounded connection.
-    # Attempting it unconditionally stacks a second connect-timeout on top
-    # of `postgres_status()`'s own `ping()` and blows the 5s budget the
-    # stream watchdog gives `/health` for a content-health verdict (see
+    # Attempting it when Postgres isn't reachable stacks a second
+    # connect-timeout on top of whatever `postgres_readable()` already paid,
+    # and blows the 5s budget the stream watchdog gives `/health` for a
+    # content-health verdict (see
     # `tests/unit/test_db_deploy_guard.py::TestRoleProbeLatency`). Gating on
-    # `connected` is what keeps this reader off that cold path.
-    with patch("api.main.world_liveness_times") as reader:
+    # `postgres_readable()` is what keeps this reader off that cold path.
+    with (
+        patch("api.main.postgres_readable", return_value=False),
+        patch("api.main.world_liveness_times") as reader,
+    ):
         response = client.get("/health")
 
     assert response.status_code == 200
     assert response.json()["data"]["world"] is None
     reader.assert_not_called()
+
+
+def test_health_reads_world_liveness_when_writes_are_disabled_but_db_is_reachable():
+    # MINOR-3: the gate must key off *readability*, not the *write* flag.
+    # `postgres_status()` reports `connected: None` (unprobed, not
+    # unreachable) whenever POSTGRES_WRITE_ENABLED is off — exactly this
+    # project's default test/read-only-guard posture — so a read-only
+    # deployment with a perfectly reachable database must still get a
+    # value, not a permanent `null`.
+    now = datetime.now(timezone.utc)
+    with (
+        patch(
+            "api.main.postgres_status",
+            return_value={"enabled": False, "connected": None},
+        ),
+        patch("api.main.postgres_readable", return_value=True),
+        patch(
+            "api.main.world_liveness_times",
+            return_value=(now - timedelta(minutes=3), now - timedelta(minutes=1)),
+        ),
+    ):
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    world = response.json()["data"]["world"]
+    assert world is not None
+    assert world["stale"] is False
 
 
 def test_metrics_includes_scheduler_status():

@@ -103,3 +103,32 @@ def test_postgres_status_enabled_reports_ping(monkeypatch):
 
     with patch("storage.writes.ping", return_value=True):
         assert postgres_status() == {"enabled": True, "connected": True}
+
+
+def test_postgres_readable_reuses_a_known_connected_result():
+    # Writes on, ping already ran and succeeded inside postgres_status() —
+    # readable() must not probe again (a second bounded connect-acquire wait
+    # on the same request would blow the /health latency budget, KI-024).
+    with patch("storage.writes.ping") as ping:
+        assert writes.postgres_readable({"enabled": True, "connected": True}) is True
+    ping.assert_not_called()
+
+
+def test_postgres_readable_reuses_a_known_down_result():
+    with patch("storage.writes.ping") as ping:
+        assert writes.postgres_readable({"enabled": True, "connected": False}) is False
+    ping.assert_not_called()
+
+
+def test_postgres_readable_probes_when_writes_are_disabled():
+    # This is MINOR-3: writes off means postgres_status() never pinged, so
+    # `connected` is None — unprobed, not unreachable. A read-only deployment
+    # (writes off, database perfectly readable) must still get an answer.
+    with patch("storage.writes.ping", return_value=True) as ping:
+        assert writes.postgres_readable({"enabled": False, "connected": None}) is True
+    ping.assert_called_once()
+
+
+def test_postgres_readable_reports_unreachable_when_disabled_and_down():
+    with patch("storage.writes.ping", return_value=False):
+        assert writes.postgres_readable({"enabled": False, "connected": None}) is False
