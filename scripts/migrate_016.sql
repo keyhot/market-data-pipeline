@@ -1,0 +1,31 @@
+-- Task 13 fix round (MINOR-2): an index for world_liveness_times()'s
+-- `max(signal_timestamp)` scan. Idempotent — safe to re-run. Fresh volumes
+-- get the same index from db/init.sql instead; keep both in sync.
+-- Apply: docker compose exec -T postgres psql -U market_data -d market_data < scripts/migrate_016.sql
+--
+-- Why: storage.postgres_store.world_liveness_times() runs
+-- `SELECT max(signal_timestamp) FROM signals` with no symbol filter — by
+-- design, it asks "is the world running at all", not "is one symbol
+-- running". The table's PRIMARY KEY is (symbol, interval, signal_timestamp,
+-- model_version) and its only other index, idx_signals_unresolved, is
+-- partial and also leads with symbol (db/init.sql), so this query has no
+-- usable index today and runs as a sequential scan. Not a present hazard —
+-- at roughly 290 signals/day that scan costs milliseconds — but it is
+-- unbounded in both directions, and the endpoint that runs it (/health) is
+-- polled by the stream watchdog under a 5s content-health budget (KI-024).
+--
+-- CONCURRENTLY so it does not lock the table it is protecting a hot
+-- endpoint's query against, and so it cannot run inside the transaction
+-- this repo's other migrate_*.sql files implicitly assume — run this
+-- statement on its own if you also apply other changes in the same sitting.
+--
+-- NOT APPLIED by this task: there is no live stack in this session's
+-- environment (Ruling 3, and confirmed again here — no docker, no
+-- Postgres). This file needs applying by hand against every existing
+-- deployment; nothing in the codebase applies it automatically. Deploy
+-- guard note: this DDL touches only an index, not application data, so it
+-- is safe to run against either a dev or a prod-marked database regardless
+-- of storage.db's read-only guard state.
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_signals_signal_timestamp
+    ON signals (signal_timestamp DESC);

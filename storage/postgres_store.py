@@ -156,8 +156,20 @@ def world_liveness_times(
     broadcast-lifecycle event is exactly as self-generated. The predicate
     below is coupled to that registry by test
     (tests/unit/test_postgres_store_world_liveness.py), not by construction —
-    a new broadcast-apparatus event type needs both updated together."""
+    a new broadcast-apparatus event type needs both updated together.
+
+    MINOR-2: `timeout_seconds` above bounds acquiring a connection, not
+    running a query on it — `signals` has no index usable by this query's
+    `max(signal_timestamp)` (its PK and its one other index both lead with
+    `symbol`; see scripts/migrate_016.sql), so without a statement-level
+    bound this is an unbounded sequential scan on an endpoint (`/health`)
+    the stream watchdog polls under a 5s budget (KI-024). `SET LOCAL` scopes
+    the bound to this connection's current transaction — psycopg3 defaults
+    new connections to `autocommit=False`, so both queries below run inside
+    the one implicit transaction this `with` block opens, and the setting
+    covers both."""
     with get_pool().connection(timeout=timeout_seconds) as conn:
+        conn.execute("SET LOCAL statement_timeout = '2s'")
         (latest_signal,) = conn.execute(
             "SELECT max(signal_timestamp) FROM signals"
         ).fetchone()

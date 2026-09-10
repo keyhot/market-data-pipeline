@@ -55,7 +55,11 @@ class _FakePool:
 
 
 def _wire(monkeypatch, rows):
-    conn = _FakeConnection(rows)
+    # `rows` are the results for the SELECTs only — world_liveness_times()
+    # also runs a leading `SET LOCAL statement_timeout` whose result nothing
+    # reads, so that call gets an unused placeholder row transparently here
+    # rather than making every test author account for it.
+    conn = _FakeConnection([(None,), *rows])
     pool = _FakePool(conn)
     monkeypatch.setattr(postgres_store, "get_pool", lambda: pool)
     return conn, pool
@@ -75,13 +79,28 @@ def test_returns_signal_then_event_in_that_order(monkeypatch):
     assert latest_event == _EVENT_TS
 
 
+def test_sets_a_statement_timeout_before_either_query(monkeypatch):
+    # MINOR-2: `signals` has no index this query can use (its PK and its one
+    # other index both lead with `symbol`), so without a statement-level
+    # bound `max(signal_timestamp)` is an unbounded sequential scan on an
+    # endpoint (/health) the stream watchdog polls under a 5s budget
+    # (KI-024). This must run before either SELECT, in the same transaction
+    # (SET LOCAL is transaction-scoped), or it protects nothing.
+    conn, _ = _wire(monkeypatch, [(_SIGNAL_TS,), (_EVENT_TS,)])
+
+    postgres_store.world_liveness_times()
+
+    assert conn.queries[0] == "SET LOCAL statement_timeout = '2s'"
+    assert len(conn.queries) == 3
+
+
 def test_excludes_broadcast_apparatus_events(monkeypatch):
     conn, _ = _wire(monkeypatch, [(_SIGNAL_TS,), (_EVENT_TS,)])
 
     postgres_store.world_liveness_times()
 
-    assert len(conn.queries) == 2
-    signal_query, event_query = conn.queries
+    assert len(conn.queries) == 3
+    _, signal_query, event_query = conn.queries
     assert "signals" in signal_query
     assert "world_events" in event_query
     # MINOR-4: the backslash is what makes '_' a literal underscore rather

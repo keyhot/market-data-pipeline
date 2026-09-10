@@ -76,6 +76,14 @@ CREATE TABLE signals (
 CREATE INDEX idx_signals_unresolved ON signals (symbol, signal_timestamp)
     WHERE resolved_at IS NULL;
 
+-- storage.postgres_store.world_liveness_times() runs `max(signal_timestamp)`
+-- with no symbol filter (it asks "is the world running at all", not "is one
+-- symbol running") — the PK above and idx_signals_unresolved both lead with
+-- symbol, so neither helps that query, and without this it is a sequential
+-- scan on an endpoint (/health) the stream watchdog polls under a 5s budget
+-- (KI-024). See scripts/migrate_016.sql for the note on existing volumes.
+CREATE INDEX idx_signals_signal_timestamp ON signals (signal_timestamp DESC);
+
 -- The Living World's memory (Sprint 9): append-only — application code has
 -- no UPDATE or DELETE path, by design. History (including failures)
 -- accumulates forever. See docs/world-memory.md.
