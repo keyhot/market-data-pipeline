@@ -5551,3 +5551,53 @@ def test_a_malformed_ambient_light_degrades_that_one_light_not_the_room():
         "the malformed entry must be skipped, and the well-formed one "
         "still built"
     )
+
+
+@needs_node
+def test_a_zero_or_negative_period_falls_back_to_the_default_floor():
+    """`buildAmbientLights`'s `period: light.period > 0 ? light.period : 4`
+    is a defensive floor against a hand-edited manifest entry with a
+    `period` of `0` or negative - either would otherwise reach
+    `tickAmbientLights`'s `t / light.period`, producing a division by zero
+    (a light that is either always mid-fade or, for `0`, NaN-locked) or a
+    sign flip that runs the sine backwards. The malformed-entry test above
+    (which checks `colour`) does not exercise this guard at all.
+
+    A fourth entry omits `period` entirely - covered rather than declared
+    out of scope, because `undefined > 0` is also `false`: a missing or
+    non-numeric period takes the exact same floor branch as `0` and `-2.5`,
+    so proving it costs nothing beyond one more list entry.
+
+    Runs the real builder and reads the `period` it actually stored, not
+    the source text of the ternary - then ticks once so the `period: 0`
+    light's `alpha` is checked for the actual 3am symptom (an un-floored
+    zero divides `t` by zero, `Math.sin(Infinity)` is `NaN`, and
+    `JSON.stringify` serializes `NaN` as `null`), not just the stored
+    number.
+    """
+    lights = [
+        {"x": 100, "y": 100, "w": 8, "h": 8, "colour": "#ff3b30", "period": 0},
+        {"x": 200, "y": 200, "w": 8, "h": 8, "colour": "#ff3b30", "period": -2.5},
+        {"x": 300, "y": 300, "w": 8, "h": 8, "colour": "#ff3b30", "period": 6},
+        {"x": 400, "y": 400, "w": 8, "h": 8, "colour": "#ff3b30"},  # no period key
+    ]
+    result = _run_node(
+        _ambient_lights_driver(plate_ready=True, lights=lights)
+        + (
+            "buildAmbientLights();\n"
+            "const periods = ambientLightSprites.map((l) => l.period);\n"
+            "tickAmbientLights(1.0);\n"
+            "const alphas = ambientLightSprites.map((l) => l.graphics.alpha);\n"
+            "console.log(JSON.stringify({ periods, alphas }));\n"
+        )
+    )
+    assert result["periods"] == [4, 4, 6, 4], (
+        "a period of 0, a negative number, or a missing/non-numeric period "
+        "must all fall back to the default floor of 4; a positive period "
+        "must pass through unchanged"
+    )
+    assert all(alpha is not None for alpha in result["alphas"]), (
+        "an un-floored period of 0 reaches tickAmbientLights's t/period "
+        "division, producing Infinity -> NaN alpha (NaN serializes as JSON "
+        "null) - the exact failure the floor exists to prevent"
+    )
