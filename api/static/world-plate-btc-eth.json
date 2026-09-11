@@ -47,7 +47,7 @@
     "warmth": "#f0a848",
     "ambient": "#1a2030",
     "ramp": { "lit": 0.30, "base": 0.0, "shade": -0.34 },
-    "contact": { "opacity": 0.38, "widthScale": 1.15, "height": 7 }
+    "contact": { "opacity": 0.38, "widthScale": 1.15, "throwScale": 7 }
   },
   "text_surfaces": [
     {"id": "tube-plinth-BTCUSDT", "x": 505, "y": 758, "w": 93, "h": 9},

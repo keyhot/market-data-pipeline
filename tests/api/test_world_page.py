@@ -4370,9 +4370,9 @@ def test_the_contact_shadow_is_thrown_away_from_the_lamp():
 
 
 @needs_node
-def test_the_throw_is_the_measured_lamp_height_and_nothing_else():
-    """`LIGHT.contact.height` is the plate's own measurement of how far this
-    room throws a shadow, so doubling it must double the throw and zeroing it
+def test_the_throw_is_the_measured_scale_and_nothing_else():
+    """`LIGHT.contact.throwScale` is the plate's own measurement of how far
+    this room throws a shadow, so doubling it must double the throw and zeroing it
     must give the centred patch back — an unmeasured room gets no invented
     direction, which is the same rule `DEFAULT_LIGHT` states in Python.
 
@@ -4381,8 +4381,8 @@ def test_the_throw_is_the_measured_lamp_height_and_nothing_else():
     """
     source = _world_source()
     light = _page_light(source)
-    assert light["contact"]["height"] > 0, (
-        "the shipped plate measures no contact height - this test's premise "
+    assert light["contact"]["throwScale"] > 0, (
+        "the shipped plate measures no throw scale - this test's premise "
         "is that it does"
     )
 
@@ -4395,12 +4395,12 @@ def test_the_throw_is_the_measured_lamp_height_and_nothing_else():
         return (rest["dx"] ** 2 + rest["dy"] ** 2) ** 0.5
 
     base = throw()
-    doubled = throw(height=light["contact"]["height"] * 2)
+    doubled = throw(throwScale=light["contact"]["throwScale"] * 2)
     assert 1.98 < doubled / base < 2.02, (
-        f"doubling the measured lamp height scaled the throw by "
+        f"doubling the measured throw scale scaled the throw by "
         f"{doubled / base:.3f}x, not 2x - the offset is not the measurement"
     )
-    assert throw(height=0) < 1e-9, (
+    assert throw(throwScale=0) < 1e-9, (
         "a plate that measures no throw still displaced its shadow - the "
         "offset carries a constant of its own"
     )
@@ -4417,7 +4417,7 @@ def test_the_shadow_still_touches_the_foot_that_casts_it():
     source = _world_source()
     light = _page_light(source)
     no_throw = json.loads(json.dumps(light))
-    no_throw["contact"]["height"] = 0
+    no_throw["contact"]["throwScale"] = 0
 
     thrown = _run_node(_shadow_driver(
         source, "console.log(JSON.stringify({ rest: run(0) }));"

@@ -45,7 +45,7 @@ def test_the_ramp_is_monotonic_and_centred_on_base():
 def test_as_json_round_trips_every_field_the_page_reads():
     payload = json.loads(as_json(light_for(load_manifest())))
     assert set(payload) >= {"key", "warmth", "ambient", "ramp", "contact"}
-    assert set(payload["contact"]) >= {"opacity", "widthScale", "height"}
+    assert set(payload["contact"]) >= {"opacity", "widthScale", "throwScale"}
 
 
 def test_a_non_monotonic_ramp_degrades_instead_of_lighting_the_wrong_side():
@@ -62,7 +62,7 @@ def test_a_non_monotonic_ramp_degrades_instead_of_lighting_the_wrong_side():
             "warmth": "#f0a848",
             "ambient": "#1a2030",
             "ramp": {"lit": -0.30, "base": 0.0, "shade": 0.34},
-            "contact": {"opacity": 0.38, "widthScale": 1.15, "height": 7},
+            "contact": {"opacity": 0.38, "widthScale": 1.15, "throwScale": 7},
         },
     )
     assert light_for(poisoned) is DEFAULT_LIGHT
@@ -82,7 +82,7 @@ def test_an_explicitly_flat_ramp_still_keeps_its_measured_key():
             "warmth": "#f0a848",
             "ambient": "#1a2030",
             "ramp": {"lit": 0.0, "base": 0.0, "shade": 0.0},
-            "contact": {"opacity": 0.38, "widthScale": 1.15, "height": 7},
+            "contact": {"opacity": 0.38, "widthScale": 1.15, "throwScale": 7},
         },
     )
     model = light_for(flattened)
@@ -91,7 +91,7 @@ def test_an_explicitly_flat_ramp_still_keeps_its_measured_key():
 
 
 def test_a_light_block_missing_a_required_field_degrades_rather_than_raising():
-    # Exercises the try/except path directly: a `contact` with no `height`
+    # Exercises the try/except path directly: a `contact` with no `throwScale`
     # must not propagate a KeyError into a page render.
     manifest = load_manifest()
     poisoned = dataclasses.replace(
@@ -123,7 +123,7 @@ def test_the_neutral_default_withholds_a_direction_but_not_the_shadow():
     `opacity: 0`, which is a statement and reaches the page intact.
     """
     contact = DEFAULT_LIGHT.contact
-    assert contact["height"] == 0, (
+    assert contact["throwScale"] == 0, (
         "the neutral default measures a throw - it has invented a lamp"
     )
     assert contact["opacity"] > 0, (
