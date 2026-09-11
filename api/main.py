@@ -164,6 +164,14 @@ _THEME_REPLACEMENTS = {
     # wrong number. Precomputed per mood here, where the contrast maths and the
     # base fill live together.
     "__BODY_TINTS_JSON__": json.dumps(visuals.body_tints()),
+    # KI-060: `BODY_TINT` covers every mood MOOD_COLORS claims, and nothing
+    # else — but `character()` builds every figure at mood "neutral", which it
+    # deliberately does not claim. The page used to answer that with a hex of
+    # its own at 3.05:1, the one colour in the room below KI-028's floor. Both
+    # neutrals come from here now: the identity grey for chrome, and the same
+    # grey lifted for anything that gets painted as a body.
+    "__NEUTRAL_COLOR__": hex(int(visuals.PALETTE["neutral"][1:], 16)),
+    "__NEUTRAL_TINT__": hex(int(visuals.neutral_body_tint()[1:], 16)),
     "__BODY_BASE_FILL__": hex(visuals.BODY_BASE_FILL),
     "__BODY_RIM_FILL__": hex(visuals.BODY_RIM_FILL),
     # B2: scene-wide lighting per tier, from the same module as everything else

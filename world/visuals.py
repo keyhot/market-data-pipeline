@@ -283,16 +283,46 @@ def body_tint(mood: str, background: str | None = None) -> str:
     still falls short is it mixed toward white, and only as far as it must go. A
     dim mood therefore stays recognisably itself — it just stops being invisible.
     """
+    return lift_to_silhouette_floor(mood_color(mood), background)
+
+
+def lift_to_silhouette_floor(colour: str, background: str | None = None) -> str:
+    """``colour``, taken up to `SILHOUETTE_MIN_CONTRAST` against the room.
+
+    The lift itself, addressable by colour rather than only by mood name. It
+    was inlined in `body_tint` until KI-060, which is why the page's fallback
+    could not reach it and shipped a hand-typed hex at 3.05:1 instead — below
+    the floor this function exists to hold, on the one path that runs when
+    nothing else is guarding the frame.
+    """
     bg = _to_rgb(background or PALETTE["bg"])
-    mood_rgb = _to_rgb(mood_color(mood))
-    peak = max(mood_rgb) or 1
-    full_chroma = tuple(min(255, c * 255 / peak) for c in mood_rgb)
-    lifted = _lerp_to_floor(mood_rgb, full_chroma, bg, SILHOUETTE_MIN_CONTRAST)
+    rgb = _to_rgb(colour)
+    peak = max(rgb) or 1
+    full_chroma = tuple(min(255, c * 255 / peak) for c in rgb)
+    lifted = _lerp_to_floor(rgb, full_chroma, bg, SILHOUETTE_MIN_CONTRAST)
     if contrast_ratio(_rendered(lifted), bg) < SILHOUETTE_MIN_CONTRAST:
         lifted = _lerp_to_floor(
             full_chroma, (255, 255, 255), bg, SILHOUETTE_MIN_CONTRAST
         )
     return _to_hex(lifted)
+
+
+def neutral_body_tint(background: str | None = None) -> str:
+    """The body tint for a mood the cast cannot name.
+
+    `PALETTE["neutral"]` is the identity grey — right for chrome, a label, a
+    gallery swatch. A *body* painted in it renders at 3.05:1 against the room,
+    so it goes through the same lift every named mood does. The page reads this
+    rather than declaring a neutral of its own (KI-060).
+    """
+    return lift_to_silhouette_floor(PALETTE["neutral"], background)
+
+
+def neutral_body_contrast(background: str | None = None) -> float:
+    """Measured contrast of the neutral body against the room — the same number
+    `body_contrast` reports per mood, for the mood that has no name."""
+    bg = _to_rgb(background or PALETTE["bg"])
+    return contrast_ratio(_rendered(_to_rgb(neutral_body_tint(background))), bg)
 
 
 def body_tints(background: str | None = None) -> dict[str, str]:

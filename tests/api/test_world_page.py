@@ -4668,6 +4668,7 @@ def _mood_fill_driver(source: str, mood_fill: str, emit: str) -> str:
     return (
         _js_const(source, "MOOD_COLOR")
         + _js_const(source, "NEUTRAL")
+        + _js_const(source, "NEUTRAL_TINT")
         + _js_const(source, "BODY_TINT")
         + _js_const(source, "BODY_FILL")
         + _js_const(source, "BODY_RIM")
@@ -4741,8 +4742,11 @@ def test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_multiplier():
         )
     # An unknown mood must still resolve THROUGH the multiply on BOTH surfaces,
     # or every un-mooded figure in the room gets brighter than every mooded one.
+    # NEUTRAL_TINT, not NEUTRAL: an un-mooded BODY is painted in the lifted
+    # grey, because the identity grey renders at 3.05:1 against the room and
+    # the floor KI-028 set is 4.5 (KI-060).
     neutral_tint = int(
-        re.search(r"const NEUTRAL = (0x[0-9a-fA-F]+);", source).group(1), 16
+        re.search(r"const NEUTRAL_TINT = (0x[0-9a-fA-F]+);", source).group(1), 16
     )
     assert emitted["__unknown__"]["fill"] == _int(
         _mul_channels(base, _rgb(neutral_tint))
@@ -4845,7 +4849,7 @@ def test_every_mood_the_cast_can_wear_resolves_to_a_body_colour():
     # Mutation: remove the fallback. `neutral` has no table entry, so it is the
     # mood that proves the fallback is real rather than decorative.
     mood_tint = _js_block(source, "function moodTint(")
-    unguarded = mood_tint.replace(": NEUTRAL", ": NaN")
+    unguarded = mood_tint.replace(": NEUTRAL_TINT", ": NaN")
     assert unguarded != mood_tint, "the fallback mutation did not change the source"
     broken = _run_node(
         _mood_fill_driver(source, mood_fill, emit).replace(mood_tint, unguarded)
@@ -4867,6 +4871,7 @@ def _mood_paint_driver(source: str, apply_block: str, repaint_block: str) -> str
         "const PLATE = null;\n"
         + _js_const(source, "MOOD_COLOR")
         + _js_const(source, "NEUTRAL")
+        + _js_const(source, "NEUTRAL_TINT")
         + _js_const(source, "BODY_TINT")
         + _js_const(source, "BODY_FILL")
         + _js_const(source, "BODY_RIM")
@@ -5602,4 +5607,45 @@ def test_a_zero_or_negative_period_falls_back_to_the_default_floor():
         "an un-floored period of 0 reaches tickAmbientLights's t/period "
         "division, producing Infinity -> NaN alpha (NaN serializes as JSON "
         "null) - the exact failure the floor exists to prevent"
+    )
+
+
+TEMPLATE = Path(__file__).resolve().parents[2] / "api" / "templates" / "world.html"
+
+
+def test_the_body_tint_fallback_clears_the_silhouette_floor():
+    """KI-060: the one colour that never passed KI-028's contrast check was the
+    fallback. Every *named* mood reaches the page through `visuals.body_tints()`,
+    which lifts it to `SILHOUETTE_MIN_CONTRAST` — that lift IS the KI-028 fix.
+    The page's own `NEUTRAL` literal never went through it, and measured 3.05:1
+    against the room against a 4.5 floor (and WCAG's 3:1 for non-text graphics).
+
+    So a figure whose mood the world emits but the cast cannot name rendered
+    *below the floor the fix exists to hold* — precisely the case the fallback
+    is there to protect. `character()` builds every figure at mood "neutral",
+    which `MOOD_COLORS` does not claim, so this is the live path, not a
+    hypothetical.
+    """
+    from world import visuals
+
+    body = client.get("/world").text
+    match = re.search(r"const NEUTRAL_TINT = (0x[0-9a-fA-F]{6});", body)
+    assert match, "the page has no injected neutral body tint"
+    assert int(match.group(1), 16) == int(visuals.neutral_body_tint()[1:], 16), (
+        "the page's neutral body tint is not visuals.neutral_body_tint()"
+    )
+    assert visuals.neutral_body_contrast() >= visuals.SILHOUETTE_MIN_CONTRAST
+
+
+def test_the_template_states_no_colour_of_its_own():
+    """The other half, and the half a rendered-page test cannot see: an injected
+    value and a hand-typed one that happen to agree look identical in the
+    output. KI-060 was exactly that — `PALETTE['neutral']` copied into the page
+    as `0x787b86`, correct as an identity colour and wrong as a body tint,
+    with nothing to keep the copy honest."""
+    source = TEMPLATE.read_text()
+    assert "__NEUTRAL_TINT__" in source
+    assert "__NEUTRAL_COLOR__" in source
+    assert "0x787b86" not in source, (
+        "world.html hand-copies PALETTE['neutral'] again — inject it"
     )

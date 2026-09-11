@@ -131,10 +131,14 @@
     // between them was the old failure. Unknown moods stay grey rather than
     // throwing, so a new salience rule degrades quietly on screen.
     const MOOD_COLOR = __MOOD_COLORS_JSON__;
-    const NEUTRAL = 0x787b86;
+    const NEUTRAL = __NEUTRAL_COLOR__;
+    // The same grey after `visuals.lift_to_silhouette_floor` — what an
+    // un-mooded figure is PAINTED in. Identity colour and body colour are
+    // different jobs and only one of them has a contrast floor (KI-060).
+    const NEUTRAL_TINT = __NEUTRAL_TINT__;
     const color = (mood) => {
       const hex = MOOD_COLOR[mood];
-      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
+      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL_TINT;
     };
 
     // KI-028: the cast measured 1.19:1 (trader) and 1.00:1 against its own
@@ -628,14 +632,16 @@
     // is the pre-lift colour; reaching for it here is KI-028 reverted, which
     // sinks fourteen of the twenty-two moods back under the floor.
     //
-    // Unknown moods fall back to NEUTRAL *inside* the multiply. `neutral` is
-    // the live case, not a hypothetical: `character()` builds every figure at
-    // mood "neutral", which `visuals.MOOD_COLORS` does not claim, and
+    // Unknown moods fall back to NEUTRAL_TINT *inside* the multiply. `neutral`
+    // is the live case, not a hypothetical: `character()` builds every figure
+    // at mood "neutral", which `visuals.MOOD_COLORS` does not claim, and
     // returning the bare tint there would make un-mooded figures the brightest
-    // thing in the room.
+    // thing in the room. NEUTRAL_TINT, not NEUTRAL: the identity grey is the
+    // pre-lift colour, and painting a body in it lands at 3.05:1 — the only
+    // colour in the room under KI-028's floor, which is what KI-060 was.
     function moodTint(mood) {
       const hex = BODY_TINT[mood];
-      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
+      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL_TINT;
     }
     function moodFill(mood) {
       return mulHex(BODY_FILL, moodTint(mood));
@@ -1726,8 +1732,8 @@
       head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
 
       const nameTag = label(name, -40, 22, 18);
-      const stat = label("", -80, 46, 14, 0x787b86);
-      const moodTag = label("", -40, headY - 56, 16, 0x787b86);
+      const stat = label("", -80, 46, 14, NEUTRAL);
+      const moodTag = label("", -40, headY - 56, 16, NEUTRAL);
       // Accents go behind the mass, so a wick reads as emerging from it.
       container.addChild(...accents, body, head, nameTag, stat, moodTag);
       layers.chars.addChild(container);
@@ -2463,7 +2469,7 @@
       // `name-trader`/`name-model` are NOT rebuilt here: they are static
       // text built once at boot into `layers.nameplates` (see boot()'s own
       // comment for why that is a separate, un-scaled, top-most layer).
-      const historyLabel = placedLabel(TEXT_PLACEMENTS.history, historyLine(h), 0x787b86);
+      const historyLabel = placedLabel(TEXT_PLACEMENTS.history, historyLine(h), NEUTRAL);
       if (historyLabel) layers.props.addChild(historyLabel);
 
       renderNowBand(state);
