@@ -76,56 +76,51 @@ POT_SHADOW = (1794, 866, 1842, 886)  # the pot's contact shadow: content, not gl
 COUNTER_EDGE = ((1772, 928), (1826, 910))   # (x, y), (x, y) - slope -1/3
 
 # The painted glass is not an axis-aligned rectangle: both monitors are drawn
-# in slight perspective, with vertical left and right edges. The top edges
-# were measured off the source art (rising ~1px per 20px to the right); the
-# bottom edges were originally left flat (KI-052) - candles, laid out in the
-# axis-aligned rect this quad bounds, spilled off the bottom-right of the
-# painted bezel.
+# in perspective, with vertical left and right edges. BOTH horizontal edges are
+# measured off the source art, per column, and fitted robustly - `top` and
+# `bottom` are the same kind of number, from the same kind of measurement.
 #
-# `top` is (slope, intercept) of the frame's inner dark line, found per column
-# as the luminance minimum and fitted robustly against the source art. That
-# art is gone by the time `bottom` needed the same treatment: `darken_screens`
-# below overwrites everything inside the OLD flat-bottomed quad on the shipped
-# PNG, so re-measuring the true bottom edge off the shipped asset is not
-# possible (checked directly - the pixels below the old flat line are desk
-# clutter, not a bezel line).
+# That is a correction. `bottom` used to be DERIVED from `top` under an
+# oblique-projection argument - same slope, anchored at the bottom-left corner
+# - because the source art was believed lost (KI-052). It was not lost, only
+# invisible: `data/visual-qa/` is gitignored and every git worktree has its own
+# untracked copy, so looking in one worktree said "gone". Re-measured against
+# the recovered source (KI-067), the assumption is wrong: these screens are
+# TRAPEZOIDS that converge to the right, and their two edges are nowhere near
+# parallel.
 #
-# `bottom` is instead DERIVED - review round 1, MINOR 5: say what this
-# actually establishes, not more. It is NOT a claim that the derived line
-# matches the plate's true bezel; it is two separate, weaker (and both true)
-# claims:
+#                  top slope    bottom slope    height L -> R
+#   centre-left     -0.0506       -0.1242        238 -> 217
+#   centre-right    -0.0541       -0.1246        213 -> 192
 #
-# 1. Same slope as `top`, not merely a plausible guess: a THIRD screen in
-#    this room still has both its edges intact (never flattened), and
-#    measuring both off it finds them nearly equal (-0.1347 top, -0.1335
-#    bottom, review round 1's own measurement) - consistent with this room
-#    being drawn in OBLIQUE projection, both edges receding at the same
-#    rate, rather than perspective converging to a vanishing point (which
-#    would need a separately fitted, generally different, bottom slope).
-#    That is one screen's evidence, not a room-wide measurement (the two
-#    CENTRAL screens' own top/bottom slopes, -0.0506/-0.0541, are nothing
-#    like this peripheral one's -0.134) - but it is why "parallel to `top`"
-#    is the principled choice here and not just the conservative one.
-# 2. Anchored at the existing bottom-left corner with a slope that is <= 0
-#    for every x from left to right, so the derived line is monotonically
-#    at or above the old flat value across the whole width: the quad only
-#    ever SHRINKS relative to the old flat-bottom bug, never grows past what
-#    that bug already declared safe. This holds regardless of whether the
-#    derived slope is exactly the room's true one - it is a property of
-#    "unchanged left corner, non-positive slope", not of getting the number
-#    right.
+# Carrying `top`'s shallow slope across the bottom therefore ran the fill 21px
+# BELOW the painted bezel at each screen's right-hand end, overpainting the
+# lower frame there - the blunt square corner KI-067 reports, on air.
+#
+# The method, for both edges: the frame's inner dark line, found per column as
+# the local luminance minimum immediately against the bezel's lit face, and
+# fitted with iterated outlier rejection. Cyan pixels (blue-minus-red >= 28)
+# are excluded first, because the schematic drawn ON the glass is brighter than
+# the bezel and otherwise wins the search - that, and not the fit, is why an
+# earlier darkest-pixel-per-column attempt kept 81/329 columns and still landed
+# wrong.
+#
+# It is checkable rather than asserted: run over the TOP edge, which was
+# measured years-of-commits ago by a different method (luminance minimum per
+# column), the same code re-derives the recorded line to within 0.4px at both
+# ends of both screens. The bottom fits hold residual sd 0.56/0.57px.
 #
 # Every other edge is a scalar. The fill quads are DERIVED from these, so the
 # frame is stated once: P4 and P5 need the same numbers, and re-deriving them
-# means redoing the measurement (or, for `bottom`, redoing the derivation).
+# means redoing the measurement.
 SCREEN_FRAMES = {
     "centre-left": {
         "left": 461, "right": 809,
-        "top": (-0.0506, 137.0), "bottom": (-0.0506, 375.4278),
+        "top": (-0.0506, 137.0), "bottom": (-0.1242, 413.5233),
     },
     "centre-right": {
         "left": 852, "right": 1152,
-        "top": (-0.0541, 138.8), "bottom": (-0.0541, 352.2014),
+        "top": (-0.0541, 138.8), "bottom": (-0.1246, 412.1199),
     },
 }
 SCREEN_INSET = 2   # px inside the frame line, so a fill never overruns the bezel
@@ -139,8 +134,8 @@ def frame_top(frame: dict, x: int) -> int:
 
 def frame_bottom(frame: dict, x: int) -> int:
     """Where the frame's inner dark line runs at column `x`, bottom edge.
-    See the derivation note above `SCREEN_FRAMES` - unlike `frame_top`, this
-    is not an independent measurement of the source art."""
+    Measured off the source art the same way `frame_top` is, and no longer
+    derived from it - see the note above `SCREEN_FRAMES` (KI-067)."""
     slope, intercept = frame["bottom"]
     return round(slope * x + intercept)
 
