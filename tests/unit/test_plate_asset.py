@@ -16,12 +16,17 @@ from pathlib import Path
 from PIL import Image
 
 from scripts.prepare_plate import (
+    DEFAULT_SOURCE,
     SCREEN_FRAMES,
+    SOURCE_SHA256,
+    TARGET,
     WATERMARK_LUMA,
     WATERMARK_WINDOW,
     _is_terracotta,
     frame_bottom,
     frame_top,
+    resample_mode,
+    sha256,
 )
 
 PLATE = (
@@ -99,11 +104,15 @@ def test_the_generators_watermark_is_gone():
 # caught it as anything other than "still zero ink," which is exactly the
 # coverage gap that let the two derivations drift into KI-066. KI-067 then
 # re-measured `frame_bottom` off the recovered source art and the yield shrank
-# again, to 79391 / 60301 px - a second legitimate, measured narrowing. The
-# floors are LEFT where they were (7.3% / 5.8% headroom now, not 10%): a floor
-# that follows every shrink downward guards nothing, and the drift they were
-# standing in for is pinned directly now by
-# `test_the_shipped_plates_fill_matches_the_frames_it_was_generated_from`.
+# again, to 79391 / 60301 px - a second legitimate, measured narrowing. KI-068
+# then moved `centre-right`'s right edge 12px in, off the frame's OUTER line
+# and onto its inner one, for 79391 / 58004 - a third. The floors are LEFT
+# where they were (7.3% / 1.8% headroom now, not 10%): a floor that follows
+# every shrink downward guards nothing, and the drift they were standing in
+# for is pinned directly now by
+# `test_the_shipped_plates_fill_matches_the_frames_it_was_generated_from`
+# and, for the vertical edges those two KIs never checked, by
+# `test_the_frames_vertical_edges_are_the_lines_they_are_painted_on`.
 MIN_GLASS_PIXELS = {"centre-left": 74000, "centre-right": 57000}
 
 
@@ -206,3 +215,91 @@ def test_the_shipped_plates_fill_matches_the_frames_it_was_generated_from():
                     f"{name} x={x}: fill ends at y={bottom}, frames say "
                     f"{want_bottom} - the shipped PNG is stale, or a frame moved"
                 )
+
+
+# KI-068: the two horizontal frame edges are MEASURED off the source art and
+# recorded as fitted lines; the two vertical ones are hand-entered scalars, and
+# nothing checked them. Three of the four named the frame's inner dark line -
+# the boundary the fill is inset from - and `centre-right`'s `right` named the
+# OUTER one, 12px further out, so the glass fill was painted straight over that
+# monitor's right-hand bezel and the screen ran off the edge of its own frame.
+#
+# Not findable in the shipped PNG: the fill erases the bezel it overran, which
+# is KI-067's lesson repeated ("the pixels it wanted were the ones the bug had
+# erased"). So this reads the SOURCE, and it is the same measurement `top` and
+# `bottom` come from, turned 90 degrees: per row now instead of per column, the
+# frame's inner dark line found immediately against the bezel's lit face, with
+# the schematic's cyan masked out first because it is brighter than the bezel.
+#
+# Threshold-free on purpose. "Immediately against the lit face" is a walk from
+# the bezel's brightest column toward the glass until the luminance stops
+# falling, so nothing here is tuned to a luminance value that a repaint would
+# invalidate - the one number, CYAN_INK, is the intake's own.
+SOURCE = DEFAULT_SOURCE  # the intake's own path, so the two cannot drift
+CYAN_INK = 28           # blue-minus-red; the intake's own mask for schematic ink
+EDGE_TOLERANCE = 1      # px; `centre-left`'s left line lands on 461 or 462 by row
+
+
+def _inner_frame_line(lum, cyan, y, nominal, step):
+    """Where the frame's inner dark line runs at row `y`, on one vertical edge.
+
+    `step` is +1 for a left-hand edge (the glass lies to the RIGHT of the bezel)
+    and -1 for a right-hand one. The window is anchored on the recorded scalar
+    but reaches much further toward the glass than away from it: a scalar that
+    is wrong is wrong outward, and reaching outward instead would eventually
+    find the coolant tube standing beside the right-hand monitor, which is far
+    brighter than any bezel.
+    """
+    lo, hi = sorted((nominal + step * 16, nominal - step * 4))
+    window = [
+        (x, None if cyan[y, x] else lum[y, x]) for x in range(lo, hi + 1)
+    ]
+    lit = max((v, x) for x, v in window if v is not None)[1]
+    x = lit
+    while True:
+        nxt = x + step
+        if not (lo <= nxt <= hi) or cyan[y, nxt] or lum[y, nxt] > lum[y, x]:
+            return x
+        x = nxt
+
+
+def test_the_frames_vertical_edges_are_the_lines_they_are_painted_on():
+    """Every edge of `SCREEN_FRAMES` names the frame's inner dark line - the
+    two fitted ones by construction, and these two because this says so.
+
+    Skips when the source art is absent rather than failing: it is gitignored,
+    and KI-067 established that "gone" is usually a worktree artifact (it is in
+    every worktree and in Downloads). The hash is asserted, not skipped on, so
+    a DIFFERENT image in that path is a failure and not a silent pass.
+    """
+    import numpy as np
+
+    if not SOURCE.exists():
+        import pytest
+
+        pytest.skip(f"source art not in this worktree: {SOURCE.name}")
+    assert sha256(SOURCE) == SOURCE_SHA256, (
+        f"{SOURCE.name} is not the image every coordinate here was measured on"
+    )
+    with Image.open(SOURCE) as raw:
+        im = raw.convert("RGB").resize(TARGET, resample_mode(raw.size))
+    pixels = np.asarray(im, dtype=int)
+    lum = pixels.sum(axis=2) / 3.0
+    cyan = (pixels[:, :, 2] - pixels[:, :, 0]) >= CYAN_INK
+
+    for name, frame in SCREEN_FRAMES.items():
+        for edge, step in (("left", 1), ("right", -1)):
+            nominal = frame[edge]
+            rows = range(
+                frame_top(frame, nominal) + 12, frame_bottom(frame, nominal) - 12
+            )
+            found = sorted(
+                _inner_frame_line(lum, cyan, y, nominal, step) for y in rows
+            )
+            median = found[len(found) // 2]
+            assert abs(median - nominal) <= EDGE_TOLERANCE, (
+                f"{name} {edge}: the painted frame's inner line runs at "
+                f"x={median} over {len(found)} rows, but SCREEN_FRAMES says "
+                f"{nominal} - the fill is inset from the wrong line, so it "
+                "overruns the bezel by the difference"
+            )
