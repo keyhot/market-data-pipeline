@@ -5227,6 +5227,31 @@ def test_the_banner_is_bound_to_its_placement_not_only_its_bar_height():
     assert "banner.style.paddingTop" in body
 
 
+def test_every_declared_text_placement_is_read_by_the_page():
+    """KI-070: `floating_text` and `glyph_overflow` validate every placement
+    in `manifest.text`, so a placement the page never consults is worse than
+    no placement at all - CI reports the "no text in the air" rule satisfied
+    over data nothing renders, and a repaint that moves it moves nothing.
+
+    `#nowband` is the case that made this real: the manifest declared
+    `prices` and `record` on `band-bottom` while the strip has always been
+    CSS-positioned, so the rule was enforced everywhere except where the
+    text is largest. Either a placement is read, or it is not declared."""
+    code = "\n".join(
+        re.sub(r"//.*$", "", line) for line in _world_source().splitlines()
+    )
+    unread = [
+        placement["id"]
+        for placement in load_manifest().text
+        if f"TEXT_PLACEMENTS.{placement['id']}" not in code
+        and f'TEXT_PLACEMENTS["{placement["id"]}"]' not in code
+    ]
+    assert not unread, (
+        "declared but never read, so CI validates a layout the page does not "
+        f"draw - bind them or delete them: {unread}"
+    )
+
+
 @needs_node
 def test_the_banner_is_padded_from_inside_its_surface_not_from_the_canvas():
     """KI-072: `#banner` is pinned `top: 0; left: 0` and positions its line

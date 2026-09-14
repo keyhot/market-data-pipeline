@@ -39,7 +39,14 @@
 
     /* B9 — the always-on band. A newcomer arriving mid-calm sees no events at
        all, so the room has to answer "what is this and how is it going?"
-       without waiting for one to fire. Bottom-pinned, quiet, permanent. */
+       without waiting for one to fire. Bottom-pinned, quiet, permanent.
+
+       Laid out here, in CSS, by decision (KI-070): one flex row whose cells
+       are per-symbol groups the browser spaces, not fixed points a manifest
+       could name. It still obeys "no text in the air" — the surface it sits
+       on is the painted quiet strip `bands.bottom` reserves, and the bar is
+       pinned to it — but it is not manifest-placed, and no placement
+       pretends otherwise. */
     #nowband { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
                display: flex; align-items: baseline; gap: 1.75rem;
                padding: 0.5rem 1.25rem;
@@ -1166,9 +1173,14 @@
         // The plate reserves a quiet strip at the top for the newcomer line.
         // Bind the banner to the measurement so a repaint moves the text with
         // the art instead of hanging it over a painted detail.
-        // The bottom band has no element on this page yet — /world has no
-        // price band — so nothing is bound to PLATE.bands.bottom rather than
-        // shipping a guard that can never fire.
+        // The bottom band DOES have an element - `#nowband`, the page's
+        // largest text - and it is CSS-positioned by decision (KI-070): a
+        // flex bar pinned `bottom: 0`, whose cells are laid out by the
+        // browser rather than placed from the manifest. So `bands.bottom`
+        // binds nothing here, and the two `band-bottom` placements that
+        // described it were deleted rather than left to pass a CI check
+        // over a layout the page does not draw. `history` is the one thing
+        // actually drawn on that band, and it is placed (see `draw()`).
         const banner = document.getElementById("banner");
         const bandHeight = bannerMinHeight();
         if (banner && bandHeight) {
