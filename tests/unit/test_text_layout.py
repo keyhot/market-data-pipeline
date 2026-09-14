@@ -11,9 +11,10 @@ placement whose surface is missing entirely, or whose rect escapes the one
 it names, is "floating" — text in the air.
 """
 import dataclasses
+import json
 
 from world.plate import load_manifest
-from world.text_layout import floating_text, glyph_overflow
+from world.text_layout import as_json, floating_text, glyph_overflow
 
 
 def test_nothing_in_the_shipped_room_floats_in_the_air():
@@ -92,3 +93,43 @@ def test_a_box_too_short_for_its_own_font_size_is_caught():
     # of width. Real text, deliberately undersized box.
     tight = {"w": 9999, "h": 9}
     assert glyph_overflow("MODEL", 14, tight)
+
+
+# --- KI-072: absolute for the canvas, relative for anything inside a surface -
+
+
+def _moved_banner(surface_id: str):
+    """The shipped manifest with `banner` moved to another real surface.
+    Moving a placement is the intended workflow - the manifest is data, not
+    code - so it must not be the thing that breaks a consumer."""
+    manifest = load_manifest()
+    placements = [dict(p) for p in manifest.text]
+    for placement in placements:
+        if placement["id"] == "banner":
+            placement["surface"] = surface_id
+    return dataclasses.replace(manifest, text=tuple(placements))
+
+
+def test_a_resolved_placement_carries_its_offset_inside_its_own_surface():
+    """`as_json` resolves to absolute canvas coordinates, which is what every
+    canvas label needs and stays its contract. The DOM banner needs the other
+    number: how far in from its own surface's origin the line sits. Today
+    both are 24/14 only because `band-top` starts at (0, 0) - so the second
+    pair is stated rather than implied."""
+    surfaces = {s["id"]: s for s in load_manifest().text_surfaces}
+    surface = surfaces["desk-face-trader"]
+    placement = next(p for p in load_manifest().text if p["id"] == "banner")
+
+    resolved = json.loads(as_json(_moved_banner("desk-face-trader")))["banner"]
+
+    assert resolved["x"] == surface["x"] + placement["x"]
+    assert resolved["y"] == surface["y"] + placement["y"]
+    assert (resolved["dx"], resolved["dy"]) == (placement["x"], placement["y"])
+
+
+def test_the_shipped_banner_is_where_the_two_pairs_happen_to_agree():
+    """The reason the bug was invisible, pinned so it stays visible: on the
+    shipped plate `band-top` is at the canvas origin, so absolute and
+    relative are the same numbers."""
+    banner = json.loads(as_json(load_manifest()))["banner"]
+    assert (banner["x"], banner["y"]) == (banner["dx"], banner["dy"])

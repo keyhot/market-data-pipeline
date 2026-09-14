@@ -5228,6 +5228,46 @@ def test_the_banner_is_bound_to_its_placement_not_only_its_bar_height():
 
 
 @needs_node
+def test_the_banner_is_padded_from_inside_its_surface_not_from_the_canvas():
+    """KI-072: `#banner` is pinned `top: 0; left: 0` and positions its line
+    with padding, so it needs the offset INSIDE its surface. `as_json` hands
+    out absolute canvas coordinates - correctly; that is what every canvas
+    label needs - and the two agree today only because `band-top` starts at
+    (0, 0). Move the placement to the desk face and the old code pads a
+    top-pinned bar by 1133/669px instead of drawing the line there.
+
+    Runs the page's own binding, with `document` and the placement stubbed."""
+    body = client.get("/world").text
+    block = re.search(
+        r'const banner = document\.getElementById\("banner"\);'
+        r".*?banner\.style\.fontSize[^\n]*\n\s*\}",
+        body,
+        re.S,
+    )
+    assert block, "the page no longer binds #banner in one readable block"
+
+    driver = (
+        "const style = {};\n"
+        "const document = { getElementById: () => ({ style }) };\n"
+        "function bannerMinHeight() { return 60; }\n"
+        # banner moved to `desk-face-trader` (1109, 655): absolute 1133/669,
+        # 24/14 inside its own surface.
+        "const TEXT_PLACEMENTS = { banner: "
+        '{ x: 1133, y: 669, dx: 24, dy: 14, w: 100, h: 30, size: 15 } };\n'
+        + block.group(0)
+        + "\nconsole.log(JSON.stringify(style));"
+    )
+    style = _run_node(driver)
+
+    assert style["paddingLeft"] == "24px", (
+        "the banner is padded by an absolute canvas coordinate"
+    )
+    assert style["paddingTop"] == "14px"
+    assert style["fontSize"] == "15px"
+    assert style["minHeight"] == "60px"
+
+
+@needs_node
 def test_placedLabel_positions_and_sizes_a_label_from_its_placement_alone():
     body = client.get("/world").text
     driver = _text_driver(body) + """

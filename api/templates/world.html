@@ -1182,8 +1182,13 @@
         // moves where the sentence actually sits, not just how tall its bar is.
         const bannerText = TEXT_PLACEMENTS.banner;
         if (banner && bannerText) {
-          banner.style.paddingLeft = bannerText.x + "px";
-          banner.style.paddingTop = bannerText.y + "px";
+          // `dx`/`dy`, not `x`/`y`: this bar is pinned to the top-left of
+          // the surface and pads its line INSIDE itself, so it wants the
+          // offset within the surface, never the absolute canvas point the
+          // canvas labels are drawn at (KI-072). The two are the same
+          // numbers only while `band-top` sits at the canvas origin.
+          banner.style.paddingLeft = bannerText.dx + "px";
+          banner.style.paddingTop = bannerText.dy + "px";
           banner.style.fontSize = bannerText.size + "px";
         }
       } catch (err) {

@@ -85,7 +85,15 @@ def floating_text(manifest) -> list[str]:
 
 def as_json(manifest) -> str:
     """The page's `__TEXT_JSON__`: placements resolved to absolute canvas
-    coordinates, ready to draw.
+    coordinates, ready to draw - plus `dx`/`dy`, the same point expressed
+    relative to its own surface.
+
+    Both pairs, because the page has both kinds of consumer: a canvas label
+    is drawn at an absolute point, while `#banner` is a DOM element pinned to
+    the surface itself and positions its line with padding *inside* it
+    (KI-072). Those numbers agree only while a surface starts at the canvas
+    origin, which `band-top` happens to do - so the relative pair is stated
+    rather than left to coincide.
 
     Deliberately the opposite failure mode from `floating_text` above: a
     placement whose surface cannot be resolved is silently DROPPED here
@@ -109,6 +117,8 @@ def as_json(manifest) -> str:
         resolved[str(placement["id"])] = {
             "x": surface["x"] + placement["x"],
             "y": surface["y"] + placement["y"],
+            "dx": placement["x"],
+            "dy": placement["y"],
             "w": placement["w"],
             "h": placement["h"],
             "size": placement.get("size", 14),
