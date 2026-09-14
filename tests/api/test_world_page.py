@@ -5227,6 +5227,92 @@ def test_the_banner_is_bound_to_its_placement_not_only_its_bar_height():
     assert "banner.style.paddingTop" in body
 
 
+def _nowband_driver(source: str, state: str) -> str:
+    """`renderNowBand` against a stub DOM - the page's own strip builder, run.
+
+    Only `document`, `SYMBOLS` and `MOOD_COLOR` are stubbed; the cells and
+    their text are the page's, character for character."""
+    return (
+        """
+        class El {
+          constructor(tag) {
+            this.tag = tag; this.className = ""; this.style = {};
+            this.children = []; this._text = "";
+          }
+          set textContent(value) { this._text = value; this.children = []; }
+          get textContent() {
+            return this.children.length
+              ? this.children.map((c) => c.textContent).join("")
+              : this._text;
+          }
+          appendChild(child) { this.children.push(child); return child; }
+        }
+        const band = new El("div");
+        const document = {
+          getElementById: () => band,
+          createElement: (tag) => new El(tag),
+          createTextNode: (text) => {
+            const node = new El("#text");
+            node.textContent = text;
+            return node;
+          },
+        };
+        const SYMBOLS = ["BTCUSDT", "ETHUSDT"];
+        const MOOD_COLOR = {};
+        """
+        + _js_block(source, "function formatPrice(")
+        + "\n"
+        + _js_block(source, "function bandCell(")
+        + "\n"
+        + 'const nowband = document.getElementById("nowband");\n'
+        + _js_block(source, "function renderNowBand(")
+        + f"\nrenderNowBand({state});\n"
+        + "console.log(JSON.stringify({ text: band.textContent }));"
+    )
+
+
+@needs_node
+def test_the_now_band_publishes_the_traders_open_trades_and_pnl():
+    """KI-065: Task 10 deleted the trader's `open_trades` / `profit_pct`
+    readout - correctly, it floated beside the figure with no surface under
+    it - and nothing else in the room or the overlays carries it. The show's
+    stated premise is that an AI trades crypto live, loses money and
+    publishes every loss forever; this is the loss. It goes on `#nowband`,
+    beside the model's record, which is where a newcomer already looks."""
+    emitted = _run_node(
+        _nowband_driver(
+            _world_source(),
+            '{ prices: { BTCUSDT: 118432.5 }, symbols: {},'
+            ' model: { accuracy: { wins: 3, losses: 5, hit_rate: 0.375,'
+            ' window: 8 } },'
+            ' trader: { open_trades: 2, profit_pct: -1.3712, mood: "weighing" } }',
+        )
+    )
+
+    assert "2 open" in emitted["text"], emitted["text"]
+    assert "-1.37%" in emitted["text"], emitted["text"]
+    assert "trader" in emitted["text"]
+    # The model's record is untouched beside it.
+    assert "3W 5L" in emitted["text"]
+
+
+@needs_node
+def test_the_now_band_says_dash_when_no_sidecar_is_running():
+    """`state.trader` is null until a `trader_*` event arrives, and those come
+    from the freqtrade sidecar - an opt-in compose profile that is not running
+    on this stack. The cell renders anyway, the way the model's record does
+    when its accuracy is unknown: a named slot with an em dash is honest, an
+    absent slot silently un-publishes the premise again."""
+    emitted = _run_node(
+        _nowband_driver(
+            _world_source(),
+            "{ prices: {}, symbols: {}, model: {}, trader: null }",
+        )
+    )
+
+    assert "trader —" in emitted["text"], emitted["text"]
+
+
 def test_every_declared_text_placement_is_read_by_the_page():
     """KI-070: `floating_text` and `glyph_overflow` validate every placement
     in `manifest.text`, so a placement the page never consults is worse than

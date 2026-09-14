@@ -55,6 +55,9 @@
     #nowband .sym { color: var(--fg); font-weight: 600; letter-spacing: 0.02em; }
     #nowband .px { color: var(--fg); font-variant-numeric: tabular-nums; }
     #nowband .mood { color: var(--neutral); }
+    #nowband .trader { color: var(--neutral);
+                       font-variant-numeric: tabular-nums; }
+    #nowband .trader b { color: var(--fg); font-weight: 600; }
     #nowband .record { margin-left: auto; color: var(--neutral);
                        font-variant-numeric: tabular-nums; }
     #nowband .record b { color: var(--fg); font-weight: 600; }
@@ -2920,6 +2923,34 @@
         group.appendChild(bandCell("mood", mood, MOOD_COLOR[mood]));
         nowband.appendChild(group);
       }
+      // KI-065: the trader's own numbers. Task 10 deleted this readout from
+      // the room - rightly, it floated beside the figure with no surface
+      // under it - and nothing else in the room or the overlays carried it.
+      // The show's premise is that an AI trades crypto live, loses money and
+      // publishes every loss forever: this is the loss, so it gets a home
+      // rather than staying dropped.
+      //
+      // `state.trader` is null until a `trader_*` event arrives, and those
+      // come from the freqtrade sidecar - an opt-in compose profile. The slot
+      // then reads "—" instead of vanishing, exactly as the model's record
+      // does when its accuracy is unknown: a named empty slot says "no
+      // positions reported", an absent one silently un-publishes the premise.
+      const traderState = state.trader;
+      const pnl =
+        traderState && Number.isFinite(traderState.profit_pct)
+          ? traderState.profit_pct
+          : null;
+      const trader = document.createElement("span");
+      trader.className = "trader";
+      trader.appendChild(document.createTextNode("trader "));
+      const positions = document.createElement("b");
+      positions.textContent = traderState
+        ? `${traderState.open_trades ?? 0} open · ` +
+          (pnl == null ? "—" : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`)
+        : "—";
+      trader.appendChild(positions);
+      nowband.appendChild(trader);
+
       // The honest record, on the same last-N basis as the strips (KI-012).
       const acc = state.model?.accuracy ?? {};
       const record = document.createElement("span");
