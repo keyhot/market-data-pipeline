@@ -94,6 +94,12 @@
     // filename and the page prefixes /static/ itself, so no manifest edit can
     // put a third party into the on-air load path.
     const PLATE = __PLATE_JSON__;
+    // The cast, already sorted into people and settings by world/plate.py's
+    // `cast_payload()` — `{ characters: {...}, scale }`, or null with no plate.
+    // Indexing `PLATE.cast` here instead would find `scale` for a name and
+    // build an anchor out of `undefined` (KI-076); pinned by
+    // test_the_page_never_indexes_the_raw_cast_block.
+    const PAINTED_CAST = __CAST_JSON__;
     const PLATE_SRC = PLATE ? "/static/" + PLATE.plate : null;
     // Sprint 16 Task 10: where text is allowed to sit, already resolved to
     // absolute canvas coordinates by `world/text_layout.py::as_json` — read
@@ -1265,7 +1271,8 @@
     const CAST_FRACTIONS = { model: 0.32, trader: 0.62 };
 
     function anchorFor(name) {
-      const painted = plateReady && PLATE && PLATE.cast ? PLATE.cast[name] : null;
+      const painted =
+        plateReady && PAINTED_CAST ? PAINTED_CAST.characters[name] : null;
       if (painted) {
         // `pose` is the plate's answer to "is there a chair here" — the trader
         // is seated on this plate. C2 rebuilds the rig around it; it is
@@ -1299,7 +1306,8 @@
     // keeps the standing anchor, which is exactly the placement that shipped
     // before this existed: a degrade to the previous look, not to a blank one.
     function sitAnchorFor(name) {
-      const painted = plateReady && PLATE && PLATE.cast ? PLATE.cast[name] : null;
+      const painted =
+        plateReady && PAINTED_CAST ? PAINTED_CAST.characters[name] : null;
       const sit = painted ? painted.sit_anchor : null;
       if (!sit || sit.x == null || sit.y == null) return null;
       return { x: sit.x, baseY: sit.y };
@@ -1472,7 +1480,7 @@
     // has to keep CELL * CAST_SCALE a whole number of screen pixels (see
     // test_animation_displacement_actually_quantises_to_the_grid, which grades
     // exactly this literal): 1.25 renders the 4px cell as an exact 5px.
-    const CAST_SCALE = (PLATE && PLATE.cast && PLATE.cast.scale) || 1.25;
+    const CAST_SCALE = (PAINTED_CAST && PAINTED_CAST.scale) || 1.25;
 
     function styleFor(name) {
       const style = STYLE_OVERRIDE || CAST[name];

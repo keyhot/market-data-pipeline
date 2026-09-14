@@ -3,6 +3,7 @@ silently break a 24/7 browser source: substitution, the same-origin rule
 for the renderer (KI-045), the bounded boot retry, and the textContent-only
 rule that keeps event payloads from becoming markup."""
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from world.light import DEFAULT_LIGHT, as_json
+from world.plate import load_manifest
 
 client = TestClient(app)
 
@@ -1067,8 +1069,10 @@ def _layout_driver(body: str, *, plate: bool, manifest: dict | None = None) -> s
     test is the page's, character for character.
     """
     source = _world_source()
+    plate_json = manifest or _manifest()
     return (
-        f"const PLATE = {json.dumps(manifest or _manifest())};\n"
+        f"const PLATE = {json.dumps(plate_json)};\n"
+        f"const PAINTED_CAST = {json.dumps(_painted_cast(plate_json))};\n"
         f"const plateReady = {str(plate).lower()};\n"
         f"const app = {{ screen: {json.dumps(CANVAS)} }};\n"
         + _js_const(source, "GROUND")
@@ -1091,6 +1095,14 @@ def _run_node(driver: str):
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def _painted_cast(manifest: dict) -> dict:
+    """What `/world` injects for the cast: the server's own decision about
+    which entries are people, not a copy of the rule (KI-076). Taken from
+    `world.plate` so a change to `characters()` reaches this harness."""
+    shipped = load_manifest()
+    return dataclasses.replace(shipped, cast=manifest["cast"]).cast_payload()
 
 
 def _manifest() -> dict:
@@ -1142,6 +1154,60 @@ def test_the_cast_stands_where_the_plate_painted_it():
         )
     )
     assert moved == {"x": 111, "baseY": 222, "pose": "standing"}
+
+
+@needs_node
+def test_a_settings_key_in_cast_is_not_a_character_on_the_page_either():
+    """KI-076: Sprint 16 made `cast` a mixed block - `scale` and `rig_height`
+    beside the people - and answered "which of these is a character" once, in
+    `PlateManifest.characters()`. The page indexed the raw block, so
+    `anchorFor("scale")` found the number 1.25, took it for an anchor and
+    returned `{x: undefined}`. The guard has to be on the side that renders."""
+    emitted = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify(anchorFor("scale")));', plate=True
+        )
+    )
+
+    assert "scale" in _manifest()["cast"], "the manifest no longer poses this risk"
+    assert emitted == {
+        "x": pytest.approx(1920 * 0.5),
+        "baseY": pytest.approx(960 * 0.66),
+        "pose": "standing",
+    }, "a settings key resolved to an anchor instead of falling back"
+
+
+def test_the_cast_payload_reaches_the_page_substituted():
+    """An unreplaced `__CAST_JSON__` is a syntax error on the room's own
+    boot path - the KI-045 shape, and the reason a placeholder gets its own
+    check (a dev server that re-reads templates but not `api/main.py` renders
+    exactly this)."""
+    body = TestClient(app).get("/world").text
+    assert "__CAST_JSON__" not in body, "placeholder left unreplaced"
+
+    payload = json.loads(
+        re.search(r"const PAINTED_CAST = (.*);", body).group(1)
+    )
+    assert set(payload) == {"characters", "scale"}
+    assert payload["scale"] == load_manifest().cast["scale"]
+    assert set(payload["characters"]) == {"model", "trader"}, (
+        "the page was handed something other than the people"
+    )
+
+
+def test_the_page_never_indexes_the_raw_cast_block():
+    """The class, not the instance: the decision is made server-side and
+    injected, so a future call site cannot reach a settings key by name.
+    Mirrors `MONITOR_RULES`/`__MONITOR_JS__` for the monitors."""
+    offenders = [
+        f"{number}: {line.strip()[:90]}"
+        for number, line in enumerate(_world_source().splitlines(), start=1)
+        if "PLATE.cast" in re.sub(r"//.*$", "", line)
+    ]
+    assert not offenders, (
+        "read the injected PAINTED_CAST instead - PLATE.cast carries settings "
+        "as well as people:\n" + "\n".join(offenders)
+    )
 
 
 @needs_node
@@ -1593,7 +1659,7 @@ def test_animation_displacement_actually_quantises_to_the_grid():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
         + _js_block(source, "function snap(")
         + "\n"
@@ -1683,7 +1749,7 @@ def test_the_idle_glance_is_snapped_too():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
         + _js_block(source, "function snap(")
         + "\n"
@@ -1896,7 +1962,7 @@ def test_the_sheets_loop_dispatch_is_pose_aware_too():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_block(source, "function snap(")
         + "\n"
         + _js_const(source, "CELL")
@@ -1964,7 +2030,7 @@ def test_the_sheet_can_actually_reach_seatedrig():
         # `CAST_SCALE` reads the manifest now, so the identifier has to exist
         # in this driver even though the sheet does not care what it is: null
         # is the honest value here, the same as every other plate-free driver.
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_block(source, "const ANIM = {")
         + ";\n"
         + _js_range(
@@ -2069,7 +2135,7 @@ def test_seated_animations_actually_move_real_parts():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
         + _js_block(source, "function snap(")
         + "\n"
@@ -2167,7 +2233,7 @@ def test_seated_rest_does_not_touch_the_chair():
     touch (`body`, `head`, the arms, blink) and leave `container` alone."""
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_block(source, "function snap(")
         + "\n"
         + _js_const(source, "CELL")
@@ -2245,7 +2311,7 @@ def test_the_seated_head_stays_under_the_painted_backrest():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         # seatedRig's roundRect calls now go through `paint`/`rimStroke`
         # (KI-051, Task 6), which read `BODY_FILL`/`BODY_RIM` and the whole
         # shading chain below - the fake Graphics never reads a fill/stroke
@@ -2337,7 +2403,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         # KI-051 (Task 6): `BODY_RIM` needs a real `.color` - it feeds
         # `BODY_RIM_SHADED` via `shade()`. `LIGHT` is the real page's, since
         # it does not depend on `PLATE` (`__LIGHT_JSON__` is substituted at
@@ -2426,7 +2492,7 @@ def _seated_rig_bounds():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
         + _js_const(source, "LIGHT")
         + """
@@ -3416,7 +3482,7 @@ def test_pollBars_never_fetches_when_there_is_no_plate():
     """Override 4: PLATE may be null and plateReady may be false. `pollBars`
     must be a clean no-op then, not a per-screen exception every 20s."""
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         "const plateReady = false;\n"
         "let fetchCalls = 0;\n"
         "function fetch() { fetchCalls++; throw new Error('must not fetch'); }\n"
@@ -3843,7 +3909,7 @@ def test_the_animation_layer_is_untouched():
 def _geometry_driver(source: str, body: str) -> str:
     """The page's real shading geometry, plus a shape recorder."""
     return (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
         + _js_const(source, "LIGHT")
         + _js_block(source, "function snap(")
@@ -4215,7 +4281,7 @@ def test_a_light_without_a_ramp_degrades_instead_of_blanking_the_page():
         "the stand-in LIGHT still carries a ramp - this test would prove nothing"
     )
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + "const BODY_FILL = 0xd0d0d0, BODY_RIM = "
         + "{ width: 1.5, color: 0xffffff, alignment: 1 };\n"
         + stripped
@@ -4868,7 +4934,7 @@ def _mood_paint_driver(source: str, apply_block: str, repaint_block: str) -> str
     the test has to be able to see a container tint being written.
     """
     return (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "MOOD_COLOR")
         + _js_const(source, "NEUTRAL")
         + _js_const(source, "NEUTRAL_TINT")

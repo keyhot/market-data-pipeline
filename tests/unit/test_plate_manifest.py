@@ -484,6 +484,10 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         # This test is about the rig the room actually draws, so it has to run
         # the scale the room actually uses.
         f"const PLATE = {json.dumps(manifest.as_dict())};\n"
+        # The cast as the page receives it (KI-076): people and settings
+        # separated by `cast_payload()`, which is where `CAST_SCALE` now
+        # reads its value from.
+        f"const PAINTED_CAST = {json.dumps(manifest.cast_payload())};\n"
         "const plateReady = true;\n"
         "const CELL = 4;\n"
         # KI-051 (Task 6): `BODY_RIM` needs a real `.color` now - it feeds

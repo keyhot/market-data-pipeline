@@ -123,6 +123,19 @@ class PlateManifest:
             if isinstance(value, dict) and "x" in value
         }
 
+    def cast_payload(self) -> dict:
+        """What `/world` is handed for the cast: the people, and the one
+        room-wide number the page needs, each in its own field.
+
+        The page used to index `cast` by name itself, which meant
+        `anchorFor("scale")` found the number 1.25, read it as truthy and
+        returned an anchor made of `undefined` (KI-076). "Which entries are
+        people" is decided here - the same "decide it server-side and inject
+        the decision" move `MONITOR_RULES` makes for the monitors - so the
+        renderer cannot reach a settings key by name at all.
+        """
+        return {"characters": self.characters(), "scale": self.cast.get("scale")}
+
     def screen_for(self, symbol: str) -> dict | None:
         """The painted monitor a symbol's candles belong in, if it has one."""
         wanted = symbol.upper()

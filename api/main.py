@@ -871,6 +871,9 @@ def world_page():
             {
                 "__SYMBOLS__": json.dumps(deduped),
                 "__PLATE_JSON__": json.dumps(manifest.as_dict() if manifest else None),
+                "__CAST_JSON__": json.dumps(
+                    manifest.cast_payload() if manifest else None
+                ),
                 "__LIGHT_JSON__": light.as_json(light.light_for(manifest)),
                 "__TEXT_JSON__": text_layout.as_json(manifest),
             },

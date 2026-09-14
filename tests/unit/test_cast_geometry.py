@@ -13,6 +13,7 @@ file deliberately does not pretend otherwise: no assertion here grades whether
 the room looks right.
 """
 
+import dataclasses
 import json
 import re
 import shutil
@@ -172,6 +173,16 @@ def _stripped_manifest(*keys: str) -> dict:
     return raw
 
 
+def _painted_cast(manifest: dict | None) -> dict | None:
+    """What `/world` injects for the cast (KI-076): people and settings split
+    by `PlateManifest.cast_payload()` server-side, so the page cannot index a
+    settings key by name. Taken from `world.plate` rather than restated, so a
+    change to that split reaches these drivers."""
+    if manifest is None:
+        return None
+    return dataclasses.replace(load_manifest(), cast=manifest["cast"]).cast_payload()
+
+
 def _node(driver: str):
     result = subprocess.run(
         [NODE, "-e", driver], capture_output=True, text=True, timeout=30
@@ -258,9 +269,9 @@ def test_a_plate_without_a_cast_scale_still_draws_at_the_literal():
     fallback yields something unusable, so this test is not decorative.
     """
     line = _page_const("CAST_SCALE")
-    stripped = json.dumps(_stripped_manifest("scale"))
+    cast = json.dumps(_painted_cast(_stripped_manifest("scale")))
     emitted = _node(
-        f"const PLATE = {stripped};\n{line}\n"
+        f"const PAINTED_CAST = {cast};\n{line}\n"
         "console.log(JSON.stringify({scale: CAST_SCALE}));"
     )
     assert emitted["scale"] > 0
@@ -268,11 +279,11 @@ def test_a_plate_without_a_cast_scale_still_draws_at_the_literal():
         "the no-scale fallback has to keep the rendered cell a whole pixel too"
     )
 
-    # The mutation: drop the literal. `PLATE.cast.scale` is undefined, so the
-    # layer would be scaled by undefined and the cast would vanish.
+    # The mutation: drop the literal. The payload's `scale` is null, so the
+    # layer would be scaled by null and the cast would vanish.
     mutated = re.sub(r"\|\|.*;$", ";", line)
     broke = _node(
-        f"const PLATE = {stripped};\n{mutated}\n"
+        f"const PAINTED_CAST = {cast};\n{mutated}\n"
         "console.log(JSON.stringify({scale: CAST_SCALE ?? null}));"
     )
     assert broke["scale"] is None, (
@@ -296,7 +307,7 @@ def test_a_plate_without_a_sit_anchor_keeps_the_standing_anchor():
     prelude = "const plateReady = true;\n"
 
     present = _node(
-        f"const PLATE = {json.dumps(load_manifest().as_dict())};\n"
+        f"const PAINTED_CAST = {json.dumps(load_manifest().cast_payload())};\n"
         + prelude
         + block.group(0)
         + '\nconsole.log(JSON.stringify(sitAnchorFor("trader")));'
@@ -306,7 +317,7 @@ def test_a_plate_without_a_sit_anchor_keeps_the_standing_anchor():
 
     for stripped in (_stripped_manifest("sit_anchor"), None):
         emitted = _node(
-            f"const PLATE = {json.dumps(stripped)};\n"
+            f"const PAINTED_CAST = {json.dumps(_painted_cast(stripped))};\n"
             + prelude
             + block.group(0)
             + '\nconsole.log(JSON.stringify(sitAnchorFor("trader")));'
