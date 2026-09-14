@@ -318,7 +318,12 @@
     // call rather than a measurement, and kept out of the manifest for that
     // reason — a repaint re-measures the lamp, it does not re-decide how far
     // a shadow should read as being thrown. Chosen from frames, not from
-    // arithmetic; the comparison is in the Task 7 report.
+    // arithmetic: on a three-point sweep measured off real pixels — each
+    // frame's shadow differenced against the painted plate — `1.6` moved the
+    // model's centroid only 6px across a 78px patch and still read as a
+    // lopsided puddle, `4.5` ran the far tail 41px past the body and detached
+    // the mass into a smear, and `3.0` is unmistakably directional with the
+    // core still under the feet.
     const SHADOW_THROW = 3.0;
 
     // How much of a volume each band eats, as a FRACTION of that volume's own

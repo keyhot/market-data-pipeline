@@ -5227,8 +5227,10 @@ def test_no_room_label_the_page_actually_draws_overflows_its_own_box():
     """The gap Task 9 could not close: a placement can be a valid box,
     fully inside a real surface, and still have no room for the text it is
     asked to hold. Runs the page's own `historyLine` for a busy-but-
-    realistic world (not an adversarial string - see task-10-report.md for
-    why an adversarial one was rejected), and checks every canvas label the
+    realistic world (not an adversarial string: a 6-digit event count plus
+    3-digit outages pushes even this deliberately conservative estimate to
+    782 against a 780px box while real rendering there is still 642-709px, so
+    an adversarial case would flag a non-issue), and checks every canvas label the
     room still draws against `glyph_overflow`
     (`tests/unit/test_text_layout.py` covers the estimate itself)."""
     from world.text_layout import glyph_overflow

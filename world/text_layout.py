@@ -133,8 +133,10 @@ def as_json(manifest) -> str:
 # system-ui; they stand in for it) at a range of sizes, per README-style
 # character class, then rounded UP to the widest class-average observed
 # across the three, plus a flat 5% margin on the summed estimate. The
-# result over-estimates every sample checked against those fonts (see
-# task-10-report.md) — the direction that matters, since the failure mode
+# result over-estimates every sample checked against those fonts — at size 14,
+# "MODEL" estimates 54.4 against a real max of 51.0, "BTCUSDT" 76.1 against
+# 68.0, and a busy history line 762.9 against 691.0 — the direction that
+# matters, since the failure mode
 # this exists to catch is invisible text, not an over-cautious warning.
 GLYPH_WIDTH_RATIO = {
     "upper": 0.74,   # "MODEL", "BTCUSDT" — this room's short labels are caps

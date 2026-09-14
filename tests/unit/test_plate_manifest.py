@@ -725,8 +725,10 @@ def test_the_desk_plate_text_surface_is_the_plates_own_smooth_desktop():
 # for the model" was an artifact of what got painted, not a decision — so
 # this measures a floor rect directly under the model's own feet
 # (`cast.model`: x=360, base_y=830), the same gradient-tolerant method the
-# desk plate above was re-measured with. Full measurement + evidence that no
-# smaller, tighter rect was needed is in task-10-report.md.
+# desk plate above was re-measured with. The scan found the clean floor
+# running 5x+ the declared box in every direction, so `floor-model` ships at a
+# modest size comfortably inside the verified region rather than chasing the
+# fragile maximal rect — Task 9's own precedent.
 
 
 def test_the_model_floor_text_surface_is_the_plates_own_clean_floor():
@@ -780,12 +782,13 @@ def test_the_model_floor_surface_does_not_collide_with_the_tube_glow():
 # `desk-plate-trader` (x=1298, y=543, w=80, h=27) is real, clean desk paint —
 # verified above — but the seated rig's own head renders almost entirely in
 # front of it at the shipped cast scale/anchor (only ~15px of the 80px width
-# is ever clear of the head; see task-10-report.md's "Two more defects"
-# section). A surface that is correct-per-manifest and invisible-behind-the-
+# is ever clear of the head — the seated head covers ~85% of the surface at
+# the shipped cast scale). A surface that is correct-per-manifest and
+# invisible-behind-the-
 # figure is still "text where it is not necessary." `desk-plate-trader`
 # stays in `text_surfaces`, unreferenced now, for the same reason
 # `tube-plinth-*` do: real, verified, measured paint a future task could
-# still use (a re-anchored trader, a repaint) — see task-10-report.md.
+# still use (a re-anchored trader, a repaint).
 #
 # `desk-face-trader` (x=1109, y=655, w=100, h=30) is the desk's own front
 # panel — the same continuous piece of furniture, a different face of it —
