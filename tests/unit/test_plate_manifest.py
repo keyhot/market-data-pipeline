@@ -14,6 +14,7 @@ import math
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 from PIL import Image
@@ -27,9 +28,8 @@ from world.plate import (
     watchlist_disagreements,
 )
 
-WORLD_TEMPLATE = (
-    DEFAULT_MANIFEST_PATH.resolve().parents[2] / "api" / "templates" / "world.html"
-)
+REPO_ROOT = DEFAULT_MANIFEST_PATH.resolve().parents[2]
+WORLD_TEMPLATE = REPO_ROOT / "api" / "templates" / "world.html"
 NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
@@ -279,6 +279,46 @@ def test_the_manifests_chart_screens_match_the_intakes_own_derivation():
             f"{screen['id']}: manifest rect disagrees with the intake's own "
             "rect-from-quad formula"
         )
+
+
+def test_a_quad_with_non_vertical_sides_is_refused():
+    """KI-078: `rect_from_quad` reads `x`/`w` off two corners and trusts the
+    other two to agree. That precondition is the whole reason the result is
+    inside the quad, so failing it is a data error and must raise one - not an
+    `assert`, which `python -O` removes and which reads as a developer slip
+    rather than a refusal to derive a rect from art it does not fit."""
+    from scripts.prepare_plate import rect_from_quad
+
+    slanted = ((10, 0), (100, 0), (104, 50), (10, 50))  # right edge slants
+    with pytest.raises(ValueError, match="vertical"):
+        rect_from_quad(slanted)
+
+
+def test_the_quad_precondition_still_refuses_under_python_O():
+    """The half of KI-078 a `pytest.raises` cannot see: under `-O` a bare
+    `assert` is not merely a different exception type, it is gone - the
+    function returns a rect derived from the wrong corners and the candles
+    miss the painted glass, which is KI-052 again by another route. The art
+    does not guarantee vertical sides (KI-067: the monitors are trapezoids);
+    `screen_quad` does, by construction, and this is what says so out loud."""
+    code = (
+        "from scripts.prepare_plate import rect_from_quad\n"
+        "try:\n"
+        "    rect_from_quad(((10, 0), (100, 0), (104, 50), (10, 50)))\n"
+        "except ValueError:\n"
+        "    print('refused')\n"
+        "else:\n"
+        "    print('DERIVED A RECT FROM A QUAD IT DOES NOT FIT')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert result.stdout.strip() == "refused", (
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
 
 
 def test_the_cast_stands_clear_of_the_bands():

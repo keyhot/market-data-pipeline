@@ -169,7 +169,15 @@ def rect_from_quad(quad) -> tuple[int, int, int, int]:
     copies of one rect is how a candle ends up drawn 6px off the painted
     glass")."""
     (tlx, tly), (trx, try_), (brx, bry), (blx, bly) = quad
-    assert tlx == blx and trx == brx, "quad sides are not vertical"
+    if tlx != blx or trx != brx:
+        # A refusal, not a developer slip: `x`/`w` below are read off the top
+        # corners and the bottom two are trusted to agree, so a slanted side
+        # silently yields a rect the candles are drawn in and the glass is not
+        # under (KI-052 by another route). `assert` was wrong for it - under
+        # `python -O` the guard is gone and the wrong rect ships (KI-078).
+        raise ValueError(
+            f"quad sides are not vertical: left {tlx}/{blx}, right {trx}/{brx}"
+        )
     x, w = tlx, trx - tlx
     y = max(tly, try_)
     h = min(bry, bly) - y
