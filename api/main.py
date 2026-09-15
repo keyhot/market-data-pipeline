@@ -77,13 +77,14 @@ _RENDERER_BEATS_LOCK = threading.Lock()
 # context-manager entry, and this task's tests construct TestClient(app) at
 # module level, so a lifespan-set value would be unset in every test.
 _PROCESS_STARTED_AT = time.monotonic()
-# KI-069: every database wait `/health` makes shares this one deadline. The
-# stream watchdog gives the whole request 5s (`WatchdogConfig.
-# content_timeout_seconds`, KI-024); 4s leaves a second for everything else.
-# It cannot go lower than the cold path's role probe plus ping (2s + 2s,
-# `storage/db.py`), or an unreachable database would spend it before the
-# readability gate has even answered. Both bounds are asserted in
-# tests/api/test_health_endpoint.py against the real constants.
+# KI-069: the world read gets whatever this deadline has left after the
+# readability gate. The stream watchdog gives the whole request 5s
+# (`WatchdogConfig.content_timeout_seconds`, KI-024) and compose's
+# healthchecks 6s; 4s leaves a second under the tightest of them. It cannot go
+# lower than the cold path's role probe plus ping (2s + 2s, `storage/db.py`),
+# or an unreachable database would spend it before the gate has answered.
+# Both bounds are asserted in tests/api/test_health_endpoint.py against the
+# real constants and the real compose file.
 _HEALTH_DB_BUDGET_SECONDS = 4.0
 
 
@@ -292,10 +293,12 @@ def health():
     # probes on its own only when it didn't, so this still never stacks a
     # second bounded connection-acquire wait onto the same request when
     # writes are on and Postgres is down. When Postgres is UP the reader does
-    # run, and it gets only what `db_deadline` has left (KI-069) — so the
-    # database section is bounded by `_HEALTH_DB_BUDGET_SECONDS` whether the
-    # DB is down (the gate closes) or reachable but slow (the reader's
-    # statement_timeout fires at the deadline and it reports "reader_error").
+    # run, and it gets only what `db_deadline` has left (KI-069): measured at
+    # 4.01s with the reader's tables locked, where the independent bounds
+    # summed to ~8s. What this does NOT bound: ping's own `SELECT 1` on a
+    # server too loaded to answer it, and a stalled socket — every
+    # `statement_timeout` is enforced by the server, so a connection that
+    # stops passing packets waits on the client's TCP stack (KI-080).
     # `signal_timestamp` / `occurred_at` are TIMESTAMPTZ — an aware `now`
     # avoids the naive/aware TypeError, but the broad except is what
     # actually keeps the 200-through-an-outage guarantee even if a future
@@ -306,7 +309,8 @@ def health():
     # "not_connected" (the gate never opened — this ping-equivalent failed,
     # or writes are off and the DB didn't answer either) or "reader_error"
     # (Postgres answered the gate but the read itself then raised — e.g. it
-    # dropped between the two, or a bug like a naive/aware TypeError). KI-057's
+    # dropped between the two, it ran out of the KI-069 deadline, including
+    # before it could start, or a bug like a naive/aware TypeError). KI-057's
     # own alerting ticket is the consumer of this: "we don't know right now"
     # and "this has been broken since deploy" are different alerts, and a
     # bare `null` cannot tell them apart.

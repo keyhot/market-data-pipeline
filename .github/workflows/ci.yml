@@ -45,4 +45,8 @@ jobs:
         run: psql -f db/init.sql "postgresql://market_data:market_data@localhost:5432/market_data"
 
       - name: Run tests
+        # The service container is throwaway, so the lock-taking integration
+        # tests (tests/integration/test_health_budget.py) may run against it.
+        env:
+          POSTGRES_DISPOSABLE: "1"
         run: poetry run pytest -q

@@ -118,3 +118,20 @@ class TestRoleProbeLatency:
         monkeypatch.setattr(db.psycopg, "connect", fake_connect)
         assert db._database_role("postgresql://u:p@127.0.0.1:1/d") is None
         assert captured["connect_timeout"] == db._ROLE_PROBE_TIMEOUT_SECONDS
+
+    def test_the_probe_bounds_its_query_as_well_as_its_connect(self, monkeypatch):
+        # KI-069 review: `connect_timeout` ends at the handshake. A database
+        # that accepts connections but answers slowly (a lock on
+        # deployment_identity, an overloaded server) held the probe's SELECT
+        # — and `_pool_lock`, and the cold `/health` behind it — for as long
+        # as it liked: 6.93s measured, past the watchdog's 5s.
+        captured = {}
+
+        def fake_connect(url, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("no database here")
+
+        monkeypatch.setattr(db.psycopg, "connect", fake_connect)
+        db._database_role("postgresql://u:p@127.0.0.1:1/d")
+        expected_ms = int(db._ROLE_PROBE_TIMEOUT_SECONDS * 1000)
+        assert f"-c statement_timeout={expected_ms}" in captured["options"]

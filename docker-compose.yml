@@ -60,9 +60,13 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      # 6s/8s, not 3s/5s: /health's database section may spend up to 4s by
+      # design (KI-069's shared deadline), and a healthcheck tighter than that
+      # marks the container unhealthy exactly when the DB is slow — which
+      # holds back director/broadcast, both gated on `service_healthy`.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=6)"]
       interval: 15s
-      timeout: 5s
+      timeout: 8s
       retries: 5
       start_period: 20s
 
@@ -88,9 +92,13 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      # 6s/8s, not 3s/5s: /health's database section may spend up to 4s by
+      # design (KI-069's shared deadline), and a healthcheck tighter than that
+      # marks the container unhealthy exactly when the DB is slow — which
+      # holds back director/broadcast, both gated on `service_healthy`.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=6)"]
       interval: 15s
-      timeout: 5s
+      timeout: 8s
       retries: 5
       start_period: 20s
 

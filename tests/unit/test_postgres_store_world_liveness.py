@@ -143,8 +143,9 @@ def test_a_spent_budget_never_disables_the_statement_timeout(monkeypatch):
 
 def test_no_budget_left_does_not_even_acquire(monkeypatch):
     # The caller hands over what is left of /health's budget; when that is
-    # nothing, asking the pool for a connection with timeout<=0 is not a
-    # bound at all.
+    # nothing, refuse before touching the pool. psycopg_pool would raise
+    # PoolTimeout for timeout<=0 on its own, but the reader's contract is
+    # one exception type for "the deadline was spent", not two.
     _, pool = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS))
 
     with pytest.raises(TimeoutError):

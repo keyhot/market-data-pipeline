@@ -1,11 +1,16 @@
 import inspect
+import re
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from fastapi.testclient import TestClient
 
 from api.main import app
+
+REPO = Path(__file__).resolve().parents[2]
 
 client = TestClient(app)
 
@@ -151,24 +156,56 @@ def test_health_gives_the_world_read_only_what_the_budget_has_left():
 
     assert response.status_code == 200
     given = reader.call_args.kwargs["timeout_seconds"]
-    assert 0.6 <= given <= 0.71
+    # The upper bound is the half that catches a reader handed the whole
+    # budget; the lower one only rules out nonsense, loosely, because this
+    # box is also encoding a stream when the suite runs.
+    assert 0.5 <= given <= 0.71
 
 
-def test_health_db_budget_fits_inside_the_watchdog_content_timeout():
-    # The budget is only a fix if it is below what the consumer waits, with
-    # headroom for the rest of the handler — and at least the cold path's
-    # role probe plus ping, or a cold unreachable database would already
-    # have spent it before the gate answers.
-    from api import main
+def _health_consumers() -> dict[str, float]:
+    """Every process that polls /health, and how long each waits for it."""
     from scripts.stream_watchdog import WatchdogConfig
+
+    consumers = {"watchdog": WatchdogConfig().content_timeout_seconds}
+    compose = yaml.safe_load((REPO / "docker-compose.yml").read_text())
+    for name, service in compose["services"].items():
+        check = service.get("healthcheck")
+        if not check or "/health" not in " ".join(check["test"]):
+            continue
+        # The command's own urlopen timeout, and Docker's kill timeout around
+        # the command — whichever is shorter is what this consumer waits.
+        urlopen = float(re.search(r"timeout=(\d+(?:\.\d+)?)", check["test"][-1])[1])
+        docker = float(check["timeout"].rstrip("s"))
+        consumers[f"compose:{name}"] = min(urlopen, docker)
+    return consumers
+
+
+def test_health_db_budget_leaves_headroom_under_every_consumer():
+    # The budget is only a fix if it is below what EVERY poller waits, with a
+    # second for the rest of the handler. The watchdog is not the tightest:
+    # compose's healthchecks gave /health 3s, and director/broadcast wait on
+    # `api: service_healthy` — a degraded database would have marked the api
+    # container unhealthy under a 4s budget.
+    from api import main
+
+    consumers = _health_consumers()
+    assert {"watchdog", "compose:api", "compose:scheduler"} <= set(consumers)
+    for name, waits in consumers.items():
+        assert main._HEALTH_DB_BUDGET_SECONDS <= waits - 1.0, name
+
+
+def test_health_db_budget_covers_a_cold_unreachable_database():
+    # On a cold process the role probe runs before ping's pool exists. With
+    # Postgres unreachable each is bounded by its connect timeout, so both
+    # together must fit, or the gate cannot even answer inside the budget.
+    # (Reachable-but-slow is bounded separately: the probe carries a
+    # statement_timeout of the same length, see test_db_deploy_guard.py.)
+    from api import main
     from storage import db
 
-    watchdog = WatchdogConfig().content_timeout_seconds
     ping_default = inspect.signature(db.ping).parameters["timeout_seconds"].default
-
-    budget = main._HEALTH_DB_BUDGET_SECONDS
-    assert budget <= watchdog - 1.0
-    assert db._ROLE_PROBE_TIMEOUT_SECONDS + ping_default <= budget
+    cold = db._ROLE_PROBE_TIMEOUT_SECONDS + ping_default
+    assert cold <= main._HEALTH_DB_BUDGET_SECONDS
 
 
 def test_metrics_includes_scheduler_status():

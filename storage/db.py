@@ -25,7 +25,13 @@ _READ_ONLY_OPTIONS = "-c default_transaction_read_only=on"
 # *content* outages. Measured against an unreachable host: 4.01s cold, all of
 # it this probe plus ping's own 2s, so 1s of headroom. A Postgres that is
 # actually there answers a loopback (or tunnelled) connect in milliseconds.
+# The same bound applies to the probe's query (KI-069): connect_timeout ends
+# at the handshake, and a database that accepts connections but answers slowly
+# otherwise held this SELECT — and `_pool_lock` — for as long as it liked.
 _ROLE_PROBE_TIMEOUT_SECONDS = 2.0
+_ROLE_PROBE_OPTIONS = (
+    f"-c statement_timeout={int(_ROLE_PROBE_TIMEOUT_SECONDS * 1000)}"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +53,14 @@ def _database_role(url: str) -> str | None:
     A single short-lived connection, once per process, before the pool exists.
     Absent table (a volume older than the guard) and an unreachable database
     both read as None: the guard never turns a connectivity problem into a
-    read-only surprise, it only acts on a positive contradiction.
+    read-only surprise, it only acts on a positive contradiction. A probe that
+    times out on a slow database is the same case and reads the same way.
     """
     try:
         with psycopg.connect(
-            url, connect_timeout=_ROLE_PROBE_TIMEOUT_SECONDS
+            url,
+            connect_timeout=_ROLE_PROBE_TIMEOUT_SECONDS,
+            options=_ROLE_PROBE_OPTIONS,
         ) as conn:
             row = conn.execute("SELECT role FROM deployment_identity").fetchone()
     except Exception as e:
