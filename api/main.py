@@ -44,15 +44,18 @@ from storage.postgres_store import (
     get_signal_accuracy,
     get_signals,
     get_world_events,
+    world_liveness_times,
 )
 from storage.writes import (
+    postgres_readable,
     postgres_status,
     write_events,
     write_metrics,
     write_news,
     write_price_bars,
 )
-from world import monitors, reactions, visuals
+from world import light, monitors, reactions, text_layout, visuals
+from world.liveness import world_liveness
 from world.plate import load_manifest, watchlist_disagreements
 from world.reactions import attach_reactions
 from world.renderer_health import record_beat, renderer_status
@@ -161,6 +164,14 @@ _THEME_REPLACEMENTS = {
     # wrong number. Precomputed per mood here, where the contrast maths and the
     # base fill live together.
     "__BODY_TINTS_JSON__": json.dumps(visuals.body_tints()),
+    # KI-060: `BODY_TINT` covers every mood MOOD_COLORS claims, and nothing
+    # else — but `character()` builds every figure at mood "neutral", which it
+    # deliberately does not claim. The page used to answer that with a hex of
+    # its own at 3.05:1, the one colour in the room below KI-028's floor. Both
+    # neutrals come from here now: the identity grey for chrome, and the same
+    # grey lifted for anything that gets painted as a body.
+    "__NEUTRAL_COLOR__": hex(int(visuals.PALETTE["neutral"][1:], 16)),
+    "__NEUTRAL_TINT__": hex(int(visuals.neutral_body_tint()[1:], 16)),
     "__BODY_BASE_FILL__": hex(visuals.BODY_BASE_FILL),
     "__BODY_RIM_FILL__": hex(visuals.BODY_RIM_FILL),
     # B2: scene-wide lighting per tier, from the same module as everything else
@@ -253,16 +264,66 @@ def health():
         renderer = renderer_status(
             _RENDERER_BEATS, now=time.monotonic(), started_at=_PROCESS_STARTED_AT
         )
+    postgres = postgres_status()
+    # KI-057: a drawing page is not proof the world is running — the model
+    # went silent for three days while ingestion and every container stayed
+    # green. This must degrade to None rather than ever fail the request:
+    # `/health` answers 200 through a Postgres outage by design (the stream
+    # watchdog probes it for content health, KI-024). Gate on
+    # `postgres_readable()`, not on `postgres["connected"]` directly:
+    # `connected` only reflects reachability when POSTGRES_WRITE_ENABLED is
+    # on (`postgres_status()` skips its own ping otherwise), so a read-only
+    # deployment — writes off, database perfectly readable — would see
+    # `connected: None` forever and this field would never report.
+    # `postgres_readable()` reuses that ping's result when it already ran and
+    # probes on its own only when it didn't, so this still never stacks a
+    # second bounded connection-acquire wait onto the same request when
+    # writes are on and Postgres is down — the 5s budget `storage/db.py`
+    # measured at 4.01s cold with 1s of headroom (see `TestRoleProbeLatency`
+    # in `tests/unit/test_db_deploy_guard.py`) is unchanged either way.
+    # `signal_timestamp` / `occurred_at` are TIMESTAMPTZ — an aware `now`
+    # avoids the naive/aware TypeError, but the broad except is what
+    # actually keeps the 200-through-an-outage guarantee even if a future
+    # caller gets that wrong, or the reader fails for any other reason.
+    # `world` and `world_unavailable_reason` are a pair, not two independent
+    # fields: `null`/`null` means the field itself is healthy (see the dict
+    # below), and whenever `world` is `null` the reason is exactly one of
+    # "not_connected" (the gate never opened — this ping-equivalent failed,
+    # or writes are off and the DB didn't answer either) or "reader_error"
+    # (Postgres answered the gate but the read itself then raised — e.g. it
+    # dropped between the two, or a bug like a naive/aware TypeError). KI-057's
+    # own alerting ticket is the consumer of this: "we don't know right now"
+    # and "this has been broken since deploy" are different alerts, and a
+    # bare `null` cannot tell them apart.
+    world = None
+    world_unavailable_reason = None
+    if postgres_readable(postgres):
+        try:
+            latest_signal_at, latest_event_at = world_liveness_times()
+            world = world_liveness(
+                latest_signal_at, latest_event_at, datetime.now(timezone.utc)
+            )
+        except Exception as e:
+            logger.warning(
+                "world_liveness_times failed; /health's world field degrades to None",
+                extra={"error": f"{type(e).__name__}: {e}"},
+            )
+            world = None
+            world_unavailable_reason = "reader_error"
+    else:
+        world_unavailable_reason = "not_connected"
     return ApiResponse(
         status=200,
         message="API is healthy",
         data={
             "scheduler": scheduler_service.status(),
-            "postgres": postgres_status(),
+            "postgres": postgres,
             # `healthy` here folds EVERY page that posted, including developer
             # tabs, so it is advisory. The watchdog judges one host out of
             # `pages` — see Task 15. The API cannot know which source is on air.
             "renderer": renderer,
+            "world": world,
+            "world_unavailable_reason": world_unavailable_reason,
         },
     )
 
@@ -810,6 +871,11 @@ def world_page():
             {
                 "__SYMBOLS__": json.dumps(deduped),
                 "__PLATE_JSON__": json.dumps(manifest.as_dict() if manifest else None),
+                "__CAST_JSON__": json.dumps(
+                    manifest.cast_payload() if manifest else None
+                ),
+                "__LIGHT_JSON__": light.as_json(light.light_for(manifest)),
+                "__TEXT_JSON__": text_layout.as_json(manifest),
             },
         )
     )

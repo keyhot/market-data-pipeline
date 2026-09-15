@@ -20,8 +20,29 @@ width a screen-space rect would use, the same convention `screens` already
 uses. It exists so the seated rig's width has something machine-checkable to
 fit inside, rather than a number carried only in a test's docstring.
 
+`cast.trader.sit_anchor` (Sprint 16) is the companion measurement `seat` is NOT:
+`seat` is the fit budget, `sit_anchor` is where the hips go. On a chair painted
+in three-quarter view those are different points, and using one for both is what
+put the figure beside the chair (KI-054). At the shipped `cast.scale` the rig
+composited on `sit_anchor` clears the seat by 17px on the left and **2px on the
+right** - the band is nearly exhausted, so a wider seated rig or a further-right
+anchor needs `seat` re-measured off the plate, not nudged.
+
 Pure and DB-free by design: this is read during a page render, and a broken
 manifest must degrade to the procedural room rather than raise into it.
+
+`text_surfaces["desk-plate-trader"]` (Sprint 16 Task 9) is real, clean desk
+paint - and, at the shipped `cast.scale`/`sit_anchor`, almost entirely
+covered by the seated rig's own head (`y=543..570` sits inside the head's
+rendered `y=520..705`). It stays in the manifest, unreferenced by any `text`
+placement, for the same reason `spare_tubes` and `tube-plinth-*` do: real,
+measured paint a re-anchored trader or a repaint could use later - but
+anyone reaching for it for a NEW placement should re-check it against the
+rig first (`tests/api/test_world_page.py::
+test_the_name_trader_surface_does_not_intersect_the_seated_rig` is the
+check that caught this the first time). `name-trader` itself now sits on
+`desk-plate-trader`'s sibling `desk-face-trader` - the same desk unit's
+front panel, well clear of the rig.
 """
 
 from __future__ import annotations
@@ -50,6 +71,19 @@ class PlateManifest:
     glow: tuple[dict, ...]
     bands: dict
     spare_tubes: tuple[dict, ...] = field(default=())
+    light: dict = field(default_factory=dict)
+    # Sprint 16 Task 9: where text is allowed to sit. `text_surfaces` is the
+    # measured places the plate actually has (a plinth, a desk plate) — NOT
+    # the two bands, which `world.text_layout` derives from `bands` + canvas
+    # instead of restating. `text` is the placements, each naming one surface.
+    text_surfaces: tuple[dict, ...] = field(default=())
+    text: tuple[dict, ...] = field(default=())
+    # Sprint 16 Task 14 (STRETCH): the painted city's own window lights, each
+    # a small rect measured over painted glass with a colour and a blink
+    # period. Optional, like `text_surfaces`/`text` above — an older
+    # manifest or a repaint that dropped it degrades to a dark, still
+    # skyline, never a throw.
+    ambient_lights: tuple[dict, ...] = field(default=())
 
     def as_dict(self) -> dict:
         return {
@@ -62,8 +96,45 @@ class PlateManifest:
             "cast": dict(self.cast),
             "screens": [dict(screen) for screen in self.screens],
             "glow": [dict(glow) for glow in self.glow],
+            "ambient_lights": [dict(light) for light in self.ambient_lights],
             "bands": dict(self.bands),
+            "light": dict(self.light),
+            "text_surfaces": [dict(s) for s in self.text_surfaces],
+            "text": [dict(t) for t in self.text],
         }
+
+    def characters(self) -> dict[str, dict]:
+        """Only the people in `cast` - not the room-wide numbers beside them.
+
+        Sprint 16 put `scale` and `rig_height` in `cast`, where they belong:
+        how big the figures are drawn is a measurement against the painted
+        furniture, the same kind of thing as the seat and the tube bores. That
+        makes `cast` a mixed block, and "is this entry a character" is the
+        question every consumer then has to answer - so it is answered once,
+        here, rather than as an `isinstance` restated at each call site.
+
+        A character is an entry carrying an anchor. A future settings key is
+        excluded by having no `x`, not by being on a list this has to be kept
+        in step with.
+        """
+        return {
+            name: value
+            for name, value in self.cast.items()
+            if isinstance(value, dict) and "x" in value
+        }
+
+    def cast_payload(self) -> dict:
+        """What `/world` is handed for the cast: the people, and the one
+        room-wide number the page needs, each in its own field.
+
+        The page used to index `cast` by name itself, which meant
+        `anchorFor("scale")` found the number 1.25, read it as truthy and
+        returned an anchor made of `undefined` (KI-076). "Which entries are
+        people" is decided here - the same "decide it server-side and inject
+        the decision" move `MONITOR_RULES` makes for the monitors - so the
+        renderer cannot reach a settings key by name at all.
+        """
+        return {"characters": self.characters(), "scale": self.cast.get("scale")}
 
     def screen_for(self, symbol: str) -> dict | None:
         """The painted monitor a symbol's candles belong in, if it has one."""
@@ -94,7 +165,11 @@ def load_manifest(path: Path | None = None) -> PlateManifest | None:
             cast=dict(raw.get("cast", {})),
             screens=tuple(raw.get("screens", ())),
             glow=tuple(raw.get("glow", ())),
+            ambient_lights=tuple(raw.get("ambient_lights", ())),
             bands=dict(raw.get("bands", {})),
+            light=dict(raw.get("light", {})),
+            text_surfaces=tuple(raw.get("text_surfaces", ())),
+            text=tuple(raw.get("text", ())),
         )
     except FileNotFoundError:
         logger.warning("plate manifest missing", extra={"path": str(path)})
@@ -105,6 +180,33 @@ def load_manifest(path: Path | None = None) -> PlateManifest | None:
             extra={"path": str(path), "error": f"{type(exc).__name__}: {exc}"},
         )
         return None
+
+
+def _rects_intersect(a: dict, b: dict) -> bool:
+    return (
+        a["x"] < b["x"] + b["w"]
+        and b["x"] < a["x"] + a["w"]
+        and a["y"] < b["y"] + b["h"]
+        and b["y"] < a["y"] + a["h"]
+    )
+
+
+def glow_chart_overlaps(manifest: PlateManifest | None) -> list[str]:
+    """Every glow rect that lands on a screen carrying live content (KI-056).
+
+    The swell's job is to light the surfaces the plate deliberately left
+    blank. A monitor with candles in it is no longer blank, and additive amber
+    over dark glass turns it olive - worst at high tiers, i.e. exactly when a
+    viewer is most likely to be looking.
+    """
+    if manifest is None:
+        return []
+    charts = [s for s in manifest.screens if s.get("role") == "chart"]
+    return [
+        str(glow.get("id"))
+        for glow in manifest.glow
+        if any(_rects_intersect(glow, chart) for chart in charts)
+    ]
 
 
 def watchlist_disagreements(

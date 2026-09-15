@@ -3,6 +3,8 @@ silently break a 24/7 browser source: substitution, the same-origin rule
 for the renderer (KI-045), the bounded boot retry, and the textContent-only
 rule that keeps event payloads from becoming markup."""
 
+import dataclasses
+import hashlib
 import json
 import re
 import shutil
@@ -14,6 +16,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
+from world.light import DEFAULT_LIGHT, as_json
+from world.plate import load_manifest
 
 client = TestClient(app)
 
@@ -274,9 +278,19 @@ def test_the_figures_arms_read_apart_from_its_torso():
     """v1's figure was dropped partly because the arms were the same tint as the
     body: they only existed once shrug/wave/cheer fired, and a resting trader
     read as a capsule. Shading them apart is what makes the arms visible at
-    rest, which is 99% of the airtime."""
+    rest, which is 99% of the airtime.
+
+    Sprint 16 (KI-051): `shade` was renamed to `lightenTint` for this specific
+    multiplicative lighten - `shade` now names the light-mix function
+    `paint()` uses, a different colour rule entirely (mixes toward
+    `LIGHT.warmth`/`LIGHT.ambient` rather than scaling channels by a
+    factor). `"function shade(" in body` is true regardless, since that
+    function still exists under its new job - it proves nothing about THIS
+    feature any more, which is why it was replaced rather than kept as a
+    second assertion alongside the real one.
+    """
     body = client.get("/world").text
-    assert "function shade(" in body
+    assert "function lightenTint(" in body
     assert "shadeFactor" in body
 
 
@@ -324,7 +338,13 @@ def test_a_character_does_not_sink_into_the_background():
     expression = re.search(
         r"function setExpression\(char, mood\) \{(.*?)\n    \}", body, re.S
     ).group(1)
-    assert "bodyTint(" in expression, "the table is injected but never applied"
+    # Task 8 renamed `bodyTint` to `moodFill`, because what it returns stopped
+    # being a tint: the mood is now the colour `paint()` lights (the product
+    # `visuals._rendered()` models) rather than a multiplier laid over an
+    # already-shaded figure. That the product is the RIGHT one is graded in
+    # node by `test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_
+    # multiplier`; this line only holds the wiring.
+    assert "moodFill(" in expression, "the table is injected but never applied"
     # The floor is the point, and it holds for every mood the room can show —
     # not just the two that happened to be on screen when it was measured.
     for mood in MOOD_COLORS:
@@ -712,8 +732,13 @@ def test_the_swell_preview_surface_opens_no_event_stream():
     log. It must return before subscribe(), which is also what makes it
     screenshottable at all: headless Chrome hangs on the page's SSE."""
     body = _world_source()
+    # {0,13}: the branch's own `window.__worldDrawn = true;` (Task 2, set
+    # after THIS gate's own draw call, not before it) is one more line inside
+    # this early-returning branch than the window used to allow — widen the
+    # bound, not the intent: still a *bounded* window, still failing the
+    # instant an EventSource sneaks in before the return.
     preview = re.search(
-        r'get\("swell"\).*?\n(?:.*\n){0,12}?\s*return;', body
+        r'get\("swell"\).*?\n(?:.*\n){0,13}?\s*return;', body
     )
     assert preview, "no early-returning ?swell=1 branch"
     assert "EventSource" not in preview.group(0)
@@ -895,6 +920,40 @@ def _js_block(source: str, opening: str) -> str:
     raise AssertionError(f"unbalanced braces after {opening!r}")
 
 
+def _shading_prelude(source: str) -> str:
+    """Everything `seatedRig`/`BODIES.*` need to draw since KI-051 (Task 6):
+    they now call `paint`, which calls `shade`/`mixHex`, and draw their rim
+    via `rimStyle`/`rimStroke`/`BODY_RIM_SHADED` (Task 8 put `rimStyle` between
+    `paint` and the stroke, so the mood can reach the rim's own albedo).
+    Pulled from the real page rather than re-typed, the same reason every
+    driver in this file pulls `snap` from the page instead of restating it - a
+    second definition drifts from the first and stops proving anything about
+    the page that actually ships.
+    """
+    return (
+        _js_block(source, "function mixHex(") + "\n"
+        + _js_block(source, "function shade(") + "\n"
+        + _js_block(source, "function rampLevel(") + "\n"
+        + _js_block(source, "function keyAxis(") + "\n"
+        + _js_const(source, "KEY_AXIS")
+        + _js_const(source, "BAND_INSET")
+        + _js_const(source, "BAND_MAX")
+        + _js_block(source, "function circleBand(") + "\n"
+        + _js_block(source, "function bandExtent(") + "\n"
+        + _js_block(source, "function bandInside(") + "\n"
+        + _js_block(source, "function slideToKey(") + "\n"
+        + _js_const(source, "quant")
+        + _js_const(source, "MIN_BAND")
+        + _js_block(source, "const litRect = ") + "\n"
+        + _js_block(source, "const litCircle = ") + "\n"
+        + _js_const(source, "BODY_RIM_SHADED")
+        + _js_block(source, "function rimStyle(") + "\n"
+        + _js_block(source, "function paint(") + "\n"
+        + _js_block(source, "function rimStroke(") + "\n"
+        + _js_block(source, "function rimStrokeCircle(") + "\n"
+    )
+
+
 def test_a_plate_that_fails_to_load_degrades_to_the_procedural_room():
     """KI-045's lesson applied to the asset that repeats its shape, and KI-047's
     applied to the page that already went white for 36 hours: the room must
@@ -958,34 +1017,35 @@ def test_the_heartbeat_is_installed_only_after_the_plate_settles():
     assert boot.index("await drawPlate()") < boot.index("/world/heartbeat")
 
 
-def test_preview_modes_hide_the_plate_not_just_the_procedural_room():
-    """`?swell=1` (drawGallery) and the cast sheet (drawAnimationSheet) both set
-    layers.room.visible = false. With a plate they must hide layers.plate too,
-    or the character sheet renders over a full pixel-art control room and is
-    unreadable as evidence.
+def test_preview_modes_keep_the_room_and_plate_in_lockstep():
+    """`?gallery=1` (drawGallery) and the cast sheet (drawAnimationSheet) both
+    toggle layers.room and layers.plate together, on the same VOID_MODE flag —
+    KI-051: judging the cast against a background it never stands in. Task 2
+    flipped the default (room+plate visible unless `?void=1`), but the two
+    layers still have to move together, or a preview mode could hide the
+    procedural room while leaving a full pixel-art control room behind the
+    specimens (or the reverse).
 
     A page-wide `body.count(...) >= 2` passes if both copies live in the SAME
     function and the other preview mode hides nothing — this sprint's
     can't-fail shape (`d1ad270`) applied to a count instead of a substring.
     `_js_block` slices each function separately so the two assertions are
-    provably about two different regions, and each pins the plate hidden
-    ALONGSIDE the room (not instead of it) — the point of a specimen sheet is
-    a plain background, not a different piece of scenery.
+    provably about two different regions.
     """
     body = _world_source()
 
     gallery = _js_block(body, "function drawGallery(")
     assert "STYLES.forEach" in gallery, "not actually the gallery body"
-    assert "layers.room.visible = false" in gallery
-    assert "layers.plate.visible = false" in gallery, (
-        "drawGallery must hide the plate, not just the procedural room"
+    assert "layers.room.visible = VOID_MODE ? false : true;" in gallery
+    assert "layers.plate.visible = VOID_MODE ? false : true;" in gallery, (
+        "drawGallery must gate the plate on VOID_MODE alongside the room"
     )
 
     sheet = _js_block(body, "function drawAnimationSheet(")
     assert "sample.loopAnim" in sheet, "not actually the animation-sheet body"
-    assert "layers.room.visible = false" in sheet
-    assert "layers.plate.visible = false" in sheet, (
-        "drawAnimationSheet must hide the plate, not just the procedural room"
+    assert "layers.room.visible = VOID_MODE ? false : true;" in sheet
+    assert "layers.plate.visible = VOID_MODE ? false : true;" in sheet, (
+        "drawAnimationSheet must gate the plate on VOID_MODE alongside the room"
     )
 
 
@@ -1009,8 +1069,10 @@ def _layout_driver(body: str, *, plate: bool, manifest: dict | None = None) -> s
     test is the page's, character for character.
     """
     source = _world_source()
+    plate_json = manifest or _manifest()
     return (
-        f"const PLATE = {json.dumps(manifest or _manifest())};\n"
+        f"const PLATE = {json.dumps(plate_json)};\n"
+        f"const PAINTED_CAST = {json.dumps(_painted_cast(plate_json))};\n"
         f"const plateReady = {str(plate).lower()};\n"
         f"const app = {{ screen: {json.dumps(CANVAS)} }};\n"
         + _js_const(source, "GROUND")
@@ -1033,6 +1095,14 @@ def _run_node(driver: str):
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def _painted_cast(manifest: dict) -> dict:
+    """What `/world` injects for the cast: the server's own decision about
+    which entries are people, not a copy of the rule (KI-076). Taken from
+    `world.plate` so a change to `characters()` reaches this harness."""
+    shipped = load_manifest()
+    return dataclasses.replace(shipped, cast=manifest["cast"]).cast_payload()
 
 
 def _manifest() -> dict:
@@ -1084,6 +1154,60 @@ def test_the_cast_stands_where_the_plate_painted_it():
         )
     )
     assert moved == {"x": 111, "baseY": 222, "pose": "standing"}
+
+
+@needs_node
+def test_a_settings_key_in_cast_is_not_a_character_on_the_page_either():
+    """KI-076: Sprint 16 made `cast` a mixed block - `scale` and `rig_height`
+    beside the people - and answered "which of these is a character" once, in
+    `PlateManifest.characters()`. The page indexed the raw block, so
+    `anchorFor("scale")` found the number 1.25, took it for an anchor and
+    returned `{x: undefined}`. The guard has to be on the side that renders."""
+    emitted = _run_node(
+        _layout_driver(
+            'console.log(JSON.stringify(anchorFor("scale")));', plate=True
+        )
+    )
+
+    assert "scale" in _manifest()["cast"], "the manifest no longer poses this risk"
+    assert emitted == {
+        "x": pytest.approx(1920 * 0.5),
+        "baseY": pytest.approx(960 * 0.66),
+        "pose": "standing",
+    }, "a settings key resolved to an anchor instead of falling back"
+
+
+def test_the_cast_payload_reaches_the_page_substituted():
+    """An unreplaced `__CAST_JSON__` is a syntax error on the room's own
+    boot path - the KI-045 shape, and the reason a placeholder gets its own
+    check (a dev server that re-reads templates but not `api/main.py` renders
+    exactly this)."""
+    body = TestClient(app).get("/world").text
+    assert "__CAST_JSON__" not in body, "placeholder left unreplaced"
+
+    payload = json.loads(
+        re.search(r"const PAINTED_CAST = (.*);", body).group(1)
+    )
+    assert set(payload) == {"characters", "scale"}
+    assert payload["scale"] == load_manifest().cast["scale"]
+    assert set(payload["characters"]) == {"model", "trader"}, (
+        "the page was handed something other than the people"
+    )
+
+
+def test_the_page_never_indexes_the_raw_cast_block():
+    """The class, not the instance: the decision is made server-side and
+    injected, so a future call site cannot reach a settings key by name.
+    Mirrors `MONITOR_RULES`/`__MONITOR_JS__` for the monitors."""
+    offenders = [
+        f"{number}: {line.strip()[:90]}"
+        for number, line in enumerate(_world_source().splitlines(), start=1)
+        if "PLATE.cast" in re.sub(r"//.*$", "", line)
+    ]
+    assert not offenders, (
+        "read the injected PAINTED_CAST instead - PLATE.cast carries settings "
+        "as well as people:\n" + "\n".join(offenders)
+    )
 
 
 @needs_node
@@ -1144,6 +1268,10 @@ def test_a_pillar_is_drawn_inside_the_tube_the_plate_painted():
     assert btc["x"] == tubes["BTCUSDT"]["x"] - tubes["BTCUSDT"]["width"] / 2
     assert btc_full["height"] == tubes["BTCUSDT"]["height"], "a full tube overflows"
     assert eth["baseY"] == tubes["ETHUSDT"]["base_y"]
+    # KI-055: the cap's squash is the painted bore's own, not a guess -
+    # pillarGeometry carries it so drawPillars never has to re-derive a tube.
+    assert btc["boreRy"] == tubes["BTCUSDT"]["bore_ry"]
+    assert eth["boreRy"] == tubes["ETHUSDT"]["bore_ry"]
 
 
 @needs_node
@@ -1162,6 +1290,11 @@ def test_without_a_plate_the_pillars_march_off_toward_the_corner_as_before():
     assert second["x"] == pytest.approx(1920 * 0.80 + 132)
     assert first["width"] == 54
     assert first["baseY"] == pytest.approx(960 * 0.66)
+    # No painted tube means no measured squash either - this must degrade to
+    # a finite fraction of the (also-fallback) width, never NaN/undefined
+    # reaching g.ellipse(), the same "no plate, no throw" rule CONTACT/
+    # rampLevel hold above.
+    assert first["boreRy"] == pytest.approx(54 * 0.13)
 
 
 def test_the_cast_is_placed_from_its_anchor_every_frame():
@@ -1448,6 +1581,62 @@ def test_the_pillar_fill_is_a_stack_of_blocks_not_a_smooth_rect():
     assert "CELL" in draw_pillars and "snap(" in draw_pillars
 
 
+def test_the_tube_fill_is_capped_with_an_ellipse():
+    """KI-055: the tubes are painted cylinders seen slightly from above, so
+    the surface of whatever fills them is an ellipse - a `roundRect` cap is
+    why they read as progress bars. `boreRy` (pillarGeometry's own measured
+    field, see test_a_pillar_is_drawn_inside_the_tube_the_plate_painted) is
+    what stands in for the guessed constant a comment-only check could not
+    tell apart from the real fix."""
+    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    assert "roundRect(geo.x - 4" not in draw_pillars, (
+        "the cap is still a flat roundRect"
+    )
+    assert "ellipse(" in draw_pillars
+    assert "geo.boreRy" in draw_pillars, "the cap's squash must be the measured one"
+
+
+def test_the_tube_fill_has_a_base_ellipse_too():
+    """Review round 2, mutation M-B: the brief's Step 4 required the tube's
+    BASE - its own floor, always visible under the fill - to get the same
+    elliptical treatment as the cap, but nothing pinned it: deleting the
+    base ellipse and keeping only the cap left 15 tests green.
+    `test_the_tube_fill_is_capped_with_an_ellipse` above is satisfied by
+    either ellipse alone, so it cannot tell one from two. `drawPillars` must
+    draw exactly two ellipses per tube."""
+    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    assert draw_pillars.count("ellipse(") == 2, (
+        "drawPillars must draw exactly two ellipses per tube - the cap AND "
+        "the base"
+    )
+
+
+def test_drawPillars_reads_the_ramp_through_rampLevel_not_raw():
+    """Review round 2, mutation M-C: swapping `rampLevel("lit")` for the
+    banned raw `LIGHT.ramp.lit` inside `drawPillars` left 20 tests green.
+    `rampLevel()` exists so a missing/malformed ramp degrades to 0 (the
+    volume's own flat colour, via `shade()`) instead of throwing
+    (world.html:249's rule) - a raw `LIGHT.ramp.*` read here is exactly the
+    class of inline read that rule exists to prevent, just inside a
+    per-poll draw cycle instead of at top level. Scoped to `drawPillars`'s
+    own source slice, not the whole file, because the rule's comment block
+    legitimately mentions `LIGHT.ramp.lit` in prose."""
+    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    assert "LIGHT.ramp" not in draw_pillars, (
+        "drawPillars reads LIGHT.ramp directly instead of through rampLevel()"
+    )
+    assert draw_pillars.count("rampLevel(") == 2, (
+        "drawPillars must read both the lit and shaded rungs through "
+        "rampLevel()"
+    )
+
+
+def test_the_stacked_cell_fill_survives():
+    # Deliberate from Sprint 15 (C1 Step 3b): the cells are the texture that
+    # makes the fill read as volume. This ticket is the cap only.
+    assert "CELL" in _js_block(_world_source(), "function drawPillars(")
+
+
 @needs_node
 def test_animation_displacement_actually_quantises_to_the_grid():
     """`test_animation_displacement_is_snapped_too` only proves the text
@@ -1470,7 +1659,7 @@ def test_animation_displacement_actually_quantises_to_the_grid():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
         + _js_block(source, "function snap(")
         + "\n"
@@ -1560,7 +1749,7 @@ def test_the_idle_glance_is_snapped_too():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
         + _js_block(source, "function snap(")
         + "\n"
@@ -1773,7 +1962,7 @@ def test_the_sheets_loop_dispatch_is_pose_aware_too():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_block(source, "function snap(")
         + "\n"
         + _js_const(source, "CELL")
@@ -1838,7 +2027,11 @@ def test_the_sheet_can_actually_reach_seatedrig():
     `ANIM` has no key for (which `advanceCharacters` would throw on)."""
     source = _world_source()
     driver = (
-        _js_block(source, "const ANIM = {")
+        # `CAST_SCALE` reads the manifest now, so the identifier has to exist
+        # in this driver even though the sheet does not care what it is: null
+        # is the honest value here, the same as every other plate-free driver.
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + _js_block(source, "const ANIM = {")
         + ";\n"
         + _js_range(
             source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.turn"
@@ -1861,9 +2054,13 @@ def test_the_sheet_can_actually_reach_seatedrig():
         }
         function setCharacterVisible() {}
         function setExpression() {}
-        const layers = { room: {}, plate: {}, chars: { scale: { set() {} } } };
+        const layers = {
+          room: {}, plate: {}, monitors: {}, nameplates: {},
+          chars: { scale: { set() {} } },
+        };
         const location = { search: "" };
         const model = {}, trader = {};
+        const VOID_MODE = false;
         """
         + _js_block(source, "function drawAnimationSheet(")
         + "\n"
@@ -1938,7 +2135,7 @@ def test_seated_animations_actually_move_real_parts():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
         + _js_block(source, "function snap(")
         + "\n"
@@ -2036,7 +2233,7 @@ def test_seated_rest_does_not_touch_the_chair():
     touch (`body`, `head`, the arms, blink) and leave `container` alone."""
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_block(source, "function snap(")
         + "\n"
         + _js_const(source, "CELL")
@@ -2114,16 +2311,20 @@ def test_the_seated_head_stays_under_the_painted_backrest():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
-        # seatedRig's roundRect calls end in `.fill(BODY_FILL).stroke(BODY_RIM)`
-        # - the fake Graphics below never reads either argument, but JS still
-        # evaluates the expression, so the identifiers have to exist. The
-        # forearm loop builds its own `new PIXI.Graphics()` rather than
-        # reusing the `body` argument, so PIXI needs the same stub.
-        + "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        # seatedRig's roundRect calls now go through `paint`/`rimStroke`
+        # (KI-051, Task 6), which read `BODY_FILL`/`BODY_RIM` and the whole
+        # shading chain below - the fake Graphics never reads a fill/stroke
+        # argument, but JS still evaluates the expressions building them, so
+        # every identifier they touch has to exist. The forearm loop builds
+        # its own `new PIXI.Graphics()` rather than reusing the `body`
+        # argument, so PIXI needs the same stub.
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
           roundRect() { return this; }
+          circle() { return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -2135,11 +2336,12 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
+        + _shading_prelude(source)
         + _js_block(source, "function seatedRig(")
         + "\n"
         + """
-        const fakeGfx = { roundRect() { return this; }, fill() { return this; },
-                           stroke() { return this; } };
+        const fakeGfx = { roundRect() { return this; }, circle() { return this; },
+                           fill() { return this; }, stroke() { return this; } };
         const accents = [];
         const headY = seatedRig(fakeGfx, accents);
         console.log(JSON.stringify({
@@ -2201,12 +2403,19 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     """
     source = _world_source()
     driver = (
-        "const PLATE = null;\n"
-        + "const BODY_FILL = 0xffffff, BODY_RIM = {};\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        # KI-051 (Task 6): `BODY_RIM` needs a real `.color` - it feeds
+        # `BODY_RIM_SHADED` via `shade()`. `LIGHT` is the real page's, since
+        # it does not depend on `PLATE` (`__LIGHT_JSON__` is substituted at
+        # render time from the manifest, independent of this driver's own
+        # `const PLATE = null`).
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
           constructor() { this.calls = []; this.x = 0; }
           roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
+          circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -2214,6 +2423,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         const bodyCalls = [];
         const fakeGfx = {
           roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
+          circle(x, y, r) { bodyCalls.push([x - r, 2 * r]); return this; },
           fill() { return this; },
           stroke() { return this; },
         };
@@ -2224,6 +2434,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
+        + _shading_prelude(source)
         + _js_block(source, "function seatedRig(")
         + "\n"
         + """
@@ -2262,6 +2473,141 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         f"the seated rig's right edge is at screen x={right_screen} - "
         f"{right_screen - seat['x'] - seat['width']}px past the seat's "
         f"right edge ({seat['x'] + seat['width']})"
+    )
+
+
+def _seated_rig_bounds():
+    """The trader's full rendered bounding box, in screen pixels: every real
+    `roundRect`/`circle` call `seatedRig` makes (torso, thighs, each arm at
+    its own `arm.x` offset — the sibling test above's own recorder, extended
+    from an X-only range to a full 2D box) UNIONED with the head circle
+    `character()` paints separately (`litCircle(0, 0, 28)`, offset by
+    `seatedRig`'s own returned `headY` the same way `head.y = headY` does)
+    — then composited at the manifest's real `sit_anchor` through the real
+    `CAST_SCALE`, exactly as `positionCharacters` does for a seated pose.
+    Nothing here is a magic number: every input is read out of the page or
+    the manifest, the same discipline `test_the_seated_rig_fits_inside_the_
+    painted_seat_not_just_the_backrest` above already established for the
+    X-only, seat-only version of this same claim.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + """
+        function makeRecorder(calls) {
+          return {
+            roundRect(x, y, w, h, r) { calls.push([x, y, w, h]); return this; },
+            circle(x, y, r) { calls.push([x - r, y - r, 2 * r, 2 * r]); return this; },
+            fill() { return this; },
+            stroke() { return this; },
+          };
+        }
+        // `new PIXI.Graphics()` (each arm) needs the same interface as the
+        // plain recorder above, on an instance with its own `.calls`.
+        class FakeGraphics {
+          constructor() {
+            this.calls = []; this.x = 0; this.y = 0;
+            const r = makeRecorder(this.calls);
+            this.roundRect = r.roundRect; this.circle = r.circle;
+            this.fill = r.fill; this.stroke = r.stroke;
+          }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const bodyCalls = [];
+        const fakeGfx = makeRecorder(bodyCalls);
+        const skullCalls = [];
+        const fakeSkull = makeRecorder(skullCalls);
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _shading_prelude(source)
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        const headY = seatedRig(fakeGfx, accents);
+        // `character()`'s own line, verbatim: the skull is painted once per
+        // non-orb style, at local (0,0,28) within `head`, which is then
+        // shifted by `head.y = headY`.
+        paint(fakeSkull, litCircle(0, 0, 28), BODY_FILL);
+        function box(calls, offX, offY) {
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const [x, y, w, h] of calls) {
+            x0 = Math.min(x0, offX + x); y0 = Math.min(y0, offY + y);
+            x1 = Math.max(x1, offX + x + w); y1 = Math.max(y1, offY + y + h);
+          }
+          return [x0, y0, x1, y1];
+        }
+        let [x0, y0, x1, y1] = box(bodyCalls, 0, 0);
+        for (const accent of accents) {
+          const [ax0, ay0, ax1, ay1] = box(accent.calls, accent.x, accent.y);
+          x0 = Math.min(x0, ax0); y0 = Math.min(y0, ay0);
+          x1 = Math.max(x1, ax1); y1 = Math.max(y1, ay1);
+        }
+        const [hx0, hy0, hx1, hy1] = box(skullCalls, 0, headY);
+        x0 = Math.min(x0, hx0); y0 = Math.min(y0, hy0);
+        x1 = Math.max(x1, hx1); y1 = Math.max(y1, hy1);
+        console.log(JSON.stringify({ x0, y0, x1, y1, castScale: CAST_SCALE }));
+        """
+    )
+    emitted = _run_node(driver)
+    manifest = _manifest()
+    sit_anchor = manifest["cast"]["trader"]["sit_anchor"]
+    scale = emitted["castScale"]
+    return {
+        "x": sit_anchor["x"] + emitted["x0"] * scale,
+        "y": sit_anchor["y"] + emitted["y0"] * scale,
+        "w": (emitted["x1"] - emitted["x0"]) * scale,
+        "h": (emitted["y1"] - emitted["y0"]) * scale,
+    }
+
+
+def _rects_intersect(a, b):
+    return (
+        a["x"] < b["x"] + b["w"]
+        and b["x"] < a["x"] + a["w"]
+        and a["y"] < b["y"] + b["h"]
+        and b["y"] < a["y"] + a["h"]
+    )
+
+
+@needs_node
+def test_the_name_trader_surface_does_not_intersect_the_seated_rig():
+    """Review round 2's own criterion, made measurable: the surface
+    `name-trader` sits on must not intersect the trader's rendered bounds.
+    `desk-plate-trader` failed this (the rig's real geometry, composited at
+    the manifest's own anchor, lands squarely inside it) - that is why
+    `name-trader` now names `desk-face-trader` instead. Checked here from
+    the rendering side, with the real seated-rig geometry and CAST_SCALE
+    (`_seated_rig_bounds` above), not eyeballed from a screenshot.
+    """
+    rig = _seated_rig_bounds()
+    manifest = _manifest()
+    surface = next(
+        s for s in manifest["text_surfaces"] if s["id"] == "desk-face-trader"
+    )
+    assert not _rects_intersect(rig, surface), (
+        f"the seated rig's rendered bounds {rig} intersect desk-face-trader "
+        f"{surface} — the fix this ticket exists to make did not land"
+    )
+
+    # Mutation check: the SAME rendered rig, against the surface this fix
+    # replaced, must be caught as intersecting — proving this check actually
+    # distinguishes a bad surface from a good one, not just returning False
+    # for everything.
+    old_surface = next(
+        s for s in manifest["text_surfaces"] if s["id"] == "desk-plate-trader"
+    )
+    assert _rects_intersect(rig, old_surface), (
+        "desk-plate-trader no longer reads as intersecting the rig — either "
+        "the plate or the rig changed, and this mutation check is no longer "
+        "anchored to a real, known-bad surface"
     )
 
 
@@ -2311,7 +2657,14 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
     (`layers.monitors`, a stage sibling with a build-once/never-wiped
     contract — deliberately not sharing `layers.props`, whose contract is
     per-cycle wipe-and-rebuild), the glow layer must sit below that layer
-    too, or it would wash the candles out.
+    too, or it would wash the candles out. `layers.nameplates` (Sprint 16
+    Task 10) sits LAST — a name tag hidden behind the very figure it names
+    (the trader's seated head covered all but ~15px of `desk-plate-trader`
+    at this cast scale, found by actually rendering the room — `name-trader`
+    has since moved to `desk-face-trader`, review round 2, but the layer
+    stays last regardless: it is what keeps a label from inheriting a
+    reaction's shake/hop) is as much "text where it is not necessary" as
+    hovering in mid-air was.
     """
     boot = _js_block(_world_source(), "async function boot()")
     assert "layers.glow = new PIXI.Container();" in boot
@@ -2320,7 +2673,8 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
     assert match, "boot() no longer builds the stage in one addChild call"
     order = [name.strip() for name in match.group(1).split(",")]
     assert order == ["layers.plate", "layers.room", "layers.glow",
-                      "layers.monitors", "layers.props", "layers.chars"], order
+                      "layers.monitors", "layers.props", "layers.chars",
+                      "layers.nameplates"], order
 
 
 def test_the_ambient_vignette_is_guarded_for_the_plate_path():
@@ -2788,6 +3142,12 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
     assert "new PIXI.Graphics()" not in draw, (
         "drawCandles must reuse a Graphics keyed by screen.id, not build one"
     )
+    assert "addChild" not in draw, (
+        "KI-052: drawCandles runs once per screen per poll, forever - "
+        "anything it adds to a layer (e.g. a quad mask) leaks unboundedly. "
+        "The mask belongs in buildMonitorGraphics, built once, like `g` "
+        "itself"
+    )
     poll = _js_block(body, "async function pollBars(")
     assert "new PIXI.Graphics()" not in poll
 
@@ -2832,6 +3192,7 @@ def _monitor_driver(*, plate_ready: bool) -> str:
         "  }\n"
         "  clear() { this.cleared++; this.rects = []; this.fills = []; return this; }\n"
         "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
+        "  poly(points) { this.polyPoints = points; return this; }\n"
         "  fill(color) { this.fills.push(color); return this; }\n"
         "}\n"
         "const PIXI = { Graphics: FakeGraphics };\n"
@@ -2957,11 +3318,18 @@ def test_drawCandles_executed_draws_fresh_candles_and_dims_stale_ones():
 
 @needs_node
 def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
-    """Exactly one Graphics per painted screen, keyed by `screen.id`, and
-    parented under its OWN layer, `layers.monitors` — never `layers.glow`
+    """Exactly one candle Graphics per painted screen, keyed by `screen.id`,
+    and parented under its OWN layer, `layers.monitors` — never `layers.glow`
     (additive glow would wash the candles out), never `layers.chars`, and
     (Finding 1, review round 1) never `layers.props` either, since that
-    container is wiped and rebuilt every draw() cycle."""
+    container is wiped and rebuilt every draw() cycle.
+
+    KI-052: each screen also gets a quad mask, built once here alongside its
+    candle Graphics (never inside drawCandles, which runs every poll forever
+    - see test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick).
+    That doubles the Graphics/children counts below; the mask itself is
+    checked against the manifest's own `quad`, not just counted.
+    """
     driver = _monitor_driver(plate_ready=True) + (
         "buildMonitorGraphics();\n"
         "console.log(JSON.stringify({\n"
@@ -2970,14 +3338,79 @@ def test_buildMonitorGraphics_keys_by_screen_id_and_lands_in_monitors():
         "  inMonitors: layers.monitors.children.length,\n"
         "  sameRef: monitorGraphics[PLATE.screens[0].id]"
         " === layers.monitors.children[0],\n"
+        "  masks: Object.fromEntries(Object.entries(monitorGraphics).map(\n"
+        "    ([id, g]) => [id, g.mask ? g.mask.polyPoints : null])),\n"
         "}));\n"
     )
     emitted = _run_node(driver)
-    manifest_ids = sorted(s["id"] for s in _manifest()["screens"])
-    assert emitted["built"] == len(manifest_ids)
+    manifest_screens = {s["id"]: s for s in _manifest()["screens"]}
+    manifest_ids = sorted(manifest_screens)
     assert emitted["ids"] == manifest_ids
-    assert emitted["inMonitors"] == len(manifest_ids)
+    # One candle Graphics per screen, plus one quad mask per screen THAT
+    # CARRIES A QUAD - not every screen, per review round 1's own
+    # test_a_screen_with_no_quad_still_gets_a_graphics_but_no_mask, which
+    # blesses a quad-less screen as legitimate. `2 * len(manifest_ids)`
+    # silently assumed every screen has a quad; it and that test contradict
+    # each other the moment a real manifest ships a quad-less screen.
+    masked_ids = [sid for sid in manifest_ids if manifest_screens[sid].get("quad")]
+    assert masked_ids, "no manifest screens carry a quad to check for a mask"
+    assert emitted["built"] == len(manifest_ids) + len(masked_ids)
+    assert emitted["inMonitors"] == len(manifest_ids) + len(masked_ids)
     assert emitted["sameRef"] is True
+    for screen_id in masked_ids:
+        quad = manifest_screens[screen_id]["quad"]
+        assert emitted["masks"][screen_id] == [c for point in quad for c in point], (
+            f"{screen_id}: candle Graphics mask does not match its own quad"
+        )
+
+
+@needs_node
+def test_a_screen_with_no_quad_still_gets_a_graphics_but_no_mask():
+    """KI-052 review round 1, MINOR 4: `screen.quad` is optional in the
+    manifest schema (nothing forbids a future screen without one, and
+    `screen.quad.flat()` on `undefined` would throw), so
+    `buildMonitorGraphics` guards on it with `if (screen.quad)`. Every other
+    degrade path on this page (`rampLevel`, `CONTACT`, the no-plate
+    fallbacks) has a test, because the failure path is the one that runs
+    unattended at 3am - this drives the real `buildMonitorGraphics` against
+    a manifest with one quad-less screen and one normal one, and checks both
+    still get their candle Graphics (nothing throws, nothing is skipped)
+    while only the quad-less one is left unmasked."""
+    source = _world_source()
+    driver = (
+        "const PLATE = { screens: [\n"
+        "  { id: 'no-quad', x: 0, y: 0, w: 200, h: 100, role: 'chart' },\n"
+        "  { id: 'has-quad', x: 0, y: 0, w: 200, h: 100, role: 'chart',\n"
+        "    quad: [[0, 0], [200, 0], [200, 100], [0, 100]] },\n"
+        "] };\n"
+        "class FakeGraphics {\n"
+        "  poly(points) { this.polyPoints = points; return this; }\n"
+        "  fill() { return this; }\n"
+        "}\n"
+        "const PIXI = { Graphics: FakeGraphics };\n"
+        "const layers = { monitors: { children: [],\n"
+        "  addChild(...items) { this.children.push(...items); } } };\n"
+        "const monitorGraphics = {};\n"
+        + _js_block(source, "function buildMonitorGraphics(")
+        + "\n"
+        + "buildMonitorGraphics();\n"
+        + "console.log(JSON.stringify({\n"
+        + "  inMonitors: layers.monitors.children.length,\n"
+        + "  ids: Object.keys(monitorGraphics).sort(),\n"
+        + "  noQuadMask: monitorGraphics['no-quad'].mask || null,\n"
+        + "  hasQuadMask: !!monitorGraphics['has-quad'].mask,\n"
+        + "}));\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["ids"] == ["has-quad", "no-quad"], (
+        "both screens must still get a candle Graphics, guard or not"
+    )
+    # One candle Graphics for the quad-less screen, plus a candle Graphics
+    # AND a mask for the other - the guard skips only the mask, not the
+    # screen.
+    assert emitted["inMonitors"] == 3
+    assert emitted["noQuadMask"] is None, "a quad-less screen must not get a mask"
+    assert emitted["hasQuadMask"] is True
 
 
 @needs_node
@@ -3049,7 +3482,7 @@ def test_pollBars_never_fetches_when_there_is_no_plate():
     """Override 4: PLATE may be null and plateReady may be false. `pollBars`
     must be a clean no-op then, not a per-screen exception every 20s."""
     driver = (
-        "const PLATE = null;\n"
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         "const plateReady = false;\n"
         "let fetchCalls = 0;\n"
         "function fetch() { fetchCalls++; throw new Error('must not fetch'); }\n"
@@ -3119,3 +3552,2319 @@ def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure
     assert emitted["drawnWith"]["down"] == [], "a thrown fetch must draw dark glass"
     assert "tube" not in emitted["drawnWith"]
     assert "blank" not in emitted["drawnWith"]
+
+
+def test_the_gallery_keeps_the_room_it_is_judged_against():
+    page = client.get("/world?gallery=1").text
+    body = _js_block(page, "function drawGallery(")
+    # The specimens must stand in the room by default. This is KI-051's root
+    # cause: the tool used to judge the cast deleted the picture.
+    assert "layers.plate.visible = false" not in body
+    assert "VOID_MODE" in body
+
+
+def test_the_gallery_hides_the_live_monitors():
+    # Observed 2026-09-01: live candles drew straight over the specimens.
+    body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
+    assert "layers.monitors.visible = false" in body
+
+
+def test_the_gallery_hides_the_rooms_own_nameplates():
+    # Observed 2026-09-07 (this ticket's own screenshot): `layers.nameplates`
+    # is built once at fixed canvas coordinates, independent of the room
+    # characters `setCharacterVisible` hides here — left visible, "MODEL"/
+    # "TRADER" drew straight over whichever grid cell happened to land on
+    # that spot. Same failure shape, same fix, as the monitors sibling above.
+    body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
+    assert "layers.nameplates.visible = false" in body
+
+
+def test_the_animation_sheet_keeps_the_room_too():
+    body = _js_block(
+        client.get("/world?anims=1").text, "function drawAnimationSheet("
+    )
+    assert "layers.plate.visible = false" not in body
+    assert "VOID_MODE" in body
+
+
+def test_the_animation_sheet_hides_the_rooms_own_nameplates():
+    # Sibling of the gallery's own check above - the same static-content leak
+    # observed on this ticket's `?anims=1` screenshot.
+    body = _js_block(
+        client.get("/world?anims=1").text, "function drawAnimationSheet("
+    )
+    assert "layers.nameplates.visible = false" in body
+
+
+def test_the_page_reports_that_it_has_drawn():
+    # scripts/shoot.py polls this instead of guessing a duration.
+    assert "window.__worldDrawn = true" in client.get("/world").text
+
+
+def test_void_mode_is_reachable_from_drawgallery_and_drawanimationsheet():
+    """A `const VOID_MODE` declared inside boot() parses fine and passes every
+    text-substring test above — VOID_MODE still appears, in the source,
+    inside drawGallery's own body — but throws ReferenceError the instant
+    drawGallery runs: it is boot()'s sibling, not its child, and can't see a
+    boot()-local const. boot()'s own `.catch()` turns that into a silent
+    reload loop, and shoot.py photographs an empty page with no other signal
+    that anything is wrong. That took three rounds of debugging-by-screenshot
+    to catch by hand; this pins it at the source level so the next edit that
+    moves the declaration "closer to the other query-flag reads" (i.e. into
+    boot(), where most of them live) can't reintroduce it silently.
+    """
+    source = _world_source()
+    boot_body = _js_block(source, "async function boot(")
+    assert "VOID_MODE" not in boot_body, (
+        "VOID_MODE must not be declared (or read) inside boot() — "
+        "drawGallery and drawAnimationSheet are boot()'s siblings, not its "
+        "children, and a boot()-local const is invisible to them"
+    )
+    assert re.search(r"^    const VOID_MODE = ", source, re.M), (
+        "VOID_MODE must be a top-level (4-space-indent) const, a sibling of "
+        "drawGallery and drawAnimationSheet, not nested inside another "
+        "function"
+    )
+
+
+def test_the_page_only_claims_drawn_after_each_gates_own_draw_call():
+    """`window.__worldDrawn` used to be set once, above all four gates, right
+    after the heartbeat interval — true before drawGallery, drawAnimationSheet,
+    the swell rehearsal, or the live refresh had drawn anything. shoot.py polls
+    that flag INSTEAD OF a fixed sleep specifically so a page that has not
+    painted can't report ready; setting it early makes the poll decorative and
+    turns `--settle` into the only real guard — the exact failure Task 1's CDP
+    screenshotter exists to catch.
+
+    Pinned as an ORDERING claim per gate (the same idiom as
+    test_the_heartbeat_is_installed_only_after_the_plate_settles above),
+    because the flag string appearing anywhere in the page proves nothing
+    about when it goes true — this must fail if the assignment moves back
+    above the gate branches, which a plain substring test cannot detect.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+
+    gallery_gate = 'get("gallery") === "1") {'
+    anims_gate = 'get("anims")) {'
+    swell_gate = 'get("swell")) {'
+    live_start = "try {\n        await refresh();"
+
+    gallery = boot[boot.index(gallery_gate) : boot.index(anims_gate)]
+    assert gallery.index("drawGallery();") < gallery.index(
+        "window.__worldDrawn = true;"
+    ), "drawGallery must run before the gallery gate claims it has drawn"
+
+    anims = boot[boot.index(anims_gate) : boot.index(swell_gate)]
+    assert anims.index("drawAnimationSheet();") < anims.index(
+        "window.__worldDrawn = true;"
+    ), "drawAnimationSheet must run before the anims gate claims it has drawn"
+
+    swell = boot[boot.index(swell_gate) : boot.index(live_start)]
+    # The FIRST rehearse() call — the synchronous invocation, not the
+    # `const rehearse = () => {...}` definition or the later recurring
+    # setInterval(rehearse, ...) re-invocation.
+    first_call = swell.index("rehearse();", swell.index("const rehearse ="))
+    assert first_call < swell.index("window.__worldDrawn = true;"), (
+        "the first rehearse() must run before the swell gate claims it has drawn"
+    )
+
+    live = boot[boot.index(live_start) :]
+    assert live.index("await refresh();") < live.index(
+        "window.__worldDrawn = true;"
+    ), "the live path must await refresh() before claiming it has drawn"
+
+
+@needs_node
+def test_worlddrawn_is_still_set_when_refresh_throws():
+    """A failed `/world/state` fetch is a data problem, not a failure to draw
+    the room — the cast is already positioned before this fragment runs — so
+    the flag must go true even if refresh ever stops swallowing its own
+    errors (it currently does, via its own try/catch, but that is refresh's
+    contract to keep, not this one's to assume). Runs the real live-path
+    fragment — `try { await refresh(); } finally { window.__worldDrawn =
+    true; }` — against a `refresh` stub that actually throws, so a future
+    edit that swaps the `finally` for a `.then()` (which would silently skip
+    the flag on a throw and leave shoot.py spinning its full 30s poll on a
+    page that is actually fine) fails here.
+    """
+    boot = _js_block(_world_source(), "async function boot()")
+    live_start = "try {\n        await refresh();"
+    live = boot[boot.index(live_start) : boot.index("subscribe();")]
+    driver = (
+        "let worldDrawn = false;\n"
+        "const window = {\n"
+        "  get __worldDrawn() { return worldDrawn; },\n"
+        "  set __worldDrawn(v) { worldDrawn = v; },\n"
+        "};\n"
+        "async function refresh() { throw new Error('network down'); }\n"
+        "(async () => {\n"
+        "  try {\n"
+        + live
+        + "\n"
+        "  } catch (e) { /* refresh's own throw must not escape uncaught */ }\n"
+        "  console.log(JSON.stringify({ worldDrawn }));\n"
+        "})();\n"
+    )
+    emitted = _run_node(driver)
+    assert emitted["worldDrawn"] is True, (
+        "window.__worldDrawn must be set from a finally (or equivalent), "
+        "not skipped when refresh() throws"
+    )
+
+
+# --- Task 6: the cast is lit by the room's lamp (KI-051) --------------------
+#
+# Every volume used to be `roundRect(...).fill(BODY_FILL).stroke(BODY_RIM)` -
+# one flat fill, one hard rim, no light direction. `shade`/`paint` replace the
+# fill rule only; shapes, positions and animations are untouched (pinned by
+# `test_the_animation_layer_is_untouched` below and the SHA check in the task
+# report).
+
+
+@needs_node
+def test_the_cast_is_shaded_rather_than_flat_filled():
+    """KI-051: a figure lit by this room mixes toward the lamp's own warmth
+    when its lit band faces the key, and toward the room's ambient when its
+    shaded band faces away - not toward flat white/black, which would make a
+    figure merely "brighter here" rather than lit by this specific amber lamp
+    in this specific cold room. Every painted object on the plate already
+    does the same amber-highlight / cold-shadow mix; this is what makes the
+    cast belong to it.
+
+    Exercised for real against `LIGHT.warmth`/`LIGHT.ambient` as the page
+    actually declares them, not by grepping the source for the identifier
+    `LIGHT.warmth`: that string can sit in a comment or a dead branch and
+    still satisfy a substring check. This drives the real `shade()` and
+    compares its output to a colour computed independently in Python from
+    the same measured `LIGHT`, then mutation-checks that the comparison is
+    load-bearing by swapping which side of the ramp mixes toward which
+    colour - the one bug `light_for`'s own monotonic-ramp check exists to
+    keep off the Python side, and the one that would light every figure from
+    the wrong side of the room if it ever reached the page.
+    """
+    source = _world_source()
+    light_match = re.search(r"const LIGHT = (\{.*\});", source)
+    assert light_match, "the page no longer declares a one-line const LIGHT"
+    light = json.loads(light_match.group(1))
+
+    def mix_hex(a, b, t):
+        pa = a if isinstance(a, int) else int(str(a).lstrip("#"), 16)
+        pb = b if isinstance(b, int) else int(str(b).lstrip("#"), 16)
+        ch = lambda v, sh: (v >> sh) & 0xFF  # noqa: E731
+        lerp = lambda x, y: round(x + (y - x) * t)  # noqa: E731
+        return (
+            (lerp(ch(pa, 16), ch(pb, 16)) << 16)
+            | (lerp(ch(pa, 8), ch(pb, 8)) << 8)
+            | lerp(ch(pa, 0), ch(pb, 0))
+        )
+
+    base = 0x808080
+    expected_lit = mix_hex(base, light["warmth"], min(1, abs(light["ramp"]["lit"])))
+    expected_shaded = mix_hex(
+        base, light["ambient"], min(1, abs(light["ramp"]["shade"]))
+    )
+
+    shade_block = _js_block(source, "function shade(")
+
+    def run(block):
+        driver = (
+            _js_const(source, "LIGHT")
+            + _js_block(source, "function mixHex(")
+            + "\n"
+            + block
+            + "\n"
+            + f"""
+            console.log(JSON.stringify({{
+              lit: shade({base}, LIGHT.ramp.lit),
+              shaded: shade({base}, LIGHT.ramp.shade),
+              neutral: shade({base}, LIGHT.ramp.base),
+            }}));
+            """
+        )
+        return _run_node(driver)
+
+    emitted = run(shade_block)
+    assert emitted["lit"] == expected_lit, (
+        f"shade(base, LIGHT.ramp.lit) = {emitted['lit']:#x}, expected "
+        f"{expected_lit:#x} - the lit band must mix toward LIGHT.warmth"
+    )
+    assert emitted["shaded"] == expected_shaded, (
+        f"shade(base, LIGHT.ramp.shade) = {emitted['shaded']:#x}, expected "
+        f"{expected_shaded:#x} - the shaded band must mix toward LIGHT.ambient"
+    )
+    assert emitted["neutral"] == base, (
+        "LIGHT.ramp.base (0) must return the tint unchanged"
+    )
+    assert emitted["lit"] != emitted["shaded"], (
+        "the lit and shaded bands rendered the same colour"
+    )
+
+    # Mutation check: swap which colour each side of the ramp mixes toward.
+    mutated = shade_block.replace(
+        "level >= 0 ? LIGHT.warmth : LIGHT.ambient",
+        "level >= 0 ? LIGHT.ambient : LIGHT.warmth",
+    )
+    assert mutated != shade_block, "the mutation did not change the source"
+    broken = run(mutated)
+    assert broken["lit"] != expected_lit or broken["shaded"] != expected_shaded, (
+        "swapping which colour each ramp side mixes toward still produced "
+        "the correct output - these assertions would not catch a "
+        "wrong-side-of-the-room lighting bug"
+    )
+
+
+def test_no_body_volume_is_painted_with_the_bare_flat_fill_any_more():
+    """The exact construct KI-051 is about. `paint(...)` replaces every
+    `roundRect(...).fill(BODY_FILL).stroke(BODY_RIM)` two-tone stamp with
+    three shaded bands and a shaded rim (`BODY_RIM_SHADED`) - so a bare
+    `BODY_FILL`/`BODY_RIM` fill/stroke pair must not survive anywhere a body
+    volume is drawn.
+
+    Covers all three places a volume is drawn, not just the two the brief
+    named: the five `BODIES.*` methods, `seatedRig` (the trader's lower
+    body), AND `character()`, where the skull is built separately for every
+    style but the orb. The skull is the largest single surface carrying mood
+    (`setExpression` paints eyes/brows/mouth onto it) and the easiest to miss
+    a shading pass on precisely because it lives in neither of the other two
+    constructs - a shaded body with a flat sticker head is a half-finished
+    result no assertion scoped to `BODIES`/`seatedRig` alone would catch.
+    """
+    source = _world_source()
+    rig = (
+        _js_block(source, "const BODIES = {")
+        + _js_block(source, "function seatedRig(")
+        + _js_block(source, "function character(")
+    )
+    assert ".fill(BODY_FILL)" not in rig, (
+        "a body volume is still using the bare flat fill KI-051 is about"
+    )
+    assert re.search(r"\.stroke\(BODY_RIM\)", rig) is None, (
+        "a body volume is still stroked with the un-shaded BODY_RIM - "
+        "BODY_RIM_SHADED is the KI-051 rim, this is the sticker outline"
+    )
+    assert rig.count("paint(") >= 15, (
+        "fewer paint() calls than the volumes this rig draws - a body was "
+        "converted to something else, or not converted at all"
+    )
+
+
+# The sprint's Global Constraint (plan line 47): `ANIM`, `SEATED_ANIMATIONS`
+# and `advanceCharacters` must be byte-unchanged by Sprint 16. Digests taken
+# from the rendered page at `29c3a96`, this branch's tip before Task 6, and
+# verified equal to `git show 29c3a96:api/templates/world.html`'s own blocks.
+# If one of these fails, either the shading pass reached into the animation
+# layer - the thing the constraint exists to catch - or the constraint is
+# being deliberately lifted, which is a decision, not a test edit.
+PROTECTED_BLOCKS = {
+    "const ANIM = {": (
+        "716d3fb9df6668032c3ee2da1f9eccd2cf5d2580968bc12b09e545b35687d58d", 3783
+    ),
+    "const SEATED_ANIMATIONS = {": (
+        "1977ba1c188c5a701d71422678d66eec929defcab43736d25da76986e5c26673", 2540
+    ),
+    "function advanceCharacters(": (
+        "a4f17050f3d1ca7fbc7790bd192fbeb089353d7d73f556bb73acafb9ec4b5e9e", 2275
+    ),
+}
+
+
+def test_the_animation_layer_is_untouched():
+    """The constraint that makes this redesign safe: the animation layer
+    survives byte-for-byte because only the fill rule changed.
+
+    Review round 1, Important 4: the previous version of this test said
+    "byte-for-byte" in its docstring and then asserted that two substrings
+    were present - nothing in it would have failed if the bodies of those
+    blocks had been rewritten, and it cited the task report as if a report
+    were a test. This grades the actual bytes: each block is brace-matched
+    out of the rendered page and digested, so a single character moved inside
+    `ANIM` fails here rather than in a screenshot three tasks later.
+    """
+    page = client.get("/world").text
+    for opening, (digest, size) in PROTECTED_BLOCKS.items():
+        block = _js_block(page, opening)
+        actual = hashlib.sha256(block.encode()).hexdigest()
+        assert (actual, len(block)) == (digest, size), (
+            f"{opening!r} is no longer byte-identical to its Sprint 16 "
+            f"baseline ({len(block)}B/{actual[:16]} vs {size}B/{digest[:16]}) "
+            "- this sprint's Global Constraint says the animation layer does "
+            "not move"
+        )
+
+
+# --- KI-051, review round 1: the light has to land on the lamp's side -------
+#
+# Critical 1 was a sign error that every string-matching test in this file was
+# blind to: `insetSpan`'s two branches were swapped, so rects were lit from the
+# left while the skull - a circle, which never went through that function - was
+# lit from the right. Head and body lit from opposite sides of one figure, and
+# the code comment described the correct behaviour, which is why self-review
+# missed it. The fix deleted the branch rather than correcting it: "toward the
+# key" is now expressed once, as `-KEY_AXIS`, for rects and circles alike.
+#
+# These drive the page's own geometry in node. They are the tests that can see
+# a sign.
+
+
+def _geometry_driver(source: str, body: str) -> str:
+    """The page's real shading geometry, plus a shape recorder."""
+    return (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _shading_prelude(source)
+        + """
+        const shapes = [];
+        const rec = {
+          roundRect(x, y, w, h, r) {
+            shapes.push({ kind: "rect", x, y, w, h, r }); return this;
+          },
+          circle(x, y, r) { shapes.push({ kind: "circle", x, y, r }); return this; },
+          fill() { return this; },
+          stroke() { return this; },
+        };
+        """
+        + body
+    )
+
+
+@needs_node
+def test_every_band_is_drawn_on_the_lamp_side_of_its_volume():
+    """The measured key sits up and to the right of the cast (`direction =
+    [-0.55, 0.84]`, so `-direction` points at the painted lamp at plate
+    `[1339, 455]`). Every band a volume draws must therefore have its centre
+    displaced from the volume's own centre in that direction - a rect and a
+    circle alike, which is the half of the claim round 1 got wrong.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const vols = {
+          "chest 66x54 r22": litRect(-33, -128, 66, 54, 22),
+          "wick 7x30 r3.5":  litRect(-3.5, -130, 7, 30, 3.5),
+          "bar 12x54 r4":    litRect(-6, -54, 12, 54, 4),
+          "seat chest 48x40 r20": litRect(-24, -80, 48, 40, 20),
+          "skull r28":       litCircle(0, 0, 28),
+          "orb r46":         litCircle(0, -60, 46),
+        };
+        const out = {};
+        for (const [name, vol] of Object.entries(vols)) {
+          out[name] = [];
+          for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+            shapes.length = 0;
+            vol.band(rec, band);
+            const s = shapes[0];
+            const cx = s.kind === "rect" ? s.x + s.w / 2 : s.x;
+            const cy = s.kind === "rect" ? s.y + s.h / 2 : s.y;
+            out[name].push({ cx, cy, s });
+          }
+        }
+        console.log(JSON.stringify({ out, axis: KEY_AXIS }));
+        """,
+    )
+    emitted = _run_node(driver)
+    ux, uy = -emitted["axis"][0], -emitted["axis"][1]
+    assert ux > 0 and uy < 0, (
+        f"the key axis no longer points up and to the right: ({ux}, {uy}) - "
+        "this test's premise is the painted lamp's measured position"
+    )
+    for name, bands in emitted["out"].items():
+        origin = bands[0]  # the inset-0 band IS the volume's own silhouette
+        for label, band in zip(("base", "lit"), bands[1:]):
+            dx = band["cx"] - origin["cx"]
+            dy = band["cy"] - origin["cy"]
+            mag = (dx * dx + dy * dy) ** 0.5
+            assert mag > 0.5, (
+                f"{name}: the {label} band sits on the volume's own centre "
+                f"({dx:+.3f}, {dy:+.3f}) - it carries no light direction"
+            )
+            # Asserted PER AXIS, because an axis is where a sign error lives.
+            # A band cannot always travel the full key direction: a long thin
+            # volume runs out of room across its short axis long before its
+            # long one, and forcing the diagonal anyway is what left a 12x96
+            # bar with its bright part in the middle. So what is pinned is
+            # that NEITHER axis moves away from the lamp, and that the result
+            # still points broadly at it.
+            assert dx * ux >= 0 and dy * uy >= 0, (
+                f"{name}: the {label} band is displaced ({dx:+.2f}, {dy:+.2f}), "
+                f"which moves it AWAY from the lamp on one axis (the key is at "
+                f"({ux:+.2f}, {uy:+.2f})) - a sign is inverted"
+            )
+            cos = (dx * ux + dy * uy) / mag
+            assert cos > 0.7, (
+                f"{name}: the {label} band is displaced ({dx:+.2f}, {dy:+.2f}), "
+                f"which agrees with the key direction by cos={cos:+.4f} - the "
+                "band is not on the lamp's side of the volume"
+            )
+
+
+@needs_node
+def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
+    """The property `insetSpan` was written to protect, made checkable.
+
+    The first version of this rule kept every band inside the volume's
+    BOUNDING BOX and still leaked out through its rounded corner, because a
+    small band's corner is squarer than the silhouette's: rasterised against
+    the real call sites, the seated chest (48x40, r20 - a stadium) spilled
+    15.3% of its lit band outside its own outline. A figure whose silhouette
+    grows when the lamp is measured is exactly what the seat- and
+    backrest-fit budgets (Task 5: 9px and 50px) cannot afford.
+
+    Checked by sampling the band's own area on a fine grid and testing each
+    point against the volume's real rounded rect - every volume the page
+    actually draws, read out of the page source rather than re-typed.
+    """
+    source = _world_source()
+    rig = (
+        _js_block(source, "const BODIES = {")
+        + _js_block(source, "function seatedRig(")
+        + _js_block(source, "function character(")
+    )
+    rects = re.findall(
+        r"litRect\(([-\d.]+), ([-\d.]+), (\w+|[\d.]+), (\w+|[\d.]+), ([\d.]+)\)", rig
+    )
+    circles = re.findall(r"litCircle\(([-\d.]+), ([-\d.]+), ([\d.]+)\)", rig)
+    assert len(rects) + len(circles) >= 15, (
+        f"only found {len(rects)} rect and {len(circles)} circle volumes in the "
+        "rig - the call-site shapes changed and this test stopped covering them"
+    )
+    # `bars` builds its rects from a loop variable, so its heights have to be
+    # substituted - read out of the page, never restated here. A literal list
+    # would keep this test green while it checked geometry the page had stopped
+    # drawing, which is the shape of test this sprint exists to stop writing.
+    declared = re.search(r"const heights = \[([\d,\s]+)\];", rig)
+    assert declared, (
+        "BODIES.bars no longer declares `const heights = [...]` - this test "
+        "can no longer see what the bar cluster actually draws"
+    )
+    bar_heights = [float(v) for v in declared.group(1).split(",")]
+    assert len(bar_heights) >= 3, f"only {len(bar_heights)} bar heights found"
+    volumes = []
+    for x, y, w, h, r in rects:
+        for hh in (bar_heights if h == "h" else [h]):
+            yy = -float(hh) if y == "-h" or h == "h" else float(y)
+            volumes.append(["rect", float(x), yy, float(w), float(hh), float(r)])
+    for cx, cy, rad in circles:
+        volumes.append(["circle", float(cx), float(cy), float(rad)])
+
+    driver = _geometry_driver(
+        source,
+        "const VOLUMES = " + json.dumps(volumes) + ";\n"
+        + """
+        function insideRR(px, py, hw, hh, r) {
+          const ax = Math.abs(px), ay = Math.abs(py);
+          if (ax > hw + 1e-9 || ay > hh + 1e-9) return false;
+          const dx = Math.max(0, ax - (hw - r)), dy = Math.max(0, ay - (hh - r));
+          return dx * dx + dy * dy <= r * r + 1e-9;
+        }
+        const worst = [];
+        VOLUMES.forEach((spec, i) => {
+          // The volume's TRUE silhouette, in the same snapped space the page
+          // draws it in: litRect snaps its origin, litCircle its centre.
+          let vol, sx, sy, w, h, r;
+          if (spec[0] === "rect") {
+            w = spec[3]; h = spec[4]; r = spec[5];
+            vol = litRect(spec[1], spec[2], w, h, r);
+            sx = snap(spec[1]); sy = snap(spec[2]);
+          } else {
+            r = spec[3]; w = h = 2 * r;
+            vol = litCircle(spec[1], spec[2], r);
+            sx = snap(spec[1]) - r; sy = snap(spec[2]) - r;
+          }
+          for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+            shapes.length = 0;
+            vol.band(rec, band);
+            const s = shapes[0];
+            const br = s.r;
+            const bw = s.kind === "rect" ? s.w : 2 * s.r;
+            const bh = s.kind === "rect" ? s.h : 2 * s.r;
+            const bx = s.kind === "rect" ? s.x : s.x - s.r;
+            const by = s.kind === "rect" ? s.y : s.y - s.r;
+            if (bw <= 0 || bh <= 0 || br < 0) {
+              worst.push({ i, band, leak: 1, bw, bh, br, note: "non-positive band" });
+              continue;
+            }
+            let out = 0, tot = 0;
+            const step = Math.min(bw, bh) / 40;
+            for (let py = by + step / 2; py < by + bh; py += step) {
+              for (let px = bx + step / 2; px < bx + bw; px += step) {
+                const inBand = insideRR(
+                  px - bx - bw / 2, py - by - bh / 2, bw / 2, bh / 2, br);
+                if (!inBand) continue;
+                tot += 1;
+                const inVol = insideRR(
+                  px - sx - w / 2, py - sy - h / 2, w / 2, h / 2, r);
+                if (!inVol) out += 1;
+              }
+            }
+            worst.push(
+              { i, kind: spec[0], band, leak: tot ? out / tot : 0, bw, bh, br });
+          }
+        });
+        worst.sort((a, b) => b.leak - a.leak);
+        console.log(JSON.stringify(worst.slice(0, 4)));
+        """,
+    )
+    emitted = _run_node(driver)
+    top = emitted[0]
+    assert top["leak"] == 0, (
+        f"volume {top['i']} band {top['band']} draws {100 * top['leak']:.2f}% of "
+        f"its own area outside the silhouette it belongs to ({top}) - the "
+        "figure's shape changes with the light instead of only its colour"
+    )
+    for row in emitted:
+        assert row["bw"] > 0 and row["bh"] > 0 and row["br"] >= 0, (
+            f"a band came out non-positive: {row} - a roundRect of negative "
+            "width is a silent geometry failure, not an exception"
+        )
+
+
+@needs_node
+def test_the_band_offsets_scale_with_the_volume_rather_than_being_fixed_px():
+    """Review round 1's ruling. The shipped rule used absolute insets of
+    0/2/5 against volumes spanning 12 to 66 local units, so a bar got a ~1px
+    shade band and 85% of every figure came out one flat colour - a tint,
+    which is the defect KI-051 names, not light. Two volumes five times apart
+    in size must get band insets five times apart, and a band that ate a
+    constant number of units would fail this.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const out = {};
+        for (const [name, w] of [["small", 12], ["large", 60]]) {
+          shapes.length = 0;
+          litRect(-w / 2, -100, w, 100, 2).band(rec, BAND_INSET.lit);
+          out[name] = shapes[0].w;
+        }
+        // and the clamp: an absurd band must not invert or vanish a volume
+        shapes.length = 0;
+        litRect(-6, -54, 12, 54, 4).band(rec, 5.0);
+        out.absurdRect = shapes[0];
+        shapes.length = 0;
+        litCircle(0, 0, 28).band(rec, 5.0);
+        out.absurdCircle = shapes[0];
+        console.log(JSON.stringify(out));
+        """,
+    )
+    e = _run_node(driver)
+    small_eaten, large_eaten = 12 - e["small"], 60 - e["large"]
+    ratio = large_eaten / small_eaten
+    assert 4.5 < ratio < 5.5, (
+        f"a 60-unit volume's lit band eats {large_eaten:.2f} units and a "
+        f"12-unit one eats {small_eaten:.2f} - a ratio of {ratio:.2f}, not the "
+        "5.0 that makes the offset a fraction of the volume's own extent"
+    )
+    for label in ("absurdRect", "absurdCircle"):
+        s = e[label]
+        dims = [s["r"]] + ([s["w"], s["h"]] if s["kind"] == "rect" else [])
+        assert all(d > 0 for d in dims), (
+            f"a band fraction of 5.0 produced {s} - BAND_MAX must clamp every "
+            "band to a positive width, height and radius"
+        )
+
+
+@needs_node
+def test_a_head_and_the_body_under_it_get_the_same_share_of_light():
+    """A rect loses one linear fraction per axis; a circle shrinks on both at
+    once, so the SAME fraction costs a circle far more of itself - at `lit`,
+    uncorrected, a rect keeps ~25% of its area and a circle 9%. That is a
+    skull visibly darker than the chest under it: head and body disagreeing
+    about the light, which is the shape Critical 1 took. `circleBand` solves
+    for the inset that leaves a circle the area share the rect keeps, so this
+    pins the outcome rather than the formula.
+
+    Caught by mutation: with `circleBand` reduced to `return band`, every
+    other test in this file still passed.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const area = (w, h, r) => w * h - (4 - Math.PI) * r * r;
+        function shares(vol, circle) {
+          const a = [];
+          for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+            shapes.length = 0;
+            vol.band(rec, band);
+            const s = shapes[0];
+            a.push(circle ? Math.PI * s.r * s.r : area(s.w, s.h, s.r));
+          }
+          return [a[2] / a[0], (a[1] - a[2]) / a[0], (a[0] - a[1]) / a[0]];
+        }
+        console.log(JSON.stringify({
+          skull: shares(litCircle(0, 0, 28), true),
+          orb: shares(litCircle(0, -60, 46), true),
+          chest: shares(litRect(-33, -128, 66, 54, 22), false),
+          seatChest: shares(litRect(-24, -80, 48, 40, 20), false),
+          bar: shares(litRect(-6, -96, 12, 96, 4), false),
+          wick: shares(litRect(-3.5, -130, 7, 30, 3.5), false),
+        }));
+        """,
+    )
+    e = _run_node(driver)
+    lit = {k: v[0] for k, v in e.items()}
+    lo, hi = min(lit.values()), max(lit.values())
+    assert hi - lo < 0.06, (
+        "the lit band covers a different share of a circle than of a rect: "
+        + ", ".join(f"{k} {100 * v:.1f}%" for k, v in sorted(lit.items()))
+        + " - a head shaded on a different rule from the body under it"
+    )
+    for name, (hi_, mid_, lo_) in e.items():
+        assert 0.15 < hi_ < 0.40 and 0.30 < mid_ < 0.55 and 0.20 < lo_ < 0.45, (
+            f"{name} came out {100 * hi_:.0f}/{100 * mid_:.0f}/{100 * lo_:.0f} "
+            "lit/mid/shade - that is not a three-tone form shade any more"
+        )
+
+
+@needs_node
+def test_a_circle_is_the_closed_form_of_the_same_slide_rule():
+    """One rule, two shapes. `litCircle` solves its slide in closed form
+    (`radius - rb`, the tangency point) instead of bisecting, and that is only
+    legitimate if it is the same answer `slideToKey` gives for a square volume
+    with a half-extent radius. Pinning the identity is what stops the head and
+    the body drifting into two different lighting rules again - the shape
+    Critical 1 took.
+    """
+    source = _world_source()
+    driver = _geometry_driver(
+        source,
+        """
+        const out = [];
+        for (const [R, rb] of [[28, 8], [46, 20], [46, 45.5], [10, 1]]) {
+          const got = slideToKey(2 * R, 2 * R, R, 2 * rb, 2 * rb, rb);
+          const want = [(R - rb) * -KEY_AXIS[0], (R - rb) * -KEY_AXIS[1]];
+          out.push([R, rb, got, want]);
+        }
+        console.log(JSON.stringify(out));
+        """,
+    )
+    for R, rb, got, want in _run_node(driver):
+        gap = max(abs(a - b) for a, b in zip(got, want))
+        assert gap < 1e-3, (
+            f"slideToKey for a circle of radius {R} with band radius {rb} "
+            f"returned {got}, but the tangency offset is {want} (off by "
+            f"{gap:.4f}) - litCircle's closed form and litRect's bisected "
+            "placement are no longer the same rule"
+        )
+
+
+@needs_node
+def test_a_light_without_a_ramp_degrades_instead_of_blanking_the_page():
+    """Review round 1, Important 5. `BODY_RIM_SHADED` is a TOP-LEVEL const
+    that reads the ramp, so a `LIGHT` without one threw a TypeError before
+    `boot()` was ever called - a blank page that every page-source test in
+    this file still passes (Task 2's failure mode), and strictly worse than
+    the pre-ticket code, where the same dereference lived inside `paint()`
+    and could only spoil one figure.
+
+    `rampLevel()` is the one guarded accessor, used by the top-level const
+    AND by `paint()` - guarding only the loud one leaves the inner path open.
+    A missing rung degrades to 0, which `shade()` turns back into the volume's
+    own flat colour: the pre-KI-051 look, not a broken room.
+    """
+    source = _world_source()
+    stripped = re.sub(
+        r'^(\s*const LIGHT = )\{.*\};$',
+        r'\1{ "key": [0, 0], "direction": [-0.55, 0.84], '
+        r'"warmth": "#f0a848", "ambient": "#1a2030" };',
+        _js_const(source, "LIGHT").rstrip("\n"),
+        flags=re.M,
+    )
+    assert '"ramp"' not in stripped and "ramp" not in stripped, (
+        "the stand-in LIGHT still carries a ramp - this test would prove nothing"
+    )
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xd0d0d0, BODY_RIM = "
+        + "{ width: 1.5, color: 0xffffff, alignment: 1 };\n"
+        + stripped
+        + "\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _shading_prelude(source)
+        + """
+        const shapes = [];
+        const fills = [];
+        const rec = {
+          roundRect(x, y, w, h, r) { shapes.push([x, y, w, h, r]); return this; },
+          circle(x, y, r) { shapes.push([x, y, r]); return this; },
+          fill(c) { fills.push(c); return this; },
+          stroke() { return this; },
+        };
+        paint(rec, litRect(-24, -80, 48, 40, 20), BODY_FILL);
+        console.log(JSON.stringify(
+          { rim: BODY_RIM_SHADED.color, fills, shapes: shapes.length }));
+        """
+    )
+    e = _run_node(driver)
+    assert e["rim"] == 0xFFFFFF, (
+        f"BODY_RIM_SHADED came out {e['rim']:#x} with no ramp to read - it "
+        "must degrade to the plain rim colour, not to a mixed one"
+    )
+    assert e["fills"] == [0xD0D0D0, 0xD0D0D0, 0xD0D0D0], (
+        f"a ramp-less LIGHT painted {[hex(f) for f in e['fills']]} - every "
+        "band must fall back to the volume's own flat colour"
+    )
+    assert e["shapes"] == 4, "paint must still draw three bands and a rim"
+
+
+# --- P7: the shadow is cast, not pooled ------------------------------------
+#
+# The brief's three checks for this ticket were `"LIGHT.direction" in body`,
+# `"LIGHT.contact" in body` and `"lift" in body` over the whole `shadowTick`
+# block — each satisfied by a comment or a dead branch, which is the fifth
+# such test this sprint has found and rewritten. These drive the real
+# `shadowTick` in node against a fake `char` and compare the numbers it
+# writes to values computed here from the page's own `LIGHT`, then
+# mutation-check that the comparison is load-bearing.
+
+
+def _shadow_driver(source: str, body: str, *, light: dict | None = None,
+                   tick: str | None = None) -> str:
+    """The page's real contact-shadow arithmetic, lifted out and run in node.
+
+    `light` substitutes a stand-in `LIGHT` (an unmeasured room, or a lamp
+    twice as high) in place of the page's own; `tick` substitutes a mutated
+    `shadowTick` body, which is how these assertions prove they can fail.
+    """
+    return (
+        (f"const LIGHT = {json.dumps(light)};\n" if light is not None
+         else _js_const(source, "LIGHT"))
+        + _js_block(source, "function keyAxis(") + "\n"
+        + _js_const(source, "KEY_AXIS")
+        + _js_block(source, "function contactLight(") + "\n"
+        + _js_const(source, "CONTACT")
+        + _js_const(source, "SHADOW_ASPECT")
+        + _js_const(source, "SHADOW_THROW")
+        + (tick if tick is not None else _js_block(source, "function shadowTick("))
+        + "\n"
+        + """
+        // A body's whole contact with this function: where it stands, how far
+        // off the floor it is, and how wide its own patch is. Nothing else in
+        // `character()` is involved, so nothing else is stubbed.
+        function fakeChar(lift) {
+          return {
+            baseY: 400, shadowW: 34,
+            container: { x: 200, y: 400 - lift },
+            shadow: { x: 0, y: 0, width: 0, height: 0, alpha: 0 },
+          };
+        }
+        function run(lift) {
+          const c = fakeChar(lift || 0);
+          shadowTick(c);
+          return {
+            dx: c.shadow.x - c.container.x,
+            dy: c.shadow.y - (c.baseY + 3),
+            width: c.shadow.width, height: c.shadow.height,
+            alpha: c.shadow.alpha,
+            // The edge nearest the lamp: the one thing a cast shadow must
+            // not move, or it stops touching the foot it belongs to.
+            lampEdgeX: c.shadow.x + c.shadow.width / 2,
+            lampEdgeY: c.shadow.y - c.shadow.height / 2,
+          };
+        }
+        """
+        + body
+    )
+
+
+def _page_light(source: str) -> dict:
+    match = re.search(r"const LIGHT = (\{.*\});", source)
+    assert match, "the page no longer declares a one-line const LIGHT"
+    return json.loads(match.group(1))
+
+
+@needs_node
+def test_the_contact_shadow_is_thrown_away_from_the_lamp():
+    """A shadow centred under a figure the room lights hard from one side is a
+    puddle, and a puddle is the loudest "pasted on" cue in the before-frame.
+
+    `-KEY_AXIS` is where the lamp is — it is the direction every lit band
+    slides in (`litCircle`'s `slide * -KEY_AXIS[i]`), and
+    `test_every_band_is_drawn_on_the_lamp_side_of_its_volume` pins that it
+    points up and to the right. So a shadow goes the OTHER way, `+KEY_AXIS`.
+    The plan's own snippet had this backwards (it subtracted
+    `LIGHT.direction`, which throws the shadow back under the lamp), which is
+    why this is asserted on the real displacement rather than on the presence
+    of the string `LIGHT.direction`.
+    """
+    source = _world_source()
+    emitted = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0), axis: KEY_AXIS }));"
+    ))
+    ux, uy = -emitted["axis"][0], -emitted["axis"][1]
+    assert ux > 0 and uy < 0, (
+        f"the key axis no longer points up and to the right: ({ux}, {uy}) - "
+        "this test's premise is the painted lamp's measured position"
+    )
+    rest = emitted["rest"]
+    dx, dy = rest["dx"], rest["dy"]
+    assert (dx * dx + dy * dy) ** 0.5 > 1.0, (
+        f"the shadow is displaced ({dx:+.3f}, {dy:+.3f}) - it still sits on "
+        "the figure's own centre, which is the puddle this ticket is about"
+    )
+    assert dx * ux < 0 and dy * uy < 0, (
+        f"the shadow is displaced ({dx:+.2f}, {dy:+.2f}), which moves it "
+        f"TOWARD the lamp at ({ux:+.2f}, {uy:+.2f}) on at least one axis - "
+        "the sign is inverted and every figure is lit from behind its own "
+        "shadow"
+    )
+
+    # Mutation: throw it toward the lamp instead. If these assertions still
+    # pass, they are not reading the sign.
+    block = _js_block(source, "function shadowTick(")
+    mutated = block.replace("KEY_AXIS[0] *", "-KEY_AXIS[0] *").replace(
+        "KEY_AXIS[1] *", "-KEY_AXIS[1] *"
+    )
+    assert mutated != block, "the mutation did not change the source"
+    broken = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", tick=mutated
+    ))["rest"]
+    assert not (broken["dx"] * ux < 0 and broken["dy"] * uy < 0), (
+        "throwing the shadow toward the lamp still satisfied the away-from-"
+        "the-lamp assertion - it would not catch an inverted sign"
+    )
+
+
+@needs_node
+def test_the_throw_is_the_measured_scale_and_nothing_else():
+    """`LIGHT.contact.throwScale` is the plate's own measurement of how far
+    this room throws a shadow, so doubling it must double the throw and zeroing it
+    must give the centred patch back — an unmeasured room gets no invented
+    direction, which is the same rule `DEFAULT_LIGHT` states in Python.
+
+    Driven against the page's own `LIGHT` and two edits of it, so the
+    measured values stay under test instead of being restated here.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    assert light["contact"]["throwScale"] > 0, (
+        "the shipped plate measures no throw scale - this test's premise "
+        "is that it does"
+    )
+
+    def throw(**contact):
+        edited = json.loads(json.dumps(light))
+        edited["contact"].update(contact)
+        rest = _run_node(_shadow_driver(
+            source, "console.log(JSON.stringify({ rest: run(0) }));", light=edited
+        ))["rest"]
+        return (rest["dx"] ** 2 + rest["dy"] ** 2) ** 0.5
+
+    base = throw()
+    doubled = throw(throwScale=light["contact"]["throwScale"] * 2)
+    assert 1.98 < doubled / base < 2.02, (
+        f"doubling the measured throw scale scaled the throw by "
+        f"{doubled / base:.3f}x, not 2x - the offset is not the measurement"
+    )
+    assert throw(throwScale=0) < 1e-9, (
+        "a plate that measures no throw still displaced its shadow - the "
+        "offset carries a constant of its own"
+    )
+
+
+@needs_node
+def test_the_shadow_still_touches_the_foot_that_casts_it():
+    """The throw moves the shadow AND grows it, so its lamp-side edge stays
+    exactly where the foot is and only the far edge travels. Offsetting alone
+    would walk the whole ellipse off the feet, and a shadow that no longer
+    touches the body reads as a second figure rather than a grounded one -
+    the failure this ticket would most easily trade for the one it fixes.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    no_throw = json.loads(json.dumps(light))
+    no_throw["contact"]["throwScale"] = 0
+
+    thrown = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));"
+    ))["rest"]
+    centred = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", light=no_throw
+    ))["rest"]
+
+    grew = (thrown["width"] > centred["width"]
+            and thrown["height"] > centred["height"])
+    assert grew, (
+        "the thrown shadow is no bigger than the centred one - it was moved "
+        "without being stretched, so it has left the feet behind"
+    )
+    assert abs(thrown["lampEdgeX"] - centred["lampEdgeX"]) < 1e-9, (
+        f"the lamp-side edge moved from {centred['lampEdgeX']:.4f} to "
+        f"{thrown['lampEdgeX']:.4f} - the shadow no longer starts at the foot"
+    )
+    assert abs(thrown["lampEdgeY"] - centred["lampEdgeY"]) < 1e-9, (
+        f"the lamp-side edge moved from {centred['lampEdgeY']:.4f} to "
+        f"{thrown['lampEdgeY']:.4f} - the shadow no longer starts at the foot"
+    )
+
+    # Mutation: move without growing. The edge check is the only assertion
+    # here that can see it.
+    block = _js_block(source, "function shadowTick(")
+    mutated = re.sub(r" \+ 2 \* Math\.abs\(throw[XY]\)", "", block)
+    assert mutated != block, "the mutation did not change the source"
+    broken = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", tick=mutated
+    ))["rest"]
+    assert abs(broken["lampEdgeX"] - centred["lampEdgeX"]) > 1e-6, (
+        "a shadow that slid without stretching still kept its lamp-side edge "
+        "- this assertion cannot see the failure it exists for"
+    )
+
+
+@needs_node
+def test_the_shadow_is_as_dark_and_as_wide_as_the_plate_measured():
+    """0.55 was tuned against the old dark canvas; this floor is painted.
+    Opacity and width both come from `LIGHT.contact` now, compared against
+    the manifest's own numbers rather than against a copy of them.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    block = _js_block(source, "function shadowTick(")
+    assert "0.55" not in block, (
+        "shadowTick still carries the hardcoded alpha tuned for the old "
+        "dark canvas"
+    )
+    rest = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));"
+    ))["rest"]
+    assert rest["alpha"] == pytest.approx(light["contact"]["opacity"]), (
+        f"a resting shadow drew at alpha {rest['alpha']} - the plate measures "
+        f"{light['contact']['opacity']}"
+    )
+    # 34 is `SHADOW_WIDTH.bars`, which `fakeChar` hands in; the width scale is
+    # the manifest's. The throw widens it further, so this is a floor.
+    assert rest["width"] >= 34 * 2 * light["contact"]["widthScale"] - 1e-9, (
+        f"a resting shadow drew {rest['width']:.2f} wide - narrower than the "
+        f"measured widthScale {light['contact']['widthScale']} allows"
+    )
+    assert light["contact"]["widthScale"] != 1.0, (
+        "the plate measures widthScale 1.0, so the assertion above proves "
+        "nothing about whether the page reads it"
+    )
+
+
+@needs_node
+def test_the_shadow_still_spreads_and_fades_as_a_figure_leaves_the_floor():
+    """The one behaviour of the old `shadowTick` that was already right, and
+    the one a rewrite would silently drop: height off the floor spreads a
+    shadow and thins it. Without it a jump is a body sliding up the screen.
+    """
+    source = _world_source()
+    emitted = _run_node(_shadow_driver(
+        source,
+        "console.log(JSON.stringify({ down: run(0), up: run(100) }));",
+    ))
+    down, up = emitted["down"], emitted["up"]
+    assert up["width"] > down["width"] and up["height"] > down["height"], (
+        f"a figure 100 units off the floor cast a {up['width']:.1f}-wide "
+        f"shadow against {down['width']:.1f} on the floor - it does not spread"
+    )
+    assert up["alpha"] < down["alpha"], (
+        f"a lifted figure's shadow drew at alpha {up['alpha']:.3f} against "
+        f"{down['alpha']:.3f} on the floor - it does not fade"
+    )
+
+    block = _js_block(source, "function shadowTick(")
+    mutated = block.replace(
+        "const lift = Math.max(0, char.baseY - char.container.y);",
+        "const lift = 0;",
+    )
+    assert mutated != block, "the mutation did not change the source"
+    broken = _run_node(_shadow_driver(
+        source,
+        "console.log(JSON.stringify({ down: run(0), up: run(100) }));",
+        tick=mutated,
+    ))
+    assert broken["up"] == broken["down"], (
+        "a shadowTick that ignores lift still passed - these assertions do "
+        "not read the lift response"
+    )
+
+
+@needs_node
+def test_an_unmeasured_room_still_puts_a_shadow_under_its_cast():
+    """The procedural fallback room has no plate and therefore no measured
+    lamp, so `light_for` hands the page `DEFAULT_LIGHT`. That default must
+    still ground the cast: a shadow is the only thing telling a viewer where
+    the floor is, and the room that has lost its painting is the last one
+    that can afford figures floating in front of nothing (KI-045/KI-047).
+
+    What the neutral default withholds is the DIRECTION, not the shadow -
+    with `height: 0` the throw is zero, so the fallback gets the centred
+    patch it had before this ticket rather than a made-up cast direction.
+    `DEFAULT_LIGHT` is imported rather than retyped, so this cannot drift
+    from what `world/light.py` actually serves.
+    """
+    source = _world_source()
+    neutral = json.loads(as_json(DEFAULT_LIGHT))
+    rest = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", light=neutral
+    ))["rest"]
+    assert rest["alpha"] > 0, (
+        "a room with no measured light drew its cast with alpha 0 - every "
+        "figure in the fallback room floats"
+    )
+    assert rest["width"] > 0 and rest["height"] > 0, (
+        "a room with no measured light drew a zero-sized shadow"
+    )
+    assert abs(rest["dx"]) < 1e-9 and abs(rest["dy"]) < 1e-9, (
+        f"a room with no measured light threw its shadow ({rest['dx']:+.3f}, "
+        f"{rest['dy']:+.3f}) - it invented a lamp direction"
+    )
+
+
+@needs_node
+def test_a_light_with_no_contact_block_degrades_instead_of_blanking_the_page():
+    """`CONTACT` is read at TOP LEVEL, which is the flavour of TypeError that
+    throws before `boot()` is ever called and leaves a blank page that every
+    page-source test still passes (the Task 2 failure mode). A `LIGHT` with
+    no `contact` — which `light_for` cannot produce, but a hand-edited page
+    or a future injection bug could — must degrade, not throw.
+    """
+    source = _world_source()
+    light = _page_light(source)
+    stripped = {k: v for k, v in light.items() if k != "contact"}
+    assert "contact" not in stripped
+    rest = _run_node(_shadow_driver(
+        source, "console.log(JSON.stringify({ rest: run(0) }));", light=stripped
+    ))["rest"]
+    assert rest["width"] > 0 and rest["height"] > 0, (
+        "a contact-less LIGHT drew a zero-sized shadow rather than degrading "
+        "to the body's own patch"
+    )
+    assert abs(rest["dx"]) < 1e-9 and abs(rest["dy"]) < 1e-9, (
+        "a contact-less LIGHT still threw a shadow somewhere"
+    )
+
+
+# --- Task 8: mood shifts the light, not the paint ---------------------------
+#
+# Until this ticket a mood was a PixiJS container tint set on an ALREADY-shaded
+# figure (`char.body.tint = tint`). A container tint is a shader multiply over
+# every pixel the container drew, so it did not only recolour the body: it
+# recoloured the light. `paint()`'s lit band mixes toward `LIGHT.warmth` and its
+# shade band toward `LIGHT.ambient`, and both of those came out multiplied by
+# the mood — an amber desk lamp that turned red when the market fell. That is
+# what made every mood read as "the same figure, but red".
+#
+# The seam Task 6 built for this is `paint(g, volume, tint)`'s third argument,
+# which until now only ever received `BODY_FILL`. The mood now goes in THERE, so
+# the room's lamp stays the room's lamp and what changes is the colour it falls
+# on.
+#
+# `BODY_TINT` (not `MOOD_COLOR`) stays the source: `world.visuals.body_tints()`
+# is the identity palette lifted to `SILHOUETTE_MIN_CONTRAST`, which is KI-028's
+# measured fix. But it is a *tint*, and the floor was measured on
+# `visuals._rendered()` — "what the canvas actually shows: the base fill
+# multiplied by the tint". So the colour a body is now painted with is that
+# product, computed once as a colour instead of per-pixel by the GPU. Handing
+# `paint()` the raw tint instead would ship every body 1/0.816 = 1.23x brighter
+# than the number `body_contrast()` asserts, i.e. silently move a measured
+# quantity on a ticket that must not.
+#
+# The RIM is the second half, and it is here because a frame caught it and these
+# tests did not. Dropping the container multiply also dropped it from the rim,
+# which `BODY_RIM_SHADED` computes once from the lamp over a white base — so the
+# first frame of this ticket outlined every figure in the lamp's cream #fbe5c8
+# (11,491 pixels, and most of a 14-unit arm), a die-cut sticker keyline, which
+# is the KI-051 read this sprint exists to remove. `world/visuals.py` names the
+# invariant that broke: the rim is brighter than the fill and "the ratio between
+# them is fixed here and nowhere else". The container tint was what held it. So
+# the mood now reaches each material's OWN albedo before the light —
+# `moodFill = BODY_FILL x tint`, `moodRim = BODY_RIM.color x tint` — and, because
+# the rim's base is white, `moodRim` comes out as the lifted tint itself: the
+# same ratio, by construction rather than by a number restated on the page.
+#
+# The tests missed it because `applyMood` used to take two colours and these
+# drivers supplied both, so the seam that could forget one was `setExpression`,
+# which no driver ran. `applyMood(char, mood)` now derives both itself; there is
+# no argument left to omit, and the mutation that reproduces the shipped bug
+# fails here.
+
+
+def _half_up(value: float) -> int:
+    """`Math.round`, for the non-negative channel values here.
+
+    Python's `round` is banker's (`round(0.5) == 0`) and JS's is half-up
+    (`Math.round(0.5) === 1`). Channel products land exactly on .5 often
+    enough that reusing `round` here would produce a one-mood mismatch that
+    looks like a flake and is really a rounding-mode bug in the test.
+    """
+    return int(value + 0.5)
+
+
+def _mul_channels(a: tuple, b: tuple) -> tuple:
+    """`base x tint / 255` — `visuals._rendered`, quantised to what ships."""
+    return tuple(_half_up(a[i] * b[i] / 255) for i in range(3))
+
+
+def _mix_channels(a: tuple, b: tuple, t: float) -> tuple:
+    """`mixHex` in Python. Independent of the page, by design."""
+    return tuple(_half_up(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _rgb(value) -> tuple:
+    if isinstance(value, str):
+        value = int(value.lstrip("#"), 16)
+    return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+
+
+def _int(rgb: tuple) -> int:
+    return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
+
+
+def _page_face_moods(source: str) -> set:
+    """Every mood the cast can actually be put into — the keys of the page's
+    own `FACE` table, which is what `setExpression` is called with."""
+    face = _js_block(source, "const FACE = {")
+    return set(re.findall(r"^\s*(\w+):\s*\{", face, re.M))
+
+
+def _mood_fill_driver(source: str, mood_fill: str, emit: str) -> str:
+    return (
+        _js_const(source, "MOOD_COLOR")
+        + _js_const(source, "NEUTRAL")
+        + _js_const(source, "NEUTRAL_TINT")
+        + _js_const(source, "BODY_TINT")
+        + _js_const(source, "BODY_FILL")
+        + _js_const(source, "BODY_RIM")
+        + _js_block(source, "function mulHex(")
+        + "\n"
+        + _js_block(source, "function moodTint(")
+        + "\n"
+        + mood_fill
+        + "\n"
+        + _js_block(source, "function moodRim(")
+        + "\n"
+        + emit
+    )
+
+
+@needs_node
+def test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_multiplier():
+    """The mood's body colour is `BODY_FILL x BODY_TINT[mood]` — the product
+    `visuals._rendered()` names as "what the canvas actually shows", and the
+    exact quantity `SILHOUETTE_MIN_CONTRAST` was measured on (KI-028).
+
+    Driven for real in node over every mood in the page's own table and
+    compared against a product computed here from `visuals.BODY_BASE_FILL`
+    and `visuals.body_tint()`, not against a copy of the page's arithmetic.
+    Two mutations follow, and each one is a bug that has a name.
+    """
+    from world.visuals import (
+        BODY_BASE_FILL,
+        BODY_RIM_FILL,
+        MOOD_COLORS,
+        body_tint,
+    )
+
+    source = _world_source()
+    mood_fill = _js_block(source, "function moodFill(")
+    emit = (
+        "const out = {};\n"
+        "for (const mood of Object.keys(BODY_TINT)) {\n"
+        "  out[mood] = { fill: moodFill(mood), rim: moodRim(mood) };\n"
+        "}\n"
+        'const u = "no-such-mood-was-ever-emitted";\n'
+        'out["__unknown__"] = { fill: moodFill(u), rim: moodRim(u) };\n'
+        "console.log(JSON.stringify(out));\n"
+    )
+    emitted = _run_node(_mood_fill_driver(source, mood_fill, emit))
+
+    base = _rgb(BODY_BASE_FILL)
+    rim_base = _rgb(BODY_RIM_FILL)
+    expected = {
+        mood: _int(_mul_channels(base, _rgb(body_tint(mood))))
+        for mood in MOOD_COLORS
+    }
+    expected_rim = {
+        mood: _int(_mul_channels(rim_base, _rgb(body_tint(mood))))
+        for mood in MOOD_COLORS
+    }
+    for mood, want in expected.items():
+        assert emitted[mood]["fill"] == want, (
+            f"moodFill({mood!r}) = {emitted[mood]['fill']:#08x}, expected "
+            f"{want:#08x} — the page is not shipping BODY_FILL x BODY_TINT[mood]"
+        )
+        # The rim is a SECOND base colour carrying the same mood, not a
+        # decoration: `visuals` says the rim-over-fill ratio "is fixed here and
+        # nowhere else", and the container tint used to be what held it. Losing
+        # it outlines every figure in the lamp's cream — measured at 11,491
+        # keyline pixels on this ticket's first frame.
+        assert emitted[mood]["rim"] == expected_rim[mood], (
+            f"moodRim({mood!r}) = {emitted[mood]['rim']:#08x}, expected "
+            f"{expected_rim[mood]:#08x} — the mood is not reaching the rim's "
+            "own albedo"
+        )
+    # An unknown mood must still resolve THROUGH the multiply on BOTH surfaces,
+    # or every un-mooded figure in the room gets brighter than every mooded one.
+    # NEUTRAL_TINT, not NEUTRAL: an un-mooded BODY is painted in the lifted
+    # grey, because the identity grey renders at 3.05:1 against the room and
+    # the floor KI-028 set is 4.5 (KI-060).
+    neutral_tint = int(
+        re.search(r"const NEUTRAL_TINT = (0x[0-9a-fA-F]+);", source).group(1), 16
+    )
+    assert emitted["__unknown__"]["fill"] == _int(
+        _mul_channels(base, _rgb(neutral_tint))
+    ), (
+        "an unknown mood skipped the multiply — the neutral fallback must be "
+        "the neutral FILL, not the neutral tint"
+    )
+    assert emitted["__unknown__"]["rim"] == _int(
+        _mul_channels(rim_base, _rgb(neutral_tint))
+    ), "an unknown mood's rim skipped the multiply"
+
+    # Mutation 1: hand `paint()` the raw tint (the shape the brief's own text
+    # suggests). Every mood ships ~1.23x brighter than the measured number.
+    raw = mood_fill.replace("mulHex(BODY_FILL, moodTint(mood))", "moodTint(mood)")
+    assert raw != mood_fill, "the multiply mutation did not change the source"
+    broken = _run_node(_mood_fill_driver(source, raw, emit))
+    assert any(broken[m]["fill"] != expected[m] for m in expected), (
+        "dropping the BODY_FILL multiply still produced the measured colours — "
+        "this assertion would not notice a body 1.23x brighter than KI-028's "
+        "own arithmetic"
+    )
+
+    # Mutation 2: read the raw identity palette instead of the lifted one.
+    # This is KI-028 itself, reverted: `MOOD_COLORS` is the palette BEFORE the
+    # contrast lift, so bodies sink back into the room.
+    mood_tint = _js_block(source, "function moodTint(")
+    reverted = mood_tint.replace("BODY_TINT[mood]", "MOOD_COLOR[mood]")
+    assert reverted != mood_tint, "the palette mutation did not change the source"
+    sunk = _run_node(
+        _mood_fill_driver(source, mood_fill, emit).replace(mood_tint, reverted)
+    )
+    assert any(sunk[m]["fill"] != expected[m] for m in expected), (
+        "swapping BODY_TINT for the un-lifted MOOD_COLOR changed nothing — "
+        "the page is not reading the contrast-lifted table at all"
+    )
+    from world.visuals import PALETTE, SILHOUETTE_MIN_CONTRAST, contrast_ratio
+
+    room = _rgb(PALETTE["bg"])
+    below = [
+        m for m in expected
+        if contrast_ratio(_rgb(sunk[m]["fill"]), room) < SILHOUETTE_MIN_CONTRAST
+    ]
+    assert below, (
+        "reverting to MOOD_COLOR left every mood above the contrast floor, so "
+        "this test cannot tell the lifted table from the raw one"
+    )
+
+
+@needs_node
+def test_every_mood_the_cast_can_wear_resolves_to_a_body_colour():
+    """The registry invariant, in the shape the reaction registries use: a mood
+    the world can emit but the cast cannot paint is a silent grey figure.
+
+    Graded against `BODY_TINT`'s own key set — deliberately NOT `MOOD_COLOR`'s.
+    They hold the same moods, but only one of them is the contrast-lifted table
+    KI-028 resolved, and pointing this invariant at the other one is how that
+    fix gets quietly reverted by a test.
+
+    `neutral` is the one mood in `FACE` with no entry, and that is on purpose:
+    it is `character()`'s pre-mood default and `visuals.MOOD_COLORS` does not
+    claim it. It has to resolve to the neutral FILL rather than to `undefined`,
+    which is checked by running it.
+    """
+    from world.visuals import MOOD_COLORS
+
+    source = _world_source()
+    table = json.loads(re.search(r"const BODY_TINT = (\{.*?\});", source).group(1))
+    assert set(table) == set(MOOD_COLORS), (
+        "the page's body-colour table and world.visuals.MOOD_COLORS disagree: "
+        f"page-only {sorted(set(table) - set(MOOD_COLORS))}, "
+        f"module-only {sorted(set(MOOD_COLORS) - set(table))}"
+    )
+
+    face_moods = _page_face_moods(source)
+    assert face_moods, "the page no longer declares a FACE table"
+    assert face_moods - set(table) == {"neutral"}, (
+        "a mood the cast can be put into has no body colour of its own: "
+        f"{sorted(face_moods - set(table) - {'neutral'})}"
+    )
+
+    mood_fill = _js_block(source, "function moodFill(")
+    emit = (
+        f"const moods = {json.dumps(sorted(face_moods))};\n"
+        "const out = {};\n"
+        "for (const mood of moods) {\n"
+        "  out[mood] = { fill: moodFill(mood), rim: moodRim(mood) };\n"
+        "}\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    emitted = _run_node(_mood_fill_driver(source, mood_fill, emit))
+    for mood in sorted(face_moods):
+        for surface in ("fill", "rim"):
+            value = emitted[mood][surface]
+            assert isinstance(value, int) and 0 <= value <= 0xFFFFFF, (
+                f"moodFill/{surface} for {mood!r} returned {value!r}, not a "
+                "colour — this mood renders as whatever PixiJS does with a "
+                "non-colour"
+            )
+
+    # Mutation: remove the fallback. `neutral` has no table entry, so it is the
+    # mood that proves the fallback is real rather than decorative.
+    mood_tint = _js_block(source, "function moodTint(")
+    unguarded = mood_tint.replace(": NEUTRAL_TINT", ": NaN")
+    assert unguarded != mood_tint, "the fallback mutation did not change the source"
+    broken = _run_node(
+        _mood_fill_driver(source, mood_fill, emit).replace(mood_tint, unguarded)
+    )
+    assert broken["neutral"] != emitted["neutral"], (
+        "breaking the unknown-mood fallback left `neutral` unchanged — nothing "
+        "here would notice an un-mooded figure losing its colour"
+    )
+
+
+def _mood_paint_driver(source: str, apply_block: str, repaint_block: str) -> str:
+    """The real shading rig, plus Graphics recorders that also trap `tint`.
+
+    The trap is the point: the defect this ticket removes is invisible to a
+    fill recorder (the fills never change, the GPU does the recolouring), so
+    the test has to be able to see a container tint being written.
+    """
+    return (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + _js_const(source, "MOOD_COLOR")
+        + _js_const(source, "NEUTRAL")
+        + _js_const(source, "NEUTRAL_TINT")
+        + _js_const(source, "BODY_TINT")
+        + _js_const(source, "BODY_FILL")
+        + _js_const(source, "BODY_RIM")
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + _shading_prelude(source)
+        + _js_block(source, "function mulHex(")
+        + "\n"
+        + _js_block(source, "function moodTint(")
+        + "\n"
+        + _js_block(source, "function moodFill(")
+        + "\n"
+        + _js_block(source, "function moodRim(")
+        + "\n"
+        + _js_block(source, "function lightenTint(")
+        + "\n"
+        + repaint_block
+        + "\n"
+        + apply_block
+        + "\n"
+        + """
+        function makeG() {
+          const g = { fills: [], strokes: [], cleared: 0, tintWrites: [] };
+          g.roundRect = () => g;
+          g.circle = () => g;
+          g.fill = (c) => { g.fills.push(c); return g; };
+          g.stroke = (s) => { g.strokes.push(s); return g; };
+          g.clear = () => { g.cleared++; g.fills = []; g.strokes = []; return g; };
+          Object.defineProperty(g, "tint", {
+            get() { return 0xffffff; },
+            set(v) { g.tintWrites.push(v); },
+          });
+          return g;
+        }
+        const body = makeG(), skull = makeG(), arm = makeG();
+        arm.shadeFactor = 1.35;
+        // The figure's chest, the shared skull, and one of its arms - three
+        // real call sites, copied from BODIES.figure/character().
+        paint(body, litRect(-33, -128, 66, 54, 22), BODY_FILL);
+        paint(skull, litCircle(0, 0, 28), BODY_FILL);
+        paint(arm, litRect(-7, -5, 14, 66, 7), BODY_FILL);
+        const rims = (g) => g.strokes.map((s) => (s && s.color) ?? null);
+        const snapshot = () => ({
+          body: body.fills.slice(), bodyRim: rims(body),
+          skull: skull.fills.slice(), skullRim: rims(skull),
+          arm: arm.fills.slice(), armRim: rims(arm),
+        });
+        const built = snapshot();
+        const char = { body, skull, accents: [arm] };
+        applyMood(char, "dejected");
+        const dejected = snapshot();
+        applyMood(char, "elated");
+        const elated = snapshot();
+        console.log(JSON.stringify({
+          built, dejected, elated,
+          tintWrites: body.tintWrites.concat(skull.tintWrites, arm.tintWrites),
+          cleared: body.cleared,
+        }));
+        """
+    )
+
+
+@needs_node
+def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
+    """The call-site change, graded on the colours that actually reach
+    `g.fill()` and `g.stroke()`.
+
+    Runs the page's real `applyMood` over the page's real `paint`, and
+    checks the three bands of a body against band colours computed here from
+    `visuals` and the plate's measured `LIGHT` — so the lit band has to be the
+    mood mixed toward the LAMP's amber and the shade band the mood mixed
+    toward the ROOM's cold ambient. Under the old container tint those two
+    were the lamp and the room multiplied by the mood, and no colour a fill
+    recorder saw ever changed at all.
+    """
+    from world.visuals import BODY_BASE_FILL, BODY_RIM_FILL, body_tint
+
+    source = _world_source()
+    light = json.loads(re.search(r"const LIGHT = (\{.*\});", source).group(1))
+    apply_block = _js_block(source, "function applyMood(")
+    repaint_block = _js_block(source, "function repaint(")
+    emitted = _run_node(_mood_paint_driver(source, apply_block, repaint_block))
+
+    base = _rgb(BODY_BASE_FILL)
+    warmth, ambient = _rgb(light["warmth"]), _rgb(light["ambient"])
+    ramp = light["ramp"]
+
+    def bands(fill: tuple) -> list:
+        """`paint()`'s three fills, in the order it draws them."""
+        out = []
+        for rung in ("shade", "base", "lit"):
+            level = ramp[rung]
+            toward = warmth if level >= 0 else ambient
+            out.append(_int(_mix_channels(fill, toward, min(1, abs(level)))))
+        return out
+
+    def lighten(fill: tuple, factor: float) -> tuple:
+        return tuple(max(0, min(255, _half_up(c * factor))) for c in fill)
+
+    def rim_of(fill: tuple) -> int:
+        """A rim is the lit edge: the same base colour at `rampLevel("lit")`."""
+        return _int(_mix_channels(fill, warmth, min(1, abs(ramp["lit"]))))
+
+    for mood in ("dejected", "elated"):
+        tint = _rgb(body_tint(mood))
+        fill = _mul_channels(base, tint)
+        rim = _mul_channels(_rgb(BODY_RIM_FILL), tint)
+        assert emitted[mood]["bodyRim"] == [rim_of(rim)], (
+            f"the {mood} body's rim is {emitted[mood]['bodyRim']}, expected "
+            f"[{rim_of(rim):#08x}] — the mood must reach the rim's own albedo, "
+            "or every figure is outlined in the lamp's cream"
+        )
+        assert emitted[mood]["armRim"] == [rim_of(lighten(rim, 1.35))], (
+            f"the {mood} arm's rim did not follow its own lightened fill"
+        )
+        assert emitted[mood]["body"] == bands(fill), (
+            f"the {mood} body's bands are {[hex(c) for c in emitted[mood]['body']]}, "
+            f"expected {[hex(c) for c in bands(fill)]} — the mood is not what "
+            "paint() is lighting"
+        )
+        assert emitted[mood]["skull"] == bands(fill), (
+            f"the {mood} skull did not follow its body — a flat sticker head "
+            "on a lit figure is the KI-051 defect, one volume up"
+        )
+        assert emitted[mood]["arm"] == bands(lighten(fill, 1.35)), (
+            f"the {mood} arm lost its shadeFactor lighten — the figure's arms "
+            "read as part of the torso at rest again"
+        )
+
+    # No container tint anywhere. The one assertion the old code fails.
+    assert emitted["tintWrites"] == [], (
+        f"a mood was still written as a container tint ({emitted['tintWrites']}) "
+        "— that multiplies the room's own lamp by the mood"
+    )
+    # The mood must actually have moved the paint, and the repaint must
+    # REPLACE the construction fills rather than stack a second set on top.
+    assert emitted["built"]["body"] != emitted["dejected"]["body"], (
+        "the mood change left the body painted in the un-mooded BODY_FILL"
+    )
+    assert emitted["dejected"]["body"] != emitted["elated"]["body"], (
+        "two different moods painted the body the same colour"
+    )
+    assert len(emitted["elated"]["body"]) == len(emitted["built"]["body"]), (
+        "a repaint left more fills on the body than paint() drew — the bands "
+        "are stacking rather than being redrawn"
+    )
+    assert emitted["cleared"] >= 2, "the body was repainted without being cleared"
+    assert emitted["dejected"]["bodyRim"] != emitted["elated"]["bodyRim"], (
+        "two different moods struck the same rim colour — this is the cream "
+        "keyline this ticket's first frame shipped, before it was looked at"
+    )
+
+    # Mutation 1: the bug this ticket actually shipped and a frame caught.
+    # Strike the rim from its own un-mooded constant instead of from the mood,
+    # and every figure is outlined in the lamp's cream regardless of colour.
+    keyline = apply_block.replace("const rim = moodRim(mood);",
+                                  "const rim = BODY_RIM.color;")
+    assert keyline != apply_block, "the keyline mutation did not apply"
+    outlined = _run_node(_mood_paint_driver(source, keyline, repaint_block))
+    assert outlined["dejected"]["bodyRim"] == outlined["elated"]["bodyRim"], (
+        "dropping the mood from the rim did not collapse the rim colours — "
+        "the keyline assertion above is not load-bearing"
+    )
+
+    # Mutation 2: put the container tint back. This is the pre-ticket code.
+    tinted = apply_block.replace(
+        "repaint(char.body, fill, rim);", "char.body.tint = fill;"
+    )
+    assert tinted != apply_block, "the container-tint mutation did not apply"
+    broken = _run_node(_mood_paint_driver(source, tinted, repaint_block))
+    assert broken["tintWrites"] != [] and (
+        broken["dejected"]["body"] == broken["built"]["body"]
+    ), (
+        "restoring `char.body.tint = fill` produced the same result as "
+        "repainting — these assertions cannot see the defect this ticket "
+        "exists to remove"
+    )
+
+    # Mutation 3: repaint without clearing. Bands stack instead of replacing.
+    stacking = repaint_block.replace("g.clear();", "")
+    assert stacking != repaint_block, "the clear mutation did not apply"
+    stacked = _run_node(_mood_paint_driver(source, apply_block, stacking))
+    assert len(stacked["elated"]["body"]) != len(emitted["elated"]["body"]), (
+        "dropping g.clear() from repaint changed nothing observable — the "
+        "stacking check is not load-bearing"
+    )
+
+
+# --- Sprint 16 Task 10: the page moves onto the surfaces Task 9 declared ---
+#
+# Task 9 made text placement DATA and proved the data is internally
+# consistent (`tests/unit/test_text_layout.py`): every placement lands
+# inside the surface it names. It could not prove two things only the PAGE
+# can answer, which is what this section is for:
+#
+#   1. That the page actually READS that data instead of a redefinition
+#      that happens to mention `TEXT_PLACEMENTS` somewhere nearby. "Reading
+#      a placement does not prove landing inside a surface" - the
+#      dispatcher's own ruling against this ticket's brief.
+#   2. That the GLYPHS the page draws into a placement's box actually fit
+#      it. A placement can be a perfectly valid rectangle, fully inside a
+#      perfectly real surface, and still have no room for its own text -
+#      Task 9's first-pass `tube-plinth-*` sizing (9-10px surfaces for an
+#      8px line) is the shipped example of exactly that failure.
+#
+# Scope, stated plainly: `banner`/`prices`/`record` are DOM (`#banner`,
+# `#nowband`), not single-line canvas text - `banner`'s position is checked
+# below (bound via inline style), but none of the three get the glyph-fit
+# check, because CSS wraps them and the single-line glyph estimate does not
+# apply to wrapped text. `history`, `name-trader` and `name-model` are the
+# room's only canvas-drawn labels left after this ticket, and get both
+# checks in full.
+
+
+def _text_placements():
+    """The resolved `__TEXT_JSON__` this page was actually served - read
+    from the same function `api/main.py` calls, not re-parsed out of the
+    HTML, matching `_manifest()`'s own convention above."""
+    from world.plate import load_manifest
+    from world.text_layout import as_json
+
+    return json.loads(as_json(load_manifest()))
+
+
+def _text_driver(body: str) -> str:
+    """`label`/`placedLabel`, run for real against a stub `PIXI.Text` that
+    records what it was given rather than rendering anything - the same
+    "real arithmetic, stubbed renderer" shape `_layout_driver` already uses
+    for `anchorFor`/`pillarGeometry` above."""
+    return (
+        "class FakeText {\n"
+        "  constructor(opts) {\n"
+        "    this.text = opts.text; this._size = opts.style.fontSize;\n"
+        "  }\n"
+        "}\n"
+        "const PIXI = { Text: FakeText };\n"
+        + _js_block(body, "function label(")
+        + "\n"
+        + _js_block(body, "function placedLabel(")
+        + "\n"
+    )
+
+
+def test_the_room_no_longer_floats_a_symbol_or_mood_label_at_a_fixed_offset():
+    """The room's own floating labels, observed 2026-09-01, by call site:
+    two per painted tube (symbol, mood) and three writes into the cast's
+    `moodTag` (the model's live mood, the trader's live mood, a reaction's
+    live mood). `moodTag` itself is NOT deleted - ruling: it is shared with
+    the gallery and animation-sheet eval surfaces (`?gallery=1`/`?anims=1`),
+    where labelling a specimen by mood is legitimate diagnostic use and
+    never goes on air - only the ROOM's own writes into it are gone."""
+    body = client.get("/world").text
+    assert "label(data.mood" not in body
+    assert "label(symbol," not in body
+    assert "model.moodTag.text =" not in body
+    assert "trader.moodTag.text =" not in body
+    assert "target.moodTag.text =" not in body
+    # Still shared machinery for the gallery/sheet - not deleted wholesale.
+    assert "sample.moodTag.text = mood;" in body
+    assert "sample.moodTag.text = anim;" in body
+    assert "TEXT_PLACEMENTS" in body
+
+
+def test_the_history_line_sits_on_the_bottom_band():
+    body = client.get("/world").text
+    draw_fn = _js_block(body, "function draw(")
+    assert "TEXT_PLACEMENTS.history" in draw_fn
+    # Was `app.screen.height - 86`, which is why it ran across the tubes.
+    # A page-wide ban on `app.screen.height` would be over-broad - other
+    # functions legitimately use it for non-text layout - so this is scoped
+    # to `draw()` itself, which after this change has no remaining reason to
+    # read it at all.
+    assert "app.screen.height" not in draw_fn
+
+
+def test_the_banner_is_bound_to_its_placement_not_only_its_bar_height():
+    """`bannerMinHeight()` already sized the bar's own background from
+    `PLATE.bands.top` (Task 4) - that is not text, so it is untouched. This
+    is the new half: the READABLE line inside that bar binds to
+    `TEXT_PLACEMENTS.banner` directly, the same rule every canvas label now
+    follows."""
+    body = client.get("/world").text
+    assert "TEXT_PLACEMENTS.banner" in body
+    assert "banner.style.paddingLeft" in body
+    assert "banner.style.paddingTop" in body
+
+
+def _nowband_driver(source: str, state: str) -> str:
+    """`renderNowBand` against a stub DOM - the page's own strip builder, run.
+
+    Only `document`, `SYMBOLS` and `MOOD_COLOR` are stubbed; the cells and
+    their text are the page's, character for character."""
+    return (
+        """
+        class El {
+          constructor(tag) {
+            this.tag = tag; this.className = ""; this.style = {};
+            this.children = []; this._text = "";
+          }
+          set textContent(value) { this._text = value; this.children = []; }
+          get textContent() {
+            return this.children.length
+              ? this.children.map((c) => c.textContent).join("")
+              : this._text;
+          }
+          appendChild(child) { this.children.push(child); return child; }
+        }
+        const band = new El("div");
+        const document = {
+          getElementById: () => band,
+          createElement: (tag) => new El(tag),
+          createTextNode: (text) => {
+            const node = new El("#text");
+            node.textContent = text;
+            return node;
+          },
+        };
+        const SYMBOLS = ["BTCUSDT", "ETHUSDT"];
+        const MOOD_COLOR = {};
+        """
+        + _js_block(source, "function formatPrice(")
+        + "\n"
+        + _js_block(source, "function bandCell(")
+        + "\n"
+        + 'const nowband = document.getElementById("nowband");\n'
+        + _js_block(source, "function renderNowBand(")
+        + f"\nrenderNowBand({state});\n"
+        + "console.log(JSON.stringify({ text: band.textContent }));"
+    )
+
+
+@needs_node
+def test_the_now_band_publishes_the_traders_open_trades_and_pnl():
+    """KI-065: Task 10 deleted the trader's `open_trades` / `profit_pct`
+    readout - correctly, it floated beside the figure with no surface under
+    it - and nothing else in the room or the overlays carries it. The show's
+    stated premise is that an AI trades crypto live, loses money and
+    publishes every loss forever; this is the loss. It goes on `#nowband`,
+    beside the model's record, which is where a newcomer already looks."""
+    emitted = _run_node(
+        _nowband_driver(
+            _world_source(),
+            '{ prices: { BTCUSDT: 118432.5 }, symbols: {},'
+            ' model: { accuracy: { wins: 3, losses: 5, hit_rate: 0.375,'
+            ' window: 8 } },'
+            ' trader: { open_trades: 2, profit_pct: -1.3712, mood: "weighing" } }',
+        )
+    )
+
+    assert "2 open" in emitted["text"], emitted["text"]
+    assert "-1.37%" in emitted["text"], emitted["text"]
+    assert "trader" in emitted["text"]
+    # The model's record is untouched beside it.
+    assert "3W 5L" in emitted["text"]
+
+
+@needs_node
+def test_the_now_band_says_dash_when_no_sidecar_is_running():
+    """`state.trader` is null until a `trader_*` event arrives, and those come
+    from the freqtrade sidecar - an opt-in compose profile that is not running
+    on this stack. The cell renders anyway, the way the model's record does
+    when its accuracy is unknown: a named slot with an em dash is honest, an
+    absent slot silently un-publishes the premise again."""
+    emitted = _run_node(
+        _nowband_driver(
+            _world_source(),
+            "{ prices: {}, symbols: {}, model: {}, trader: null }",
+        )
+    )
+
+    assert "trader —" in emitted["text"], emitted["text"]
+
+
+def test_every_declared_text_placement_is_read_by_the_page():
+    """KI-070: `floating_text` and `glyph_overflow` validate every placement
+    in `manifest.text`, so a placement the page never consults is worse than
+    no placement at all - CI reports the "no text in the air" rule satisfied
+    over data nothing renders, and a repaint that moves it moves nothing.
+
+    `#nowband` is the case that made this real: the manifest declared
+    `prices` and `record` on `band-bottom` while the strip has always been
+    CSS-positioned, so the rule was enforced everywhere except where the
+    text is largest. Either a placement is read, or it is not declared."""
+    code = "\n".join(
+        re.sub(r"//.*$", "", line) for line in _world_source().splitlines()
+    )
+    unread = [
+        placement["id"]
+        for placement in load_manifest().text
+        if f"TEXT_PLACEMENTS.{placement['id']}" not in code
+        and f'TEXT_PLACEMENTS["{placement["id"]}"]' not in code
+    ]
+    assert not unread, (
+        "declared but never read, so CI validates a layout the page does not "
+        f"draw - bind them or delete them: {unread}"
+    )
+
+
+@needs_node
+def test_the_banner_is_padded_from_inside_its_surface_not_from_the_canvas():
+    """KI-072: `#banner` is pinned `top: 0; left: 0` and positions its line
+    with padding, so it needs the offset INSIDE its surface. `as_json` hands
+    out absolute canvas coordinates - correctly; that is what every canvas
+    label needs - and the two agree today only because `band-top` starts at
+    (0, 0). Move the placement to the desk face and the old code pads a
+    top-pinned bar by 1133/669px instead of drawing the line there.
+
+    Runs the page's own binding, with `document` and the placement stubbed."""
+    body = client.get("/world").text
+    block = re.search(
+        r'const banner = document\.getElementById\("banner"\);'
+        r".*?banner\.style\.fontSize[^\n]*\n\s*\}",
+        body,
+        re.S,
+    )
+    assert block, "the page no longer binds #banner in one readable block"
+
+    driver = (
+        "const style = {};\n"
+        "const document = { getElementById: () => ({ style }) };\n"
+        "function bannerMinHeight() { return 60; }\n"
+        # banner moved to `desk-face-trader` (1109, 655): absolute 1133/669,
+        # 24/14 inside its own surface.
+        "const TEXT_PLACEMENTS = { banner: "
+        '{ x: 1133, y: 669, dx: 24, dy: 14, w: 100, h: 30, size: 15 } };\n'
+        + block.group(0)
+        + "\nconsole.log(JSON.stringify(style));"
+    )
+    style = _run_node(driver)
+
+    assert style["paddingLeft"] == "24px", (
+        "the banner is padded by an absolute canvas coordinate"
+    )
+    assert style["paddingTop"] == "14px"
+    assert style["fontSize"] == "15px"
+    assert style["minHeight"] == "60px"
+
+
+@needs_node
+def test_placedLabel_positions_and_sizes_a_label_from_its_placement_alone():
+    body = client.get("/world").text
+    driver = _text_driver(body) + """
+    const drawn = placedLabel({ x: 12, y: 34, size: 16 }, "HELLO", 0);
+    const missing = placedLabel(null, "HELLO", 0);
+    console.log(JSON.stringify({
+      x: drawn.x, y: drawn.y, size: drawn._size, text: drawn.text,
+      missingIsNull: missing === null,
+    }));
+    """
+    emitted = _run_node(driver)
+    assert emitted == {
+        "x": 12, "y": 34, "size": 16, "text": "HELLO", "missingIsNull": True,
+    }
+
+
+@needs_node
+def test_placedLabel_trusts_its_placement_so_the_manifest_check_is_the_real_guard():
+    """`placedLabel` must not silently clamp a bad position - if it did, a
+    regression in `floating_text` (the manifest-level guard) could break
+    with nothing on the page able to show it. Corrupts a real placement
+    exactly the way `test_a_label_nudged_off_its_surface_is_caught`
+    (`tests/unit/test_text_layout.py`) does - `name-trader` nudged off
+    `desk-plate-trader` - resolves it exactly as `as_json` would, and
+    confirms the page's own function reproduces the escaped position
+    verbatim. That is the proof this ticket's brief was missing: not that
+    the page mentions `TEXT_PLACEMENTS`, but that a bad value in it reaches
+    the screen unmodified, which is what makes the manifest-level check the
+    thing actually protecting the room rather than a redundant assertion
+    nothing depends on.
+    """
+    import dataclasses
+
+    from world.plate import load_manifest
+    from world.text_layout import as_json, floating_text
+
+    manifest = load_manifest()
+    placements = [dict(p) for p in manifest.text]
+    idx = next(i for i, p in enumerate(placements) if p["id"] == "name-trader")
+    placements[idx] = dict(placements[idx], y=placements[idx]["y"] - 400)
+    poisoned = dataclasses.replace(manifest, text=tuple(placements))
+
+    # Sanity: the manifest-level guard does catch it (established already by
+    # test_text_layout.py; re-asserted here only to anchor the claim below).
+    assert floating_text(poisoned) == ["name-trader"]
+
+    resolved = json.loads(as_json(poisoned))["name-trader"]
+    body = client.get("/world").text
+    driver = _text_driver(body) + f"""
+    const drawn = placedLabel({json.dumps(resolved)}, "TRADER", 0);
+    console.log(JSON.stringify({{ x: drawn.x, y: drawn.y }}));
+    """
+    emitted = _run_node(driver)
+    assert emitted == {"x": resolved["x"], "y": resolved["y"]}, (
+        "placedLabel did not draw exactly where the (deliberately bad) "
+        "resolved placement said - if it clamped or ignored the escaped "
+        "value, the manifest-level check above would not be load-bearing"
+    )
+
+
+@needs_node
+def test_no_room_label_the_page_actually_draws_overflows_its_own_box():
+    """The gap Task 9 could not close: a placement can be a valid box,
+    fully inside a real surface, and still have no room for the text it is
+    asked to hold. Runs the page's own `historyLine` for a busy-but-
+    realistic world (not an adversarial string: a 6-digit event count plus
+    3-digit outages pushes even this deliberately conservative estimate to
+    782 against a 780px box while real rendering there is still 642-709px, so
+    an adversarial case would flag a non-issue), and checks every canvas label the
+    room still draws against `glyph_overflow`
+    (`tests/unit/test_text_layout.py` covers the estimate itself)."""
+    from world.text_layout import glyph_overflow
+
+    placements = _text_placements()
+    body = client.get("/world").text
+    driver = _js_block(body, "function historyLine(") + """
+    const h = {
+      total_events: 12345,
+      longest_streak: { bars: 9999 },
+      worst_loss: { realized_return: -0.9999 },
+      outages: 99,
+    };
+    console.log(JSON.stringify({ history: historyLine(h) }));
+    """
+    emitted = _run_node(driver)
+
+    drawn = {
+        "history": emitted["history"],
+        "name-model": "MODEL",
+        "name-trader": "TRADER",
+    }
+    for label_id, text in drawn.items():
+        p = placements[label_id]
+        assert not glyph_overflow(text, p["size"], p), (
+            f"{label_id}: {text!r} at size {p['size']} does not fit its own "
+            f"{p['w']}x{p['h']} box"
+        )
+
+
+def test_a_label_whose_text_would_overflow_its_box_is_caught():
+    # Mutation check for the check above: the same real, shipped box, with
+    # text no reasonable margin would ever fit.
+    from world.text_layout import glyph_overflow
+
+    placements = _text_placements()
+    p = placements["name-trader"]
+    assert glyph_overflow("A NAME NO REASONABLE DESK PLATE COULD HOLD", p["size"], p)
+
+
+@needs_node
+def test_a_built_characters_nametag_is_reachable_from_outside_character():
+    """Real bug this ticket shipped once, caught only by `scripts/shoot.py`'s
+    screenshot, not by any Node-block test above: `character()` builds
+    `nameTag` and adds it to the container, but the returned tracking object
+    (`const char = {...}`) never listed it - `model.nameTag.text = ""`
+    (this ticket's own new code, run right after `character("MODEL")`)
+    threw `Cannot set properties of undefined` in a real browser, because
+    every other test here reads fields OFF the extracted function's own
+    source rather than off a value the function actually returns.
+
+    Runs the real `const char = {...}` object literal with every free
+    variable it references pre-stubbed, and asserts the built object
+    actually carries `nameTag` - the same field `model.nameTag.text = ""`
+    depends on.
+    """
+    source = _world_source()
+    char_literal = _js_block(source, "const char = {")
+    driver = f"""
+    const container = {{ y: 5 }}, body = {{}}, head = {{}}, skull = {{}},
+      eyeL = {{}}, eyeR = {{}}, mouth = {{}}, browL = {{}}, browR = {{}},
+      visor = {{}}, accents = [], style = "bars", stat = {{}}, moodTag = {{}},
+      nameTag = {{ text: "TRADER" }}, seed = 1, shadow = {{}};
+    const FACE_KIND = {{ bars: "circle" }};
+    const SHADOW_WIDTH = {{ bars: 10 }};
+    function rng32() {{ return () => 0; }}
+    {char_literal};
+    // The exact call site this ticket added, against the RETURNED object -
+    // not the free `nameTag` variable, which would trivially succeed either
+    // way and prove nothing about what character() actually hands back.
+    char.nameTag.text = "";
+    console.log(JSON.stringify({{ hasNameTag: "nameTag" in char }}));
+    """
+    emitted = _run_node(driver)
+    assert emitted["hasNameTag"], (
+        "character()'s returned object no longer exposes nameTag - "
+        "model.nameTag.text = \"\" / trader.nameTag.text = \"\" would throw"
+    )
+
+
+# --- Task 14 (STRETCH): the painted city's window lights blink -------------
+#
+# The plate already paints a skyline of window lights outside the room's own
+# window; this animates what is there rather than inventing anything new.
+# Ruling 2 (controller pre-flight): the brief's own two tests were substring
+# checks over the whole page source - `"phase" in body` passes on an English
+# sentence, and the `plateReady` check passes on a comment describing a
+# MISSING guard. These run the real `buildAmbientLights`/`tickAmbientLights`
+# in node, the same way `_glow_driver`'s tests run the real
+# `buildGlows`/`applyGlow` above - against the manifest's own `ambient_lights`
+# rects, with only `PIXI.Graphics` and `layers.plate` stubbed.
+
+
+def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> str:
+    """The page's own `buildAmbientLights`/`tickAmbientLights`, run against
+    the real manifest's `ambient_lights` rects - only `PIXI.Graphics` and
+    `layers.plate` are stubbed, and the stub records what was actually
+    drawn/mutated rather than asserting on source text. Mirrors
+    `_glow_driver` above: additive light laid ON TOP of the plate's own
+    painted lights, not a substitute for them - an opaque fill at alpha 1
+    would flatten the painted sign's own detail into a solid block the
+    moment a light reached peak brightness, which is the opposite of what
+    "the city already has the lights, animate them" asks for.
+    """
+    source = _world_source()
+    ambient_lights = lights if lights is not None else _manifest()["ambient_lights"]
+    return (
+        f"const PLATE = {json.dumps({'ambient_lights': ambient_lights})};\n"
+        f"const plateReady = {str(plate_ready).lower()};\n"
+        "class FakeGraphics {\n"
+        "  constructor() {\n"
+        "    this.rects = []; this.fills = []; this.blendMode = null; this.alpha = 1;\n"
+        "  }\n"
+        "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
+        "  fill(opts) { this.fills.push(opts); return this; }\n"
+        "}\n"
+        "const PIXI = { Graphics: FakeGraphics };\n"
+        "const layers = { plate: { children: [],\n"
+        "  addChild(c) { this.children.push(c); } } };\n"
+        "let ambientLightSprites = [];\n"
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_block(source, "function rng32(")
+        + "\n"
+        + _js_const(source, "AMBIENT_LIGHTS")
+        + "\n"
+        + _js_const(source, "AMBIENT_LIGHT_MIN_ALPHA")
+        + "\n"
+        + _js_block(source, "function buildAmbientLights(")
+        + "\n"
+        + _js_block(source, "function tickAmbientLights(")
+        + "\n"
+    )
+
+
+@needs_node
+def test_ambient_lights_use_additive_blend_so_the_paint_survives():
+    """An opaque fill at high alpha replaces the pixels underneath rather
+    than lighting them - the exact failure a sighted check caught: light G
+    (the 39x25 sign at 1659,402) paints a small arrow/icon inside its red
+    field, and an opaque rect at alpha~1 flattens that into a featureless
+    block, which is the opposite of "the city already has the lights,
+    animate them". `buildGlows` (just above this ticket's own code) already
+    solves the identical problem the identical way - `glow.blendMode =
+    "add"` - so each light must match it.
+    """
+    driver = _ambient_lights_driver(plate_ready=True) + (
+        "buildAmbientLights();\n"
+        "console.log(JSON.stringify("
+        "ambientLightSprites.map((l) => l.graphics.blendMode)));\n"
+    )
+    blends = _run_node(driver)
+    lights = _manifest()["ambient_lights"]
+    assert len(blends) == len(lights)
+    assert all(b == "add" for b in blends), (
+        "every ambient light must blend additively, or it paints over the "
+        "plate's own detail instead of lighting it"
+    )
+
+
+@needs_node
+def test_the_window_lights_blink_on_independent_cycles():
+    """A shared phase makes the whole skyline pulse in unison, which reads
+    as a fault rather than as a city - the same "vary AND offset" rule
+    `char.phaseOffset`/`char.breath` already follow for the cast, just above
+    this ticket's own code. Runs the real builder/ticker and checks what got
+    painted at three different instants, not a claim about the source text.
+    """
+    lights = _manifest()["ambient_lights"]
+    assert len(lights) >= 2, "not enough lights in the manifest to prove independence"
+
+    driver = _ambient_lights_driver(plate_ready=True) + (
+        "buildAmbientLights();\n"
+        "const phases = ambientLightSprites.map((l) => l.phase);\n"
+        "const snapshots = [0, 1.3, 4.7].map((t) => {\n"
+        "  tickAmbientLights(t);\n"
+        "  return ambientLightSprites.map((l) => l.graphics.alpha);\n"
+        "});\n"
+        "console.log(JSON.stringify({ phases, snapshots }));\n"
+    )
+    emitted = _run_node(driver)
+
+    assert len(emitted["phases"]) == len(lights)
+    assert len(set(emitted["phases"])) == len(emitted["phases"]), (
+        "every light must carry its own phase, not a shared clock"
+    )
+
+    # At any single instant the lights must not all read the same
+    # brightness - that is what "independent phase" has to mean in practice.
+    for snapshot in emitted["snapshots"]:
+        assert len(set(snapshot)) > 1, (
+            "every light reported the same alpha at one instant - "
+            "the skyline pulsed in unison"
+        )
+
+    # And each light must actually move between two different instants - a
+    # phase that never advances is a fixed dim window, not a blink.
+    for i in range(len(lights)):
+        trace = [snapshot[i] for snapshot in emitted["snapshots"]]
+        assert len(set(trace)) > 1, f"light {i} never changes brightness over time"
+
+
+@needs_node
+def test_ambient_life_is_guarded_for_the_no_plate_path():
+    """The KI-050 shape, exactly: an ambient ticker that writes to something
+    only the plate path creates kills the renderer on every load. Two claims,
+    both run rather than pattern-matched: (1) the realistic no-plate call
+    pattern never builds anything to tick in the first place, and (2) even if
+    something HAD been built (a future edit, a stale call), `tickAmbientLights`
+    must still refuse to touch it while `plateReady` is false - so the
+    guard's own behaviour is pinned, not just its presence in a comment.
+    """
+    # Realistic pattern: buildAmbientLights is never called without a plate
+    # (see the drawPlate wiring test below), so there is nothing to tick.
+    realistic = _run_node(
+        _ambient_lights_driver(plate_ready=False)
+        + (
+            "tickAmbientLights(3.0);\n"
+            "console.log(JSON.stringify(ambientLightSprites.length));\n"
+        )
+    )
+    assert realistic == 0
+
+    # Adversarial: build unconditionally, then prove the GUARD - not just
+    # caller discipline - is what stops tickAmbientLights from touching it.
+    result = _run_node(
+        _ambient_lights_driver(plate_ready=False)
+        + (
+            "buildAmbientLights();\n"
+            "const before = ambientLightSprites.map((l) => l.graphics.alpha);\n"
+            "tickAmbientLights(3.0);\n"
+            "const after = ambientLightSprites.map((l) => l.graphics.alpha);\n"
+            "console.log(JSON.stringify({ before, after }));\n"
+        )
+    )
+    assert result["before"], (
+        "buildAmbientLights built nothing to test the guard against"
+    )
+    assert result["before"] == result["after"], (
+        "tickAmbientLights must leave the lights exactly as buildAmbientLights "
+        "left them when plateReady is false - it changed them instead"
+    )
+
+
+def test_ambient_lights_build_their_graphics_once_not_inside_the_ticker():
+    """RULING 3 (controller pre-flight): this file already carries the scar -
+    `buildMonitorGraphics`'s own comment records that rebuilding `Graphics`
+    every tick "is exactly what B2 warned would cost the stream frames on a
+    box that also encodes 1080p", and Task 12's central ruling was a
+    per-poll `Graphics` leak caught before it shipped. Ambient lights tick
+    far more often than either. Built once (`buildAmbientLights`, called from
+    `drawPlate`'s success path alongside `buildGlows`/`buildMonitorGraphics`);
+    the ticker (`tickAmbientLights`, called from `startAmbient`'s
+    `app.ticker.add`) only mutates `.alpha`.
+    """
+    body = _world_source()
+    draw_plate = _js_block(body, "async function drawPlate(")
+    assert "buildAmbientLights();" in draw_plate, (
+        "buildAmbientLights must be called once, when the plate becomes ready"
+    )
+
+    ambient_fn = _js_block(body, "function startAmbient()")
+    ticker = _js_block(ambient_fn, "app.ticker.add(")
+    assert "tickAmbientLights(" in ticker, (
+        "the per-frame ticker must actually drive the lights"
+    )
+    assert "new PIXI.Graphics()" not in ticker, (
+        "a Graphics allocation inside the per-frame ticker rebuilds "
+        "geometry ~60x/sec"
+    )
+    assert "buildAmbientLights(" not in ticker, (
+        "buildAmbientLights must not be called from inside the ticker"
+    )
+
+    tick_fn = _js_block(body, "function tickAmbientLights(")
+    assert "new PIXI.Graphics()" not in tick_fn, (
+        "tickAmbientLights must only mutate .alpha on the pre-built lights"
+    )
+    assert "buildAmbientLights(" not in tick_fn, (
+        "tickAmbientLights must not call buildAmbientLights() itself either - "
+        "that would rebuild the geometry every tick just as surely as "
+        "inlining the allocation would"
+    )
+
+
+def test_the_manifest_carries_a_small_list_of_ambient_lights():
+    """Schema-level pin: `ambient_lights` is a small list of rects measured
+    over painted windows, each with its own colour and blink period - the
+    shape `buildAmbientLights`/the node drivers above assume."""
+    lights = _manifest()["ambient_lights"]
+    assert 2 <= len(lights) <= 12, "expected a SMALL list, not a new effect"
+    canvas_w, canvas_h = _manifest()["canvas"]
+    for light in lights:
+        for key in ("x", "y", "w", "h", "colour", "period"):
+            assert key in light, f"ambient light missing {key!r}: {light}"
+        assert 0 <= light["x"] <= canvas_w
+        assert 0 <= light["y"] <= canvas_h
+        assert light["w"] > 0 and light["h"] > 0
+        assert re.match(r"^#[0-9a-fA-F]{6}$", light["colour"])
+        assert light["period"] > 0
+
+
+@needs_node
+def test_a_malformed_ambient_light_degrades_that_one_light_not_the_room():
+    """Every degrade path on this page has a test, because it is what runs
+    unattended at 3am. `buildAmbientLights` runs inside `drawPlate`'s try
+    block, so an uncaught throw here would degrade the ENTIRE room to
+    procedural over one bad manifest entry - the same shape
+    `buildMonitorGraphics`'s `if (screen.quad)` guard exists to prevent for
+    a missing quad. A hand-edited manifest with no `colour` on one entry
+    must lose only that light, not crash the builder.
+    """
+    lights = [
+        {"x": 100, "y": 100, "w": 8, "h": 8, "period": 3.0},   # no colour
+        {"x": 200, "y": 200, "w": 8, "h": 8, "colour": "#ff3b30", "period": 3.0},
+    ]
+    emitted = _run_node(
+        _ambient_lights_driver(plate_ready=True, lights=lights)
+        + (
+            "buildAmbientLights();\n"
+            "console.log(JSON.stringify(ambientLightSprites.length));\n"
+        )
+    )
+    assert emitted == 1, (
+        "the malformed entry must be skipped, and the well-formed one "
+        "still built"
+    )
+
+
+@needs_node
+def test_a_zero_or_negative_period_falls_back_to_the_default_floor():
+    """`buildAmbientLights`'s `period: light.period > 0 ? light.period : 4`
+    is a defensive floor against a hand-edited manifest entry with a
+    `period` of `0` or negative - either would otherwise reach
+    `tickAmbientLights`'s `t / light.period`, producing a division by zero
+    (a light that is either always mid-fade or, for `0`, NaN-locked) or a
+    sign flip that runs the sine backwards. The malformed-entry test above
+    (which checks `colour`) does not exercise this guard at all.
+
+    A fourth entry omits `period` entirely - covered rather than declared
+    out of scope, because `undefined > 0` is also `false`: a missing or
+    non-numeric period takes the exact same floor branch as `0` and `-2.5`,
+    so proving it costs nothing beyond one more list entry.
+
+    Runs the real builder and reads the `period` it actually stored, not
+    the source text of the ternary - then ticks once so the `period: 0`
+    light's `alpha` is checked for the actual 3am symptom (an un-floored
+    zero divides `t` by zero, `Math.sin(Infinity)` is `NaN`, and
+    `JSON.stringify` serializes `NaN` as `null`), not just the stored
+    number.
+    """
+    lights = [
+        {"x": 100, "y": 100, "w": 8, "h": 8, "colour": "#ff3b30", "period": 0},
+        {"x": 200, "y": 200, "w": 8, "h": 8, "colour": "#ff3b30", "period": -2.5},
+        {"x": 300, "y": 300, "w": 8, "h": 8, "colour": "#ff3b30", "period": 6},
+        {"x": 400, "y": 400, "w": 8, "h": 8, "colour": "#ff3b30"},  # no period key
+    ]
+    result = _run_node(
+        _ambient_lights_driver(plate_ready=True, lights=lights)
+        + (
+            "buildAmbientLights();\n"
+            "const periods = ambientLightSprites.map((l) => l.period);\n"
+            "tickAmbientLights(1.0);\n"
+            "const alphas = ambientLightSprites.map((l) => l.graphics.alpha);\n"
+            "console.log(JSON.stringify({ periods, alphas }));\n"
+        )
+    )
+    assert result["periods"] == [4, 4, 6, 4], (
+        "a period of 0, a negative number, or a missing/non-numeric period "
+        "must all fall back to the default floor of 4; a positive period "
+        "must pass through unchanged"
+    )
+    assert all(alpha is not None for alpha in result["alphas"]), (
+        "an un-floored period of 0 reaches tickAmbientLights's t/period "
+        "division, producing Infinity -> NaN alpha (NaN serializes as JSON "
+        "null) - the exact failure the floor exists to prevent"
+    )
+
+
+TEMPLATE = Path(__file__).resolve().parents[2] / "api" / "templates" / "world.html"
+
+
+def test_the_body_tint_fallback_clears_the_silhouette_floor():
+    """KI-060: the one colour that never passed KI-028's contrast check was the
+    fallback. Every *named* mood reaches the page through `visuals.body_tints()`,
+    which lifts it to `SILHOUETTE_MIN_CONTRAST` — that lift IS the KI-028 fix.
+    The page's own `NEUTRAL` literal never went through it, and measured 3.05:1
+    against the room against a 4.5 floor (and WCAG's 3:1 for non-text graphics).
+
+    So a figure whose mood the world emits but the cast cannot name rendered
+    *below the floor the fix exists to hold* — precisely the case the fallback
+    is there to protect. `character()` builds every figure at mood "neutral",
+    which `MOOD_COLORS` does not claim, so this is the live path, not a
+    hypothetical.
+    """
+    from world import visuals
+
+    body = client.get("/world").text
+    match = re.search(r"const NEUTRAL_TINT = (0x[0-9a-fA-F]{6});", body)
+    assert match, "the page has no injected neutral body tint"
+    assert int(match.group(1), 16) == int(visuals.neutral_body_tint()[1:], 16), (
+        "the page's neutral body tint is not visuals.neutral_body_tint()"
+    )
+    assert visuals.neutral_body_contrast() >= visuals.SILHOUETTE_MIN_CONTRAST
+
+
+def test_the_template_states_no_colour_of_its_own():
+    """The other half, and the half a rendered-page test cannot see: an injected
+    value and a hand-typed one that happen to agree look identical in the
+    output. KI-060 was exactly that — `PALETTE['neutral']` copied into the page
+    as `0x787b86`, correct as an identity colour and wrong as a body tint,
+    with nothing to keep the copy honest."""
+    source = TEMPLATE.read_text()
+    assert "__NEUTRAL_TINT__" in source
+    assert "__NEUTRAL_COLOR__" in source
+    assert "0x787b86" not in source, (
+        "world.html hand-copies PALETTE['neutral'] again — inject it"
+    )

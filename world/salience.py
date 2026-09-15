@@ -201,3 +201,36 @@ KNOWN_EVENT_TYPES = frozenset(
         "broadcast_ended",
     }
 )
+
+# The principle, made explicit rather than left for someone to re-derive from
+# a bare SQL predicate: these are events describing the BROADCAST APPARATUS
+# ITSELF running — the stream is live, the director switched scenes, YouTube's
+# video object changed state — not evidence that the WORLD (the market, the
+# model) had news. `world.liveness`'s whole premise (KI-057) is that a
+# drawing page is not proof the world is running, and a page can keep
+# generating exactly these events on its own while the model stays silent —
+# that was the shape of KI-057 itself, with `stream_dropped`.
+#
+# `storage.postgres_store.world_liveness_times()` excludes exactly this set
+# from its "is there recent world news" check. It is a subset of
+# KNOWN_EVENT_TYPES by construction (see the coverage test in
+# tests/unit/test_postgres_store_world_liveness.py, which also pins that the
+# reader's own SQL predicate excludes exactly this set and nothing else) —
+# adding a new event type to the registry above needs a conscious decision
+# about which side of this line it is on, not a silent default either way.
+BROADCAST_APPARATUS_EVENT_TYPES = frozenset(
+    {
+        # stream lifecycle (Sprint 11)
+        "stream_started",
+        "stream_stopped",
+        "stream_dropped",
+        "stream_reconnected",
+        # director actions (Sprint 13)
+        "scene_switched",
+        "commentary_spoken",
+        # YouTube broadcast lifecycle (Sprint 14)
+        "broadcast_created",
+        "broadcast_live",
+        "broadcast_ended",
+    }
+)

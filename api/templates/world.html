@@ -39,7 +39,14 @@
 
     /* B9 — the always-on band. A newcomer arriving mid-calm sees no events at
        all, so the room has to answer "what is this and how is it going?"
-       without waiting for one to fire. Bottom-pinned, quiet, permanent. */
+       without waiting for one to fire. Bottom-pinned, quiet, permanent.
+
+       Laid out here, in CSS, by decision (KI-070): one flex row whose cells
+       are per-symbol groups the browser spaces, not fixed points a manifest
+       could name. It still obeys "no text in the air" — the surface it sits
+       on is the painted quiet strip `bands.bottom` reserves, and the bar is
+       pinned to it — but it is not manifest-placed, and no placement
+       pretends otherwise. */
     #nowband { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
                display: flex; align-items: baseline; gap: 1.75rem;
                padding: 0.5rem 1.25rem;
@@ -48,6 +55,9 @@
     #nowband .sym { color: var(--fg); font-weight: 600; letter-spacing: 0.02em; }
     #nowband .px { color: var(--fg); font-variant-numeric: tabular-nums; }
     #nowband .mood { color: var(--neutral); }
+    #nowband .trader { color: var(--neutral);
+                       font-variant-numeric: tabular-nums; }
+    #nowband .trader b { color: var(--fg); font-weight: 600; }
     #nowband .record { margin-left: auto; color: var(--neutral);
                        font-variant-numeric: tabular-nums; }
     #nowband .record b { color: var(--fg); font-weight: 600; }
@@ -94,7 +104,38 @@
     // filename and the page prefixes /static/ itself, so no manifest edit can
     // put a third party into the on-air load path.
     const PLATE = __PLATE_JSON__;
+    // The cast, already sorted into people and settings by world/plate.py's
+    // `cast_payload()` — `{ characters: {...}, scale }`, or null with no plate.
+    // Indexing `PLATE.cast` here instead would find `scale` for a name and
+    // build an anchor out of `undefined` (KI-076); pinned by
+    // test_the_page_never_indexes_the_raw_cast_block.
+    const PAINTED_CAST = __CAST_JSON__;
     const PLATE_SRC = PLATE ? "/static/" + PLATE.plate : null;
+    // Sprint 16 Task 10: where text is allowed to sit, already resolved to
+    // absolute canvas coordinates by `world/text_layout.py::as_json` — read
+    // THIS, never `PLATE.text`/`PLATE.text_surfaces` (Task 9's own surface
+    // union is inside `PLATE` too, but re-deriving band-top/band-bottom from
+    // it here would restate `_band_surfaces`' arithmetic in a second
+    // language). A placement whose surface could not be resolved is already
+    // dropped by `as_json` before this page ever sees it, so a missing key
+    // here just means "nothing is drawn there" — never a throw.
+    const TEXT_PLACEMENTS = __TEXT_JSON__;
+    // The painted key light (the amber desk lamp): direction, warmth and
+    // ramp measured off the plate, or the neutral default when unmeasured.
+    // Distinct from ROOM_LIGHT below, which is the severity-tier ambient
+    // swell — this one shapes the cast, via shade()/paint() below.
+    //
+    // AUTHORITATIVE OVER `PLATE.light`. `PLATE` (above) is the raw manifest,
+    // substituted verbatim as `manifest.as_dict()`, so `PLATE.light` is
+    // whatever the JSON file says, unvalidated. `LIGHT` is
+    // `light_for(manifest)`'s output — the same measurement, but only after
+    // it has passed the shape check, the monotonic-ramp check, and the
+    // missing-manifest/missing-block degrade, all of which land on
+    // `DEFAULT_LIGHT` rather than a bad number reaching a draw call
+    // (`world/light.py`). Reaching for `PLATE.light` instead of `LIGHT`
+    // silently steps around that whole contract. Every draw call below reads
+    // `LIGHT`; nothing in this file should ever read `PLATE.light`.
+    const LIGHT = __LIGHT_JSON__;
     const fallback = document.getElementById("fallback");
 
     // Name the room for a newcomer: the symbols in play + the one-line premise.
@@ -106,10 +147,14 @@
     // between them was the old failure. Unknown moods stay grey rather than
     // throwing, so a new salience rule degrades quietly on screen.
     const MOOD_COLOR = __MOOD_COLORS_JSON__;
-    const NEUTRAL = 0x787b86;
+    const NEUTRAL = __NEUTRAL_COLOR__;
+    // The same grey after `visuals.lift_to_silhouette_floor` — what an
+    // un-mooded figure is PAINTED in. Identity colour and body colour are
+    // different jobs and only one of them has a contrast floor (KI-060).
+    const NEUTRAL_TINT = __NEUTRAL_TINT__;
     const color = (mood) => {
       const hex = MOOD_COLOR[mood];
-      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
+      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL_TINT;
     };
 
     // KI-028: the cast measured 1.19:1 (trader) and 1.00:1 against its own
@@ -131,10 +176,512 @@
     // it spends its fewest bits on the near-black gradients that used to be the
     // only thing separating the cast from the room.
     const BODY_RIM = { width: 1.5, color: __BODY_RIM_FILL__, alignment: 1 };
-    const bodyTint = (mood) => {
-      const hex = BODY_TINT[mood];
-      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL;
+
+    // --- KI-051: light the cast with the room's own lamp -------------------
+    // Every volume used to be one flat fill and one hard rim — the figures
+    // read as stickers laid over the painting rather than objects standing
+    // in it. `shade`/`paint` below replace the fill rule only: the shapes,
+    // positions and animations they are called from are untouched.
+    //
+    // `function` declarations (not `const … = () =>`), deliberately: they
+    // are hoisted, so `BODY_RIM_SHADED` below can call `shade()` regardless
+    // of source order, and no later reordering of this block can reintroduce
+    // a temporal-dead-zone `ReferenceError` — the failure mode that a
+    // `boot().catch()` swallows into a silent reload loop (KI seen in Task 2
+    // of this sprint), invisible to every test that only inspects page
+    // source rather than running it.
+
+    // Two colours, blended toward `b` by `t` in [0, 1]. Channel-wise, not a
+    // library: this file mixes hex nowhere else.
+    //
+    // Guards its OWN parsed inputs, not its output: `<<`/`|` coerce a NaN
+    // operand to 0 (`NaN << 16` is `0`, not `NaN`), so a bad colour does NOT
+    // make this return a non-finite number — it silently returns a wrong but
+    // perfectly finite one (black, in the simplest case). A `Number.isFinite`
+    // check on the RESULT can never see that; it has to happen here, before
+    // the bitwise math ever runs. A colour that fails to parse degrades to
+    // the OTHER colour, unmixed — "no light contribution from the broken
+    // side" rather than a wrong colour nobody asked for.
+    function mixHex(a, b, t) {
+      const pa = typeof a === "number" ? a : parseInt(String(a).slice(1), 16);
+      const pb = typeof b === "number" ? b : parseInt(String(b).slice(1), 16);
+      if (!Number.isFinite(pa)) return pb;
+      if (!Number.isFinite(pb)) return pa;
+      const ch = (v, sh) => (v >> sh) & 0xff;
+      const lerp = (x, y) => Math.round(x + (y - x) * t);
+      return (lerp(ch(pa, 16), ch(pb, 16)) << 16)
+           | (lerp(ch(pa, 8), ch(pb, 8)) << 8)
+           |  lerp(ch(pa, 0), ch(pb, 0));
+    }
+
+    // PixiJS's container tint, as arithmetic instead of a shader stage.
+    //
+    // The page used to let the GPU do this: `char.body.tint = tint` multiplied
+    // the mood over every pixel the container had already drawn — which, once
+    // `paint()` existed, meant it multiplied the mood over the room's LIGHT as
+    // well as over the body. The lit band mixes toward `LIGHT.warmth` and the
+    // shade band toward `LIGHT.ambient`, so a red mood did not put a red object
+    // under the amber lamp; it turned the lamp red. Doing the multiply HERE, on
+    // one colour, before any light is applied, is the whole of the change: the
+    // product is the body's own colour, and `shade()` then lights it with the
+    // room's lamp exactly as it lights every other volume.
+    //
+    // Guards its own inputs for the same reason `mixHex` does, and to the same
+    // rule: `<<`/`|` coerce NaN to 0, so an unparseable colour would come back
+    // finite and wrong (black) rather than detectably broken. A side that fails
+    // to parse degrades to the other side unmultiplied — "no contribution from
+    // the broken side", not a body nobody asked for.
+    function mulHex(a, b) {
+      const pa = typeof a === "number" ? a : parseInt(String(a).slice(1), 16);
+      const pb = typeof b === "number" ? b : parseInt(String(b).slice(1), 16);
+      if (!Number.isFinite(pa)) return pb;
+      if (!Number.isFinite(pb)) return pa;
+      const ch = (v, sh) => (v >> sh) & 0xff;
+      const mul = (x, y) => Math.round((x * y) / 255);
+      return (mul(ch(pa, 16), ch(pb, 16)) << 16)
+           | (mul(ch(pa, 8), ch(pb, 8)) << 8)
+           |  mul(ch(pa, 0), ch(pb, 0));
+    }
+
+    // A volume's colour at a given light level. `level` is the ramp value for
+    // the band being drawn: positive faces the lamp, negative faces away.
+    //
+    // Lit mixes toward the lamp's OWN warmth and shade toward the room's
+    // ambient, rather than toward white and black — a figure that is lit BY
+    // THIS ROOM puts amber on one side and the room's cold ambient on the
+    // other, the same thing every painted object on the plate already does.
+    // `LIGHT` always reaches this page as a complete, validated model
+    // (`light_for` never lets a malformed manifest through — see the comment
+    // above `const LIGHT`), so this needs no input guard of its own; a
+    // non-finite `level` (the one field a caller could still pass wrong) is
+    // caught below before it reaches `mixHex`, and a non-finite `LIGHT.warmth`
+    // /`LIGHT.ambient` is caught inside `mixHex` itself. Either way the
+    // volume draws in its old flat, unshaded colour rather than `g.fill(...)`
+    // throwing mid-`character()` and taking the rest of the cast with it —
+    // the one path this sprint's "never a blank canvas" rule reaches inside a
+    // single figure.
+    function shade(baseHex, level) {
+      if (!Number.isFinite(level)) return baseHex;
+      const toward = level >= 0 ? LIGHT.warmth : LIGHT.ambient;
+      return mixHex(baseHex, toward, Math.min(1, Math.abs(level)));
+    }
+
+    // The ONE way this file reads the ramp. `LIGHT.ramp.lit` written inline is
+    // a `TypeError` the moment `LIGHT` arrives without a `ramp` — and one of
+    // those inline reads sits at TOP LEVEL (`BODY_RIM_SHADED` below), which
+    // throws before `boot()` is ever called and leaves the page blank with
+    // every page-source test still green (the Task 2 failure mode). The inner
+    // reads inside `paint()` are the softer version of the same class, so
+    // both go through here rather than only the loud one: a missing or
+    // non-numeric rung degrades to 0, which `shade()` turns back into the
+    // volume's own flat colour — the pre-KI-051 look, not a broken page.
+    function rampLevel(rung) {
+      const ramp = LIGHT && LIGHT.ramp;
+      const level = ramp ? ramp[rung] : undefined;
+      return Number.isFinite(level) ? level : 0;
+    }
+
+    // The measured direction, normalised, and safe to divide by. Not read raw
+    // from `LIGHT.direction` at each draw call, for two reasons: `litCircle`'s
+    // no-overshoot property holds EXACTLY only for a unit vector (this plate
+    // measures |d| = 1.004, which walks each band's key-facing point outward
+    // by 0.4% of its own inset), and a `[0, 0]` direction — which `light_for`
+    // accepts, since it validates the ramp and not the vector — would put NaN
+    // into every roundRect on the page. Anything unusable falls back to
+    // DEFAULT_LIGHT's straight-down axis rather than throwing.
+    function keyAxis() {
+      const raw = (LIGHT && LIGHT.direction) || [];
+      const dx = Number(raw[0]), dy = Number(raw[1]);
+      const len = Math.hypot(dx, dy);
+      return Number.isFinite(len) && len > 0 ? [dx / len, dy / len] : [0, 1];
+    }
+    const KEY_AXIS = keyAxis();
+
+    // The measured contact patch — how dark a shadow this room casts, how wide
+    // it sits under a body, and how far the lamp's height throws it. Guarded
+    // for the same reason `rampLevel` and `keyAxis` above are: `LIGHT.contact
+    // .opacity` written inline is a TypeError the moment `LIGHT` arrives
+    // without a `contact`, and THIS one is read at top level (`CONTACT`
+    // below), which is the flavour that throws before `boot()` is ever called
+    // and leaves a blank page every page-source test still passes.
+    //
+    // The fallback numbers here are deliberately NOT a copy of
+    // `DEFAULT_LIGHT`'s: `light_for` always supplies a complete `contact`
+    // block, including for a missing or malformed manifest, so what an
+    // unmeasured room's shadow looks like is decided in `world/light.py` and
+    // nowhere else. What is left here is the structural degrade — no throw,
+    // no NaN reaching a sprite — for a state that contract cannot produce.
+    function contactLight() {
+      const c = (LIGHT && LIGHT.contact) || {};
+      const num = (v, dflt) => (Number.isFinite(Number(v)) ? Number(v) : dflt);
+      return {
+        opacity: Math.min(1, Math.max(0, num(c.opacity, 0))),
+        widthScale: Math.max(0, num(c.widthScale, 1)),
+        throwScale: Math.max(0, num(c.throwScale, 0)),
+      };
+    }
+    const CONTACT = contactLight();
+
+    // How far this room lays its shadows down, in plate pixels:
+    //
+    //     throw_px = CONTACT.throwScale * SHADOW_THROW
+    //
+    // `throwScale` is the plate's measured share, dimensionless and beside
+    // `widthScale` for that reason; this constant carries the pixels. It was
+    // called `height` until KI-063, which was wrong twice over — not a length,
+    // and backwards as physics, since RAISING a lamp shortens a shadow. It is
+    // the one number in the shadow that is an art
+    // call rather than a measurement, and kept out of the manifest for that
+    // reason — a repaint re-measures the lamp, it does not re-decide how far
+    // a shadow should read as being thrown. Chosen from frames, not from
+    // arithmetic: on a three-point sweep measured off real pixels — each
+    // frame's shadow differenced against the painted plate — `1.6` moved the
+    // model's centroid only 6px across a 78px patch and still read as a
+    // lopsided puddle, `4.5` ran the far tail 41px past the body and detached
+    // the mass into a smear, and `3.0` is unmistakably directional with the
+    // core still under the feet.
+    const SHADOW_THROW = 3.0;
+
+    // How much of a volume each band eats, as a FRACTION of that volume's own
+    // extent — never as a fixed number of units.
+    //
+    // Review round 1's ruling, measured rather than argued: the first version
+    // used absolute insets of 0/2/5 against volumes spanning 12 to 66 local
+    // units, so a 15-unit bar got a ~1px shade band and a ~4px base band and
+    // the remaining ~85% of EVERY figure came out one flat colour. That is a
+    // tint, not light — the exact thing KI-051 names as the defect. Raising
+    // the absolute numbers cannot fix it either: what shades a torso would
+    // collapse or invert a wick.
+    //
+    // Measured at these values over every volume the page draws — the 66x54
+    // chest, the 12x96 bar, the 7x30 wick, the r28 skull, the r46 orb — each
+    // one comes out 25-27% lit, 39-43% mid, 30-35% shade by area. One
+    // three-tone form shade, the same on the biggest volume and the smallest,
+    // which is the whole point of expressing the offsets as fractions. The
+    // VALUES are an art call made off a frame, not a derivation; the SHAPE of
+    // the rule (proportional, clamped) is the load-bearing part.
+    const BAND_INSET = { shade: 0, base: 0.25, lit: 0.70 };
+    // No band may eat more than this share of its volume, whatever the
+    // fractions above or a future manifest's direction say. A `roundRect` of
+    // negative width is a silent geometry failure, not an exception — nothing
+    // throws, the volume just stops being drawn — so the clamp is what keeps a
+    // retune from quietly deleting the smallest bodies.
+    const BAND_MAX = 0.85;
+
+    // The same band, for a circle. A rect loses one linear fraction per axis;
+    // a circle shrinks on BOTH axes at once, so the identical fraction costs
+    // it far more of itself — at `lit` a rect keeps ~25% of its area and a
+    // circle only 9%. Left uncorrected that is a skull visibly darker than the
+    // chest under it: head and body disagreeing about the light, which is the
+    // the same defect class as the sign error review round 1 shipped. So:
+    // solve for the linear inset leaving a circle the AREA share a rect keeps
+    // — rect keeps `(1 - band·|dx|)(1 - band·|dy|)`, circle keeps `(1 - f)²`.
+    // Derived from the same measured axis rather than hardcoded, so a repaint
+    // that moves the lamp keeps the head and the body agreeing.
+    function circleBand(band) {
+      if (!Number.isFinite(band) || band <= 0) return 0;
+      const kept = (1 - band * Math.abs(KEY_AXIS[0]))
+                 * (1 - band * Math.abs(KEY_AXIS[1]));
+      return 1 - Math.sqrt(Math.max(0, kept));
+    }
+
+    // A rim colour shaded toward the lamp's own warmth rather than a fixed
+    // hue. It reads as a bright contour where it sits against the volume's
+    // own shaded (away-from-key) band — the KI-028 contrast the plain
+    // BODY_RIM existed for, now needed most on the side `paint` leaves
+    // darkest.
+    const BODY_RIM_SHADED = { width: BODY_RIM.width, color: shade(BODY_RIM.color, rampLevel("lit")), alignment: BODY_RIM.alignment };
+
+    // Draw one volume in three bands, lit toward the key. A `volume` is what
+    // `litRect`/`litCircle` return: `band(g, inset)` draws the SAME silhouette
+    // shrunk to a given band, `rim(g)` strokes its true (un-inset) outline.
+    // `paint` supplies the insets and, via `shade`, the colour of each band,
+    // so the shape a caller passes in is unchanged — this adds light to the
+    // existing rig, it does not redraw it.
+    //
+    // The brief asks for a rim that "survives only away from the key", and the
+    // mechanism for it — draw the rim, then let the lit band overpaint it on
+    // the lamp side — does not work here, measured rather than assumed:
+    // `BODY_RIM.alignment` is 1, which in PixiJS v8 strokes OUTSIDE the shape
+    // (scanned off the delivered frame: on 96 rows through the trader, a rim
+    // pixel sat outside the outermost band pixel 192 times and strictly
+    // inside it 0). Nothing drawn inside the silhouette can occlude a stroke
+    // drawn outside it, and the alternative — moving the rim to an inner
+    // alignment — shrinks the very silhouette KI-028's contrast fix was
+    // measured against. So the rim stays whole and goes on last, and the
+    // measurement lives in the task report instead of an aesthetic claim.
+    //
+    // Each volume is REMEMBERED on the Graphics it was drawn into, so the same
+    // rig can be re-lit in another colour without the call site having to hand
+    // its rects over a second time. That is what makes mood a colour `paint()`
+    // receives rather than a multiply laid over its output (`repaint` below) —
+    // and it is why the nineteen `BODIES.*`/`seatedRig`/`character()` call
+    // sites are untouched by this ticket: they still describe the shape once,
+    // in `BODY_FILL`, and the mood arrives afterwards.
+    // `rim` is the volume's EDGE colour, and it is a second base colour rather
+    // than a decoration derived from the first. `world/visuals.py` states the
+    // invariant this ticket has to carry: "the rim is drawn brighter than the
+    // fill so the difference SURVIVES tinting (both get multiplied by the same
+    // tint, so the ratio between them is fixed here and nowhere else)". The
+    // container tint used to be what kept that ratio; with the tint gone the
+    // mood has to reach the rim's own albedo the same way it reaches the
+    // body's, or every figure is outlined in the lamp's cream regardless of
+    // what colour it is. Measured on the first frame of this ticket: 11,491
+    // pixels of flat `#fbe5c8` keyline, and a 14-unit arm at 1.5px of rim lost
+    // its colour almost entirely — a die-cut sticker outline, which is the
+    // KI-051 read this whole sprint exists to remove.
+    //
+    // Omitted, it falls back to `BODY_RIM_SHADED`: the un-mooded edge, which
+    // is what the nineteen construction-time call sites want and what a
+    // volume drawn outside a character gets.
+    function paint(g, volume, fill, rim) {
+      (g.volumes || (g.volumes = [])).push(volume);
+      volume.band(g, BAND_INSET.shade);  g.fill(shade(fill, rampLevel("shade")));
+      volume.band(g, BAND_INSET.base);   g.fill(shade(fill, rampLevel("base")));
+      volume.band(g, BAND_INSET.lit);    g.fill(shade(fill, rampLevel("lit")));
+      volume.rim(g, rimStyle(rim));
+    }
+
+    // A rim's stroke style at a given base colour, lit like the volume's own
+    // lamp-facing band — the rim IS the lit edge, so it takes `rampLevel("lit")`
+    // and nothing else. `BODY_RIM_SHADED` (the same computation over the
+    // un-mooded `BODY_RIM.color`) is what a caller with no colour to offer
+    // gets, so the constant stays the single definition of the default edge.
+    function rimStyle(rim) {
+      if (!Number.isFinite(rim)) return BODY_RIM_SHADED;
+      return {
+        width: BODY_RIM.width,
+        color: shade(rim, rampLevel("lit")),
+        alignment: BODY_RIM.alignment,
+      };
+    }
+
+    // The same volumes, lit again in a new colour.
+    //
+    // `g.clear()` first, so the bands REPLACE the old ones rather than stacking
+    // a second opaque set on top of them — and the recorded list is emptied
+    // before the re-paint, because `paint` re-records as it goes and an
+    // unreset list would double on every mood change for as long as the stream
+    // is up. Nothing here touches the Graphics' transform, which is where
+    // every animation's state lives (`scale`, `rotation`, `x`/`y`): a mood
+    // change mid-gesture re-colours the figure without interrupting it.
+    //
+    // A Graphics with nothing recorded is left exactly as it is. That is not
+    // only defensive: faces (eyes, brows, mouth, visor) are drawn by
+    // `setExpression`'s own primitives, never through `paint`, and clearing
+    // one of those here would wipe a face and draw nothing back.
+    function repaint(g, fill, rim) {
+      const volumes = g.volumes;
+      if (!volumes || !volumes.length) return;
+      g.clear();
+      g.volumes = [];
+      for (const volume of volumes) paint(g, volume, fill, rim);
+    }
+
+    // How much of a volume's own extent a band keeps on one axis. `band` is
+    // the fraction from `BAND_INSET`; how many UNITS that costs is a property
+    // of this volume and this axis, so it is computed where the size is known
+    // rather than handed down as a fixed number of pixels. Weighting by the
+    // key's own component on the axis is what makes an overhead lamp band a
+    // shape across its height and leave its width alone, and a side lamp do
+    // the reverse — a light straight down the y axis produces full-width
+    // horizontal bands, which is the correct picture and also exactly what the
+    // neutral DEFAULT_LIGHT degrades to.
+    function bandExtent(size, axisComponent, band) {
+      const fraction = Number.isFinite(band) ? Math.max(0, band) : 0;
+      return size * (1 - Math.min(fraction * Math.abs(axisComponent), BAND_MAX));
+    }
+
+    // Can a `bw × bh` band with corner radius `rb`, sitting `cx, cy` from the
+    // volume's own centre, be drawn without any part of it leaving a `w × h`
+    // rounded rect of radius `r`?
+    //
+    // Exact, not a margin heuristic — and the check the FIRST version of this
+    // rule was missing. Bands placed flush against the volume's key-facing
+    // edges nest correctly in the BOUNDING BOX and still leak out through the
+    // rounded corner, because a small band's corner is squarer than the
+    // silhouette's: rasterised against the real call sites, the seated chest
+    // (48×40, r20 — a stadium) spilled 15.3% of its lit band outside its own
+    // outline, which is a figure whose shape changes when the lamp moves.
+    //
+    // The statement below is the whole of it: a rounded rect contains a
+    // rounded rect exactly when each of the inner shape's four corner DISCS
+    // lies inside the outer shape eroded by that disc's radius — and the
+    // erosion of a rounded rect by a disc is the same rounded rect with both
+    // dimensions and the radius reduced by it.
+    function bandInside(cx, cy, w, h, r, bw, bh, rb) {
+      if (Math.abs(cx) > (w - bw) / 2) return false;
+      if (Math.abs(cy) > (h - bh) / 2) return false;
+      const room = r - rb;
+      if (room <= 0) return true;
+      const ax = bw / 2 - rb, ay = bh / 2 - rb;   // the band's own arc centres
+      const hx = w / 2 - r, hy = h / 2 - r;       // the volume's arc centres
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          const dx = Math.max(0, Math.abs(cx + sx * ax) - hx);
+          const dy = Math.max(0, Math.abs(cy + sy * ay) - hy);
+          if (dx * dx + dy * dy > room * room) return false;
+        }
+      }
+      return true;
+    }
+
+    // Where a band sits: as far toward the lamp as this volume allows, as an
+    // offset from the volume's own centre.
+    //
+    // The direction is the key axis scaled by how much ROOM each axis has
+    // (half the difference between the volume and its band). Walking the raw
+    // key vector instead is wrong for anything long and thin, and wrong in a
+    // way the frame shows immediately: a 12x96 bar has 2.3 units of
+    // horizontal room and 28 of vertical, so a straight diagonal walk runs out
+    // of width after 4 units and the band ends up vertically CENTRED — a bar
+    // lit from above with its bright part in the middle. Scaling by the room
+    // turns that into an almost-vertical walk, while a SQUARE volume (which
+    // every circle is, 2R x 2R) still walks exactly along the key axis — which
+    // is what keeps `litCircle`'s closed form below the same rule and not a
+    // second one.
+    //
+    // The magnitude is bisected rather than solved: the feasible set is convex
+    // (an erosion of one convex shape by another) and contains the centre, so
+    // the feasible offsets along a ray are an interval from 0 and bisection
+    // lands on its edge — which leaves `bandInside` as the only geometry that
+    // has to be right. The centred band always fits, because `rb` is capped at
+    // `min(r, bw/2, bh/2)`, which is exactly the condition that makes the
+    // centred case pass; the search always has that floor.
+    //
+    // This is also the ONE place "toward the lamp" is expressed for a rect.
+    // Review round 1 shipped a figure lit from two directions at once because
+    // that phrase had two separate expressions — a per-axis sign branch for
+    // rects and `-LIGHT.direction` for circles — and only one of them was
+    // right. There is no sign branch left to get backwards.
+    function slideToKey(w, h, r, bw, bh, rb) {
+      const ux = -KEY_AXIS[0], uy = -KEY_AXIS[1];
+      const scale = Math.max(Math.abs(ux), Math.abs(uy)) || 1;
+      const tx = ux * ((w - bw) / 2) / scale;
+      const ty = uy * ((h - bh) / 2) / scale;
+      let lo = 0, hi = 1;
+      for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        if (bandInside(mid * tx, mid * ty, w, h, r, bw, bh, rb)) lo = mid;
+        else hi = mid;
+      }
+      return [lo * tx, lo * ty];
+    }
+
+    // Band edges land on a 1/64 unit — a power of two, so they stay exact in
+    // binary floating point against the whole (CELL-snapped) coordinates every
+    // call site passes, and the final `Math.max`/`Math.min` below can then
+    // pin a band inside its volume's box EXACTLY rather than to within 1e-15.
+    // Task 5 measured the seated rig clearing the painted seat by 9px and the
+    // backrest by 50px; those checks are worth being able to state without a
+    // tolerance.
+    const quant = (v) => Math.round(v * 64) / 64;
+    // The floor is one quantum, not zero: `band()` must always leave a path
+    // for the `g.fill()` that follows it, and a zero-area `roundRect` is a
+    // silent no-op rather than an error.
+    const MIN_BAND = 1 / 64;
+
+    // A volume for `paint`: the same rounded rect shrunk to each band and slid
+    // toward the lamp, plus the rim at its true silhouette. One definition
+    // rather than restating the arithmetic at every one of the nineteen call
+    // sites.
+    const litRect = (x, y, w, h, r) => {
+      return {
+        band: (g, band) => {
+          const x0 = snap(x), y0 = snap(y);
+          const bw = bandExtent(w, KEY_AXIS[0], band);
+          const bh = bandExtent(h, KEY_AXIS[1], band);
+          // A corner cannot stay absolute while the rect shrinks: a radius
+          // wider than the band it rounds is where a renderer starts guessing.
+          const rb = Math.max(0, Math.min(r, bw / 2, bh / 2));
+          const [ox, oy] = slideToKey(w, h, r, bw, bh, rb);
+          const bx = Math.min(Math.max(x0, quant(x0 + (w - bw) / 2 + ox)), x0 + w);
+          const by = Math.min(Math.max(y0, quant(y0 + (h - bh) / 2 + oy)), y0 + h);
+          const bwq = Math.max(MIN_BAND, Math.min(quant(bw), x0 + w - bx));
+          const bhq = Math.max(MIN_BAND, Math.min(quant(bh), y0 + h - by));
+          return g.roundRect(bx, by, bwq, bhq, Math.min(rb, bwq / 2, bhq / 2));
+        },
+        rim: (g, style) => rimStroke(g, x, y, w, h, r, style),
+      };
     };
+    // A circle is the closed-form case of the same rule, not a second one:
+    // `slideToKey(2R, 2R, R, 2rb, 2rb, rb)` is exactly `(R - rb)·-KEY_AXIS`,
+    // the offset that leaves the band internally tangent to the original
+    // circle at its key-facing point — which is why a square volume walking
+    // along the key axis matters above. `tests/api/test_world_page.py` asserts
+    // that identity rather than leaving it as a claim in a comment. Solving it
+    // here keeps the skull exact and saves 24 bisection steps per band.
+    const litCircle = (cx, cy, radius) => {
+      return {
+        band: (g, band) => {
+          const kept = radius * (1 - Math.min(circleBand(band), BAND_MAX));
+          const rb = Math.max(MIN_BAND, quant(kept));
+          const slide = radius - rb;
+          return g.circle(
+            snap(cx) + slide * -KEY_AXIS[0],
+            snap(cy) + slide * -KEY_AXIS[1],
+            rb,
+          );
+        },
+        rim: (g, style) => rimStrokeCircle(g, cx, cy, radius, style),
+      };
+    };
+
+    // The rim, kept at the volume's true (un-inset) silhouette so it still
+    // outlines the shape `paint` was called with, not one of its bands.
+    // Reached only through a volume's own `rim(g)`, never from a body method:
+    // a rim is not something a call site can forget, mis-order, or hand the
+    // wrong rectangle — `paint` owns the whole fill rule for a volume, which
+    // is the one thing this ticket was allowed to change.
+    function rimStroke(g, x, y, w, h, r, style) {
+      g.roundRect(snap(x), snap(y), w, h, r).stroke(style || BODY_RIM_SHADED);
+    }
+    function rimStrokeCircle(g, cx, cy, radius, style) {
+      g.circle(snap(cx), snap(cy), radius).stroke(style || BODY_RIM_SHADED);
+    }
+    // -------------------------------------------------------------------
+
+    // The colour a body of this mood is PAINTED in — the thing `paint()` then
+    // lights, not a multiplier laid over the result.
+    //
+    // `BODY_TINT` is the mood palette lifted to `SILHOUETTE_MIN_CONTRAST`
+    // (KI-028), and it is still a *tint*: the contrast floor was measured in
+    // `world/visuals.py` on `_rendered()`, "what the canvas actually shows: the
+    // base fill multiplied by the tint". So the colour that clears the floor is
+    // the PRODUCT, and that is what gets painted. Handing `paint()` the raw
+    // `BODY_TINT` entry instead would ship every body 1/0.816 = 1.23x brighter
+    // than the number `body_contrast()` asserts and a screenshot is compared
+    // back to — a measured quantity moved silently, which is exactly the shape
+    // of the defect KI-028 was.
+    //
+    // `MOOD_COLOR` is deliberately NOT what this reads. That map is the
+    // identity palette for chrome — labels, the gallery's mood swatch — and it
+    // is the pre-lift colour; reaching for it here is KI-028 reverted, which
+    // sinks fourteen of the twenty-two moods back under the floor.
+    //
+    // Unknown moods fall back to NEUTRAL_TINT *inside* the multiply. `neutral`
+    // is the live case, not a hypothetical: `character()` builds every figure
+    // at mood "neutral", which `visuals.MOOD_COLORS` does not claim, and
+    // returning the bare tint there would make un-mooded figures the brightest
+    // thing in the room. NEUTRAL_TINT, not NEUTRAL: the identity grey is the
+    // pre-lift colour, and painting a body in it lands at 3.05:1 — the only
+    // colour in the room under KI-028's floor, which is what KI-060 was.
+    function moodTint(mood) {
+      const hex = BODY_TINT[mood];
+      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL_TINT;
+    }
+    function moodFill(mood) {
+      return mulHex(BODY_FILL, moodTint(mood));
+    }
+    // The same mood on the RIM's own albedo — not a lighter `moodFill`, but the
+    // second base colour the container tint used to multiply alongside the
+    // first. `BODY_RIM_FILL` is white, so this comes out as the lifted tint
+    // itself, i.e. `BODY_FILL`'s 0xd0 stretched to 0xff: the fixed
+    // rim-over-fill ratio `world/visuals.py` says lives "here and nowhere
+    // else", preserved by construction instead of by a number restated here.
+    function moodRim(mood) {
+      return mulHex(BODY_RIM.color, moodTint(mood));
+    }
 
     // Shared severity -> tier bands (mirror the overlay + world/state tiers) so
     // the "swell" reads the same on every surface: tier 0 barely stirs, tier 3
@@ -203,6 +750,14 @@
       history.replaceState(null, "", clean.toString());
     }
 
+    // The void is a legitimate question — comparing two silhouettes against
+    // each other is easier without a painting behind them — but it is no
+    // longer the default. Judging a cast against a background the cast will
+    // never stand in is how KI-051 shipped. Top-level, not inside boot():
+    // drawGallery and drawAnimationSheet are boot()'s siblings, not its
+    // children, and need to read this too.
+    const VOID_MODE = new URLSearchParams(location.search).get("void") === "1";
+
     async function boot() {
       if (typeof PIXI === "undefined") {
         retryBoot("renderer unavailable");
@@ -242,6 +797,21 @@
       layers.monitors = new PIXI.Container();
       layers.chars = new PIXI.Container();
       layers.props = new PIXI.Container();
+      // Sprint 16 Task 10: `name-trader` originally sat on `desk-plate-trader`,
+      // real clean desk paint (Task 9 verified it) that the seated rig's own
+      // head rendered almost entirely in front of at this cast scale/anchor —
+      // a fact nothing had ever rendered the room live enough to see. A
+      // surface can be exactly where the plate says and still be unreadable
+      // if a layer above it paints over it, which is as much "text where it
+      // is not necessary" as hovering in the air was. Fix round: `name-trader`
+      // moved to `desk-face-trader` (the desk's front panel, well clear of
+      // the rig — see `world/plate.py`'s docstring and
+      // `test_the_name_trader_surface_does_not_intersect_the_seated_rig`).
+      // `nameplates` stays its own layer, added to `app.stage` LAST (after
+      // `layers.chars`) regardless: it is what keeps a label from inheriting
+      // a reaction's shake/hop, and it is cheap insurance against the next
+      // surface ever landing under a figure again.
+      layers.nameplates = new PIXI.Container();
       // Shadows are a *child* of the cast layer, not of any character: they
       // inherit CAST_SCALE and the layer's coordinate space for free, so a
       // shadow's x is just the character's x — but they are siblings of the
@@ -251,7 +821,7 @@
       layers.chars.addChild(layers.shadows);
       app.stage.addChild(
         layers.plate, layers.room, layers.glow, layers.monitors,
-        layers.props, layers.chars);
+        layers.props, layers.chars, layers.nameplates);
       // Pixel-art rule: no sub-pixel compositing for anything the cast or its
       // furniture draws. The plate and the vignette stay off this list on
       // purpose — they are painted art and a soft light falloff, not part of
@@ -259,10 +829,31 @@
       layers.chars.roundPixels = true;
       layers.props.roundPixels = true;
       layers.monitors.roundPixels = true;
+      layers.nameplates.roundPixels = true;
 
       await drawPlate();
       model = character("MODEL");
       trader = character("TRADER");
+      // `character()`'s nameTag is shared with the gallery/animation-sheet
+      // eval surfaces (`?gallery=1`/`?anims=1`), which legitimately float a
+      // label beside a diagnostic specimen — the design rule ("no text in
+      // the air") is about the ROOM, never those. The room's own name is
+      // drawn separately below, from TEXT_PLACEMENTS, into `layers.nameplates`
+      // rather than nested in each character's own (scaled, animated)
+      // container — both live on furniture that does not move when a
+      // reaction shakes or hops the figure above it, so the label must not
+      // inherit that animation either. The constructor's floating copy is
+      // blanked here rather than removed from `character()` itself, which
+      // both eval surfaces still need. Built ONCE: the content never
+      // changes per-frame, unlike the history line below.
+      model.nameTag.text = "";
+      trader.nameTag.text = "";
+      layers.nameplates.addChild(
+        ...[
+          placedLabel(TEXT_PLACEMENTS["name-model"], "MODEL"),
+          placedLabel(TEXT_PLACEMENTS["name-trader"], "TRADER"),
+        ].filter(Boolean),
+      );
       cast.push(model, trader);
       positionCharacters();
       startAmbient();
@@ -287,11 +878,20 @@
         }).catch(() => {});   // a failed beat is the watchdog's problem, not the room's
       }, 15000);
 
+      // scripts/shoot.py polls this instead of guessing a duration — readiness
+      // is polled, not timed. That design only holds if the flag actually
+      // means "drawn": set it before any gate's own draw call runs and the
+      // poll is decorative, the settle sleep becomes the only real guard, and
+      // shoot.py can photograph a page that reports ready before it painted
+      // anything. So each gate below sets it itself, immediately after ITS
+      // OWN drawing call, never here up front.
+
       // B1 evaluation gate: `?gallery=1` lays out both styles against every
       // mood so the options can be compared in one screenshot. Aesthetics is
       // the thing no assertion grades, so it needs to be *lookable*.
       if (new URLSearchParams(location.search).get("gallery") === "1") {
         drawGallery();
+        window.__worldDrawn = true;
         return;
       }
       // `?anims=1` — the other half of the eval gate, and the half that was
@@ -300,6 +900,7 @@
       // characters ticking is not something to point a browser source at.
       if (new URLSearchParams(location.search).get("anims")) {
         drawAnimationSheet();
+        window.__worldDrawn = true;
         return;
       }
 
@@ -325,11 +926,25 @@
           });
         };
         rehearse();
+        window.__worldDrawn = true;
         setInterval(rehearse, 12000);
         return;
       }
 
-      await refresh();
+      // Live path: `draw(world)` happens inside refresh(), which already
+      // swallows its own fetch/parse failures to keep the last frame on
+      // screen (see refresh's own comment) — but the flag has to be honest
+      // even if that ever stops being true. A dropped `/world/state` call is
+      // a data problem, not a failure to draw the room (the cast is already
+      // positioned above), so the flag is set from `finally`, not only on
+      // success — otherwise a throwing refresh would leave `__worldDrawn`
+      // false forever and shoot.py would spin its full 30s poll on a page
+      // that is actually fine.
+      try {
+        await refresh();
+      } finally {
+        window.__worldDrawn = true;
+      }
       subscribe();
       setInterval(refresh, 60000);   // projection stays authoritative server-side
     }
@@ -337,8 +952,19 @@
     function drawGallery() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
-      layers.room.visible = false;   // the floor line is scenery, not a specimen
-      layers.plate.visible = false;  // and so is the painted backdrop
+      layers.room.visible = VOID_MODE ? false : true;
+      layers.plate.visible = VOID_MODE ? false : true;
+      // Live candles drew straight over the specimens (observed 2026-09-01).
+      // The monitors are the room's content, not its scenery, so they go in
+      // both modes.
+      layers.monitors.visible = false;
+      // Sprint 16 Task 10: `layers.nameplates` is independent of the room
+      // characters `setCharacterVisible` above hides — it is built once at
+      // fixed canvas coordinates, so left visible it draws "MODEL"/"TRADER"
+      // over whichever grid cell happens to land on that spot (observed
+      // 2026-09-07, this ticket's own screenshot). Same "eval surface hides
+      // the room's content" rule the monitors line above already follows.
+      layers.nameplates.visible = false;
       layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
@@ -386,8 +1012,15 @@
     function drawAnimationSheet() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
-      layers.room.visible = false;
-      layers.plate.visible = false;
+      layers.room.visible = VOID_MODE ? false : true;
+      layers.plate.visible = VOID_MODE ? false : true;
+      // Live candles drew straight over the specimens (observed 2026-09-01).
+      // The monitors are the room's content, not its scenery, so they go in
+      // both modes.
+      layers.monitors.visible = false;
+      // See drawGallery's own comment: `layers.nameplates` is fixed-position
+      // and independent of the room characters this sheet already hides.
+      layers.nameplates.visible = false;
       // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
       // and whether that reads as dejected or as a head in a torso is a
       // question about broadcast size. Tier-3 amplitude, for the same reason.
@@ -457,6 +1090,21 @@
       return t;
     }
 
+    // Sprint 16 Task 10: the room's own text is never positioned by a
+    // literal offset any more (KI-054's sibling failure, one layer up — a
+    // label that hovers near a character instead of sitting on the surface
+    // the room actually painted for it). `placement` is a resolved
+    // `TEXT_PLACEMENTS.*` entry, so the caller always names the const field
+    // directly (`TEXT_PLACEMENTS.history`, `TEXT_PLACEMENTS["name-model"]`)
+    // rather than routing through a second lookup this function would have
+    // to trust. A placement that did not resolve (surface repainted away,
+    // manifest missing) is `undefined` here, same contract as `as_json`
+    // itself: the label is omitted, never a throw into the render loop.
+    function placedLabel(placement, text, tint) {
+      if (!placement) return null;
+      return label(text, placement.x, placement.y, placement.size, tint);
+    }
+
     // B2: the room is built ONCE and only its alpha and tint are animated.
     // OBS renders this in software on a box that also encodes 1080p, and a
     // full-canvas Graphics rebuilt per frame is the one way this ticket could
@@ -513,24 +1161,50 @@
         // never inside drawCandles or the poll loop. See buildMonitorGraphics
         // below.
         buildMonitorGraphics();
-        // Claimed only once BOTH builders have actually succeeded — not
-        // before them. Every other read of `plateReady` (the vignette gate,
-        // applyGlow, drawCandles) treats it as "the room is safe to light as
-        // painted"; claiming it before the builders ran let a throw inside
-        // either leave the flag true while the catch below drew the
-        // procedural room on top of the still-added plate sprite — plate and
-        // procedural room composited together, a darkened double-exposure.
+        // Task 14: the painted city's window lights, same "build once" rule
+        // — never inside the per-frame ticker. See buildAmbientLights above.
+        buildAmbientLights();
+        // Claimed only once ALL THREE builders have actually succeeded —
+        // not before them. Every other read of `plateReady` (the vignette
+        // gate, applyGlow, tickAmbientLights, drawCandles) treats it as "the
+        // room is safe to light as painted"; claiming it before the builders
+        // ran let a throw inside any of them leave the flag true while the
+        // catch below drew the procedural room on top of the still-added
+        // plate sprite — plate and procedural room composited together, a
+        // darkened double-exposure.
         plateReady = true;
         // The plate reserves a quiet strip at the top for the newcomer line.
         // Bind the banner to the measurement so a repaint moves the text with
         // the art instead of hanging it over a painted detail.
-        // The bottom band has no element on this page yet — /world has no
-        // price band — so nothing is bound to PLATE.bands.bottom rather than
-        // shipping a guard that can never fire.
+        // The bottom band DOES have an element - `#nowband`, the page's
+        // largest text - and it is CSS-positioned by decision (KI-070): a
+        // flex bar pinned `bottom: 0`, whose cells are laid out by the
+        // browser rather than placed from the manifest. So `bands.bottom`
+        // binds nothing here, and the two `band-bottom` placements that
+        // described it were deleted rather than left to pass a CI check
+        // over a layout the page does not draw. `history` is the one thing
+        // actually drawn on that band, and it is placed (see `draw()`).
         const banner = document.getElementById("banner");
         const bandHeight = bannerMinHeight();
         if (banner && bandHeight) {
           banner.style.minHeight = bandHeight + "px";
+        }
+        // Sprint 16 Task 10: the bar's own height above binds to the full
+        // quiet strip (a background choice, not text); the READABLE line
+        // inside it binds to `TEXT_PLACEMENTS.banner` directly, so the rule
+        // ("no text in the air") covers this DOM element the same way it
+        // covers every canvas label — a repaint that moved the placement
+        // moves where the sentence actually sits, not just how tall its bar is.
+        const bannerText = TEXT_PLACEMENTS.banner;
+        if (banner && bannerText) {
+          // `dx`/`dy`, not `x`/`y`: this bar is pinned to the top-left of
+          // the surface and pads its line INSIDE itself, so it wants the
+          // offset within the surface, never the absolute canvas point the
+          // canvas labels are drawn at (KI-072). The two are the same
+          // numbers only while `band-top` sits at the canvas origin.
+          banner.style.paddingLeft = bannerText.dx + "px";
+          banner.style.paddingTop = bannerText.dy + "px";
+          banner.style.fontSize = bannerText.size + "px";
         }
       } catch (err) {
         // Deliberately NOT retryBoot(): a reload cannot conjure a missing
@@ -617,7 +1291,8 @@
     const CAST_FRACTIONS = { model: 0.32, trader: 0.62 };
 
     function anchorFor(name) {
-      const painted = plateReady && PLATE && PLATE.cast ? PLATE.cast[name] : null;
+      const painted =
+        plateReady && PAINTED_CAST ? PAINTED_CAST.characters[name] : null;
       if (painted) {
         // `pose` is the plate's answer to "is there a chair here" — the trader
         // is seated on this plate. C2 rebuilds the rig around it; it is
@@ -634,6 +1309,28 @@
         baseY: app.screen.height * GROUND,
         pose: "standing",
       };
+    }
+
+    // Where a seated body's HIPS go, which is a different question from where
+    // a seated body FITS. `seat` is the fit budget — the cushion's painted
+    // span, what the rig's width is checked against. `sit_anchor` is the point
+    // the rig's origin is pinned to. Sprint 15 used one number for both, taking
+    // the seat rect's centre as the anchor, and the figure still landed beside
+    // the chair (KI-054): this plate draws the chair in three-quarter view, so
+    // the cushion's centre and the point a sitter's hips occupy are ~7px and
+    // ~8px apart in different directions, and the backrest is up-and-right of
+    // both. Two measurements now, two fields.
+    //
+    // Returns null — never a throw and never a guess — when the plate has no
+    // `sit_anchor` (an older manifest, a repaint mid-edit). The caller then
+    // keeps the standing anchor, which is exactly the placement that shipped
+    // before this existed: a degrade to the previous look, not to a blank one.
+    function sitAnchorFor(name) {
+      const painted =
+        plateReady && PAINTED_CAST ? PAINTED_CAST.characters[name] : null;
+      const sit = painted ? painted.sit_anchor : null;
+      if (!sit || sit.x == null || sit.y == null) return null;
+      return { x: sit.x, baseY: sit.y };
     }
 
     // How tall the newcomer banner must be to sit on the strip the plate left
@@ -671,7 +1368,17 @@
       // so they read as depth rather than as a chart; centred in the bore when
       // the plate painted one.
       const x = tube ? tube.x - width / 2 : app.screen.width * 0.80 + index * 132;
-      return { x, baseY, width, height };
+      // KI-055: the tube is a cylinder seen slightly from above, so the fill's
+      // top and base are ellipses, not flat caps - `bore_ry` is that ellipse's
+      // measured squash (KI-055, Docs/known-issues.md). Read here, not re-derived
+      // in drawPillars, for the same reason this whole function exists:
+      // off-by-tens against the painted bore is arithmetic, checkable without
+      // PIXI. No painted tube means no measured squash either, so this falls
+      // back to a fixed fraction of the (also-fallback) width rather than
+      // reaching into a null tube - the same degrade-not-throw rule
+      // rampLevel/CONTACT use above.
+      const boreRy = tube && Number.isFinite(tube.bore_ry) ? tube.bore_ry : width * 0.13;
+      return { x, baseY, width, height, boreRy };
     }
 
     function drawPillars(state) {
@@ -694,14 +1401,40 @@
           pillar.rect(snap(geo.x), snap(geo.baseY - (b + 1) * CELL * 2), geo.width, CELL)
                 .fill({ color: color(data.mood), alpha: 0.85 });
         }
-        // A cap catches the light: without it a flat column reads as a bar
-        // chart, which is the model's body, not the room's furniture.
-        const cap = new PIXI.Graphics()
-          .roundRect(geo.x - 4, geo.baseY - geo.height - 6, geo.width + 8, 8, 3)
-          .fill({ color: color(data.mood), alpha: 0.8 });
-        layers.props.addChild(pillar, cap,
-          label(symbol, geo.x - 6, geo.baseY + 12, 13, 0x787b86),
-          label(data.mood, geo.x - 6, geo.baseY + 30, 13, 0x5a6472));
+        // KI-055: the tubes are painted cylinders seen slightly from above,
+        // so the surface of what fills them is an ellipse. A flat cap
+        // contradicts the perspective of the art it sits inside — it reads
+        // as a bar chart, which is the model's BODY, not the room's
+        // furniture. The base gets the same treatment: it is the tube's own
+        // floor, always visible under the fill, never a flat edge either.
+        const cap = new PIXI.Graphics();
+        const fillColour = color(data.mood);
+        // Review round 2, MINOR 6: every other draw in this function snaps
+        // its POSITION but not its size (`pillar.rect` above snaps `geo.x`,
+        // never `geo.width`) — the cap's centre-x is the one coordinate that
+        // skipped it, ~2px off the stripes it caps. `snap(geo.x)` is the
+        // exact value the stripes themselves are drawn from, so adding half
+        // the (unsnapped) width lands the cap dead-centre on the column it
+        // caps, not just closer to it. `cy` is deliberately NOT snapped here
+        // — review round 2, MINOR 2: the cap already sits a few px above the
+        // painted bore's own measured centre (pinned in
+        // tests/unit/test_plate_manifest.py), and that gap looked right
+        // in-frame; snapping cy would nudge it without anyone having asked
+        // to move it.
+        const capX = snap(geo.x) + geo.width / 2;
+        // Review round 2, finding (d): opaque caps over an alpha:0.85 fill
+        // read as a different, harder material sitting on top of the liquid
+        // rather than its own surface. Same alpha as the column it caps.
+        cap.ellipse(capX, geo.baseY - geo.height, geo.width / 2, geo.boreRy)
+           .fill({ color: shade(fillColour, rampLevel("lit")), alpha: 0.85 });
+        cap.ellipse(capX, geo.baseY, geo.width / 2, geo.boreRy)
+           .fill({ color: shade(fillColour, rampLevel("shade")), alpha: 0.85 });
+        // Sprint 16 Task 10: no per-tube symbol/mood label any more — both
+        // floated at a fixed offset off the tube's own base, with no
+        // declared surface (Task 9 deleted `symbol-BTCUSDT`/`symbol-ETHUSDT`
+        // from `text` for exactly that reason), and #nowband already prints
+        // every symbol's price and mood on every frame.
+        layers.props.addChild(pillar, cap);
       });
     }
 
@@ -755,7 +1488,19 @@
     // of the only two figures on screen, which trades this sprint's headline
     // goal (watchability) for a parenthetical. One constant to reverse after
     // a visual check, not a redesign.
-    const CAST_SCALE = 1.5;
+    //
+    // Sprint 16: the visual check happened, at the 1920x960 the browser source
+    // actually is. 1.5 puts a 42px-radius head on the model — over half the
+    // height of the painted bonsai beside it — and lifts the trader's crown
+    // 67px clear of its own chair's backrest, which is what "standing in front
+    // of the chair" turned out to mean. So the size of the cast is a
+    // MEASUREMENT against the painted furniture now, not a constant: it lives
+    // in the manifest next to the seat and the tubes, and a repaint re-measures
+    // it instead of re-coding it. The literal is the no-plate fallback, and it
+    // has to keep CELL * CAST_SCALE a whole number of screen pixels (see
+    // test_animation_displacement_actually_quantises_to_the_grid, which grades
+    // exactly this literal): 1.25 renders the 4px cell as an exact 5px.
+    const CAST_SCALE = (PAINTED_CAST && PAINTED_CAST.scale) || 1.25;
 
     function styleFor(name) {
       const style = STYLE_OVERRIDE || CAST[name];
@@ -803,13 +1548,13 @@
       // A candlestick: real body between two wicks. The project's own glyph,
       // and the one that reads most instantly as "this thing is the market".
       candle(body, accents) {
-        body.roundRect(snap(-27), snap(-104), 54, 84, 8).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-27, -104, 54, 84, 8), BODY_FILL);
         // Wick thick enough to read as a neck at stream distance, and short
         // enough that the head sits ON the candle rather than floating over it.
-        const wickTop = new PIXI.Graphics().roundRect(snap(-3.5), snap(-130), 7, 30, 3.5)
-          .fill(BODY_FILL).stroke(BODY_RIM);
-        const wickLow = new PIXI.Graphics().roundRect(snap(-3.5), snap(-22), 7, 26, 3.5)
-          .fill(BODY_FILL).stroke(BODY_RIM);
+        const wickTop = new PIXI.Graphics();
+        paint(wickTop, litRect(-3.5, -130, 7, 30, 3.5), BODY_FILL);
+        const wickLow = new PIXI.Graphics();
+        paint(wickLow, litRect(-3.5, -22, 7, 26, 3.5), BODY_FILL);
         // A wick flicks by lengthening. It cannot swing: it's drawn in the
         // character's own space, so rotating it pivots about the feet.
         wickTop.gestureMode = wickLow.gestureMode = "pump";
@@ -821,8 +1566,8 @@
       bars(body, accents) {
         const heights = [54, 86, 68, 96, 60];
         heights.forEach((h, i) => {
-          const bar = new PIXI.Graphics()
-            .roundRect(snap(-6), snap(-h), 12, h, 4).fill(BODY_FILL).stroke(BODY_RIM);
+          const bar = new PIXI.Graphics();
+          paint(bar, litRect(-6, -h, 12, h, 4), BODY_FILL);
           bar.x = -36 + i * 18;
           bar.restHeight = h;
           bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
@@ -831,15 +1576,15 @@
         // A static stem, so the head isn't left hovering over the cluster the
         // way it was. It can't be one of the bars: those ripple, and a neck
         // that stretches would pull the face off the body.
-        body.roundRect(snap(-6), snap(-118), 12, 58, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-6, -118, 12, 58, 6), BODY_FILL);
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
       // end of the register; a piece that looks like it is thinking.
       monolith(body, accents) {
-        body.roundRect(snap(-26), snap(-104), 52, 78, 20).fill(BODY_FILL).stroke(BODY_RIM);
-        const base = new PIXI.Graphics()
-          .roundRect(snap(-38), snap(-30), 76, 30, 14).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-26, -104, 52, 78, 20), BODY_FILL);
+        const base = new PIXI.Graphics();
+        paint(base, litRect(-38, -30, 76, 30, 14), BODY_FILL);
         base.gestureMode = "shift";   // a weighted column doesn't wave, it leans
         base.restX = 0;
         accents.push(base);
@@ -851,16 +1596,16 @@
       figure(body, accents) {
         // The gap has to be wide enough to survive the stream: at 6 units the
         // two legs merged into one column and he read as a pedestal.
-        body.roundRect(snap(-19), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(snap(6), snap(-56), 13, 56, 6).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-19, -56, 13, 56, 6), BODY_FILL);
+        paint(body, litRect(6, -56, 13, 56, 6), BODY_FILL);
         // Waist under a broader chest. The taper is what reads as a person —
         // one capsule reads as a pill — and the wider shoulders are what stop
         // the head (28px, shared with every other body) looking oversized.
-        body.roundRect(snap(-26), snap(-86), 52, 40, 14).fill(BODY_FILL).stroke(BODY_RIM);
-        body.roundRect(snap(-33), snap(-128), 66, 54, 22).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litRect(-26, -86, 52, 40, 14), BODY_FILL);
+        paint(body, litRect(-33, -128, 66, 54, 22), BODY_FILL);
         for (const side of [-1, 1]) {
-          const arm = new PIXI.Graphics().roundRect(snap(-7), snap(-5), 14, 66, 7)
-            .fill(BODY_FILL).stroke(BODY_RIM);
+          const arm = new PIXI.Graphics();
+          paint(arm, litRect(-7, -5, 14, 66, 7), BODY_FILL);
           arm.x = side * 36; arm.y = -120;   // pivot at the shoulder
           // Not quite straight and not quite matching: dead-symmetrical arms
           // read as a mannequin, and the asymmetry costs two numbers.
@@ -878,7 +1623,7 @@
       // The original: face on a single disc, no body. Kept as the baseline the
       // others are judged against.
       orb(body) {
-        body.circle(snap(0), snap(-60), 46).fill(BODY_FILL).stroke(BODY_RIM);
+        paint(body, litCircle(0, -60, 46), BODY_FILL);
         return -66;
       },
     };
@@ -898,6 +1643,20 @@
     // as HEAD_TRAVEL, and checked against STYLES for the same reason: a new
     // body that silently inherits someone else's footprint reads as floating.
     const SHADOW_WIDTH = { bars: 34, figure: 30, candle: 22, monolith: 26, orb: 20 };
+
+    // How tall a contact patch is against its own width: a roughly circular
+    // patch on the floor, seen from the room's viewpoint. So this number is
+    // not just the ellipse's proportions — it IS this room's foreshortening,
+    // the factor by which the floor squashes anything measured across it. The
+    // shadow's height and the y half of its throw both read it, because they
+    // are the same fact, and writing the throw's squash as its own literal is
+    // how the two would silently drift apart.
+    //
+    // Taken against the patch's own 2:1 base, NOT against its drawn width:
+    // `CONTACT.widthScale` widens the blob that is DRAWN — an art call about
+    // how far a body's contact spills — while the floor's foreshortening is a
+    // property of the room, unchanged by how wide the plate wants the smudge.
+    const SHADOW_ASPECT = 0.46;
 
     // One soft blob, built once and shared. A hard ellipse reads as a sticker
     // and three stacked ellipses band visibly (the same thing that made the
@@ -935,14 +1694,43 @@
     }
 
     function shadowTick(char) {
+      // First, always: `CONTACT` is a top-level read, so a character with no
+      // shadow must leave before anything touches it.
       if (!char.shadow) return;
       const lift = Math.max(0, char.baseY - char.container.y);
       const spread = 1 + lift * 0.004;
-      char.shadow.x = char.container.x;
-      char.shadow.y = char.baseY + 3;
-      char.shadow.width = char.shadowW * 2 * spread;
-      char.shadow.height = char.shadowW * 0.46 * spread;
-      char.shadow.alpha = 0.55 / (1 + lift * 0.014);
+      // Thrown AWAY from the key, which is `+KEY_AXIS`. `-KEY_AXIS` is where
+      // the lamp is — it is the direction every lit band slides in
+      // (`litCircle`'s `slide * -KEY_AXIS[i]` above) — so a shadow goes the
+      // other way, and on this plate that is down and to the LEFT. Centred,
+      // which is what this did until Sprint 16, a figure the room lights hard
+      // from one side gets a puddle under its feet; a puddle is the loudest
+      // "pasted on" cue in the before-frame, and the whole of KI-051's
+      // complaint about the cast not belonging to its room.
+      //
+      // The y half is squashed by `SHADOW_ASPECT / 2` because the throw lies
+      // ON the floor, and the floor is exactly that foreshortened — it is the
+      // same fact that makes a round contact patch draw as a flat ellipse, so
+      // it is read from the same constant rather than restated as a number of
+      // its own. Unsquashed, the measured direction (steeply downward) walks
+      // the shadow clear of the feet and the figure floats again, having
+      // gained a direction and lost its floor.
+      const throwX = KEY_AXIS[0] * CONTACT.throwScale * SHADOW_THROW;
+      const throwY =
+        KEY_AXIS[1] * CONTACT.throwScale * SHADOW_THROW * (SHADOW_ASPECT / 2);
+      // The throw moves the patch AND grows it by the same amount, so the
+      // half-extent gains exactly what the centre gave up: the lamp-side edge
+      // stays where the foot is and only the far edge travels. Offsetting
+      // alone is the trade this ticket would most easily make by accident —
+      // a shadow that no longer touches the body it belongs to reads as a
+      // second figure, which is a worse floating than the one being fixed.
+      char.shadow.x = char.container.x + throwX;
+      char.shadow.y = char.baseY + 3 + throwY;
+      char.shadow.width =
+        (char.shadowW * 2 * CONTACT.widthScale + 2 * Math.abs(throwX)) * spread;
+      char.shadow.height =
+        (char.shadowW * SHADOW_ASPECT + 2 * Math.abs(throwY)) * spread;
+      char.shadow.alpha = CONTACT.opacity / (1 + lift * 0.014);
     }
 
     function character(name, style) {
@@ -971,13 +1759,21 @@
         ? seatedRig(body, accents)
         : BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
-      if (style !== "orb") skull.circle(snap(0), snap(0), 28).fill(BODY_FILL).stroke(BODY_RIM);
+      // Not one of BODIES.*: the orb IS its own face and skips a head
+      // entirely, but every other style's head is built here rather than in
+      // its body method. Shaded the same way as the rest of the cast — the
+      // head is the single largest surface carrying mood (`FACE`/`setExpression`
+      // paint eyes, brows and mouth onto it), and a flat head on an otherwise
+      // lit body is the one inconsistency a gallery grid would show first.
+      if (style !== "orb") {
+        paint(skull, litCircle(0, 0, 28), BODY_FILL);
+      }
       head.y = headY;
       head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
 
       const nameTag = label(name, -40, 22, 18);
-      const stat = label("", -80, 46, 14, 0x787b86);
-      const moodTag = label("", -40, headY - 56, 16, 0x787b86);
+      const stat = label("", -80, 46, 14, NEUTRAL);
+      const moodTag = label("", -40, headY - 56, 16, NEUTRAL);
       // Accents go behind the mass, so a wick reads as emerging from it.
       container.addChild(...accents, body, head, nameTag, stat, moodTag);
       layers.chars.addChild(container);
@@ -992,7 +1788,7 @@
 
       const char = {
         container, body, head, skull, eyeL, eyeR, mouth, browL, browR, visor,
-        accents, style, stat, moodTag, faceKind: FACE_KIND[style],
+        accents, style, stat, moodTag, nameTag, faceKind: FACE_KIND[style],
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
         rand: rng32(seed || 1),
         shadow, shadowW: SHADOW_WIDTH[style],
@@ -1047,7 +1843,23 @@
     // Lighten or darken a mood colour without leaving its hue. Accents that
     // sit ON the body (arms) need to be a different value from it, or they
     // vanish into the mass at stream distance.
-    function shade(tint, factor) {
+    //
+    // Renamed from `shade` (KI-051): that name now belongs to the room-light
+    // mix defined near `BODY_RIM` (`shade(baseHex, level)`, blends toward
+    // `LIGHT.warmth`/`LIGHT.ambient`). This one is unrelated — a flat
+    // channel-wise multiply against `factor` — and the two are NOT
+    // interchangeable: `accent.shadeFactor` (`1.35`, a multiplier) fed to
+    // the room-light `shade()` would clamp to a full-strength mix toward
+    // `LIGHT.warmth` instead of a gentle lighten. Kept as its own function
+    // under its own name rather than merged, so `applyMood`'s per-accent
+    // lighten and `paint`'s per-band light direction stay two independent
+    // knobs.
+    //
+    // It is now applied to a body's own FILL rather than to a tint (Task 8),
+    // which is a rename of what it receives and not a change to what it does:
+    // the arm is a lighter version of whatever colour the torso is painted,
+    // and `paint()` lights both from the same lamp afterwards.
+    function lightenTint(tint, factor) {
       const clamp = (v) => Math.max(0, Math.min(255, Math.round(v * factor)));
       return (clamp((tint >> 16) & 0xff) << 16)
            | (clamp((tint >> 8) & 0xff) << 8)
@@ -1062,6 +1874,11 @@
     // "floor" was not the quantity anyone measures. Both are now done in
     // world/visuals.py against the rendered colour, and the answer arrives
     // precomputed in BODY_TINT (KI-028).
+    //
+    // Task 8 finished the same thought one step further along: the rendered
+    // colour is no longer something the GPU arrives at per pixel, it is what
+    // `moodFill()` computes and `paint()` is handed. Nothing on this page
+    // multiplies a mood over a drawn figure any more.
 
     // Faces are redrawn rather than tweened: a handful of primitives per mood
     // change is far cheaper than keeping a rig, and OBS renders in software.
@@ -1072,23 +1889,28 @@
       // exactly as the mood had them.
       char.face = { valence, arousal };
       char.blinkClosed = false;
-      const tint = bodyTint(mood);
+      const fill = moodFill(mood);
       char.visor.clear();
       if (char.faceKind === "machine") {
-        machineFace(char, valence, arousal, tint);
+        machineFace(char, valence, arousal, fill);
       } else {
         humanFace(char, valence, arousal);
       }
-      applyTint(char, tint);
+      applyMood(char, mood);
     }
 
     // A readout, not an expression: the same two axes, computed. Arousal lights
     // more of the LED; valence steps the mouth. No brows — a brow is a muscle.
-    function machineFace(char, valence, arousal, tint) {
-      // 0.14, not 0.35: the skull is a 0x545862 fill *tinted*, so it already
-      // renders at roughly a third of the mood colour — a 0.35 visor came out
-      // the same value as the head and was invisible on the real page.
-      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(shade(tint, 0.14));
+    function machineFace(char, valence, arousal, fill) {
+      // 0.14, not 0.35: a dark inset of the head's own colour. The original
+      // number was picked when the skull was a 0x545862 fill being *tinted*,
+      // so it rendered at roughly a third of the mood colour and a 0.35 visor
+      // came out the same value as the head — invisible on the real page.
+      // KI-028 raised the base fill and this ticket replaced the tint with a
+      // paint, so the head now renders at ~0.82 of the mood colour and 0.14
+      // sits further below it than it ever did. Kept, deliberately: the visor
+      // reads as a recess, and moving it is an art call with no frame behind it.
+      char.visor.roundRect(snap(-21), snap(-16), 42, 23, 8).fill(lightenTint(fill, 0.14));
       machineEyes(char, arousal);
       char.browL.clear();
       char.browR.clear();
@@ -1156,11 +1978,44 @@
         .stroke({ width: 2.5, color: 0xd1d4dc });
     }
 
-    function applyTint(char, tint) {
-      char.body.tint = tint;
-      if (char.skull) char.skull.tint = tint;
+    // A mood, applied to every volume the figure is made of.
+    //
+    // This used to be three container-tint assignments — `char.body.tint =
+    // tint` and friends. A container tint is a shader multiply over pixels
+    // that have ALREADY been drawn, so once `paint()` started mixing the lit
+    // band toward `LIGHT.warmth` and the shade band toward `LIGHT.ambient`,
+    // the tint multiplied the room's own lamp along with the body. Every mood
+    // came out as the same figure under a differently coloured light, which is
+    // precisely why the gallery read as "the same figure, but red".
+    //
+    // Now the mood goes in as `paint()`'s own colour argument — the seam Task 6
+    // built and, until this ticket, only ever handed `BODY_FILL`. The lamp stays
+    // amber and the room stays cold in every mood; what changes is the colour
+    // they fall on. Nothing here writes `.tint` any more, on purpose.
+    // Takes the MOOD, not two colours. Both surfaces are derived here, in one
+    // place, because a call site that can pass a fill and forget a rim is a
+    // call site that eventually does: the first frame of this ticket shipped
+    // exactly that — bodies correctly re-lit, every silhouette outlined in the
+    // lamp's cream — and it was invisible to a test that drove this function
+    // with both colours already in hand. There is no argument left to omit.
+    //
+    // Both surfaces move together on the accents too: an arm's `shadeFactor`
+    // lightened its fill AND its rim before, because the container tint it was
+    // handed had already been lightened and was multiplied over both.
+    // Lightening only the fill leaves a bright arm inside a rim struck for a
+    // darker body.
+    function applyMood(char, mood) {
+      const fill = moodFill(mood);
+      const rim = moodRim(mood);
+      repaint(char.body, fill, rim);
+      if (char.skull) repaint(char.skull, fill, rim);
       for (const accent of char.accents) {
-        accent.tint = accent.shadeFactor ? shade(tint, accent.shadeFactor) : tint;
+        const factor = accent.shadeFactor;
+        repaint(
+          accent,
+          factor ? lightenTint(fill, factor) : fill,
+          factor ? lightenTint(rim, factor) : rim,
+        );
       }
     }
 
@@ -1272,8 +2127,8 @@
     function seatedRig(body, accents) {
       // Thighs: short and low, at the front edge of the seat rather than
       // dropping to a floor this plate doesn't give the chair.
-      body.roundRect(snap(-22), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
-      body.roundRect(snap(4), snap(-6), 18, 16, 6).fill(BODY_FILL).stroke(BODY_RIM);
+      paint(body, litRect(-22, -6, 18, 16, 6), BODY_FILL);
+      paint(body, litRect(4, -6, 18, 16, 6), BODY_FILL);
       // Waist and chest, stacked straight up off the hips rather than off a
       // standing pair of legs. Review round 1, Finding 1: the seat measures
       // 79 screen px wide (`PLATE.cast.trader.seat.width`), and 58 units of
@@ -1288,15 +2143,15 @@
       // seat` (manifest) both compute this from the real roundRect calls
       // against the manifest's measurement, rather than trusting this
       // comment's arithmetic.
-      body.roundRect(snap(-20), snap(-42), 40, 34, 14).fill(BODY_FILL).stroke(BODY_RIM);
-      body.roundRect(snap(-24), snap(-80), 48, 40, 20).fill(BODY_FILL).stroke(BODY_RIM);
+      paint(body, litRect(-20, -42, 40, 34, 14), BODY_FILL);
+      paint(body, litRect(-24, -80, 48, 40, 20), BODY_FILL);
       // Forearms bent up toward the desk, not hanging at the sides — shorter
       // than the standing figure's (66 units). Pivot at 14: the arm's own
       // local rect snaps to [-4, 8], so a wider pivot pushes its outer edge
       // past the chest and becomes the new widest part.
       for (const side of [-1, 1]) {
-        const arm = new PIXI.Graphics().roundRect(snap(-6), snap(0), 12, 40, 6)
-          .fill(BODY_FILL).stroke(BODY_RIM);
+        const arm = new PIXI.Graphics();
+        paint(arm, litRect(-6, 0, 12, 40, 6), BODY_FILL);
         arm.x = side * 14; arm.y = -76;
         arm.restRotation = side < 0 ? -0.55 : 0.5;
         arm.shadeFactor = 1.35;
@@ -1605,6 +2460,14 @@
       // NOTE: `character()` also sets a y, and it is dead — this runs on every
       // draw and overwrites it. The plan pointed this ticket at that write.
       const anchors = { model: anchorFor("model"), trader: anchorFor("trader") };
+      // A seated pose is pinned by the hips, a standing one by the feet — the
+      // plate measures both, and `sitAnchorFor` returns null for any plate that
+      // doesn't, which leaves the standing anchor in place rather than a hole.
+      for (const name of ["model", "trader"]) {
+        if (anchors[name].pose !== "seated") continue;
+        const hips = sitAnchorFor(name);
+        if (hips) { anchors[name].x = hips.x; anchors[name].baseY = hips.baseY; }
+      }
       model.container.x = anchors.model.x / CAST_SCALE;
       trader.container.x = anchors.trader.x / CAST_SCALE;
       // The two no longer share a floor: on this plate the trader sits on a
@@ -1626,30 +2489,28 @@
       const m = state.model ?? {};
       const mood = m.reaction?.mood ?? "neutral";
       setExpression(model, mood);
-      model.moodTag.text = mood;
-      // KI-012: show the same last-N-resolved record as the overlay strips
-      // (m.accuracy), labelled with its window, so the room and strips agree.
-      const acc = m.accuracy ?? {};
-      const rate = acc.hit_rate == null ? "—" : `${(acc.hit_rate * 100).toFixed(1)}%`;
-      model.stat.text =
-        `${acc.wins ?? 0}W ${acc.losses ?? 0}L · ${rate} · last ${acc.window ?? 0}`;
+      // Sprint 16 Task 10: no floating mood/record text beside the cast any
+      // more. Mood is readable from the figure itself (Tasks 6/8's shading);
+      // the win/loss record is `#nowband`'s own `record` span (KI-012) and a
+      // second copy here had no declared surface to sit on.
 
       // The trader stays dormant until trader_* events exist, so the room is
       // complete whether or not the freqtrade sidecar is running.
       const traderState = state.trader ?? null;
       // No sidecar running means asleep, not dead: a closed-eye idle face.
       setExpression(trader, traderState ? traderState.mood : "idle");
-      trader.moodTag.text = traderState ? traderState.mood : "";
-      trader.stat.text = traderState
-        ? `${traderState.open_trades} open · ${traderState.profit_pct}%`
-        : "asleep";
 
       drawPillars(state);
 
       const h = state.history ?? {};
-      // Sits above the now-band (B9), which owns the bottom strip of the page.
-      layers.props.addChild(label(historyLine(h), 24, app.screen.height - 86, 14,
-        0x787b86));
+      // The history line sits on a surface the manifest actually measured
+      // (Sprint 16 Task 10) — never at a fixed offset off app.screen, which
+      // is why it used to run across the tubes at some window sizes.
+      // `name-trader`/`name-model` are NOT rebuilt here: they are static
+      // text built once at boot into `layers.nameplates` (see boot()'s own
+      // comment for why that is a separate, un-scaled, top-most layer).
+      const historyLabel = placedLabel(TEXT_PLACEMENTS.history, historyLine(h), NEUTRAL);
+      if (historyLabel) layers.props.addChild(historyLabel);
 
       renderNowBand(state);
       readAmbient(state);
@@ -1746,6 +2607,11 @@
         // one frame while the vignette/warmth/background dimming beside it
         // keep easing for four more seconds. Two speeds for one swell.
         applyGlow(ambient.light.lift);
+        // Task 14: the city's window lights, off the same running clock —
+        // a no-op of its own accord when there is no plate (see
+        // tickAmbientLights's own guard), so it is safe to call every tick
+        // either way, same as applyGlow above.
+        tickAmbientLights(ambient.t);
 
         // Colour temperature: warm as selling pressure builds, cool as it eases.
         // Tier warmth composes on top rather than replacing it — pressure is
@@ -1841,6 +2707,65 @@
       for (const glow of glows) glow.alpha = alpha;
     }
 
+    // --- Task 14 (STRETCH): the painted city's window lights blink --------
+    // The plate already paints a skyline through the room's own window; this
+    // animates what is there rather than inventing anything new. A small
+    // list of rects measured over painted glass, each fading on its own
+    // phase and period — a shared clock would pulse the whole skyline in
+    // unison, which reads as a fault rather than as a city.
+    const AMBIENT_LIGHTS = (PLATE && PLATE.ambient_lights) || [];
+    // The floor of the fade: dim, not zero. Additive light at alpha 0 IS the
+    // plate's own painted light — correctly "off" — but never literal zero,
+    // so a light is never left fully unlit for the low point of its cycle
+    // either (a light that vanishes entirely reads as a rendering glitch,
+    // not a window that is briefly dark).
+    const AMBIENT_LIGHT_MIN_ALPHA = 0.12;
+
+    // Built once, exactly like buildGlows/buildMonitorGraphics beside it —
+    // never inside the per-frame ticker. Each light gets its own Graphics
+    // (mutated only on .alpha per tick) and its own phase, seeded off the
+    // light's index with the same rng32 the cast's breathing uses, so a
+    // reload is reproducible but no two lights start in lockstep. Additive
+    // blend, the same as buildGlows: an opaque fill at alpha near 1 would
+    // paint FLAT OVER the plate's own painted detail (several of these
+    // signs have an icon drawn inside the red field) the moment a light
+    // reached peak brightness — the opposite of animating what is already
+    // there. `filter` skips any entry missing a usable colour rather than
+    // throwing mid-map — a malformed manifest entry degrades that ONE light
+    // to unlit, never the whole room to procedural (buildMonitorGraphics's
+    // `if (screen.quad)` guard is the same idea for a different builder).
+    let ambientLightSprites = [];
+
+    function buildAmbientLights() {
+      ambientLightSprites = AMBIENT_LIGHTS
+        .filter((light) => (
+          light && /^#[0-9a-fA-F]{6}$/.test(light.colour || "")
+          && light.w > 0 && light.h > 0
+        ))
+        .map((light, i) => {
+          const graphics = new PIXI.Graphics()
+            .rect(snap(light.x), snap(light.y), snap(light.w), snap(light.h))
+            .fill({ color: parseInt(light.colour.slice(1), 16), alpha: 1 });
+          graphics.blendMode = "add";
+          layers.plate.addChild(graphics);
+          return {
+            graphics,
+            period: light.period > 0 ? light.period : 4,
+            phase: rng32(i + 1)(),
+          };
+        });
+    }
+
+    // `t` is `ambient.t`, the same running clock the swell/drift/breathing
+    // already read — never a second clock of its own (KI-019's family).
+    function tickAmbientLights(t) {
+      if (!plateReady) return;   // no plate: nothing was ever built to light
+      for (const light of ambientLightSprites) {
+        const u = 0.5 + 0.5 * Math.sin((t / light.period + light.phase) * Math.PI * 2);
+        light.graphics.alpha = AMBIENT_LIGHT_MIN_ALPHA + (1 - AMBIENT_LIGHT_MIN_ALPHA) * u;
+      }
+    }
+
     // --- M2: live candles in the painted monitors -------------------------
     // The plate paints two central monitors as flat dark glass. The rules for
     // whether/how much of that glass is worth drawing into — how many candles
@@ -1876,6 +2801,22 @@
         // wiped by anyone else (see the layer's own comment in boot()).
         layers.monitors.addChild(g);
         monitorGraphics[screen.id] = g;
+        // KI-052: clip candles to the painted glass's own quad, not the
+        // bounding rect drawCandles lays them out in - the rect can (and,
+        // before this fix, did) reach past the quad's slanted bottom edge
+        // at the bottom-right. Built once here, exactly like `g` itself:
+        // drawCandles runs once per screen per poll, forever, so anything
+        // it added to a layer would leak without bound (see that
+        // function's own comment, and
+        // test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick).
+        // Guarded on `screen.quad` so a manifest entry with no quad (never
+        // shipped today, but not schema-forbidden) fails closed to an
+        // unmasked screen rather than throwing inside boot().
+        if (screen.quad) {
+          const glass = new PIXI.Graphics().poly(screen.quad.flat()).fill(0xffffff);
+          g.mask = glass;
+          layers.monitors.addChild(glass);
+        }
       }
     }
 
@@ -1982,6 +2923,34 @@
         group.appendChild(bandCell("mood", mood, MOOD_COLOR[mood]));
         nowband.appendChild(group);
       }
+      // KI-065: the trader's own numbers. Task 10 deleted this readout from
+      // the room - rightly, it floated beside the figure with no surface
+      // under it - and nothing else in the room or the overlays carried it.
+      // The show's premise is that an AI trades crypto live, loses money and
+      // publishes every loss forever: this is the loss, so it gets a home
+      // rather than staying dropped.
+      //
+      // `state.trader` is null until a `trader_*` event arrives, and those
+      // come from the freqtrade sidecar - an opt-in compose profile. The slot
+      // then reads "—" instead of vanishing, exactly as the model's record
+      // does when its accuracy is unknown: a named empty slot says "no
+      // positions reported", an absent one silently un-publishes the premise.
+      const traderState = state.trader;
+      const pnl =
+        traderState && Number.isFinite(traderState.profit_pct)
+          ? traderState.profit_pct
+          : null;
+      const trader = document.createElement("span");
+      trader.className = "trader";
+      trader.appendChild(document.createTextNode("trader "));
+      const positions = document.createElement("b");
+      positions.textContent = traderState
+        ? `${traderState.open_trades ?? 0} open · ` +
+          (pnl == null ? "—" : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`)
+        : "—";
+      trader.appendChild(positions);
+      nowband.appendChild(trader);
+
       // The honest record, on the same last-N basis as the strips (KI-012).
       const acc = state.model?.accuracy ?? {};
       const record = document.createElement("span");
@@ -2168,7 +3137,8 @@
       // only decides how big it reads.
       const reaction = reactionFor(event);
       setExpression(target, reaction.mood);
-      target.moodTag.text = reaction.mood;
+      // Sprint 16 Task 10: no floating mood text on a live reaction either —
+      // `setExpression` is the room's only mood channel now.
       playAnimation(target, reaction.animation, tier);
       // B7: the one who didn't act notices the one who did. Only from tier 1 —
       // at tier 0 the pair would spend the day turning to look at each other,
