@@ -239,6 +239,36 @@ def test_every_scene_tiles_the_canvas_exactly():
         )
 
 
+def test_the_signals_strip_spans_the_canvas_in_every_scene(monkeypatch):
+    """`/overlay/signals` is laid out for the full 1920: a label, two symbol
+    cells and the now-playing credit. event-focus gave it 960, and on air the
+    ETHUSDT hit-dots ran over its own "hit 44% of 50" line and into BTCUSDT's
+    — the strip was legible in two scenes and a collision in the third."""
+    monkeypatch.delenv("STREAM_AUDIO_DIR", raising=False)
+    for scene in stream_scene.scenes_spec():
+        canvas_w, _ = scene["canvas"]
+        for src in scene["sources"]:
+            if "/overlay/signals" not in src["settings"].get("url", ""):
+                continue
+            assert (src["x"], src["settings"]["width"]) == (0, canvas_w), (
+                f"{scene['scene']}/{src['name']} is not full width"
+            )
+
+
+def test_event_focus_gives_the_chart_more_room_than_the_feed(monkeypatch):
+    """Half the frame for the feed was too much: its cards are sized in rem,
+    so the extra width became empty card, while the chart beside it was
+    squeezed to 960. The feed stays wider than chart-focus's 480 rail — that
+    is what makes this scene event-focus — but the chart leads."""
+    monkeypatch.delenv("STREAM_AUDIO_DIR", raising=False)
+    scenes = {s["scene"]: s for s in stream_scene.scenes_spec()}
+    event = {s["name"]: s for s in scenes["event-focus"]["sources"]}
+    home = {s["name"]: s for s in scenes["chart-focus"]["sources"]}
+    feed = event["event-feed"]["settings"]["width"]
+    assert event["event-chart"]["settings"]["width"] > feed
+    assert feed > home["overlay-events"]["settings"]["width"]
+
+
 def test_the_events_rail_never_covers_a_chart(monkeypatch):
     """KI-025, named. The rail sits at x=1440 and `charts-1m` was 1920 wide, so
     the rail buried the right-hand pane's price scale, its last-price label and

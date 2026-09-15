@@ -10,8 +10,9 @@ Three scenes the director switches between on salience (Sprint 13), all on a
   rests on and decays back to.
 - **world-focus**: the /world room foregrounded (1920x960) with the signals
   strip — for model/trader moments.
-- **event-focus**: the world-event feed large (960x1080) with a single-symbol
-  chart and the strip on the left — for a burst of market events.
+- **event-focus**: a single-symbol chart (1280x960) with a wider world-event
+  feed than home's rail (640x960 at x=1280) and the full signals strip — for a
+  burst of market events.
 
 Every scene **tiles** the 1920x1080 canvas: the sources are disjoint and cover
 it exactly, asserted by `test_every_scene_tiles_the_canvas_exactly`. Overlap is
@@ -216,22 +217,32 @@ def _world_focus() -> dict:
 
 
 def _event_focus() -> dict:
-    """The world-event feed large, with a small chart and the signals strip."""
+    """The world-event feed widened, beside a single-symbol chart, over the
+    full signals strip."""
     return {
         "scene": SCENE_EVENT,
         "canvas": CANVAS,
         "sources": [
             *audio_sources(),
-            _browser("event-feed", "/overlay/events", 960, 1080, 960, 0),
+            # Source ORDER is load-bearing beyond z-order: shards are assigned
+            # by position across all scenes, and world-room's (KI-046) comes
+            # before these. Resize freely; do not reorder or add ahead of it.
+            #
+            # 640, not 960: the cards are sized in rem, so half the frame
+            # became empty card while the chart was squeezed. Still wider than
+            # home's 480 rail, which is what makes this the event scene.
+            _browser("event-feed", "/overlay/events", 640, 960, 1280, 0),
             # `/charts?symbols=`, not `/chart/BTCUSDT`: the latter is the page a
             # human opens in a browser, and its `← dashboard` nav link, status
             # line and TradingView footer all went out on air (KI-027).
-            # 960x960 fills the column down to the strip; it was 960x540, which
-            # left the lower-left quarter of the frame empty and invited the
-            # 1.5x upscale that shredded the rail's headlines (KI-026).
+            # It fills the column down to the strip; at 960x540 it left the
+            # lower-left quarter of the frame empty and invited the 1.5x
+            # upscale that shredded the rail's headlines (KI-026).
             _browser("event-chart", "/charts?interval=1m&symbols=BTCUSDT",
-                     960, 960, 0, 0),
-            _browser("event-signals", "/overlay/signals", 960, 120, 0, 960),
+                     1280, 960, 0, 0),
+            # Full width, as in the other scenes: at 960 the strip's cells
+            # collided — ETHUSDT's hit-dots ran over its own stats line.
+            _browser("event-signals", "/overlay/signals", 1920, 120, 0, 960),
         ],
     }
 
