@@ -10,10 +10,13 @@ from a long one cannot score anything measured on the new 6.6 years of bars.
 Pure functions only here: no LightGBM, no Postgres, no clock.
 """
 
+import types
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from model import backtest
 from model.backtest import (
     BacktestConfig,
     apply_cooldown,
@@ -229,19 +232,47 @@ def test_a_cooldown_lowers_both_the_positions_taken_and_the_exposure():
     assert cooled["fee_charges"] == cooled["total_positions"]
 
 
-def test_the_published_equity_path_is_unchanged_by_the_benchmark_work():
-    """A regression pin, not a discovery: these are the numbers the current
-    harness produces on this fixture. Exposure and the null are additive
-    reporting — if adding them moved the equity path, this fails."""
+class _ScriptedBooster:
+    """A model with no floating point in it: up for the first three minutes of
+    every hour, flat otherwise. 35 positions of a few bars each on the fixture
+    below, 60% of them winners — enough to exercise merging, fees, per-fold
+    compounding and the benchmark fields together."""
+
+    def predict(self, X):
+        return np.where(X.index.minute < 3, 0.9, 0.1)
+
+
+def test_the_published_equity_path_is_unchanged_by_the_benchmark_work(monkeypatch):
+    """A regression pin on the ACCOUNTING: exposure and the null are additive
+    reporting, and if adding them — or anything after them — moved the equity
+    path, this fails.
+
+    KI-081: this used to pin the numbers real LightGBM produced, and those are
+    only repeatable on one CPU. The same commit failed CI with -0.01702 against
+    a pinned -0.01102 on every runner after 2026-09-15 05:52 UTC while passing
+    locally at every thread count — the same 16-position count, a different
+    return. A red main that means nothing trains people to ignore red. The
+    model is replaced by a scripted one here, so every number below is
+    arithmetic on fixed data; real LightGBM's determinism on one machine is
+    still pinned by tests/unit/test_backtest.py."""
+    monkeypatch.setattr(
+        backtest, "lgb",
+        types.SimpleNamespace(
+            train=lambda *args, **kwargs: _ScriptedBooster(),
+            Dataset=lambda *args, **kwargs: None,
+        ),
+    )
     results = run_backtest(_bars(n=2600), BacktestConfig(
         train_rows=400, test_rows=100))
 
     assert results["n_folds"] == 21
-    assert results["total_positions"] == 16
-    assert results["hit_rate_per_position"] == pytest.approx(0.5)
-    assert results["strategy_total_return"] == pytest.approx(-0.011022098334825703)
+    assert results["total_positions"] == 35
+    assert results["hit_rate_per_position"] == pytest.approx(0.6)
+    assert results["strategy_total_return"] == pytest.approx(-0.038313640153833206)
     assert results["buy_hold_total_return"] == pytest.approx(0.041448730766337816)
-    assert results["avg_position_return"] == pytest.approx(-0.0006589124138992458)
+    assert results["avg_position_return"] == pytest.approx(-0.0011041656090941608)
+    assert results["time_in_market"] == pytest.approx(0.2423076923076923)
+    assert results["null_total_return"] == pytest.approx(-0.061065792259007434)
 
 
 # --- E2: an error bar on the average position ---------------------------
