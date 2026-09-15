@@ -148,6 +148,11 @@ def test_postgres_readable_skips_the_probe_when_no_database_is_configured(
     ping.assert_not_called()
 
 
-def test_postgres_readable_reports_unreachable_when_disabled_and_down():
-    with patch("storage.writes.ping", return_value=False):
+def test_postgres_readable_reports_unreachable_when_disabled_and_down(monkeypatch):
+    # DATABASE_URL set, or this is the no-database test above in disguise: the
+    # autouse fixture unsets it, postgres_readable() returns False before
+    # ping() is reached, and the fake ping below is never consulted.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db:5432/d")
+    with patch("storage.writes.ping", return_value=False) as ping:
         assert writes.postgres_readable({"enabled": False, "connected": None}) is False
+    ping.assert_called_once()
