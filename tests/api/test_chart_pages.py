@@ -1,5 +1,10 @@
+import json
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
@@ -152,3 +157,84 @@ def test_charts_page_rejects_a_symbol_that_is_not_on_the_watchlist():
     with patch("api.main.load_watchlist", return_value=_predict_watchlist()):
         resp = client.get("/charts?symbols=DOGEUSDT")
     assert resp.status_code == 400
+
+
+# --- markers stay inside the candles they annotate -----------------------------
+
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
+_CHARTS = Path(__file__).resolve().parents[2] / "api" / "templates" / "charts.html"
+
+
+def _js_function(source: str, signature: str) -> str:
+    """One top-level function of the page, lifted verbatim by brace matching."""
+    start = source.index(signature)
+    depth = 0
+    for i in range(source.index("{", start), len(source)):
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        if depth == 0:
+            return source[start : i + 1]
+    raise AssertionError(f"unterminated {signature}")
+
+
+def _markers(interval: str, signals: list[dict], first_bar_time) -> list:
+    source = _CHARTS.read_text()
+    driver = (
+        f"const INTERVAL = {json.dumps(interval)};\n"
+        'const _OUTCOME_COLOR = { win: "#26a69a", loss: "#ef5350" };\n'
+        + _js_function(source, "function barTime(")
+        + "\n"
+        + _js_function(source, "function signalMarkers(")
+        + "\n"
+        + f"console.log(JSON.stringify(signalMarkers({json.dumps(signals)}, "
+        f"{json.dumps(first_bar_time)})));"
+    )
+    result = subprocess.run(
+        [NODE, "-e", driver], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _signal(ts: str, direction: str = "up", outcome: str | None = "win") -> dict:
+    return {"signal_timestamp": ts, "direction": direction,
+            "outcome": outcome, "probability": 0.8}
+
+
+@needs_node
+def test_calls_older_than_the_first_candle_are_not_drawn():
+    """The page loads 250 1m candles but 200 calls, which reach further back.
+    Lightweight Charts pins a marker with no bar to the NEAREST bar, so every
+    call older than the window landed on the first candle: event-focus went
+    out with a column of thirty stacked `p=` labels down its left edge."""
+    markers = _markers(
+        "1m",
+        [_signal("2026-09-15T01:10:00Z"), _signal("2026-09-15T01:59:00Z"),
+         _signal("2026-09-15T02:00:00Z"), _signal("2026-09-15T02:30:00Z", "down")],
+        1789437600,  # 2026-09-15T02:00:00Z, barTime() of the first candle
+    )
+    assert [m["time"] for m in markers] == [1789437600, 1789439400]
+    assert markers[1]["shape"] == "arrowDown"
+
+
+@needs_node
+def test_daily_charts_filter_on_the_date_not_the_instant():
+    markers = _markers(
+        "1d",
+        [_signal("2026-09-13T00:00:00Z"), _signal("2026-09-14T00:00:00Z"),
+         _signal("2026-09-15T00:00:00Z")],
+        "2026-09-14",
+    )
+    assert [m["time"] for m in markers] == ["2026-09-14", "2026-09-15"]
+
+
+@needs_node
+def test_markers_are_sorted_and_keep_their_outcome_colour():
+    markers = _markers(
+        "1m",
+        [_signal("2026-09-15T02:30:00Z", outcome="loss"),
+         _signal("2026-09-15T02:10:00Z", outcome=None)],
+        1789437600,
+    )
+    assert [m["time"] for m in markers] == [1789438200, 1789439400]
+    assert [m["color"] for m in markers] == ["#787b86", "#ef5350"]

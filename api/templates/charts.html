@@ -40,21 +40,31 @@
     }
 
     // The model's calls on each panel: ▲/▼ by direction, grey pending → green
-    // win / red loss once resolved. Enrichment — never breaks the chart.
-    async function drawSignalMarkers(symbol, series) {
-      try {
-        const r = await fetch(`/signals/${symbol}?limit=200&interval=${INTERVAL}`);
-        if (!r.ok) return;
-        const signals = (await r.json()).data.signals;
-        const markers = signals.map((s) => ({
+    // win / red loss once resolved. Only calls at or after the first loaded
+    // candle: the page loads 250 bars but 200 calls, which reach further back,
+    // and Lightweight Charts pins a marker with no bar to the nearest one — so
+    // every older call stacked onto the first candle as a column of `p=`
+    // labels down the chart's left edge, on air.
+    function signalMarkers(signals, firstBarTime) {
+      return signals
+        .map((s) => ({
           time: barTime(s.signal_timestamp),
           position: s.direction === "up" ? "belowBar" : "aboveBar",
           shape: s.direction === "up" ? "arrowUp" : "arrowDown",
           color: _OUTCOME_COLOR[s.outcome] || "#787b86",
           text: `p=${s.probability.toFixed(2)}`,
-        }));
-        markers.sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
-        series.setMarkers(markers);
+        }))
+        .filter((m) => m.time >= firstBarTime)
+        .sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
+    }
+
+    // Enrichment — never breaks the chart.
+    async function drawSignalMarkers(symbol, series, firstBarTime) {
+      try {
+        const r = await fetch(`/signals/${symbol}?limit=200&interval=${INTERVAL}`);
+        if (!r.ok) return;
+        const signals = (await r.json()).data.signals;
+        series.setMarkers(signalMarkers(signals, firstBarTime));
       } catch (e) { /* the chart stands without markers */ }
     }
 
@@ -78,14 +88,19 @@
         autoSize: true, timeScale: { timeVisible: INTERVAL !== "1d" },
       });
       const series = chart.addCandlestickSeries();
-      series.setData(data.bars.map(toCandle));
+      const candles = data.bars.map(toCandle);
+      series.setData(candles);
       chart.timeScale().fitContent();
-      drawSignalMarkers(symbol, series);
+      // Live updates only append, so the first candle stays the first. With no
+      // bars at all there is nothing to annotate, and Infinity filters out
+      // every marker.
+      const firstBarTime = candles.length ? candles[0].time : Infinity;
+      drawSignalMarkers(symbol, series, firstBarTime);
 
       const es = new EventSource(`/stream/bars/${symbol}?interval=${INTERVAL}`);
       es.onmessage = (e) => {
         series.update(toCandle(JSON.parse(e.data)));
-        drawSignalMarkers(symbol, series);
+        drawSignalMarkers(symbol, series, firstBarTime);
       };
     }
 
