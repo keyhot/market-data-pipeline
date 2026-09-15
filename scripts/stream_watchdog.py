@@ -112,6 +112,16 @@ class WatchdogConfig:
     # beats every 15s, so no restart of the API, OBS or the watchdog can leave a
     # gap long enough to manufacture an outage.
     renderer_failures_before_drop: int = 3
+    # KI-082: the scenes in which `renderer_source` is on screen. OBS pauses a
+    # browser source's drawing whenever its scene is off program — `shutdown:
+    # False` keeps the page loaded, not rendering — so outside these scenes a
+    # frozen frame counter is the expected state of a healthy page, and the
+    # rule has no opinion. Pinned to stream_scene.py's spec by test.
+    renderer_scenes: frozenset[str] = frozenset({stream_scene.SCENE_WORLD})
+    # And after the room comes back on program, one poll before a failure
+    # counts: the page resumes at once, but its next heartbeat can be 15s away,
+    # so the first probe can still read the pre-pause beat as frozen.
+    renderer_on_air_grace_seconds: float = 30.0
     # The browser source Task 16 reloads to recover the room. Declared with the
     # rule that decides it; nothing reads it yet.
     renderer_source: str = "world-room"
@@ -169,6 +179,10 @@ class WatchdogState:
     # the press itself is what's failing. Reset to 0 on recovery, same as
     # `renderer_refreshed_at`.
     renderer_refresh_attempts: int = 0
+    # KI-082: whether the last renderer verdict found the room off program, and
+    # when it was last seen coming back — the start of its grace poll.
+    renderer_off_air: bool = False
+    renderer_on_air_at: float | None = None
 
 
 def tick(
@@ -453,6 +467,29 @@ def _check_renderer(
     """
     healthy = probe.get("renderer_ok")
     if healthy is None:
+        return []
+
+    # KI-082: a room that is not on program is not dark air. Its page is
+    # paused by OBS, so "frozen" is what a healthy one reports — judged anyway,
+    # every director switch away from world-focus became a false severity-5
+    # `stream_dropped` that the director then spoke on air. No verdict, the same
+    # as an unreadable probe; an unreadable program scene (None) is the same
+    # again. Failures reset, because two in one visit and one in the next are
+    # not three consecutive failures of a room on screen. An outage already
+    # open stays open (and unrefreshed) until the room is back and healthy —
+    # the direction that does not flatter.
+    if probe.get("program_scene") not in config.renderer_scenes:
+        state.renderer_off_air = True
+        state.renderer_failures = 0
+        return []
+    if state.renderer_off_air:
+        state.renderer_off_air = False
+        state.renderer_on_air_at = now
+    if (
+        not healthy
+        and state.renderer_on_air_at is not None
+        and now - state.renderer_on_air_at < config.renderer_on_air_grace_seconds
+    ):
         return []
 
     if healthy:
@@ -885,6 +922,8 @@ def probe_obs() -> dict:
         "skipped_frames": status.get("skipped_frames", 0),
         "reconnecting": status.get("reconnecting", False),
         "congestion": status.get("congestion", 0.0),
+        # KI-082: the renderer rule only judges a room that is on screen.
+        "program_scene": stream_ctl.current_scene(client),
     }
 
 
@@ -996,12 +1035,11 @@ def renderer_config_warnings(
 
     A third thing has to agree too: `_BROWSER_DEFAULTS["shutdown"]` in
     stream_scene.py must stay False. OBS tears a `shutdown: True` source down
-    whenever its scene is off program — so every dwell away from world-focus
-    would blank the renderer, `probe_content` would call it unhealthy, and the
-    director would speak a false severity-5 `stream_dropped renderer_blank` on
-    a perfectly healthy stream. A plausible perf tweak to that one shared
-    default silently arms this for all twelve shards at once, so it gets the
-    same loud startup warning as the other two halves.
+    whenever its scene is off program, so the page would reload — and miss its
+    heartbeats — on every switch back, and its SSE state would be rebuilt from
+    nothing each time. (`shutdown: False` does NOT keep an off-program page
+    drawing: OBS pauses it either way. That is KI-082, and why the rule judges
+    the room only while `renderer_scenes` is on program.)
     """
     if not config.renderer_host:
         return [

@@ -901,6 +901,10 @@ def test_the_runner_seeds_the_card_from_what_obs_is_showing():
 
 
 # --- KI-046: a room that is not on screen is dark air ---
+
+# KI-082: the renderer rule only has an opinion while the room is on program,
+# so every probe below that expects a verdict says where the program is.
+_ROOM_ON_AIR = {"program_scene": "world-focus"}
 #
 # `tick` returns `(state, actions)`. The brief's blocks called it bare and
 # indexed `a[0]` over that 2-tuple, which is a TypeError on the `WatchdogState`
@@ -914,7 +918,7 @@ def test_a_blank_renderer_is_recorded_after_the_configured_failures():
     config = WatchdogConfig(renderer_failures_before_drop=3)
     state = WatchdogState(streaming=True)
     probe = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
-             "content_ok": True, "renderer_ok": False,
+             "content_ok": True, **_ROOM_ON_AIR, "renderer_ok": False,
              "renderer_detail": "no heartbeat"}
     for _ in range(2):
         assert not [
@@ -930,7 +934,8 @@ def test_a_recovered_renderer_closes_the_outage_with_its_duration():
     config = WatchdogConfig(renderer_failures_before_drop=1)
     state = WatchdogState(streaming=True)
     bad = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
-           "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+           "content_ok": True, **_ROOM_ON_AIR,
+           "renderer_ok": False, "renderer_detail": "frozen"}
     good = {**bad, "renderer_ok": True}
     tick(bad, state, config, now=100.0)
     actions = tick(good, state, config, now=160.0)[1]
@@ -1063,7 +1068,8 @@ def test_a_dead_api_does_not_forge_a_renderer_recovery():
                             content_failures_before_drop=1)
     state = WatchdogState(streaming=True)
     blank = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
-             "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+             "content_ok": True, **_ROOM_ON_AIR,
+             "renderer_ok": False, "renderer_detail": "frozen"}
     tick(blank, state, config, now=100.0)
     assert state.renderer_ok is False
     # API dies: probe_content's failure path carries no renderer key.
@@ -1082,7 +1088,8 @@ def test_a_blank_renderer_is_recorded_once_not_every_tick():
     config = WatchdogConfig(renderer_failures_before_drop=1)
     state = WatchdogState(streaming=True)
     blank = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
-             "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+             "content_ok": True, **_ROOM_ON_AIR,
+             "renderer_ok": False, "renderer_detail": "frozen"}
     _s, first = tick(blank, state, config, now=100.0)
     assert [a[2]["reason"] for a in first if a[0] == "record"] == ["renderer_blank"]
     _s, again = tick(blank, state, config, now=130.0)
@@ -1097,7 +1104,8 @@ def test_a_healthy_renderer_on_a_fresh_watchdog_records_nothing():
     config = WatchdogConfig()
     state = WatchdogState(streaming=True)
     absent = {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
-              "content_ok": True, "renderer_ok": False, "renderer_detail": "no beat"}
+              "content_ok": True, **_ROOM_ON_AIR,
+              "renderer_ok": False, "renderer_detail": "no beat"}
     for now in (100.0, 130.0):
         _s, actions = tick(absent, state, config, now=now)
         assert _actions_of(actions, "record") == []
@@ -1123,7 +1131,8 @@ def test_the_runner_reads_the_on_air_shard_from_the_environment():
 
 def _blank_probe():
     return {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
-            "content_ok": True, "renderer_ok": False, "renderer_detail": "frozen"}
+            "content_ok": True, **_ROOM_ON_AIR,
+            "renderer_ok": False, "renderer_detail": "frozen"}
 
 
 def test_the_first_blank_renderer_refreshes_the_source_before_anything_heavier():
@@ -1372,3 +1381,110 @@ def test_a_shutdown_source_flips_the_guard_to_a_false_outage():
     )
     (warning,) = renderer_config_warnings(config, spec=spec)
     assert "shutdown" in warning
+
+
+# --- KI-082: a room that is not on air is not dark air ---
+#
+# OBS pauses a browser source's drawing whenever its scene is off program —
+# `shutdown: False` keeps the page loaded, not rendering. The watchdog judged
+# `world-room` regardless, so on 2026-09-15 the director left world-focus at
+# 02:16:13 UTC and at 02:17:44 (3 x 30s) the watchdog recorded
+# `stream_dropped renderer_blank`; five seconds later the anxious character
+# said "We're dropping frames — is the stream alright?" on the live stream.
+
+
+def _room(program_scene, renderer_ok):
+    return {"reachable": True, "streaming": True, "dropped_ratio": 0.0,
+            "content_ok": True, "program_scene": program_scene,
+            "renderer_ok": renderer_ok, "renderer_detail": "age 31.3s frozen=True"}
+
+
+def _records(actions):
+    return [a for a in actions if a[0] == "record"]
+
+
+def test_the_ki082_timeline_records_nothing():
+    """The incident, replayed with the default config: healthy on air, then the
+    director moves to event-focus and the page freezes."""
+    config = WatchdogConfig(renderer_host="127.0.0.4:8000")
+    state = WatchdogState(streaming=True)
+    tick(_room("world-focus", True), state, config, now=0.0)
+    for i in range(1, 8):
+        _s, actions = tick(_room("event-focus", False), state, config, now=30.0 * i)
+        assert not _records(actions), f"false outage on off-air tick {i}"
+        assert ("refresh_source", "world-room") not in actions
+    assert state.renderer_ok is True and state.renderer_failures == 0
+
+
+def test_an_unreadable_program_scene_is_no_verdict():
+    """Absence of a verdict is not a verdict (the rule's own contract): an OBS
+    that will not say what is on program cannot say the room is on screen."""
+    config = WatchdogConfig(renderer_failures_before_drop=1)
+    state = WatchdogState(streaming=True)
+    _s, actions = tick(_room(None, False), state, config, now=10.0)
+    assert not _records(actions) and state.renderer_failures == 0
+
+
+def test_a_room_blank_on_air_is_still_an_outage():
+    """The guard is narrowed, not disarmed: KI-046's white frame on program
+    records exactly as before."""
+    config = WatchdogConfig()
+    state = WatchdogState(streaming=True)
+    for i in range(3):
+        _s, actions = tick(_room("world-focus", False), state, config, now=30.0 * i)
+    (record,) = _records(actions)
+    assert record[2]["reason"] == "renderer_blank"
+
+
+def test_coming_back_on_air_gets_one_poll_of_grace():
+    """A page that was paused resumes on the switch, but its next heartbeat can
+    be up to 15s away — so the first probe after the room returns can still
+    read the pre-pause beat as frozen. That probe is not counted; the next is."""
+    config = WatchdogConfig()
+    state = WatchdogState(streaming=True)
+    tick(_room("event-focus", False), state, config, now=0.0)
+    tick(_room("world-focus", False), state, config, now=30.0)
+    assert state.renderer_failures == 0
+    tick(_room("world-focus", False), state, config, now=60.0)
+    assert state.renderer_failures == 1
+
+
+def test_failures_do_not_carry_across_visits():
+    """Two failures in one visit and one in the next are not three consecutive
+    failures of a room on screen."""
+    config = WatchdogConfig()
+    state = WatchdogState(streaming=True)
+    t = 0.0
+    for scene, ok in [("world-focus", False), ("world-focus", False),
+                      ("event-focus", False),
+                      ("world-focus", False), ("world-focus", False)]:
+        _s, actions = tick(_room(scene, ok), state, config, now=t)
+        assert not _records(actions)
+        t += 30.0
+
+
+def test_the_room_scene_in_config_is_the_scene_the_spec_puts_it_in():
+    """Both sides of the seam: the scenes the rule treats as "room on air" must
+    be exactly the scenes stream_scene.py puts `renderer_source` in."""
+    from scripts import stream_scene
+
+    config = WatchdogConfig()
+    holding = {
+        scene["scene"]
+        for scene in stream_scene.scenes_spec()
+        for source in scene["sources"]
+        if source["name"] == config.renderer_source
+    }
+    assert holding == set(config.renderer_scenes)
+
+
+def test_the_obs_probe_reports_the_program_scene(monkeypatch):
+    from scripts import stream_watchdog
+
+    status = {"streaming": True, "dropped_ratio": 0.0}
+    monkeypatch.setattr(stream_watchdog.stream_ctl, "make_client", lambda: object())
+    monkeypatch.setattr(stream_watchdog.stream_ctl, "get_status", lambda c: status)
+    monkeypatch.setattr(
+        stream_watchdog.stream_ctl, "current_scene", lambda c: "event-focus"
+    )
+    assert stream_watchdog.probe_obs()["program_scene"] == "event-focus"

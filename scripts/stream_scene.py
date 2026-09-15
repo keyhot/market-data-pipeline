@@ -62,9 +62,11 @@ _SHARD_HOSTS = (
 # resize this tuple and that env var must change with it**, or the watchdog
 # starts watching a page that is not on screen.
 #
-# Its `shutdown: False` (below) is load-bearing for the same rule: a source OBS
-# tears down when its scene is not on program stops rendering, stops beating,
-# and reads as a dead renderer on a perfectly healthy stream.
+# Its `shutdown: False` (below) keeps the page loaded while its scene is off
+# program — SSE connected, state warm, no reload on the switch back. It does
+# NOT keep it drawing: OBS pauses an off-program browser source either way, and
+# the watchdog judged the paused page as a dead renderer until KI-082 limited
+# the rule to the scenes the room is actually on.
 #
 # Only loopback can be sharded this way; a real host (compose's `api`, a remote
 # box) has one address and must be left alone.
