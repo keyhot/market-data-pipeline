@@ -77,6 +77,14 @@ _RENDERER_BEATS_LOCK = threading.Lock()
 # context-manager entry, and this task's tests construct TestClient(app) at
 # module level, so a lifespan-set value would be unset in every test.
 _PROCESS_STARTED_AT = time.monotonic()
+# KI-069: every database wait `/health` makes shares this one deadline. The
+# stream watchdog gives the whole request 5s (`WatchdogConfig.
+# content_timeout_seconds`, KI-024); 4s leaves a second for everything else.
+# It cannot go lower than the cold path's role probe plus ping (2s + 2s,
+# `storage/db.py`), or an unreachable database would spend it before the
+# readability gate has even answered. Both bounds are asserted in
+# tests/api/test_health_endpoint.py against the real constants.
+_HEALTH_DB_BUDGET_SECONDS = 4.0
 
 
 class RendererBeat(BaseModel):
@@ -264,6 +272,11 @@ def health():
         renderer = renderer_status(
             _RENDERER_BEATS, now=time.monotonic(), started_at=_PROCESS_STARTED_AT
         )
+    # KI-069: one deadline for every database wait in this request. The probe
+    # below and the world read each carried their own bound, and they summed
+    # past the watchdog's timeout — the endpoint that exists to prove the
+    # stack is alive could itself trip a content outage.
+    db_deadline = time.monotonic() + _HEALTH_DB_BUDGET_SECONDS
     postgres = postgres_status()
     # KI-057: a drawing page is not proof the world is running — the model
     # went silent for three days while ingestion and every container stayed
@@ -278,9 +291,11 @@ def health():
     # `postgres_readable()` reuses that ping's result when it already ran and
     # probes on its own only when it didn't, so this still never stacks a
     # second bounded connection-acquire wait onto the same request when
-    # writes are on and Postgres is down — the 5s budget `storage/db.py`
-    # measured at 4.01s cold with 1s of headroom (see `TestRoleProbeLatency`
-    # in `tests/unit/test_db_deploy_guard.py`) is unchanged either way.
+    # writes are on and Postgres is down. When Postgres is UP the reader does
+    # run, and it gets only what `db_deadline` has left (KI-069) — so the
+    # database section is bounded by `_HEALTH_DB_BUDGET_SECONDS` whether the
+    # DB is down (the gate closes) or reachable but slow (the reader's
+    # statement_timeout fires at the deadline and it reports "reader_error").
     # `signal_timestamp` / `occurred_at` are TIMESTAMPTZ — an aware `now`
     # avoids the naive/aware TypeError, but the broad except is what
     # actually keeps the 200-through-an-outage guarantee even if a future
@@ -299,7 +314,9 @@ def health():
     world_unavailable_reason = None
     if postgres_readable(postgres):
         try:
-            latest_signal_at, latest_event_at = world_liveness_times()
+            latest_signal_at, latest_event_at = world_liveness_times(
+                timeout_seconds=db_deadline - time.monotonic()
+            )
             world = world_liveness(
                 latest_signal_at, latest_event_at, datetime.now(timezone.utc)
             )

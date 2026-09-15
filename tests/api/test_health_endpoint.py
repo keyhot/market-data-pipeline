@@ -1,3 +1,5 @@
+import inspect
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -125,6 +127,48 @@ def test_health_reads_world_liveness_when_writes_are_disabled_but_db_is_reachabl
     assert data["world"] is not None
     assert data["world"]["stale"] is False
     assert data["world_unavailable_reason"] is None
+
+
+def test_health_gives_the_world_read_only_what_the_budget_has_left():
+    # KI-069: the reachability probe and the world read used to carry their
+    # own independent bounds, which summed past the watchdog's 5s. One
+    # deadline starts before the probe, and the reader gets the remainder.
+    now = datetime.now(timezone.utc)
+
+    def slow_status():
+        time.sleep(0.3)
+        return _CONNECTED
+
+    with (
+        patch("api.main._HEALTH_DB_BUDGET_SECONDS", 1.0),
+        patch("api.main.postgres_status", side_effect=slow_status),
+        patch(
+            "api.main.world_liveness_times",
+            return_value=(now - timedelta(minutes=3), now - timedelta(minutes=1)),
+        ) as reader,
+    ):
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    given = reader.call_args.kwargs["timeout_seconds"]
+    assert 0.6 <= given <= 0.71
+
+
+def test_health_db_budget_fits_inside_the_watchdog_content_timeout():
+    # The budget is only a fix if it is below what the consumer waits, with
+    # headroom for the rest of the handler — and at least the cold path's
+    # role probe plus ping, or a cold unreachable database would already
+    # have spent it before the gate answers.
+    from api import main
+    from scripts.stream_watchdog import WatchdogConfig
+    from storage import db
+
+    watchdog = WatchdogConfig().content_timeout_seconds
+    ping_default = inspect.signature(db.ping).parameters["timeout_seconds"].default
+
+    budget = main._HEALTH_DB_BUDGET_SECONDS
+    assert budget <= watchdog - 1.0
+    assert db._ROLE_PROBE_TIMEOUT_SECONDS + ping_default <= budget
 
 
 def test_metrics_includes_scheduler_status():

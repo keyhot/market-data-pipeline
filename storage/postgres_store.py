@@ -1,3 +1,4 @@
+import time
 from datetime import date, datetime
 
 import pandas as pd
@@ -142,6 +143,9 @@ def latest_bar_timestamp(symbol: str, interval: str = BAR_INTERVAL) -> datetime 
 # what keeps this off the cold path, not the bound below. The bound is
 # belt-and-braces for the gap between that check and this call (the DB could
 # still drop mid-request), sized to match `storage.writes.ping()`'s own probe.
+# It is only the default: `/health` passes what is left of its own deadline
+# (KI-069), and the reader treats whatever it is given as a total, not a
+# per-step, bound.
 _HEALTH_PROBE_TIMEOUT_SECONDS = 2.0
 
 
@@ -158,32 +162,43 @@ def world_liveness_times(
     (tests/unit/test_postgres_store_world_liveness.py), not by construction —
     a new broadcast-apparatus event type needs both updated together.
 
-    MINOR-2: `timeout_seconds` above bounds acquiring a connection, not
-    running a query on it — `signals` has no index usable by this query's
-    `max(signal_timestamp)` (its PK and its one other index both lead with
-    `symbol`; see scripts/migrate_016.sql), so without a statement-level
-    bound this is an unbounded sequential scan on an endpoint (`/health`)
-    the stream watchdog polls under a 5s budget (KI-024). `SET LOCAL` scopes
-    the bound to this connection's current transaction — psycopg3 defaults
-    new connections to `autocommit=False`, so both queries below run inside
-    the one implicit transaction this `with` block opens, and the setting
-    covers both."""
+    `timeout_seconds` is ONE deadline for the whole read — acquiring the
+    connection and running the query together (KI-069). It used to bound only
+    the acquire, with a fixed per-statement 2s on each of two SELECTs after
+    it, so this function alone could spend 6s of the 5s the stream watchdog
+    gives `/health` (KI-024). Now the acquire's cost comes off the statement's
+    allowance, and both maxima are one statement, so one `statement_timeout`
+    bounds both scans — including time spent waiting on a lock, which is what
+    "reachable but slow" looks like. `set_config(..., true)` is transaction-
+    local: psycopg3 opens connections with `autocommit=False`, so it covers
+    the SELECT in the same implicit transaction and dies with it.
+
+    Raises `TimeoutError` rather than reading when the deadline is already
+    spent: `statement_timeout = 0` means *no* timeout, so a remainder that
+    rounds to 0ms must refuse, not read unbounded."""
+    deadline = time.monotonic() + timeout_seconds
+    if timeout_seconds <= 0:
+        raise TimeoutError("no time left for the world liveness read")
     with get_pool().connection(timeout=timeout_seconds) as conn:
-        conn.execute("SET LOCAL statement_timeout = '2s'")
-        (latest_signal,) = conn.execute(
-            "SELECT max(signal_timestamp) FROM signals"
-        ).fetchone()
-        # No bound parameters today, so the literal `%` below is safe — but
-        # only because psycopg parses placeholders exclusively when a `vars`
-        # argument is passed to `.execute()`; with none, the query string
-        # reaches Postgres byte-for-byte. The moment a parameter is EVER
-        # added to this statement, every literal `%` here must become `%%`
-        # or it will be read as a (missing) placeholder.
-        (latest_event,) = conn.execute(
-            "SELECT max(occurred_at) FROM world_events"
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            raise TimeoutError("connection acquire spent the liveness budget")
+        conn.execute(
+            "SELECT set_config('statement_timeout', %s, true)",
+            (f"{remaining_ms}ms",),
+        )
+        # No bound parameters on this statement, so the literal `%` below is
+        # safe — but only because psycopg parses placeholders exclusively when
+        # a `vars` argument is passed to `.execute()`; with none, the query
+        # string reaches Postgres byte-for-byte. The moment a parameter is
+        # EVER added to this statement, every literal `%` here must become
+        # `%%` or it will be read as a (missing) placeholder.
+        latest_signal, latest_event = conn.execute(
+            "SELECT (SELECT max(signal_timestamp) FROM signals),"
+            " (SELECT max(occurred_at) FROM world_events"
             " WHERE event_type NOT LIKE 'stream\\_%'"
             " AND event_type NOT LIKE 'broadcast\\_%'"
-            " AND event_type NOT IN ('scene_switched', 'commentary_spoken')"
+            " AND event_type NOT IN ('scene_switched', 'commentary_spoken'))"
         ).fetchone()
     return latest_signal, latest_event
 

@@ -8,6 +8,8 @@ one piece of new logic this ticket adds isn't exercised by nothing.
 
 from datetime import datetime, timezone
 
+import pytest
+
 from storage import postgres_store
 from world.salience import BROADCAST_APPARATUS_EVENT_TYPES, KNOWN_EVENT_TYPES
 
@@ -24,13 +26,15 @@ class _FakeCursor:
 
 
 class _FakeConnection:
-    def __init__(self, rows):
-        self._rows = list(rows)
+    def __init__(self, row):
+        self._row = row
         self.queries: list[str] = []
+        self.params: list[tuple | None] = []
 
     def execute(self, sql, params=None):
         self.queries.append(sql)
-        return _FakeCursor(self._rows.pop(0))
+        self.params.append(params)
+        return _FakeCursor(self._row)
 
 
 class _FakeConnCtx:
@@ -45,22 +49,40 @@ class _FakeConnCtx:
 
 
 class _FakePool:
-    def __init__(self, conn):
+    def __init__(self, conn, on_acquire=None):
         self._conn = conn
+        self._on_acquire = on_acquire
         self.timeouts_seen: list[float | None] = []
 
     def connection(self, timeout=None):
         self.timeouts_seen.append(timeout)
+        if self._on_acquire:
+            self._on_acquire()
         return _FakeConnCtx(self._conn)
 
 
-def _wire(monkeypatch, rows):
-    # `rows` are the results for the SELECTs only — world_liveness_times()
-    # also runs a leading `SET LOCAL statement_timeout` whose result nothing
-    # reads, so that call gets an unused placeholder row transparently here
-    # rather than making every test author account for it.
-    conn = _FakeConnection([(None,), *rows])
-    pool = _FakePool(conn)
+class _Clock:
+    """A monotonic clock the test moves by hand, so "the acquire took 1.5s"
+    is a statement rather than a sleep."""
+
+    def __init__(self, start: float = 1000.0):
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _wire(monkeypatch, row, acquire_takes: float = 0.0):
+    # `row` is the one combined SELECT's result, `(signal, event)`. The
+    # leading set_config() call returns the same fake row; nothing reads it.
+    clock = _Clock()
+    monkeypatch.setattr(postgres_store.time, "monotonic", clock)
+
+    def advance():
+        clock.now += acquire_takes
+
+    conn = _FakeConnection(row)
+    pool = _FakePool(conn, on_acquire=advance)
     monkeypatch.setattr(postgres_store, "get_pool", lambda: pool)
     return conn, pool
 
@@ -71,7 +93,7 @@ def test_returns_signal_then_event_in_that_order(monkeypatch):
     # transposes signal_age_s and event_age_s — the two numbers a human
     # reads to tell "the model is dead" from "the world is merely quiet".
     # Nothing else in this ticket's tests would catch that swap.
-    _wire(monkeypatch, [(_SIGNAL_TS,), (_EVENT_TS,)])
+    _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS))
 
     latest_signal, latest_event = postgres_store.world_liveness_times()
 
@@ -79,39 +101,76 @@ def test_returns_signal_then_event_in_that_order(monkeypatch):
     assert latest_event == _EVENT_TS
 
 
-def test_sets_a_statement_timeout_before_either_query(monkeypatch):
-    # MINOR-2: `signals` has no index this query can use (its PK and its one
-    # other index both lead with `symbol`), so without a statement-level
-    # bound `max(signal_timestamp)` is an unbounded sequential scan on an
-    # endpoint (/health) the stream watchdog polls under a 5s budget
-    # (KI-024). This must run before either SELECT, in the same transaction
-    # (SET LOCAL is transaction-scoped), or it protects nothing.
-    conn, _ = _wire(monkeypatch, [(_SIGNAL_TS,), (_EVENT_TS,)])
+def test_sets_a_statement_timeout_before_the_read(monkeypatch):
+    # MINOR-2: `signals` had no index this query could use, so without a
+    # statement-level bound `max(signal_timestamp)` is an unbounded
+    # sequential scan on an endpoint (/health) the stream watchdog polls
+    # under a 5s budget (KI-024). It must run before the SELECT, transaction-
+    # local (set_config's third argument), or it protects nothing.
+    conn, _ = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS))
 
     postgres_store.world_liveness_times()
 
-    assert conn.queries[0] == "SET LOCAL statement_timeout = '2s'"
-    assert len(conn.queries) == 3
+    assert conn.queries[0] == "SELECT set_config('statement_timeout', %s, true)"
+    assert len(conn.queries) == 2
+
+
+def test_one_deadline_covers_the_acquire_and_both_reads(monkeypatch):
+    # KI-069: this used to be three independent bounds — a 2s acquire, then a
+    # per-statement 2s on each of two SELECTs — so the reader alone could
+    # spend 6s of a 5s watchdog budget. Now whatever the acquire spends comes
+    # off the statement's allowance, and both maxima are one statement, so
+    # one statement_timeout bounds them together.
+    conn, pool = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS), acquire_takes=1.5)
+
+    postgres_store.world_liveness_times(timeout_seconds=2.0)
+
+    assert pool.timeouts_seen == [2.0]
+    assert conn.params[0] == ("500ms",)
+    assert len([q for q in conn.queries if "max(" in q]) == 1
+
+
+def test_a_spent_budget_never_disables_the_statement_timeout(monkeypatch):
+    # `statement_timeout = 0` means NO timeout in Postgres. A remaining
+    # budget that truncates to 0ms must refuse to read, not read unbounded.
+    conn, _ = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS), acquire_takes=1.9996)
+
+    with pytest.raises(TimeoutError):
+        postgres_store.world_liveness_times(timeout_seconds=2.0)
+
+    assert conn.queries == []
+
+
+def test_no_budget_left_does_not_even_acquire(monkeypatch):
+    # The caller hands over what is left of /health's budget; when that is
+    # nothing, asking the pool for a connection with timeout<=0 is not a
+    # bound at all.
+    _, pool = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS))
+
+    with pytest.raises(TimeoutError):
+        postgres_store.world_liveness_times(timeout_seconds=0.0)
+
+    assert pool.timeouts_seen == []
 
 
 def test_excludes_broadcast_apparatus_events(monkeypatch):
-    conn, _ = _wire(monkeypatch, [(_SIGNAL_TS,), (_EVENT_TS,)])
+    conn, _ = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS))
 
     postgres_store.world_liveness_times()
 
-    assert len(conn.queries) == 3
-    _, signal_query, event_query = conn.queries
-    assert "signals" in signal_query
-    assert "world_events" in event_query
+    assert len(conn.queries) == 2
+    query = conn.queries[1]
+    assert "FROM signals" in query
+    assert "FROM world_events" in query
     # MINOR-4: the backslash is what makes '_' a literal underscore rather
     # than a single-character LIKE wildcard — dropping it (e.g. 'stream_%')
     # would additionally exclude any type merely starting "stream" followed
     # by any character, not just the four stream_* lifecycle rows. Assert
     # both escaped prefixes are present, not just "the word stream/broadcast
     # appears somewhere".
-    assert "'stream\\_%'" in event_query
-    assert "'broadcast\\_%'" in event_query
-    assert "NOT IN ('scene_switched', 'commentary_spoken')" in event_query
+    assert "'stream\\_%'" in query
+    assert "'broadcast\\_%'" in query
+    assert "NOT IN ('scene_switched', 'commentary_spoken')" in query
 
 
 def _sql_predicate_excludes(event_type: str) -> bool:
@@ -152,7 +211,7 @@ def test_bounds_the_connection_acquire_wait(monkeypatch):
     # (KI-024). The caller in api/main.py also gates this behind a
     # confirmed-readable postgres_readable(), so this bound is belt-and-braces
     # for the gap between that check and this call, not the only guard.
-    _, pool = _wire(monkeypatch, [(_SIGNAL_TS,), (_EVENT_TS,)])
+    _, pool = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS))
 
     postgres_store.world_liveness_times()
 
@@ -160,7 +219,7 @@ def test_bounds_the_connection_acquire_wait(monkeypatch):
 
 
 def test_a_never_stored_signal_or_event_reads_as_none(monkeypatch):
-    _wire(monkeypatch, [(None,), (None,)])
+    _wire(monkeypatch, (None, None))
 
     latest_signal, latest_event = postgres_store.world_liveness_times()
 
