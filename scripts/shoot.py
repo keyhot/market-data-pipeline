@@ -135,6 +135,9 @@ class _Session:
             self._proc.wait(timeout=10)
         except Exception:
             self._proc.kill()
+            # Reap it before returning: the caller removes the profile dir
+            # next, and a Chrome still dying can write into it mid-rmtree.
+            self._proc.wait(timeout=5)
 
 
 # The page sets this once it has drawn at least one frame (Task 2 adds it).
