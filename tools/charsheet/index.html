@@ -264,8 +264,14 @@ async function boot() {
          "k = 2/3 u/px · crown..toe 180u = manifest rig_height",
          tracedRig);
 
-  bracket(app.stage, 330, baselineY + 128 * ZOOM, 63.2, "painted seat 63.2u (79px)");
-  bracket(app.stage, 850, baselineY + 128 * ZOOM, 63.2, "painted seat 63.2u (79px)");
+  // Torso-only, and labelled so. The painted seat caps what sits ON it; the
+  // whole-figure span is 149 units and a slumped person's legs necessarily
+  // leave the seat. The seat-fit invariant is already down to be SPLIT at
+  // placement (torso/pelvis on the seat, limbs free) rather than satisfied,
+  // so a bracket implying the whole pose must fit inside it would invite the
+  // wrong comparison — the one this increment deferred on purpose.
+  bracket(app.stage, 330, baselineY + 128 * ZOOM, 63.2, "seat 63.2u — torso only");
+  bracket(app.stage, 850, baselineY + 128 * ZOOM, 63.2, "seat 63.2u — torso only");
 
   label(app.stage,
         "no chair is drawn: the reference's is high-backed with a headrest, the",
