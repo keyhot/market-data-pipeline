@@ -93,6 +93,14 @@ def _shading_prelude(source: str) -> str:
         + _js_block(source, "function paint(") + "\n"
         + _js_block(source, "function rimStroke(") + "\n"
         + _js_block(source, "function rimStrokeCircle(") + "\n"
+        # KI-085: this copy of the prelude went without `HUMAN` from the day
+        # the redesign gave `seatedRig` authored colours, so every driver here
+        # that runs the seated rig has been dying on `ReferenceError: HUMAN is
+        # not defined` instead of measuring anything. It did not show up as a
+        # regression because the failure looks like the assertion below, and
+        # the branch's green runs were `tests/api/test_world_page.py` alone.
+        # A driver that throws is not a lenient test, it is an absent one.
+        + _js_block(source, "const HUMAN = {") + "\n"
     )
 
 
@@ -462,6 +470,23 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     specific mis-measured value would just be a second magic number
     standing in for the first one review round 1 objected to.)
 
+    **KI-085: this test spent the character redesign dead.** Its driver's
+    prelude never carried `HUMAN`, so from the commit that gave `seatedRig`
+    authored colours it died on `ReferenceError: HUMAN is not defined` before
+    reaching a single assertion - and the failure reads exactly like the
+    assertion below, so nothing about it looked unusual. It was resurrected
+    with the legs, and the first thing it caught was real: composited at
+    `sit_anchor` rather than the standing `cast.trader.x` the sibling uses,
+    the right arm lands 6.75px past the cushion. See `arm.limb` in `seatedRig`
+    for why that is structural and not a number to nudge.
+
+    **The invariant is now split**, as `Docs/character-redesign.md` said it
+    needed to be: the seat budgets what SITS on it, so accents tagged `limb`
+    are skipped and the legs answer to the painted floor band instead
+    (`tests/api/test_world_page.py::test_the_seated_figure_puts_its_feet_on_
+    the_painted_floor`). Holding a figure's legs to the width of the cushion
+    it sits on is what kept the trader at doll proportions.
+
     Sprint 16: the anchor in question is `sit_anchor.x`, not `cast.trader.x`.
     `positionCharacters` stopped using `x` for a seated pose when the plate
     started measuring the hips separately from the seat, so shifting `x` now
@@ -502,7 +527,10 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         f"const LIGHT = {as_json(light_for(manifest))};\n"
         + """
         class FakeGraphics {
-          constructor() { this.calls = []; this.x = 0; }
+          constructor() {
+            this.calls = []; this.x = 0;
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+          }
           roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
           circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
           fill() { return this; }
@@ -537,6 +565,14 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         }
         let [lo, hi] = range(bodyCalls, 0);
         for (const accent of accents) {
+          // Limbs are exempt, and the exemption is the claim: the seat is a
+          // budget for what SITS on it, and a seated person's legs overhang
+          // the front of the cushion. Holding the rig to the cushion's width
+          // including its legs is what kept the figure at doll proportions.
+          // The legs answer to the painted floor band instead (see
+          // `tests/api/test_world_page.py::test_the_seated_figure_puts_its_
+          // feet_on_the_painted_floor`); the torso and arms still answer here.
+          if (accent.limb) continue;
           const [alo, ahi] = range(accent.calls, accent.x);
           lo = Math.min(lo, alo);
           hi = Math.max(hi, ahi);

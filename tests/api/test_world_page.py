@@ -2330,6 +2330,11 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
+          // `pivot`/`rotation` are real PIXI.Graphics fields and the seated
+          // legs are posed with both. A double that omits them does not fail
+          // loudly, it throws from inside the code under test — so it is the
+          // double that gets fixed, not the page.
+          constructor() { this.pivot = { x: 0, y: 0 }; this.rotation = 0; }
           roundRect() { return this; }
           circle() { return this; }
           fill() { return this; }
@@ -2352,7 +2357,8 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         const accents = [];
         const headY = seatedRig(fakeGfx, accents);
         console.log(JSON.stringify({
-          headY, castScale: CAST_SCALE, armCount: accents.length,
+          headY, castScale: CAST_SCALE,
+          armCount: accents.filter((a) => a.limb === "arm").length,
         }));
         """
     )
@@ -2370,6 +2376,10 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         f"the painted backrest's crown at y={BACKREST_CROWN_SCREEN_Y} - the "
         "trader pokes out over the top of the chair"
     )
+    # Counted over the accents that are NOT tagged a limb: the posed legs are
+    # six more real Graphics on the same array (each bone carries its own
+    # rotation, so each must be its own object), and `character()` still
+    # aliases `accents[0]`/`accents[1]` as the two arms by index.
     assert emitted["armCount"] == 2, "seatedRig must build exactly two arms"
 
 
@@ -2407,6 +2417,20 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     inside_the_manifest_seat` runs the identical check from the manifest's
     own test file, mutation-checked there against a deliberately narrowed
     seat; this one is the same claim from the rendering side.
+
+    **The character redesign split this invariant, which is what
+    `Docs/character-redesign.md` meant by "needs splitting, not satisfying".**
+    The seat is a budget for what SITS on it. A seated person's legs overhang
+    the front of the cushion, so holding the whole rig to the cushion's width
+    is precisely what kept the trader at doll proportions — 3.59 heads against
+    the reference's 5.47, with the entire shortfall in the legs. Accents
+    tagged `limb` are therefore skipped, and the legs answer to
+    `test_the_seated_figure_puts_its_feet_on_the_painted_floor` instead, which
+    brackets them against the floor the chair's own castors paint.
+
+    Arms are exempt too, and that one is forced rather than chosen: see the
+    proof in `seatedRig` beside `arm.limb`. It is a consequence of KI-084
+    (arms draw behind the torso), and it comes back the moment KI-084 lands.
     """
     source = _world_source()
     driver = (
@@ -2420,7 +2444,10 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
-          constructor() { this.calls = []; this.x = 0; }
+          constructor() {
+            this.calls = []; this.x = 0;
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+          }
           roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
           circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
           fill() { return this; }
@@ -2457,6 +2484,14 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         }
         let [lo, hi] = range(bodyCalls, 0);
         for (const accent of accents) {
+          // The seat is a budget for what SITS on it. A seated person's legs
+          // overhang the front of the cushion -- that is what legs do -- so a
+          // limb is not a seat-fit violation, and holding the rig to the
+          // cushion's width including them would force the doll proportions
+          // this redesign exists to remove. The torso and the arms still
+          // answer to it. See the sibling floor-band bracket, which is the
+          // rail the legs DO answer to.
+          if (accent.limb) continue;
           const [alo, ahi] = range(accent.calls, accent.x);
           lo = Math.min(lo, alo);
           hi = Math.max(hi, ahi);
@@ -2480,6 +2515,115 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         f"the seated rig's right edge is at screen x={right_screen} - "
         f"{right_screen - seat['x'] - seat['width']}px past the seat's "
         f"right edge ({seat['x'] + seat['width']})"
+    )
+
+
+@needs_node
+def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
+    """The trader's feet land on the floor the plate actually paints.
+
+    The redesign's decisive finding is a RATIO and needs no scale: measured
+    against its own head the shipped figure was 3.59 heads crown-to-ankle and
+    the reference is 5.47, with the entire shortfall in the legs (thigh 16
+    units where the trace says 57, shin 18 where it says 62). That is why it
+    read as a doll -- dolls are short-legged -- and a figure that short leaves
+    its feet hanging in the air above a chair whose base is painted in full.
+
+    This is the rail for that, and it is a BRACKET rather than a derived
+    landing point, deliberately. The floor is a plane in three-quarter view, so
+    a seat-to-floor distance needs the projection; nominating a different
+    castor as "the floor under the chair" swings the answer by 2x, which is the
+    same under-determination that made anthropometry's px/cm range 2.7-4.4 and
+    got that whole method abandoned (`scripts/measure_chair.py`). A bracket
+    asks the question the art CAN answer: the feet cannot be above the furthest
+    painted contact point, nor below the nearest one.
+
+    The band is imported, never restated -- `measure_floor_band()` reads it off
+    the chair's castors with the same pixel predicate that measured the rake,
+    so it keeps tracking the art if the plate is repainted.
+
+    Anchored at `sit_anchor`, not `cast.trader.x/base_y`: `sitAnchorFor()` is
+    what actually pins the seated rig's origin, and the two differ by 8px --
+    which is a tenth of this bracket's width and exactly the sort of quiet
+    substitution that makes a passing test describe a figure nobody drew.
+    """
+    from scripts.measure_chair import measure_floor_band
+
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + """
+        class FakeGraphics {
+          constructor() {
+            this.calls = []; this.x = 0; this.y = 0;
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+          }
+          roundRect(x, y, w, h, r) { this.calls.push([x, y, w, h]); return this; }
+          circle(x, y, r) {
+            this.calls.push([x - r, y - r, 2 * r, 2 * r]); return this;
+          }
+          fill() { return this; }
+          stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const bodyCalls = [];
+        const fakeGfx = {
+          roundRect(x, y, w, h, r) { bodyCalls.push([x, y, w, h]); return this; },
+          circle(x, y, r) {
+            bodyCalls.push([x - r, y - r, 2 * r, 2 * r]); return this;
+          },
+          fill() { return this; },
+          stroke() { return this; },
+        };
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _shading_prelude(source)
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        seatedRig(fakeGfx, accents);
+        // The lowest point the rig draws, in its own units. Calls onto the
+        // body are untransformed. An accent carries a position AND -- for the
+        // leg bones, whose entire pose IS their rotation -- a pivot and an
+        // angle, so each corner is transformed properly instead of being
+        // offset by `x` alone. Offsetting by x is what an aggregate check
+        // would do, and it would report a rotated leg as a short vertical one.
+        let bottom = -Infinity;
+        for (const [, y, , h] of bodyCalls) bottom = Math.max(bottom, y + h);
+        for (const a of accents) {
+          const s = Math.sin(a.rotation || 0), c = Math.cos(a.rotation || 0);
+          const pvx = a.pivot ? a.pivot.x : 0, pvy = a.pivot ? a.pivot.y : 0;
+          for (const [x, y, w, h] of a.calls) {
+            const corners = [[x, y], [x + w, y], [x, y + h], [x + w, y + h]];
+            for (const [cx, cy] of corners) {
+              bottom = Math.max(bottom, (a.y || 0) + (cx - pvx) * s + (cy - pvy) * c);
+            }
+          }
+        }
+        console.log(JSON.stringify({ bottom, castScale: CAST_SCALE }));
+        """
+    )
+    emitted = _run_node(driver)
+    sit = _manifest()["cast"]["trader"]["sit_anchor"]
+    foot_screen = sit["y"] + emitted["bottom"] * emitted["castScale"]
+    far, near = measure_floor_band()
+    assert far <= foot_screen <= near, (
+        f"the seated figure's lowest point is at screen y={foot_screen:.0f}, "
+        f"outside the painted floor band {far}..{near}: "
+        + (
+            f"it floats {far - foot_screen:.0f}px above the furthest contact "
+            "point the chair's own castors establish"
+            if foot_screen < far
+            else f"it sinks {foot_screen - near:.0f}px below the nearest one"
+        )
     )
 
 
@@ -2516,6 +2660,9 @@ def _seated_rig_bounds():
         class FakeGraphics {
           constructor() {
             this.calls = []; this.x = 0; this.y = 0;
+            // Real PIXI.Graphics fields. The seated legs pose themselves with
+            // both, so a double without them throws from inside `seatedRig`.
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
             const r = makeRecorder(this.calls);
             this.roundRect = r.roundRect; this.circle = r.circle;
             this.fill = r.fill; this.stroke = r.stroke;
@@ -2552,10 +2699,25 @@ def _seated_rig_bounds():
           return [x0, y0, x1, y1];
         }
         let [x0, y0, x1, y1] = box(bodyCalls, 0, 0);
+        // An accent carries a position and, for the six posed leg bones, a
+        // pivot and a rotation. Offsetting by `accent.x` alone -- which is all
+        // the X-only sibling above needs, since nothing it measures is turned
+        // -- would report a thigh raked across the floor as a short upright
+        // rect, and this box is the one the desk furniture is checked against.
         for (const accent of accents) {
-          const [ax0, ay0, ax1, ay1] = box(accent.calls, accent.x, accent.y);
-          x0 = Math.min(x0, ax0); y0 = Math.min(y0, ay0);
-          x1 = Math.max(x1, ax1); y1 = Math.max(y1, ay1);
+          const s = Math.sin(accent.rotation || 0);
+          const c = Math.cos(accent.rotation || 0);
+          const pvx = accent.pivot ? accent.pivot.x : 0;
+          const pvy = accent.pivot ? accent.pivot.y : 0;
+          for (const [x, y, w, h] of accent.calls) {
+            for (const [cx, cy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+              const lx = cx - pvx, ly = cy - pvy;
+              const px = (accent.x || 0) + lx * c - ly * s;
+              const py = (accent.y || 0) + lx * s + ly * c;
+              x0 = Math.min(x0, px); y0 = Math.min(y0, py);
+              x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+            }
+          }
         }
         const [hx0, hy0, hx1, hy1] = box(skullCalls, 0, headY);
         x0 = Math.min(x0, hx0); y0 = Math.min(y0, hy0);

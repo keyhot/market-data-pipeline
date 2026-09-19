@@ -67,6 +67,55 @@ def _chair(px, x: int, y: int) -> bool:
     return b >= CHAIR_B_FLOOR and (b - r) >= CHAIR_B_OVER_R and g >= r
 
 
+# The painted floor, read off the chair's own base.
+#
+# The anthropometry dead end above needed a floor LINE, and this plate paints
+# the floor in shadow with no clean edge. The five-star base does not care: its
+# castors are painted, they are the same blue-grey upholstery material as the
+# rest of the chair, and every one of them is standing ON the floor. The bottom
+# of that silhouette is therefore a set of real floor contact points, which is
+# all a bracket needs.
+#
+# It is a BAND and not a line on purpose, and that is the whole finding. The
+# floor is a plane seen in three-quarter view, so contact y depends on depth:
+# the far castor touches at ~768 and the nearest at ~844. Converting that into
+# a seat-to-floor DISTANCE needs the projection, and the projection is exactly
+# what is not recoverable here -- estimates swing by 2x depending on which
+# contact point you nominate as "under the chair", which is the same signature
+# as the 2.7-4.4 px/cm spread that killed anthropometry. So this deliberately
+# does not try. A bracket needs no projection: a seated figure's feet cannot be
+# above the furthest painted contact point, nor below the nearest one, whatever
+# the plane does in between.
+BASE_Y_RANGE = (735, 900)
+BASE_X_RANGE = (1240, 1500)
+
+
+def measure_floor_band() -> tuple[int, int]:
+    """(far, near) screen y of the floor, from the chair base's contact points.
+
+    The ONE definition of where the painted floor is. `tests/api/
+    test_world_page.py::test_the_seated_figure_puts_its_feet_on_the_painted_
+    floor` imports it rather than restating 768/844 as literals -- the same
+    discipline `find_episodes` and `is_degraded_stream_event` get in CLAUDE.md,
+    and for the same reason: a number typed into a test is a number that stops
+    tracking the art the moment the plate is repainted.
+    """
+    from PIL import Image
+
+    px = Image.open(PLATE_PNG).convert("RGB").load()
+    contacts = []
+    for x in range(BASE_X_RANGE[0], BASE_X_RANGE[1], 2):
+        ys = [y for y in range(BASE_Y_RANGE[0], BASE_Y_RANGE[1]) if _chair(px, x, y)]
+        if ys:
+            contacts.append(max(ys))
+    if not contacts:
+        raise SystemExit(
+            "no chair-coloured pixels below the seat: the plate was repainted "
+            "or the chair predicate no longer matches its upholstery"
+        )
+    return min(contacts), max(contacts)
+
+
 def measure_plate_chair() -> dict:
     from PIL import Image
 
@@ -197,6 +246,13 @@ def main() -> int:
     print("    -> the recline the painted chair supports. The reference pose")
     print("       leans ~50 deg; that angle belongs to a headrest this chair")
     print("       does not have.")
+
+    far, near = measure_floor_band()
+    print(f"  FLOOR BAND = y {far}..{near}, from the base's castor contacts")
+    print("    -> far castor to nearest castor. Not a seat-to-floor distance:")
+    print("       that needs the projection, and the projection is the thing")
+    print("       this room does not give up. It is a bracket, and a bracket")
+    print("       is enough to catch a figure floating or sunk into the floor.")
 
     s = head_unit(chair)
     print(f"\nTHE UNIT: 1 head = {s['px_per_head']:.1f} reference px"

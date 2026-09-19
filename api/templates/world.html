@@ -1910,6 +1910,13 @@
       swing: (a, amt) => { a.rotation = (a.restRotation ?? 0) + amt * 0.35; },
       pump: (a, amt) => { a.scale.y = 1 + Math.abs(amt) * 0.55; },
       shift: (a, amt) => { a.x = snap((a.restX ?? 0) + amt * 6); },
+      // A seated figure gestures with its arms. The leg bones are accents too
+      // — they have to be, since each carries its own rotation — but swinging
+      // a thigh, a shin and a shoe independently about their own joints does
+      // not animate a leg, it dismantles one. Opting out by name beats
+      // special-casing `limb` here: `gesture()` already dispatches on
+      // `gestureMode`, so this needs no new branch.
+      still: () => {},
     };
 
     function gesture(char, amount, stagger) {
@@ -2225,17 +2232,11 @@
       // the old rig read as a stack of blobs rather than a person.
       const legs = { keepFill: true };
       const inner = { keepFill: true, noRim: true };
-      // Jeans. The thigh rects keep the exact geometry the seat-fit tests were
-      // written against (KI-051 Task 5 / review round 2) — only the colour
-      // moves, and it moves to an authored one. Shins are `inner`: they run
-      // between a thigh and a shoe and would otherwise cut the leg into three
-      // outlined links of a chain.
-      paint(body, litRect(-22, -6, 18, 16, 6), HUMAN.jeans, undefined, legs);
-      paint(body, litRect(4, -6, 18, 16, 6), HUMAN.jeans, undefined, legs);
-      paint(body, litRect(-20, 6, 15, 20, 5), HUMAN.jeans, undefined, inner);
-      paint(body, litRect(5, 6, 15, 20, 5), HUMAN.jeans, undefined, inner);
-      paint(body, litRect(-23, 24, 18, 8, 3), HUMAN.shoes, undefined, legs);
-      paint(body, litRect(5, 24, 18, 8, 3), HUMAN.shoes, undefined, legs);
+      // The legs are built at the BOTTOM of this function, after the arms, so
+      // that `accents[0]`/`accents[1]` stay the two arms `character()` aliases
+      // by index. They are no longer drawn onto `body` at all: a posed limb is
+      // a rotated capsule, and `litRect` snaps to the 4-unit CELL, so a bone
+      // has to be its own Graphics with its own rotation.
       // Waist and chest, stacked straight up off the hips rather than off a
       // standing pair of legs. Review round 1, Finding 1: the seat measures
       // 79 screen px wide (`PLATE.cast.trader.seat.width`), and 58 units of
@@ -2293,7 +2294,119 @@
         arm.x = side * 25; arm.y = -68;
         arm.restRotation = side < 0 ? -0.55 : 0.5;
         arm.shadeFactor = 1.35;
+        // An arm is a limb, and the seat budgets what SITS on it. That is not
+        // a convenience here, it is forced: at the REAL seated anchor
+        // (`sit_anchor.x` 1346, which is what `sitAnchorFor` pins the rig to)
+        // the painted cushion allows local x -37.6..25.6, and an arm has to
+        // start beyond the torso's own ±24 to be visible at all for as long as
+        // it is drawn BEHIND the torso (KI-084). That leaves a 1.6-unit window
+        // for a 10-unit sleeve, so the two constraints cannot both be met and
+        // the budget is the torso's. The comment above claiming "±31.2 the
+        // painted seat allows at this anchor" was computed against the
+        // STANDING anchor 1339; at 1346 the allowance is 25.6. When KI-084
+        // lands and near limbs draw in front, the arm comes back inside ±24
+        // and this exemption should be revisited, not inherited.
+        arm.limb = "arm";
         accents.push(arm);
+      }
+      // ---------------------------------------------------------------------
+      // The legs, posed off the traced skeleton instead of stacked as upright
+      // rects under the hips.
+      //
+      // The defect this fixes is a RATIO, which is why it needed no scale
+      // factor to find: measured against its own head the shipped figure was
+      // 3.59 heads crown-to-ankle where the reference is 5.47, and the whole
+      // shortfall sat in the legs — a 16-unit thigh where the trace says 57,
+      // an 18-unit shin where it says 62. The head was already right and the
+      // torso within 3%. That is why the old rig read as a doll rather than as
+      // a small person: dolls are short-legged.
+      //
+      // Lengths and widths are the trace's own, converted through the HEAD and
+      // nothing else (1 head = 44 units = the approved `litCircle(0, -4, 22)`
+      // in `character()`), so there is no `k` anywhere in this block. Angles
+      // are the model sheet's RE-POSED column, and the lean in them is the
+      // PAINTED chair's measured 8.2° (`scripts/measure_chair.py`) — not the
+      // reference art's ~50°, which belongs to a headrest this chair does not
+      // have and which read as reclining in mid-air when it was tried.
+      //
+      // The hip offsets are the traced ones carried over UNROTATED. That looks
+      // like laziness and is the opposite: reclining is a rotation about the
+      // body's own lateral axis, so that axis is precisely what a recline does
+      // NOT move. Rotating them with the spine grows the legs out of the air
+      // behind the figure's back.
+      const SEATED_LEGS = {
+        // [x, y] hip, then [length, degrees] per bone, then the three widths.
+        // The near leg is the one toward the camera; the far one is shorter on
+        // screen and lands higher, which is the floor receding, not an error.
+        far: {
+          hip: [-7.4, -4.4], thigh: [57.6, 159], shin: [62.5, 90],
+          foot: [24.5, 174], width: [19.2, 14.8, 11.1],
+        },
+        near: {
+          hip: [5.9, 7.4], thigh: [57.5, 150], shin: [62.4, 98],
+          foot: [29.8, 166], width: [20.7, 16.3, 11.8],
+        },
+      };
+      const step = (from, deg, len) => {
+        const r = (deg * Math.PI) / 180;
+        return { x: from.x + Math.cos(r) * len, y: from.y + Math.sin(r) * len };
+      };
+      // One bone as a lit capsule laid along a->b. Local to `seatedRig`
+      // because the node drivers in the suite extract this one function by
+      // name; a helper at module scope would be undefined inside them.
+      const bone = (a, b, width, fill, opts) => {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        const g = new PIXI.Graphics();
+        // Authored from its own corner and centred with `pivot`, never with a
+        // negative x: `litRect` snaps x to CELL, so `litRect(-w/2, ...)` with
+        // an odd half-width lands off-centre and thickens the limb on one
+        // side. The rect also runs half a width PAST the joint at each end and
+        // rounds to w/2, so consecutive bones interlock instead of leaving a
+        // notch on the outside of every bend.
+        paint(g, litRect(0, 0, width, len + width, width / 2), fill, undefined, opts);
+        g.pivot.x = width / 2;
+        g.pivot.y = width / 2;
+        g.x = a.x; g.y = a.y;
+        // `restAccents` rewrites every accent's rotation from `restRotation`
+        // on each tick, so a bone whose entire pose IS its rotation must carry
+        // the angle THERE. Setting only `.rotation` renders correctly once and
+        // then snaps bolt upright on the first frame.
+        g.restRotation = Math.atan2(dy, dx) - Math.PI / 2;
+        g.rotation = g.restRotation;
+        // Legs are not arms. `gesture()` swings every accent it is handed, and
+        // swinging each bone of a leg about its own joint takes the leg apart
+        // — the same "felled tree" failure the GESTURE table already names for
+        // limb-less bodies.
+        g.gestureMode = "still";
+        // The seat measures what SITS on it. Legs overhang the cushion by
+        // design, so the two seat-fit checks skip anything tagged a limb.
+        g.limb = "leg";
+        accents.push(g);
+        return g;
+      };
+      // Far side first so it renders behind the near one. The far leg is also
+      // mixed toward the room's own ambient rather than given a second
+      // darkness constant: the far side of a body catches less of the key
+      // light, and without that a correct depth ORDER still reads as a flat
+      // person.
+      for (const side of ["far", "near"]) {
+        const L = SEATED_LEGS[side];
+        const hip = { x: L.hip[0], y: L.hip[1] };
+        const knee = step(hip, L.thigh[1], L.thigh[0]);
+        const ankle = step(knee, L.shin[1], L.shin[0]);
+        const toe = step(ankle, L.foot[1], L.foot[0]);
+        const jeans = side === "far"
+          ? mixHex(HUMAN.jeans, LIGHT.ambient, 0.3) : HUMAN.jeans;
+        const shoes = side === "far"
+          ? mixHex(HUMAN.shoes, LIGHT.ambient, 0.3) : HUMAN.shoes;
+        // The shin is `inner`: it runs between a thigh and a shoe, so a cream
+        // keyline on it cuts the leg into three outlined links of a chain —
+        // the "die-cut sticker" read this redesign exists to remove. Only the
+        // parts that make the silhouette keep their edge.
+        bone(hip, knee, L.width[0], jeans, legs);
+        bone(knee, ankle, L.width[1], jeans, inner);
+        bone(ankle, toe, L.width[2], shoes, legs);
       }
       // -96, not -108: the human head is r22 rather than the machine's r28, so
       // the old value left it floating a dozen units clear of its own
