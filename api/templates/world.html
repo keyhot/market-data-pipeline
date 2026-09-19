@@ -177,6 +177,29 @@
     // only thing separating the cast from the room.
     const BODY_RIM = { width: 1.5, color: __BODY_RIM_FILL__, alignment: 1 };
 
+    // The trader's own palette, sampled off the pre-Sprint-16 reference
+    // (`Docs/char-redesign-reference/REFERENCE-characters.jpeg` in the vault):
+    // brown hair, warm skin, a grey-blue sweater, blue-grey jeans, dark shoes.
+    //
+    // These are authored colours and are NOT the mood — they are painted with
+    // `paint(..., keepFill = true)`, so a mood change re-lights their rim and
+    // leaves the person a person. This is the brief's "mood has to move to face
+    // + posture (+ a rim light)" as a constant rather than a comment: the day
+    // the trader stopped being one flat mood-coloured silhouette is the day it
+    // needed a palette of its own.
+    //
+    // Deliberately NOT in world/visuals.py with the mood palette: nothing here
+    // is contrast-lifted per mood (KI-028), because none of it varies with
+    // mood. A sweater is grey-blue when the model is elated and when it is
+    // panicked; what changes is the light on its edge.
+    const HUMAN = {
+      hair:    0x4a3528,
+      skin:    0xc08f68,
+      sweater: 0x8a97a8,
+      jeans:   0x5a6478,
+      shoes:   0x2a2e3c,
+    };
+
     // --- KI-051: light the cast with the room's own lamp -------------------
     // Every volume used to be one flat fill and one hard rim — the figures
     // read as stickers laid over the painting rather than objects standing
@@ -434,12 +457,40 @@
     // Omitted, it falls back to `BODY_RIM_SHADED`: the un-mooded edge, which
     // is what the nineteen construction-time call sites want and what a
     // volume drawn outside a character gets.
-    function paint(g, volume, fill, rim) {
-      (g.volumes || (g.volumes = [])).push(volume);
+    // `keepFill` is the human's exemption, and it exists because a person is
+    // not one colour. Every volume drawn before the character redesign took
+    // the mood as its fill, which is correct for a market glyph and impossible
+    // for skin, hair and denim — recolouring those wholesale stops the figure
+    // being a person at all. A volume painted with `keepFill` records its own
+    // authored colour and keeps it through every `repaint`; what still moves
+    // with the mood is its RIM, the lit edge. That is the brief's resolution
+    // ("mood has to move to face + posture + a rim light") landing on the seam
+    // `paint` already had rather than a second painting path beside it.
+    //
+    // Default false, so all nineteen pre-existing call sites and every market
+    // glyph keep the old behaviour exactly.
+    // `opts.noRim` is the second half of the same lesson, and it is the one the
+    // first frame of the redesign taught. A rim belongs to a SILHOUETTE, not to
+    // every volume that happens to be drawn. While a body was four rectangles
+    // that was the same statement; at twenty it stops being one — each interior
+    // part came back die-cut in the lamp's cream, which is precisely the
+    // "die-cut sticker outline" this file's own `paint` comment names as the
+    // KI-051 read to remove. Detail made the figure WORSE, monotonically, until
+    // interior volumes could opt out of the edge.
+    //
+    // So: volumes on the outline keep their rim; volumes that sit inside
+    // another (a face inside its hair, a shin between a thigh and a shoe) pass
+    // `noRim` and read as shading instead of as separate objects.
+    function paint(g, volume, fill, rim, opts) {
+      const keepFill = opts && opts.keepFill;
+      const noRim = !!(opts && opts.noRim);
+      (g.volumes || (g.volumes = [])).push(
+        keepFill || noRim ? { volume, fill: keepFill ? fill : undefined, noRim } : volume,
+      );
       volume.band(g, BAND_INSET.shade);  g.fill(shade(fill, rampLevel("shade")));
       volume.band(g, BAND_INSET.base);   g.fill(shade(fill, rampLevel("base")));
       volume.band(g, BAND_INSET.lit);    g.fill(shade(fill, rampLevel("lit")));
-      volume.rim(g, rimStyle(rim));
+      if (!noRim) volume.rim(g, rimStyle(rim));
     }
 
     // A rim's stroke style at a given base colour, lit like the volume's own
@@ -470,12 +521,25 @@
     // only defensive: faces (eyes, brows, mouth, visor) are drawn by
     // `setExpression`'s own primitives, never through `paint`, and clearing
     // one of those here would wipe a face and draw nothing back.
+    // A `keepFill` volume was recorded as `{ volume, fill }` rather than bare,
+    // so it re-paints in the colour it was authored in and takes only the
+    // mood's rim. Everything else is a bare volume and re-paints in the mood,
+    // exactly as before.
     function repaint(g, fill, rim) {
       const volumes = g.volumes;
       if (!volumes || !volumes.length) return;
       g.clear();
       g.volumes = [];
-      for (const volume of volumes) paint(g, volume, fill, rim);
+      for (const entry of volumes) {
+        if (entry.volume) {
+          const authored = entry.fill !== undefined;
+          paint(g, entry.volume, authored ? entry.fill : fill, rim, {
+            keepFill: authored, noRim: entry.noRim,
+          });
+        } else {
+          paint(g, entry, fill, rim);
+        }
+      }
     }
 
     // How much of a volume's own extent a band keeps on one axis. `band` is
@@ -1765,7 +1829,33 @@
       // head is the single largest surface carrying mood (`FACE`/`setExpression`
       // paint eyes, brows and mouth onto it), and a flat head on an otherwise
       // lit body is the one inconsistency a gallery grid would show first.
-      if (style !== "orb") {
+      // The orb IS its own face and takes no head at all. Everything else gets
+      // one here — but a machine's head and a person's are no longer the same
+      // circle in two colours. `FACE_KIND` already decides which FACE the style
+      // wears (`machineFace` vs `humanFace`); the head under that face now
+      // follows the same decision instead of being uniform beneath it, which is
+      // what made the trader read as a bauble with features painted on.
+      //
+      // The human head is two authored volumes, not one: hair sitting high and
+      // a slightly smaller face dropped below it, so the crown reads as hair
+      // rather than as a hairline drawn on a ball. Both `keepFill`, so the mood
+      // reaches them as a rim and leaves skin looking like skin. The face
+      // circle is r24 at y+2 — every feature `humanEyes`/`humanFace` draws
+      // (eyes at y-4 ±10, brows above them, mouth at y+12) stays well inside
+      // it, and they are separate Graphics added after the skull, so the hair
+      // can never cover them.
+      if (style === "orb") {
+        // no head
+      } else if (FACE_KIND[style] === "human") {
+        // r22/r19, not the machine's r28. The first frame of the redesign had
+        // a head 56 units across on a torso 48 across — a head wider than the
+        // shoulders under it, which is the single loudest "this is not a
+        // person" cue a figure can have, and one no test was ever going to
+        // report. The machine keeps r28: a blocky chassis carries a big head,
+        // and `SHADOW_WIDTH`/`HEAD_TRAVEL` are tuned to it.
+        paint(skull, litCircle(0, -4, 22), HUMAN.hair, undefined, { keepFill: true });
+        paint(skull, litCircle(0,  2, 19), HUMAN.skin, undefined, { keepFill: true, noRim: true });
+      } else {
         paint(skull, litCircle(0, 0, 28), BODY_FILL);
       }
       head.y = headY;
@@ -2127,8 +2217,25 @@
     function seatedRig(body, accents) {
       // Thighs: short and low, at the front edge of the seat rather than
       // dropping to a floor this plate doesn't give the chair.
-      paint(body, litRect(-22, -6, 18, 16, 6), BODY_FILL);
-      paint(body, litRect(4, -6, 18, 16, 6), BODY_FILL);
+      // Jeans. The thigh rects keep the exact geometry the seat-fit tests were
+      // written against (KI-051 Task 5 / review round 2) — only the colour
+      // moves, and it moves to an authored one. Shins and shoes are new and
+      // sit BELOW them: the reference's trader has its legs out in front of
+      // the chair, and a seated figure that stops at the hips is most of why
+      // the old rig read as a stack of blobs rather than a person.
+      const legs = { keepFill: true };
+      const inner = { keepFill: true, noRim: true };
+      // Jeans. The thigh rects keep the exact geometry the seat-fit tests were
+      // written against (KI-051 Task 5 / review round 2) — only the colour
+      // moves, and it moves to an authored one. Shins are `inner`: they run
+      // between a thigh and a shoe and would otherwise cut the leg into three
+      // outlined links of a chain.
+      paint(body, litRect(-22, -6, 18, 16, 6), HUMAN.jeans, undefined, legs);
+      paint(body, litRect(4, -6, 18, 16, 6), HUMAN.jeans, undefined, legs);
+      paint(body, litRect(-20, 6, 15, 20, 5), HUMAN.jeans, undefined, inner);
+      paint(body, litRect(5, 6, 15, 20, 5), HUMAN.jeans, undefined, inner);
+      paint(body, litRect(-23, 24, 18, 8, 3), HUMAN.shoes, undefined, legs);
+      paint(body, litRect(5, 24, 18, 8, 3), HUMAN.shoes, undefined, legs);
       // Waist and chest, stacked straight up off the hips rather than off a
       // standing pair of legs. Review round 1, Finding 1: the seat measures
       // 79 screen px wide (`PLATE.cast.trader.seat.width`), and 58 units of
@@ -2143,25 +2250,61 @@
       // seat` (manifest) both compute this from the real roundRect calls
       // against the manifest's measurement, rather than trusting this
       // comment's arithmetic.
-      paint(body, litRect(-20, -42, 40, 34, 14), BODY_FILL);
-      paint(body, litRect(-24, -80, 48, 40, 20), BODY_FILL);
+      // Sweater. Same waist and chest rects as before — these are the two the
+      // seat-fit tests measure the rig's width from, and the redesign has no
+      // business widening them. A collar on top gives the neck somewhere to
+      // come out of, which is the difference between a torso and a bolster.
+      // Sweater, as ONE volume. It used to be a chest rect stacked on a waist
+      // rect, and at four flat mood-coloured shapes that read as a torso; the
+      // moment each carried its own lit band and its own rim it read as two
+      // balls with a seam between them. The silhouette a person has here is one
+      // shape from shoulder to hip, so it is drawn as one. Left and right
+      // extents are unchanged at ±24 — which is what the two seat-fit tests
+      // measure, and why merging them is safe.
+      // r12, not r18: a 48-wide rect rounded at 18 is only 12 units wide where
+      // it meets the thighs, so the legs hung off a tapering point instead of
+      // out of a body. Shoulders stay at ±24 — the extent the seat-fit tests
+      // measure.
+      paint(body, litRect(-24, -78, 48, 72, 12), HUMAN.sweater, undefined, { keepFill: true });
+      // A collar, inside the shoulders, giving the neck somewhere to come out
+      // of. `inner`: it is shading on the torso, not a separate object.
+      paint(body, litRect(-11, -88, 22, 14, 7), HUMAN.sweater, undefined, inner);
       // Forearms bent up toward the desk, not hanging at the sides — shorter
       // than the standing figure's (66 units). Pivot at 14: the arm's own
       // local rect snaps to [-4, 8], so a wider pivot pushes its outer edge
       // past the chest and becomes the new widest part.
       for (const side of [-1, 1]) {
         const arm = new PIXI.Graphics();
-        paint(arm, litRect(-6, 0, 12, 40, 6), BODY_FILL);
-        arm.x = side * 14; arm.y = -76;
+        // Sleeve then hand: the forearm is sweater to within 8 units of its
+        // end, and the hand is skin. Both authored, so an arm keeps being an
+        // arm in every mood. `shadeFactor` still lightens the mood's RIM on
+        // this accent (see `applyMood`) — which is the whole remaining job it
+        // has here, and the reason the arms still read apart from the torso.
+        paint(arm, litRect(-5, 0, 10, 30, 5), HUMAN.sweater, undefined, { keepFill: true });
+        paint(arm, litCircle(0, 32, 5), HUMAN.skin, undefined, { keepFill: true });
+        // x ±21, not ±14. `character()` adds the accents BEFORE the body
+        // (`container.addChild(...accents, body, head, ...)`) so an arm renders
+        // BEHIND the torso — and the torso spans ±24, which means the seated
+        // arms have been completely invisible at rest for as long as the seated
+        // rig has existed. Nothing was wrong with the animation; there was
+        // simply never anything on screen to animate. At ±21 the sleeve spans
+        // 15..27, clear of the torso edge and still inside the ±31.2 the
+        // painted seat allows at this anchor.
+        arm.x = side * 25; arm.y = -68;
         arm.restRotation = side < 0 ? -0.55 : 0.5;
         arm.shadeFactor = 1.35;
         accents.push(arm);
       }
+      // -96, not -108: the human head is r22 rather than the machine's r28, so
+      // the old value left it floating a dozen units clear of its own
+      // shoulders. This sits the skull ON the collar. Lower is also strictly
+      // safer for the backrest test below.
+      //
       // Chair back measures ~220 screen px above the seat (backrest crown at
       // plate y≈462 vs the seat anchor y≈682) — 147 local units at
       // CAST_SCALE 1.5. -108 leaves the 42px head crown at screen y≈478:
       // inside the backrest. Unaffected by the width change - orthogonal axis.
-      return -108;
+      return -96;
     }
 
     // Every write below moves the torso (`body`), the head, or an arm —

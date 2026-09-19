@@ -951,6 +951,13 @@ def _shading_prelude(source: str) -> str:
         + _js_block(source, "function paint(") + "\n"
         + _js_block(source, "function rimStroke(") + "\n"
         + _js_block(source, "function rimStrokeCircle(") + "\n"
+        # The character redesign: `seatedRig` and the human head paint their
+        # volumes in authored colours (hair/skin/sweater/jeans/shoes) rather
+        # than in `BODY_FILL`, so the palette is now as much a prerequisite for
+        # executing them as `paint` is. Pulled from the page for the same
+        # reason as every other entry here — a second copy of the palette in
+        # this file would drift and stop proving anything about what ships.
+        + _js_block(source, "const HUMAN = {") + "\n"
     )
 
 
