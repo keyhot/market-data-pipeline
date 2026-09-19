@@ -36,17 +36,25 @@ const ZOOM = 2.5;                 // exactly 2x ship (CAST_SCALE 1.25), so the
                                   // 4-unit CELL lands on 10 crisp screen px.
 const INK = 0xd7dce5, DIM = 0x5b6577, ACCENT = 0xf0a848;
 
-// The reference frame is 1376x768 and the trace is in its pixel coordinates.
-// k converts those to rig units, and it is NOT a taste decision:
+// The reference frame is 1376x768 and the trace is in its pixel coordinates;
+// k converts those to rig units.
 //
-//   crown y=398 -> toe_near y=668  =  270 reference px
-//   270 * 2/3   =  180 units       =  PLATE.cast.rig_height, exactly
+// k IS A CONVENTION HERE, NOT A MEASUREMENT — say so, because the first
+// version of this comment claimed otherwise and the claim was circular. It
+// argued that the traced crown-to-toe span of 270px times 2/3 gives 180, which
+// equals `PLATE.cast.rig_height`. But k was DERIVED as 180/270, so that is one
+// number stated twice; any target would have reproduced itself.
 //
-// Two quantities derived from different places agreeing to the unit is the
-// same corroboration the bone-length symmetry check gave (both legs 78/84
-// traced independently). The head corroborates a third time: the skull's
-// traced radius is ~30px, and 30 * 2/3 = 20, within two units of the r22 the
-// user graded and approved in v3.
+// `rig_height` is not the seated span in any case:
+// `test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw` pins it
+// to the tallest STANDING body's crown-to-feet extent, and it is a room-wide
+// key covering a standing model and a seated trader alike. Read that way the
+// trace implies k ~= 0.534 (standing chain ~337px), not 2/3.
+//
+// It does not matter for what this sheet asks. Internal proportions are
+// scale-invariant, so every ratio judgment holds at either k; what is
+// arbitrary is the ~17% size difference BETWEEN the columns. Absolute size is
+// re-derived at placement.
 const K = 2 / 3;
 
 const J = SKELETON.joints;
