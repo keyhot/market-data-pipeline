@@ -128,6 +128,19 @@ def build() -> str:
             "A sheet lit by a guess grades a figure that will never exist."
         )
 
+    # The painted plate is a THIRD hard input as of increment 2 -- the sheet's
+    # lean is measured off it -- so it gets the same loud refusal the manifest
+    # and the skeleton already have. Without this the failure arrives as a
+    # Pillow traceback from inside `measure_plate_chair()`, which says where it
+    # broke but not what the sheet lost.
+    plate_png = ROOT / "api" / "static" / "world-plate-btc-eth.png"
+    if not plate_png.exists():
+        raise SystemExit(
+            f"REFUSED: {plate_png} is missing -- the re-posed column leans at "
+            "the rake MEASURED off that art. Without it the only lean "
+            "available is a guess, which is what this increment removed."
+        )
+
     # Inlined rather than fetched. The page is static, and a `fetch` that 404s
     # leaves a sheet that draws the control column and silently omits the
     # subject — a picture that lies, which is the one thing `shoot.py` exists

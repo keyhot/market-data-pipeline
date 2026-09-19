@@ -89,13 +89,23 @@ for (const [a, b, , w] of SKELETON.bones) {
 // measure — the trace settles the POSE here, not the breadth.
 const TORSO_LOWER_W = 46, TORSO_UPPER_W = 38;
 
-// The figure's length, in heads, along the body — so it is a property of the
-// BONES and not of the pose, and TRACED and RE-POSED necessarily report the
-// same number. Crown to ankle: the trace's `ankle`->`toe` runs mostly sideways
-// and would add length the figure does not have vertically.
-const CHAIN = ["pelvis>chest", "chest>neck", "neck>head", "head>crown",
-               "hip_near>knee_near", "knee_near>ankle_near"];
-const HEADS_TRACED = CHAIN.reduce((s, k) => s + BONE[k], 0) / HEAD_D;
+// The figure's length in heads, walked over the JOINTS A COLUMN ACTUALLY DREW.
+//
+// Not summed from the `BONE` table, which was the first version and was
+// circular in exactly the way this doc's `k` argument once was: `BONE` is
+// pose-independent by construction, so feeding it to both columns prints one
+// number twice and calls the agreement a check. Measuring each column's own
+// posed joints means the re-posed figure's label is a claim about the figure
+// on screen — these bones, at these angles, come to this height — and it can
+// come out wrong.
+//
+// Crown to ankle: the trace's `ankle`->`toe` runs mostly sideways and would
+// add length the figure does not have vertically.
+const CHAIN = [["pelvis", "chest"], ["chest", "neck"], ["neck", "head"],
+               ["head", "crown"], ["hip_near", "knee_near"],
+               ["knee_near", "ankle_near"]];
+const headsOf = (P) =>
+  CHAIN.reduce((s, [a, b]) => s + dist(P[a], P[b]), 0) / HEAD_D;
 // The shipped figure, from the literals in `seatedRig` + `character()`:
 // crown = headY(-108) - 4 - 22 = -134; ankle = where the shin rect
 // `litRect(-20, 6, 15, 20, 5)` meets the shoe `litRect(-23, 24, 18, 8, 3)`.
@@ -411,17 +421,19 @@ async function boot() {
          HEADS_SHIPPED,
          shippedRig);
 
+  const traced = tracedJoints(), reposed = posedJoints(SEATED);
+
   column(app, 720, baselineY,
          "TRACED  ·  reference slump",
          `the provenance of every bone — reclined ~50° on a headrest`,
-         HEADS_TRACED,
-         (root) => figure(root, tracedJoints()));
+         headsOf(traced),
+         (root) => figure(root, traced));
 
   column(app, 1250, baselineY,
          "RE-POSED  ·  the proposal",
          `same bones, leaning at the painted chair's measured ${CHAIR.rake_deg.toFixed(1)}°`,
-         HEADS_TRACED,
-         (root) => figure(root, posedJoints(SEATED)));
+         headsOf(reposed),
+         (root) => figure(root, reposed));
 
   // Torso-only, and labelled so. The painted seat caps what sits ON it; a
   // slumped person's legs necessarily leave the seat. The seat-fit invariant
