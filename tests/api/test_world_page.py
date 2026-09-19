@@ -2627,6 +2627,99 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
     )
 
 
+@needs_node
+def test_every_seated_leg_bone_carries_its_own_angle_and_opts_out_of_gestures():
+    """The two annotations that hold the leg pose up, pinned.
+
+    A posed bone's entire geometry IS its rotation, and two consumers will
+    take it away:
+
+    1. `restAccents` rewrites EVERY accent's rotation as `restRotation ?? 0`
+       on each tick. A bone that sets only `.rotation` renders correctly in a
+       screenshot and then snaps bolt upright on frame 2.
+    2. `gesture()` applies `GESTURE[accent.gestureMode] ?? GESTURE.swing` to
+       every accent. Swinging a thigh, a shin and a shoe independently about
+       their own joints does not animate a leg, it dismantles one — the same
+       "felled tree" failure the GESTURE table already names for limb-less
+       bodies.
+
+    Neither is reachable from a still frame, and the `anims` gallery cannot
+    cover it either: every sample there resolves `pose: "standing"`, so
+    `seatedRig` never runs in it (see the comment at the gallery's own
+    `pose` resolution). Without this test a refactor that drops either
+    annotation leaves every existing assertion green, the screenshot perfect,
+    and the room broken one frame later.
+
+    Asserts the invariant over every leg bone rather than a count, so bones
+    added later are covered by construction.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + """
+        class FakeGraphics {
+          constructor() {
+            this.calls = []; this.x = 0; this.y = 0;
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+          }
+          roundRect() { return this; }
+          circle() { return this; }
+          fill() { return this; }
+          stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const fakeGfx = {
+          roundRect() { return this; }, circle() { return this; },
+          fill() { return this; }, stroke() { return this; },
+        };
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _shading_prelude(source)
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        seatedRig(fakeGfx, accents);
+        const legs = accents.filter((a) => a.limb === "leg");
+        console.log(JSON.stringify({
+          legCount: legs.length,
+          // `restRotation` is what survives `restAccents`; `.rotation` is only
+          // what the first frame happens to show.
+          restRotations: legs.map((a) => a.restRotation),
+          rotationsMatchRest: legs.every((a) => a.rotation === a.restRotation),
+          gestureModes: legs.map((a) => a.gestureMode),
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    assert emitted["legCount"] == 6, (
+        "expected six leg bones (thigh/shin/foot, near and far); got "
+        f"{emitted['legCount']}"
+    )
+    assert emitted["rotationsMatchRest"], (
+        "a leg bone's `.rotation` disagrees with its `restRotation` - "
+        "`restAccents` will overwrite the pose on the first tick"
+    )
+    assert all(r is not None for r in emitted["restRotations"]), (
+        "a leg bone has no `restRotation`: `restAccents` resolves that to 0 "
+        "and the leg snaps upright one frame after it is drawn"
+    )
+    # Not every bone is at a distinct angle, but a leg whose bones are ALL at
+    # zero is a leg drawn straight down - the shape this increment replaced.
+    assert any(r != 0 for r in emitted["restRotations"]), (
+        "every leg bone sits at rotation 0 - the legs are not posed at all"
+    )
+    assert emitted["gestureModes"] == ["still"] * emitted["legCount"], (
+        "a leg bone would be swung by `gesture()`, which takes the leg apart: "
+        f"{emitted['gestureModes']}"
+    )
+
+
 def _seated_rig_bounds():
     """The trader's full rendered bounding box, in screen pixels: every real
     `roundRect`/`circle` call `seatedRig` makes (torso, thighs, each arm at
