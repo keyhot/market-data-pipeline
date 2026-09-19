@@ -31,14 +31,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts.sheet_build import SHEET_H, SHEET_W  # noqa: E402
 from scripts.shoot import _READY_JS, _Session, frame_is_blank  # noqa: E402
 
 PAGE_PATH = "/tools/charsheet/index.html"
 DEFAULT_OUT = ROOT / "data" / "visual-qa" / "char-redesign"
 
 # The sheet's own canvas, not the room's 1920x960. Judging a sheet in a
-# viewport smaller than itself crops the columns it exists to compare.
-VIEWPORT = (1280, 900)
+# viewport smaller than itself crops the columns it exists to compare -- and
+# a cropped sheet still looks like a finished picture, which is the failure
+# mode this whole harness was adopted to end. So the number is IMPORTED from
+# the one place that defines it rather than kept in step by hand.
+VIEWPORT = (SHEET_W, SHEET_H)
 
 
 @contextlib.contextmanager
