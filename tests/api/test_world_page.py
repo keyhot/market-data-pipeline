@@ -1418,6 +1418,7 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         + "let floorLine, wall, floorPlane, vignette;\n"
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           clear() { return this; }
           rect() { return this; }
           fill() { return this; }
@@ -2003,6 +2004,7 @@ def test_the_foreground_redraws_the_plate_masked_and_degrades_to_nothing():
     block = _js_block(source, "function drawForeground(")
     harness = """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() { this.polys = []; }
           poly(p) { this.polys.push(p); return this; }
           fill() { return this; }
@@ -2546,6 +2548,7 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
         + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           // `pivot`/`rotation` are real PIXI.Graphics fields and the seated
           // legs are posed with both. A double that omits them does not fail
           // loudly, it throws from inside the code under test — so it is the
@@ -2692,6 +2695,7 @@ def test_the_seated_figure_has_a_neck():
         + "\n"
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() { this.pivot = { x: 0, y: 0 }; this.rotation = 0; }
           roundRect() { return this; } circle() { return this; }
           fill() { return this; } stroke() { return this; }
@@ -2776,6 +2780,276 @@ def test_the_seated_figure_has_a_neck():
 
 
 @needs_node
+def test_the_seated_arms_bend_at_an_elbow():
+    """Two bones and a joint, and the forearm hangs off the upper arm.
+
+    The comment this replaced asserted the reference "paints an arm as ONE
+    tapering sleeve ... with no articulated elbow". The trace the whole
+    redesign runs on says otherwise — it carries `elbow_near`/`elbow_far`, and
+    the near arm turns a near right angle at one — and a 4x crop of the art
+    shows the sleeve making that turn. A straight tube from shoulder to a
+    round hand was the single most doll-like thing left on the figure.
+
+    Three claims, and the third is the one that would silently rot:
+
+    1. each arm has exactly one forearm child, and the elbow is a real BEND
+       rather than a seam in a straight tube;
+    2. both segments carry the trace's length, converted through the one unit
+       this redesign uses;
+    3. the forearm is attached AT the far end of the upper arm. That is a
+       reparenting calculation — PIXI maps a child through the parent's pivot
+       AND rotation — and getting it wrong detaches the forearm by a few units
+       in a way no screenshot at this scale would show. It is checked by
+       composing the recorded transforms two independent ways and requiring
+       them to agree, rather than by restating the page's own arithmetic.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "const HUMAN = {")
+        + ";\n"
+        + _js_block(source, "function mixHex(")
+        + "\n"
+        + """
+        class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
+          constructor() {
+            this.calls = []; this.children = [];
+            this.x = 0; this.y = 0;
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+          }
+          addChild(c) { this.children.push(c); return c; }
+          roundRect() { return this; } circle() { return this; }
+          fill() { return this; } stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const litRect = (x, y, w, h, r) => ({
+          rect: [x, y, w, h], band: (g) => g, rim: (g) => g });
+        const litCircle = (cx, cy, rad) => ({
+          rect: [cx - rad, cy - rad, 2 * rad, 2 * rad],
+          band: (g) => g, rim: (g) => g });
+        function paint(g, volume, fill, rim, opts) {
+          (g.drawn || (g.drawn = [])).push({ rect: volume.rect, fill });
+        }
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        seatedRig(new FakeGraphics(), accents);
+        const arms = accents.filter((a) => !a.limb);
+        console.log(JSON.stringify(arms.map((a) => ({
+          x: a.x, y: a.y, rotation: a.rotation, pivot: a.pivot,
+          length: a.boneLength, trueLength: a.boneTrue, width: a.boneWidth,
+          children: a.children.map((c) => ({
+            x: c.x, y: c.y, rotation: c.rotation, pivot: c.pivot,
+            length: c.boneLength, trueLength: c.boneTrue, width: c.boneWidth,
+            drawn: c.drawn,
+          })),
+        }))));
+        """
+    )
+    arms = _run_node(driver)
+    assert len(arms) == 2, f"expected two arms, got {len(arms)}"
+
+    # The unit: 59.5 reference px per head, 44 rig units per head. Both arm
+    # bones trace at 58.1 px, so both want ~43 units.
+    TARGET = 58.1 / 59.5 * 44
+
+    for index, arm in enumerate(arms):
+        assert len(arm["children"]) == 1, (
+            f"arm {index} carries {len(arm['children'])} child bones; an arm "
+            "is an upper arm with exactly one forearm parented to it"
+        )
+        fore = arm["children"][0]
+
+        for name, seg in (("upper arm", arm), ("forearm", fore)):
+            # The TRUE length, before the turn foreshortens it. Both arms are
+            # the same bones, so this is the one that may not vary with side.
+            assert 0.8 * TARGET <= seg["trueLength"] <= 1.25 * TARGET, (
+                f"arm {index}'s {name} is authored {seg['trueLength']:.0f} "
+                f"units where the trace asks for {TARGET:.0f}"
+            )
+            # ...and a projection can only ever SHORTEN it. A drawn bone
+            # longer than its own bone means the turn or the elevation is
+            # being applied twice.
+            assert seg["length"] <= seg["trueLength"] + 1, (
+                f"arm {index}'s {name} draws {seg['length']:.0f} units from a "
+                f"{seg['trueLength']:.0f}-unit bone: a projection cannot "
+                "lengthen anything"
+            )
+
+        # A bend, not a seam. The forearm's rotation is stored relative to its
+        # parent, so a straight tube reads as ~0 here however the whole arm is
+        # swung. The reference's near elbow is near a right angle.
+        assert abs(fore["rotation"]) > 0.6, (
+            f"arm {index}'s forearm sits {fore['rotation']:.2f} rad off its "
+            "upper arm: that is a straight tube with a seam in it, not an elbow"
+        )
+
+        # Attachment, two ways. The far end of the upper-arm capsule in the
+        # parent's own local frame...
+        end_local = (
+            arm["pivot"]["x"],
+            arm["length"] + arm["pivot"]["y"],
+        )
+        # ...and where the child was actually parked.
+        child_local = (fore["x"], fore["y"])
+        gap = math.dist(end_local, child_local)
+        assert gap < 1.5, (
+            f"arm {index}'s forearm is parked {gap:.1f} units from the end of "
+            f"its upper arm (elbow at {end_local}, child at {child_local}): "
+            "the reparenting maths dropped the pivot or the rotation"
+        )
+
+        # The hand is on the end of the sleeve, not floating past it. It has
+        # to be placed at the forearm's DRAWN length, because the sleeve is a
+        # projection of a 43-unit bone and can come out at 28 — a hand parked
+        # at the authored length hangs in clear air beside the arm.
+        sleeve_end = fore["length"] + fore["width"]
+        hands = [d for d in fore["drawn"] if d["fill"] == 0xC08F68]
+        assert len(hands) == 1, f"arm {index} has {len(hands)} hands"
+        hand_top = hands[0]["rect"][1]
+        assert hand_top <= sleeve_end, (
+            f"arm {index}'s hand starts at {hand_top} but its sleeve ends at "
+            f"{sleeve_end:.0f}: the hand is floating off the end of the arm"
+        )
+
+
+@needs_node
+def test_the_two_thighs_read_as_two_legs_not_one_mass():
+    """Both thighs draw at a comparable length, and neither is a lump.
+
+    The trace settles this and it is scale-free: the reference's two thighs
+    project to 77.8 and 77.7 px — within a pixel of each other, because the
+    man's legs are nearly PARALLEL (8 degrees apart), both extended forward
+    with the knees close together.
+
+    The rig splayed its thighs 47 degrees apart (lateral +/-0.40). Turned
+    132 degrees, that pointed one of them into the screen, and it came out
+    26.6 units long against its twin's 54.2 — and only 1.3x its own width, so
+    it drew as a square blob at the hip rather than as a leg. That is most of
+    what "the legs read as one mass going left" was.
+
+    Two claims, because either alone has a hole: a ratio between the twins
+    (catches the splay) and an aspect ratio per bone (catches a thigh that is
+    short because it is SHORT, which the ratio alone would pass if both were).
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "const HUMAN = {")
+        + ";\n"
+        + _js_block(source, "function mixHex(")
+        + "\n"
+        + """
+        class FakeGraphics {
+          constructor() {
+            this.calls = []; this.children = [];
+            this.x = 0; this.y = 0;
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+          }
+          addChild(c) { this.children.push(c); return c; }
+          roundRect() { return this; } circle() { return this; }
+          fill() { return this; } stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const litRect = (x, y, w, h, r) => ({ band: (g) => g, rim: (g) => g });
+        const litCircle = (cx, cy, rad) => ({ band: (g) => g, rim: (g) => g });
+        function paint(g, volume, fill, rim, opts) {}
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        seatedRig(new FakeGraphics(), accents);
+        // Bones are pushed thigh, shin, foot per leg, far leg first.
+        const legs = accents.filter((a) => a.limb === "leg");
+        console.log(JSON.stringify(legs.map((b) => ({
+          length: b.boneLength, width: b.boneWidth,
+        }))));
+        """
+    )
+    bones = _run_node(driver)
+    assert len(bones) == 6, f"expected six leg bones, got {len(bones)}"
+    thighs = [bones[0], bones[3]]
+
+    shorter = min(t["length"] for t in thighs)
+    longer = max(t["length"] for t in thighs)
+    assert shorter / longer >= 0.6, (
+        f"one thigh draws {shorter:.0f} units and the other {longer:.0f} "
+        f"({shorter / longer:.2f}): the reference's two thighs project within "
+        "a pixel of each other because its legs are nearly parallel, so this "
+        "much disparity means they are splayed apart and one is pointing at "
+        "the camera"
+    )
+    for index, thigh in enumerate(thighs):
+        aspect = thigh["length"] / thigh["width"]
+        assert aspect >= 1.5, (
+            f"thigh {index} draws {thigh['length']:.0f} long by "
+            f"{thigh['width']:.0f} wide ({aspect:.1f}:1): that is a lump at "
+            "the hip, not a leg"
+        )
+
+
+@needs_node
+def test_a_mood_change_reaches_a_limb_parented_to_another_limb():
+    """The forearm is a child, and `applyMood` only walks `char.accents`.
+
+    `repaint` used to return early on any Graphics with no `volumes` of its
+    own and never looked at its children, so the moment a limb grew a child
+    limb, half a sleeve would keep the previous mood's colour. It shows up
+    only on a mood change, which is the kind of seam that ships.
+    """
+    source = _world_source()
+    driver = (
+        _js_block(source, "function mixHex(")
+        + "\n"
+        + """
+        const painted = [];
+        function paint(g, volume, fill, rim, opts) {
+          (g.volumes || (g.volumes = [])).push(
+            opts && opts.keepFill ? { volume, fill } : volume);
+          painted.push({ g: g.name, fill });
+        }
+        """
+        + _js_block(source, "function repaint(")
+        + "\n"
+        + """
+        const parent = { name: "upper", clear() {}, children: [] };
+        const child = { name: "fore", clear() {}, children: [] };
+        parent.children.push(child);
+        paint(parent, {}, 0x111111);
+        paint(child, {}, 0x222222);
+        painted.length = 0;
+        repaint(parent, 0x00ff00, 0x00ff00);
+        console.log(JSON.stringify(painted.map((p) => p.g)));
+        """
+    )
+    touched = _run_node(driver)
+    assert "fore" in touched, (
+        "repaint did not descend into the child limb: a mood change would "
+        f"re-light the upper arm and leave the forearm behind (touched: {touched})"
+    )
+
+
+@needs_node
 def test_the_seated_figure_points_where_the_painted_cushion_points():
     """He faces the way the chair does, and the chair's own edges say which way.
 
@@ -2810,6 +3084,7 @@ def test_the_seated_figure_points_where_the_painted_cushion_points():
         + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() {
             this.calls = []; this.x = 0; this.y = 0;
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
@@ -2972,6 +3247,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() {
             this.calls = []; this.x = 0;
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
@@ -3084,6 +3360,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
         + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() {
             this.calls = []; this.x = 0; this.y = 0;
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
@@ -3198,6 +3475,7 @@ def test_every_seated_leg_bone_carries_its_own_angle_and_opts_out_of_gestures():
         + _js_const(source, "LIGHT")
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() {
             this.calls = []; this.x = 0; this.y = 0;
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
@@ -3289,6 +3567,7 @@ def _seated_rig_bounds():
         // `new PIXI.Graphics()` (each arm) needs the same interface as the
         // plain recorder above, on an instance with its own `.calls`.
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() {
             this.calls = []; this.x = 0; this.y = 0;
             // Real PIXI.Graphics fields. The seated legs pose themselves with
@@ -3661,6 +3940,7 @@ def _glow_driver(*, plate_ready: bool) -> str:
         f"const PLATE = {json.dumps({'glow': glow})};\n"
         f"const plateReady = {str(plate_ready).lower()};\n"
         "class FakeGraphics {\n"
+        "  addChild(c) { (this.children || (this.children = [])).push(c); return c; }\n"
         "  constructor() {\n"
         "    this.rects = []; this.fills = []; this.blendMode = null; this.alpha = 1;\n"
         "  }\n"
@@ -3995,6 +4275,7 @@ def _monitor_driver(*, plate_ready: bool) -> str:
         f"const plateReady = {str(plate_ready).lower()};\n"
         "let graphicsBuilt = 0;\n"
         "class FakeGraphics {\n"
+        "  addChild(c) { (this.children || (this.children = [])).push(c); return c; }\n"
         "  constructor() {\n"
         "    graphicsBuilt++;\n"
         "    this.rects = []; this.fills = []; this.cleared = 0; this.alpha = 1;\n"
@@ -4193,6 +4474,7 @@ def test_a_screen_with_no_quad_still_gets_a_graphics_but_no_mask():
         "    quad: [[0, 0], [200, 0], [200, 100], [0, 100]] },\n"
         "] };\n"
         "class FakeGraphics {\n"
+        "  addChild(c) { (this.children || (this.children = [])).push(c); return c; }\n"
         "  poly(points) { this.polyPoints = points; return this; }\n"
         "  fill() { return this; }\n"
         "}\n"
@@ -4258,7 +4540,12 @@ def test_drawPillars_never_touches_the_monitors_layer():
         "function pillarGeometry() {\n"
         "  return { x: 0, baseY: 0, width: 1, height: 1 };\n"
         "}\n"
-        "class FakeGraphics { rect() { return this; } fill() { return this; } }\n"
+        "class FakeGraphics {\n"
+        "  addChild(c) { (this.children || (this.children = [])).push(c);"
+        " return c; }\n"
+        "  rect() { return this; }\n"
+        "  fill() { return this; }\n"
+        "}\n"
         "const PIXI = { Graphics: FakeGraphics };\n"
         + _js_block(source, "function drawPillars(")
         + "\n"
@@ -6368,6 +6655,7 @@ def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> 
         f"const PLATE = {json.dumps({'ambient_lights': ambient_lights})};\n"
         f"const plateReady = {str(plate_ready).lower()};\n"
         "class FakeGraphics {\n"
+        "  addChild(c) { (this.children || (this.children = [])).push(c); return c; }\n"
         "  constructor() {\n"
         "    this.rects = []; this.fills = []; this.blendMode = null; this.alpha = 1;\n"
         "  }\n"

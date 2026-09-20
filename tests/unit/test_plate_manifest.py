@@ -527,6 +527,7 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         f"const LIGHT = {as_json(light_for(manifest))};\n"
         + """
         class FakeGraphics {
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() {
             this.calls = []; this.x = 0;
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
@@ -1024,6 +1025,7 @@ def _pillar_ellipse_driver(source, manifest_dict, symbol):
         + f"""
         const SYMBOLS = ["{symbol}"];
         class FakeGraphics {{
+          addChild(c) {{ (this.children || (this.children = [])).push(c); return c; }}
           constructor() {{ this.rects = []; this.ellipses = []; this.fills = []; }}
           rect(x, y, w, h) {{ this.rects.push([x, y, w, h]); return this; }}
           ellipse(cx, cy, rx, ry) {{

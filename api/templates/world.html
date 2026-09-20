@@ -526,6 +526,14 @@
     // mood's rim. Everything else is a bare volume and re-paints in the mood,
     // exactly as before.
     function repaint(g, fill, rim) {
+      // A limb can be a TREE now — the seated forearm is a child of its own
+      // upper arm, so that a shoulder swing carries it. `applyMood` walks
+      // `char.accents`, which holds the upper arm only, so without this
+      // descent a mood change would re-light the sleeve above the elbow and
+      // leave the one below it in the previous mood's colour. Silent, and
+      // visible only on a mood change, which is exactly the kind of seam this
+      // redesign keeps finding.
+      for (const child of g.children || []) repaint(child, fill, rim);
       const volumes = g.volumes;
       if (!volumes || !volumes.length) return;
       g.clear();
@@ -2473,6 +2481,62 @@
       // flatten him to a plank edge-on. Shoulders are still ±24 in the room;
       // only their projection moved, which is why the seat budget below is
       // measured off THIS rect rather than off the authored 48.
+      // Where a limb's next joint lands, given a body-space direction and a
+      // TRUE bone length. Declared up here rather than beside the legs that
+      // used to be its only caller: the arms below articulate now, and a
+      // `const` is in its temporal dead zone until its own line runs.
+      const reach = (from, len, dir) => {
+        const [lat, tow] = turn(dir[0], dir[1]);
+        return {
+          x: from.x + lat * len,
+          y: from.y + (tow * SIN_PHI - dir[2] * COS_PHI) * len,
+        };
+      };
+      // One bone as a lit capsule laid along a->b. Local to `seatedRig`
+      // because the node drivers in the suite extract this one function by
+      // name; a helper at module scope would be undefined inside them.
+      const boneGfx = (a, b, width, fill, opts) => {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        const g = new PIXI.Graphics();
+        // Authored from its own corner and centred with `pivot`, never with a
+        // negative x: `litRect` snaps x to CELL, so `litRect(-w/2, ...)` with
+        // an odd half-width lands off-centre and thickens the limb on one
+        // side. The rect also runs half a width PAST the joint at each end and
+        // rounds to w/2, so consecutive bones interlock instead of leaving a
+        // notch on the outside of every bend.
+        paint(g, litRect(0, 0, width, len + width, width / 2), fill, undefined, opts);
+        g.pivot.x = width / 2;
+        g.pivot.y = width / 2;
+        g.x = a.x; g.y = a.y;
+        // `restAccents` rewrites every accent's rotation from `restRotation`
+        // on each tick, so a bone whose entire pose IS its rotation must carry
+        // the angle THERE. Setting only `.rotation` renders correctly once and
+        // then snaps bolt upright on the first frame.
+        g.restRotation = Math.atan2(dy, dx) - Math.PI / 2;
+        g.rotation = g.restRotation;
+        // The PROJECTED length, which is what the capsule actually measures on
+        // screen and what the attachment maths below needs. It is not the
+        // bone's true length: a limb pointing toward the camera foreshortens,
+        // which is why one thigh draws at 27 units and its twin at 54. The
+        // true length is tagged separately by the caller that knows it.
+        g.boneLength = len;
+        g.boneWidth = width;
+        return g;
+      };
+      const bone = (a, b, width, fill, opts) => {
+        const g = boneGfx(a, b, width, fill, opts);
+        // Legs are not arms. `gesture()` swings every accent it is handed, and
+        // swinging each bone of a leg about its own joint takes the leg apart
+        // — the same "felled tree" failure the GESTURE table already names for
+        // limb-less bodies.
+        g.gestureMode = "still";
+        // The seat measures what SITS on it. Legs overhang the cushion by
+        // design, so the two seat-fit checks skip anything tagged a limb.
+        g.limb = "leg";
+        accents.push(g);
+        return g;
+      };
       // The spine, pelvis to shoulder line. 68 units from the hips at 0 to a
       // shoulder line at -72, against the trace's 1.58 heads = 70: it used to
       // be 76, and the 6 units it gives back are what let the head rise into
@@ -2506,21 +2570,42 @@
       // the neck test grades it from here and fails from both ends.
       const HALF_C = snap(HALF_W * 11 / 24);
       paint(body, litRect(-HALF_C, -72, HALF_C * 2, 10, 5), HUMAN.sweater, undefined, inner);
-      // Arms down the front of the body to hands resting on the lap — not
-      // hanging out at the sides, and not bent back up toward a keyboard that
-      // is behind this figure's left shoulder. The reference paints an arm as
-      // ONE tapering sleeve from shoulder to a chunky hand with no articulated
-      // elbow (`Docs/char-redesign-reference/ref-trader.png`), so this is one
-      // capsule and one hand circle rather than two bones.
+      // THE ARMS BEND AT AN ELBOW, and the comment that used to stand here
+      // said they could not.
+      //
+      // It claimed the reference "paints an arm as ONE tapering sleeve from
+      // shoulder to a chunky hand with no articulated elbow". That is wrong,
+      // and the trace this redesign runs on had already recorded it wrong:
+      // `skeleton_ref.json` carries `elbow_near` and `elbow_far` as joints,
+      // and the near arm turns a near right angle at one —
+      // shoulder (1068,462) -> elbow (1072,520) -> wrist (1014,524), i.e.
+      // straight DOWN the side of the chair and then FORWARD along the
+      // armrest to a hand with drawn fingers. Cropping the art at 4x shows
+      // the sleeve make that turn plainly. What the reference has no *seam*
+      // at is the elbow; it is one continuous sleeve, which is what
+      // overlapping capsules give anyway.
+      //
+      // Lengths are the trace's, converted through the one unit this redesign
+      // uses (59.5 reference px per head, 44 units per head): 58.1 px of
+      // upper arm and 58.1 px of forearm both come out at 43 units.
+      // The forearm is nearly LEVEL, and the trace is what says so. Measured
+      // against the chair rather than against the frame, the reference puts
+      // the elbow 35 px above the seat surface and the wrist 31 px above it —
+      // 26 and 23 units, a drop of three over a 43-unit bone. That is an
+      // elbow at armrest height with the forearm lying along the armrest, not
+      // an arm angling down into the lap, and it is the difference between a
+      // man resting and a man reaching for something.
+      const ARM = {
+        upper: [43, [0.20, -0.18, -0.96]],   // down the side, slightly back
+        // Lateral is POSITIVE, i.e. the forearms splay very slightly OUT. At
+        // -0.08 they both angled inward and, seen from behind, converged into
+        // one horizontal bar across the chest — two arms reading as a single
+        // object, which is the same failure the thighs have below.
+        fore:  [43, [0.10, 0.94, -0.12]],    // forward along the armrest
+        width: [14, 12],
+        hand: 7,
+      };
       for (const side of [-1, 1]) {
-        const arm = new PIXI.Graphics();
-        // Sleeve then hand: the arm is sweater to within a hand's width of its
-        // end, and the hand is skin. Both authored, so an arm keeps being an
-        // arm in every mood. `shadeFactor` still lightens the mood's RIM on
-        // this accent (see `applyMood`) — which is the whole remaining job it
-        // has here, and the reason the arms still read apart from the torso.
-        paint(arm, litRect(-6, 0, 12, 74, 6), HUMAN.sweater, undefined, { keepFill: true });
-        paint(arm, litCircle(0, 76, 6), HUMAN.skin, undefined, { keepFill: true });
         // x ±16, and the two halves of that number are the KI-084 fix.
         //
         // It used to be ±25, pushed OUT there because `character()` added every
@@ -2539,12 +2624,59 @@
         // The shoulder an arm hangs from is a point in the ROOM, so it turns
         // with the body: ±16 lateral becomes a screen offset AND a depth.
         const shoulder = plant(side * 16, 0);
-        arm.x = snap(shoulder.x); arm.y = -66 + shoulder.y;
-        // Near-vertical, tilted a few degrees inward so the hands land on the
-        // thighs rather than beside them. Uneven on purpose — dead-straight
-        // symmetrical arms read as a mannequin, the same reason `restAccents`
-        // exists at all.
-        arm.restRotation = side < 0 ? 0.13 : -0.16;
+        const root = { x: snap(shoulder.x), y: -66 + shoulder.y };
+        // Both joints come out of `reach`, exactly as the legs' do, so the
+        // arm's POSE is authored in body space and the turn projects it. The
+        // lateral component flips with the side; the other two do not.
+        const elbow = reach(root, ARM.upper[0],
+                            [side * ARM.upper[1][0], ARM.upper[1][1], ARM.upper[1][2]]);
+        const wrist = reach(elbow, ARM.fore[0],
+                            [side * ARM.fore[1][0], ARM.fore[1][1], ARM.fore[1][2]]);
+        const arm = boneGfx(root, elbow, ARM.width[0], HUMAN.sweater,
+                            { keepFill: true });
+        const fore = boneGfx(elbow, wrist, ARM.width[1], HUMAN.sweater,
+                             { keepFill: true });
+        // The lengths BEFORE the turn foreshortened them, so the suite can
+        // hold them against the trace rather than against a projection that
+        // legitimately changes whenever the chair is re-measured.
+        arm.boneTrue = ARM.upper[0];
+        fore.boneTrue = ARM.fore[0];
+        // The hand, at the far end of the FOREARM's own local frame: the bone
+        // runs from (w/2, w/2) along +y to (w/2, len + w/2), so the wrist is
+        // the second of those and the hand sits just past it. Skin and
+        // authored, so a hand stays a hand in every mood.
+        // A flat hand, not a ball. The reference's hands are broad slabs with
+        // drawn fingers resting on the armrest and the desk; a circle at this
+        // size reads as a knob on the end of a stick, which is what the figure
+        // had. A rounded rect carrying the forearm's own width keeps the
+        // sleeve-to-skin transition reading as a wrist.
+        //
+        // Placed at the forearm's DRAWN length, never its authored one. The
+        // sleeve is a projection of a 43-unit bone and comes out as little as
+        // 28 on screen at this yaw, so a hand parked at 43 floats free of the
+        // arm it belongs to with a gap of clear room between them — which is
+        // exactly what the first version of this did.
+        paint(fore, litRect(ARM.width[1] / 2 - ARM.hand,
+                            fore.boneLength + ARM.width[1] / 2 - 2,
+                            ARM.hand * 2, ARM.hand * 2.2, ARM.hand * 0.7),
+              HUMAN.skin, undefined, { keepFill: true });
+        // The forearm becomes a CHILD of the upper arm, which is the only
+        // arrangement where a shoulder swing carries the whole limb. `gesture`
+        // and `cheer` write `armNear.rotation`/`armFar.rotation`; a forearm
+        // left as its own accent would stay behind and tear the arm in half.
+        //
+        // Re-expressing the elbow in the parent's frame: PIXI maps a child by
+        // `world = parentPos + R(parentRot) * (local - parentPivot)`, so the
+        // inverse puts the elbow at `R(-parentRot) * (elbow - root) + pivot`.
+        // The rotation is likewise relative, or the parent's angle counts twice.
+        const ca = Math.cos(-arm.restRotation), sa = Math.sin(-arm.restRotation);
+        const ex = elbow.x - root.x, ey = elbow.y - root.y;
+        fore.x = ex * ca - ey * sa + ARM.width[0] / 2;
+        fore.y = ex * sa + ey * ca + ARM.width[0] / 2;
+        fore.restRotation -= arm.restRotation;
+        fore.rotation = fore.restRotation;
+        arm.addChild(fore);
+        arm.forearm = fore;
         arm.shadeFactor = 1.35;
         // Which side of the torso this arm composites on is now a consequence
         // of the turn, not a decision: the shoulder that ended up nearer the
@@ -2596,57 +2728,31 @@
         // length rather than from a slope — and the drop it no longer spends
         // on the way to the knee is what leaves room to grow the figure
         // without putting its feet through the painted floor.
+        // THE THIGHS ARE NEARLY PARALLEL, and the trace is what says so.
+        //
+        // They used to splay +/-0.40 laterally — 47 degrees apart. The
+        // reference's two thighs are 8 degrees apart and project to 77.8 and
+        // 77.7 px, within a pixel of each other, because a man slumped in a
+        // task chair puts his legs out in front with his knees together, not
+        // astride. Turned 132 degrees, a 47-degree splay aimed one thigh into
+        // the screen: it drew 26.6 units long against its twin's 54.2, and at
+        // only 1.3x its own width it read as a square lump at the hip. That
+        // disparity is most of what "the legs read as one mass" was, and
+        // `test_the_two_thighs_read_as_two_legs_not_one_mass` now measures
+        // both halves of it.
+        //
+        // The knees still part slightly — a dead-parallel pair reads as one
+        // leg with a seam — but by a tenth, not by four.
         left: {
           hipLat: 11,
-          thigh: [57.5, [0.40, 0.906, -0.12]], shin: [62.5, [-0.25, 0.1, -0.96]],
-          foot: [24.5, [0.4, 0.9, 0]], width: [19.2, 14.8, 11.1],
+          thigh: [57.5, [0.12, 0.985, -0.12]], shin: [62.5, [-0.18, 0.1, -0.98]],
+          foot: [24.5, [0.25, 0.97, 0]], width: [19.2, 14.8, 11.1],
         },
         right: {
           hipLat: -11,
-          thigh: [57.6, [-0.40, 0.906, -0.12]], shin: [62.4, [0.25, 0.1, -0.96]],
-          foot: [29.8, [-0.4, 0.9, 0]], width: [20.7, 16.3, 11.8],
+          thigh: [57.6, [-0.12, 0.985, -0.12]], shin: [62.4, [0.18, 0.1, -0.98]],
+          foot: [29.8, [-0.25, 0.97, 0]], width: [20.7, 16.3, 11.8],
         },
-      };
-      const reach = (from, len, dir) => {
-        const [lat, tow] = turn(dir[0], dir[1]);
-        return {
-          x: from.x + lat * len,
-          y: from.y + (tow * SIN_PHI - dir[2] * COS_PHI) * len,
-        };
-      };
-      // One bone as a lit capsule laid along a->b. Local to `seatedRig`
-      // because the node drivers in the suite extract this one function by
-      // name; a helper at module scope would be undefined inside them.
-      const bone = (a, b, width, fill, opts) => {
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const len = Math.hypot(dx, dy);
-        const g = new PIXI.Graphics();
-        // Authored from its own corner and centred with `pivot`, never with a
-        // negative x: `litRect` snaps x to CELL, so `litRect(-w/2, ...)` with
-        // an odd half-width lands off-centre and thickens the limb on one
-        // side. The rect also runs half a width PAST the joint at each end and
-        // rounds to w/2, so consecutive bones interlock instead of leaving a
-        // notch on the outside of every bend.
-        paint(g, litRect(0, 0, width, len + width, width / 2), fill, undefined, opts);
-        g.pivot.x = width / 2;
-        g.pivot.y = width / 2;
-        g.x = a.x; g.y = a.y;
-        // `restAccents` rewrites every accent's rotation from `restRotation`
-        // on each tick, so a bone whose entire pose IS its rotation must carry
-        // the angle THERE. Setting only `.rotation` renders correctly once and
-        // then snaps bolt upright on the first frame.
-        g.restRotation = Math.atan2(dy, dx) - Math.PI / 2;
-        g.rotation = g.restRotation;
-        // Legs are not arms. `gesture()` swings every accent it is handed, and
-        // swinging each bone of a leg about its own joint takes the leg apart
-        // — the same "felled tree" failure the GESTURE table already names for
-        // limb-less bodies.
-        g.gestureMode = "still";
-        // The seat measures what SITS on it. Legs overhang the cushion by
-        // design, so the two seat-fit checks skip anything tagged a limb.
-        g.limb = "leg";
-        accents.push(g);
-        return g;
       };
       // Far side first so it renders behind the near one. The far leg is also
       // mixed toward the room's own ambient rather than given a second
