@@ -518,12 +518,32 @@
     function paint(g, volume, fill, rim, opts) {
       const keepFill = opts && opts.keepFill;
       const noRim = !!(opts && opts.noRim);
+      // A matte volume takes the BASE rung where the lit one would go, rather
+      // than skipping the band: the shoe still needs its brightest face
+      // painted, it just must not be painted in the lamp's hue. See `shod`.
+      const matte = !!(opts && opts.matte);
+      // Anything added here needs a line in `repaint` too — it rebuilds these
+      // options field by field, so it is a WHITELIST, and an option it does
+      // not name is dropped the moment a mood is applied. `matte` was lost
+      // that way when first written: the A/B shot came back pixel-identical
+      // to the shipped figure, because `draw()` re-pins the trader to "idle"
+      // on every update and repaints him before anything is photographed.
+      //
+      // `matte` is only meaningful ALONGSIDE `keepFill`, which is how `shod`
+      // carries it. `repaint` recovers a volume's authored colour from the
+      // stored `fill`, and that is stored only for a `keepFill` volume — so a
+      // matte-only volume would keep the rung and take the MOOD as its fill on
+      // the next repaint. Nothing draws one; this is the note for whoever adds
+      // the next option, not a live defect.
       (g.volumes || (g.volumes = [])).push(
-        keepFill || noRim ? { volume, fill: keepFill ? fill : undefined, noRim } : volume,
+        keepFill || noRim || matte
+          ? { volume, fill: keepFill ? fill : undefined, noRim, matte }
+          : volume,
       );
       volume.band(g, BAND_INSET.shade);  g.fill(shade(fill, rampLevel("shade")));
       volume.band(g, BAND_INSET.base);   g.fill(shade(fill, rampLevel("base")));
-      volume.band(g, BAND_INSET.lit);    g.fill(shade(fill, rampLevel("lit")));
+      volume.band(g, BAND_INSET.lit);
+      g.fill(matte ? shade(fill, rampLevel("base")) : shade(fill, rampLevel("lit")));
       if (!noRim && !keepFill) volume.rim(g, rimStyle(rim));
     }
 
@@ -576,7 +596,7 @@
         if (entry.volume) {
           const authored = entry.fill !== undefined;
           paint(g, entry.volume, authored ? entry.fill : fill, rim, {
-            keepFill: authored, noRim: entry.noRim,
+            keepFill: authored, noRim: entry.noRim, matte: entry.matte,
           });
         } else {
           paint(g, entry, fill, rim);
@@ -2473,6 +2493,34 @@
       // the old rig read as a stack of blobs rather than a person.
       const legs = { keepFill: true };
       const inner = { keepFill: true, noRim: true };
+      // The shoe is the one volume of the trader that takes no lamp band.
+      //
+      // `shade` mixes toward `LIGHT.warmth` by an ABSOLUTE 0.3 on the lit
+      // rung, which lands EVERY cool volume's lit band within 5° of the
+      // lamp's own hue (34°) — the sweater drifts 180°, the jeans 169°, the
+      // shoes 164°. For the sweater and the jeans that is a warm sheen at
+      // roughly their own brightness and it reads. For the shoes, authored
+      // near-black at hue 227°, it is a lift to hue 31° — four degrees off
+      // skin's OWN authored 27° — so the darkest thing on the figure comes
+      // out a dark flesh tone and the trader appears to be in slippers. The
+      // near foot measured 327px of that wash against 150px of authored
+      // `#2a2e3c`. Vault `Docs/character-redesign.md`, increment 9;
+      // `scripts/measure_lit_band.py` recomputes the table.
+      //
+      // The fault is the value lift landing on a hue the volume never
+      // authored, NOT the lift itself — the hair lifts proportionally more
+      // (0.29 → 0.49) and reads fine, because it drifts 8° rather than 164°.
+      // So a darker `HUMAN.shoes` is not the fix: it lowers the band and
+      // leaves it at hue 31°, which the A/B frame refused exactly as the
+      // table predicted.
+      //
+      // Scoped to the shoe on purpose. `shade` is shared with every market
+      // glyph, the model robot and `world/visuals.py`; re-lighting the room
+      // to fix a foot is the mistake increment 8 avoided by answering the
+      // aesthetic question at the smallest scope that answers it. The
+      // reference agrees: it gives the shoes no warm band at all and lets
+      // them read on silhouette against the floor.
+      const shod = { keepFill: true, matte: true };
       // The legs are built at the BOTTOM of this function, after the arms, so
       // that `accents[0]`/`accents[1]` stay the two arms `character()` aliases
       // by index. They are no longer drawn onto `body` at all: a posed limb is
@@ -2843,7 +2891,7 @@
         // parts that make the silhouette keep their edge.
         bone(hip, knee, L.width[0], jeans, legs);
         bone(knee, ankle, L.width[1], jeans, inner);
-        bone(ankle, toe, L.width[2], shoes, legs);
+        bone(ankle, toe, L.width[2], shoes, shod);
       });
       // -100, and the 4 units it moved up are a NECK.
       //

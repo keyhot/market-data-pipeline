@@ -3045,6 +3045,143 @@ def test_a_person_is_not_outlined():
 
 
 @needs_node
+def test_a_matte_volume_takes_no_lamp_band_even_after_a_mood_change():
+    """`matte` drops the lit rung, and SURVIVES `repaint`.
+
+    Measured before it was believed (vault `Docs/character-redesign.md`,
+    increment 9; re-runnable as `scripts/measure_lit_band.py`). `shade` mixes
+    toward `LIGHT.warmth` by an ABSOLUTE 0.3 for the lit rung, so every cool
+    volume's lit band lands within 5 degrees of the lamp's own hue (34 deg):
+    the sweater drifts 180, the jeans 169, the shoes 164. Predicted and then
+    confirmed off a live frame -- `shoes.lit` `#655340` and `skin.shade`
+    `#886955`, both exact.
+
+    The shoes are where that stops being a look and becomes a defect: they
+    author at hue 227 and land at 31, which is 4 degrees off skin's OWN
+    authored hue, so the trader appears to be wearing slippers. The near foot
+    measured 327px of warm wash against 150px of authored `#2a2e3c` -- 3.4:1.
+
+    Value lift is NOT the fault and must not be blamed later: the hair lifts
+    0.29 -> 0.49, a LARGER gain than the shoes' 0.24 -> 0.40, and reads fine,
+    because it drifts 8 degrees rather than 164. The fault is a value lift onto
+    a hue the volume never authored. That is also why darkening `HUMAN.shoes`
+    is the wrong fix -- it lowers the band and leaves it at hue 31 -- and the
+    A/B frame refused it exactly as the table predicted.
+
+    The second half of this test is the one that would rot silently. `repaint`
+    rebuilds its options field by field (`{ keepFill, noRim, matte }`), so it
+    is a WHITELIST: an option it does not name is dropped the next time a mood
+    is applied. `matte` was in fact lost this way when first written -- the A/B
+    shot came back pixel-identical to the shipped figure -- because `draw()`
+    re-pins the trader to `"idle"` on every update and repaints him. Anything
+    added to `paint`'s options from here needs a line in `repaint` and a line
+    in this test.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0x8899aa;\n"
+        + "const BODY_RIM = { width: 1.5, color: 0xffffff, alignment: 1 };\n"
+        + _js_const(source, "LIGHT")
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _shading_prelude(source)
+        + _js_block(source, "function repaint(")
+        + "\n"
+        + """
+        // Every band is a `fill`; the rim is the one `stroke`. Recording the
+        // fills is therefore recording the bands, in draw order.
+        let fills = [];
+        class FakeGraphics {
+          constructor() { this.children = []; }
+          roundRect() { return this; } circle() { return this; }
+          stroke() { return this; } clear() { return this; }
+          fill(c) { fills.push(c && c.color !== undefined ? c.color : c); return this; }
+        }
+        const run = (opts) => {
+          const g = new FakeGraphics();
+          fills = [];
+          paint(g, litRect(0, 0, 20, 40, 10), HUMAN.shoes, 0x223344, opts);
+          const painted = fills.slice();
+          // What `applyMood` does on every single state update.
+          fills = [];
+          repaint(g, 0x8899aa, 0x223344);
+          return { painted, repainted: fills.slice() };
+        };
+        console.log(JSON.stringify({
+          matte: run({ keepFill: true, matte: true }),
+          plain: run({ keepFill: true }),
+          lamp: shade(HUMAN.shoes, rampLevel("lit")),
+          authored: HUMAN.shoes,
+        }));
+        """
+    )
+    out = _run_node(driver)
+    lamp, authored = out["lamp"], out["authored"]
+
+    assert lamp != authored, (
+        "the lit rung has stopped moving the shoe colour at all, so this test "
+        "can no longer tell a matte volume from a lit one. Check `LIGHT.ramp`."
+    )
+    for phase in ("painted", "repainted"):
+        assert lamp not in out["matte"][phase], (
+            f"a matte volume took the lamp's band ({lamp:#08x}) when {phase}. "
+            "The shoes author at hue 227 and this band lands at 31 -- 4 "
+            "degrees off skin -- which is the whole of the slipper read."
+        )
+        assert authored in out["matte"][phase], (
+            f"a matte volume lost its authored colour when {phase}. Dropping "
+            "the lit rung means falling back to the base rung, not skipping "
+            "the band: the shoe still needs its brightest face painted."
+        )
+        assert lamp in out["plain"][phase], (
+            f"a plain volume lost the lamp's band when {phase}. This increment "
+            "takes the warm band off the SHOES, not off the room -- `shade` is "
+            "shared with every glyph, the model robot and world/visuals.py."
+        )
+
+
+@needs_node
+def test_the_shoes_are_the_matte_volume_and_the_rest_of_the_leg_is_not():
+    """The rule reaches the shoe, and stops there.
+
+    Graded at the rig rather than at the call site, for the reason increment 6
+    taught: the arms restated `noRim` beside themselves instead of carrying the
+    rule, and the forearm shipped outlined for a whole increment. A leg draws
+    thigh, shin and shoe in that order, so the third bone of each is the one
+    that must be matte and the first two are the ones that must not.
+
+    The reference (`Docs/char-redesign-reference/ref-trader.png`) is the spec
+    here: it lights within each material's own hue and gives the shoes no warm
+    band AT ALL -- they are flat dark blue-grey near the floor's value and read
+    as shoes on silhouette alone.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+    bones, drawn = emitted["bones"], emitted["drawn"]
+
+    assert len(bones) == 6, (
+        f"expected two legs of three bones, got {len(bones)}. This test reads "
+        "the shoe as the third bone of each leg."
+    )
+    for leg, start in (("far", 0), ("near", 3)):
+        thigh, shin, shoe = (
+            _bone_capsule(drawn, bones[start + i]["gid"]) for i in range(3)
+        )
+        assert shoe["opts"].get("matte"), (
+            f"the {leg} shoe is not matte, so its lit band is still mixed 30% "
+            "toward the lamp and the foot renders in a dark flesh tone "
+            "(#655340, hue 31, against skin's authored 27)."
+        )
+        for name, capsule in (("thigh", thigh), ("shin", shin)):
+            assert not capsule["opts"].get("matte"), (
+                f"the {leg} {name} went matte too. The jeans drift 169 degrees "
+                "and still read as jeans; only the shoes land on skin's hue, "
+                "and re-lighting the whole figure is a different increment."
+            )
+
+
+@needs_node
 def test_the_seated_arms_bend_at_an_elbow():
     """Two bones and a joint, and the forearm hangs off the upper arm.
 
