@@ -2588,13 +2588,32 @@
       // Lengths are the trace's, converted through the one unit this redesign
       // uses (59.5 reference px per head, 44 units per head): 58.1 px of
       // upper arm and 58.1 px of forearm both come out at 43 units.
-      // The forearm is nearly LEVEL, and the trace is what says so. Measured
-      // against the chair rather than against the frame, the reference puts
-      // the elbow 35 px above the seat surface and the wrist 31 px above it —
-      // 26 and 23 units, a drop of three over a 43-unit bone. That is an
-      // elbow at armrest height with the forearm lying along the armrest, not
-      // an arm angling down into the lap, and it is the difference between a
-      // man resting and a man reaching for something.
+      // The forearm is nearly LEVEL: the reference's elbow is 35 px above the
+      // seat surface and its wrist 31 px, a drop of three over a 43-unit
+      // bone. That much the trace gives cleanly, because it is a difference
+      // between two points on the same arm.
+      //
+      // The arm's HEIGHT is the one thing this trace cannot settle, and the
+      // reason is worth keeping. An earlier version of this comment read
+      // "35 px above the seat = 26 units, and our hips are at 0, so the elbow
+      // belongs at -26, which is what we have". Those are two different
+      // origins: the trace puts `hip_near` 37 px above the seat as well, so
+      // its elbow is at HIP level, not 26 units above it. Taken literally
+      // that would drop this elbow 27 units.
+      //
+      // It should not be taken literally. The reference figure is slumped —
+      // reclined, with his hips slid forward and up the cushion — and a
+      // recline throws the shoulder back and down relative to the hip, so
+      // every hip-relative arm measurement off this trace carries the recline
+      // inside it. This rig sits upright. For an upright figure a shoulder at
+      // -66 and a 43-unit upper arm put the elbow near -27, which is about
+      // where a task chair's armrest is, and that is the pose drawn here.
+      //
+      // The projection-free way to settle it, when someone wants to: the
+      // armrest is PAINTED, and `skeleton_ref.json` already carries
+      // `armrest_top`. Measure the plate's own armrest the way
+      // `measure_floor_band` measures the castor contacts, and bracket the
+      // hand against it. That needs no projection and no recline.
       const ARM = {
         upper: [43, [0.20, -0.18, -0.96]],   // down the side, slightly back
         // Lateral is POSITIVE, i.e. the forearms splay very slightly OUT. At
