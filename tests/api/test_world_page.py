@@ -404,7 +404,11 @@ def test_a_shadow_is_a_sibling_of_its_body_not_a_child_of_it():
     made = re.search(
         r"function character\(name, style\) \{(.*?)\n    \}", body, re.S
     ).group(1)
-    assert "container.addChild(...accents, body, head" in made
+    # KI-084 split the accents either side of the body (`depthOrder`), so the
+    # claim this test actually makes — accents are parented to the character's
+    # own container, and the shadow is NOT — is checked on the parts that
+    # survived the split rather than on the old literal.
+    assert 'container.addChild(...depthOrder(accents, "far"), body, head' in made
     assert "container.addChild(shadow" not in made, "the shadow is parented to the body"
 
 
@@ -1443,6 +1447,13 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         + "\n"
         + _js_block(source, "function buildMonitorGraphics(")
         + "\n"
+        # `drawPlate` calls this on its success path, so the driver has to
+        # carry it. Leaving it out made `drawPlate` die on a ReferenceError
+        # before `buildGlows` ever ran, which this test caught as a glow
+        # count of 0 — the same "a driver that throws is an absent test"
+        # shape as KI-085, found here by the suite instead of by a sprint.
+        + _js_block(source, "function drawForeground(")
+        + "\n"
         + _js_block(source, "async function drawPlate(")
         + "\n"
         + """
@@ -1859,6 +1870,169 @@ def test_the_arm_aliases_are_wired_from_the_real_accents_array():
     )
     emitted = _run_node(driver)
     assert emitted == {"armNear": "near", "armFar": "far"}
+
+
+@needs_node
+def test_depth_order_partitions_accents_without_reordering_them():
+    """`depthOrder` is the whole of the KI-084 fix, so it is tested as the
+    pure function it is: it splits one accents array into the two groups
+    `character()` composites either side of the body, and it must not
+    disturb the order WITHIN a group. That second half is not decoration —
+    `seatedRig` pushes the far leg before the near one precisely so the near
+    one draws over it, and a partition that sorted or reversed would undo
+    that silently while every z-order assertion about the body still passed.
+    """
+    source = _world_source()
+    driver = (
+        _js_block(source, "function depthOrder(")
+        + """
+        const accents = [
+          { id: "legFar", depth: "far" }, { id: "legNear", depth: "far" },
+          { id: "armL", depth: "near" }, { id: "untagged" },
+          { id: "armR", depth: "near" },
+        ];
+        console.log(JSON.stringify({
+          far: depthOrder(accents, "far").map((a) => a.id),
+          near: depthOrder(accents, "near").map((a) => a.id),
+        }));
+        """
+    )
+    emitted = _run_node(driver)
+    # An untagged accent is a FAR one: every body style that predates the
+    # seated rig tags nothing, and they all used to draw behind the mass.
+    # Defaulting the other way would move every wick on the candle in front
+    # of it the moment this shipped.
+    assert emitted == {
+        "far": ["legFar", "legNear", "untagged"],
+        "near": ["armL", "armR"],
+    }
+
+
+@needs_node
+def test_the_near_limbs_composite_in_front_of_the_torso_and_under_the_labels():
+    """KI-084, the wiring half. `character()` used to add every accent before
+    the body (`container.addChild(...accents, body, head, ...)`), and the
+    seated torso spans ±24 — which is why the seated arms have been
+    completely invisible at rest for as long as the seated rig has existed.
+    Nothing was ever wrong with the arm animations; there was simply nothing
+    on screen to animate.
+
+    This drives the page's REAL `addChild` line rather than re-typing the
+    order, because the bug it guards against is precisely a correct
+    `depthOrder` that nothing calls. The labels are asserted to stay last: a
+    name tag a forearm can cover is the same class of defect as an arm the
+    torso covers.
+    """
+    source = _world_source()
+    line = re.search(r"^\s*container\.addChild\(.*\);$", source, re.M)
+    assert line, "the page no longer composites the character on one addChild line"
+    driver = (
+        _js_block(source, "function depthOrder(")
+        + """
+        const body = { id: "body" }, head = { id: "head" };
+        const nameTag = { id: "nameTag" }, stat = { id: "stat" };
+        const moodTag = { id: "moodTag" };
+        const accents = [
+          { id: "legFar", depth: "far" }, { id: "legNear", depth: "far" },
+          { id: "armL", depth: "near" }, { id: "armR", depth: "near" },
+        ];
+        const order = [];
+        const container = {
+          addChild(...kids) { order.push(...kids.map((k) => k.id)); },
+        };
+        """
+        + line.group(0).strip()
+        + "\nconsole.log(JSON.stringify(order));\n"
+    )
+    assert _run_node(driver) == [
+        "legFar", "legNear", "body", "head", "armL", "armR",
+        "nameTag", "stat", "moodTag",
+    ]
+
+
+@needs_node
+def test_the_foreground_redraws_the_plate_masked_and_degrades_to_nothing():
+    """The painted chair back has to land in FRONT of the trader, and the
+    plate is one flat image — so `/world` draws the plate a SECOND time,
+    masked to a polygon the manifest measures.
+
+    Two claims, because the failure modes are opposite. With regions: a mask
+    is built from the polygon and the second sprite is sized to
+    `PLATE.canvas` exactly as `drawPlate` sizes the first, which is what
+    makes the two land pixel-for-pixel on each other with no frame offset to
+    drift. Without regions: NOTHING is added — an unmasked full-plate sprite
+    over the cast would paint the entire room over the characters, which is
+    the white-frame class of defect (KI-045/047), not a cosmetic one.
+    """
+    source = _world_source()
+    block = _js_block(source, "function drawForeground(")
+    harness = """
+        class FakeGraphics {
+          constructor() { this.polys = []; }
+          poly(p) { this.polys.push(p); return this; }
+          fill() { return this; }
+        }
+        class FakeSprite { constructor(texture) { this.texture = texture; } }
+        const PIXI = { Graphics: FakeGraphics, Sprite: FakeSprite };
+        const added = [];
+        const layers = { foreground: { addChild(...k) { added.push(...k); } } };
+    """
+    with_region = _run_node(
+        "const PLATE = { canvas: [1920, 960], foreground: ["
+        '{ id: "chair", poly: [[1, 2], [3, 4], [5, 6]] },'
+        # A region with no usable polygon is skipped, not thrown on: `poly()`
+        # on a bad list would throw inside the one function standing between
+        # the cast and a blank frame.
+        '{ id: "broken" }] };\n'
+        + harness + block + """
+        drawForeground({ id: "tex" });
+        const [mask, sprite] = added;
+        console.log(JSON.stringify({
+          added: added.length,
+          polys: mask.polys,
+          maskIsTheGraphics: sprite.mask === mask,
+          size: [sprite.width, sprite.height],
+          reusesTexture: sprite.texture.id === "tex",
+        }));
+        """
+    )
+    assert with_region == {
+        "added": 2,
+        # Flattened, which is the shape PIXI v8's `poly()` takes.
+        "polys": [[1, 2, 3, 4, 5, 6]],
+        "maskIsTheGraphics": True,
+        "size": [1920, 960],
+        "reusesTexture": True,
+    }
+    empty = _run_node(
+        "const PLATE = { canvas: [1920, 960], foreground: [] };\n"
+        + harness + block + "drawForeground({});\n"
+        "console.log(JSON.stringify({ added: added.length }));"
+    )
+    assert empty == {"added": 0}, (
+        "a plate with no foreground must add NOTHING - an unmasked second "
+        "plate sprite over layers.chars paints the room over the cast"
+    )
+
+
+def test_the_foreground_layer_sits_above_the_cast_and_below_the_labels():
+    """Depth order is the entire point of the layer, and it is decided on one
+    `app.stage.addChild` line. Above `chars` or the chair cannot occlude
+    anyone; below the labels, or the chair covers a nameplate.
+    """
+    source = _world_source()
+    line = re.search(r"app\.stage\.addChild\((.*?)\);", source, re.S)
+    assert line, "the page no longer composites its layers on one addChild call"
+    order = [name.strip() for name in line.group(1).replace("\n", "").split(",")]
+    order = [o for o in order if o]
+    assert order.index("layers.foreground") > order.index("layers.chars"), (
+        "the painted foreground must be added AFTER layers.chars or it "
+        "cannot stand in front of the cast"
+    )
+    assert order.index("layers.foreground") < order.index("layers.nameplates"), (
+        "the painted foreground must be added BEFORE layers.nameplates or "
+        "the chair back can cover a character's name"
+    )
 
 
 def test_every_trader_animation_has_a_seated_variant():
@@ -2358,7 +2532,8 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         const headY = seatedRig(fakeGfx, accents);
         console.log(JSON.stringify({
           headY, castScale: CAST_SCALE,
-          armCount: accents.filter((a) => a.limb === "arm").length,
+          armCount: accents.filter((a) => a.depth === "near").length,
+          armsAreFirst: accents.slice(0, 2).every((a) => a.depth === "near"),
         }));
         """
     )
@@ -2376,11 +2551,22 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         f"the painted backrest's crown at y={BACKREST_CROWN_SCREEN_Y} - the "
         "trader pokes out over the top of the chair"
     )
-    # Counted over the accents that are NOT tagged a limb: the posed legs are
-    # six more real Graphics on the same array (each bone carries its own
-    # rotation, so each must be its own object), and `character()` still
-    # aliases `accents[0]`/`accents[1]` as the two arms by index.
+    # Counted over the accents tagged `near`, which since KI-084 is what an
+    # arm IS in this rig: the posed legs are six more real Graphics on the same
+    # array (each bone carries its own rotation, so each must be its own
+    # object) and they all stay far. Counting `limb === "arm"` was how this
+    # read until the arms came back inside the torso's ±24 and gave up their
+    # seat-fit exemption — see `arm.depth` in `seatedRig`.
     assert emitted["armCount"] == 2, "seatedRig must build exactly two arms"
+    # ...and they are still `accents[0]`/`accents[1]`, which `character()`
+    # aliases as `armNear`/`armFar` BY INDEX. The legs are pushed after the
+    # arms for exactly this reason, and nothing else in the suite would notice
+    # if a future edit pushed a leg bone first and silently re-aliased an arm
+    # animation onto a shin.
+    assert emitted["armsAreFirst"], (
+        "the two arms must stay accents[0] and accents[1] - character() "
+        "aliases armNear/armFar by index"
+    )
 
 
 @needs_node
@@ -2934,9 +3120,13 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
     match = re.search(r"app\.stage\.addChild\(([^)]*)\);", boot)
     assert match, "boot() no longer builds the stage in one addChild call"
     order = [name.strip() for name in match.group(1).split(",")]
+    # `layers.foreground` is the painted furniture that stands in FRONT of
+    # the cast (the trader's chair back) — so it belongs between `chars` and
+    # `nameplates`, and its own test above asserts those two relations by
+    # name rather than by this list's index.
     assert order == ["layers.plate", "layers.room", "layers.glow",
                       "layers.monitors", "layers.props", "layers.chars",
-                      "layers.nameplates"], order
+                      "layers.foreground", "layers.nameplates"], order
 
 
 def test_the_ambient_vignette_is_guarded_for_the_plate_path():

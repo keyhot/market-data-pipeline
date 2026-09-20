@@ -1137,3 +1137,78 @@ def test_the_caps_offset_from_the_painted_bores_centre_is_pinned():
                 f"{tube['symbol']}: cap-to-bore-centre offset drifted from "
                 f"the pinned {expected}px to {offset}px"
             )
+
+
+def _inside(poly, x, y) -> bool:
+    """Point-in-polygon, ray cast. Local: the only consumer is below."""
+    hit = False
+    for i in range(len(poly)):
+        ax, ay = poly[i]
+        bx, by = poly[i - 1]
+        if (ay > y) != (by > y) and x < ax + (y - ay) / (by - ay) * (bx - ax):
+            hit = not hit
+    return hit
+
+
+def test_the_chair_back_foreground_traces_the_backrests_own_painted_edge():
+    """The foreground polygon is what `/world` re-draws OVER the trader, so
+    its left edge is the line between "he is sitting in the chair" and "the
+    chair is painted across his chest". It is therefore checked against the
+    plate's own pixels, not eyeballed once off a screenshot.
+
+    The edge is found with `scripts.measure_chair._chair` - the project's ONE
+    chair-upholstery predicate, imported rather than restated, the same rule
+    `measure_floor_band` already gets. A plain luminance threshold was tried
+    first and is wrong: above y~590 the lit desk front panel sits immediately
+    left of the backrest and is BRIGHTER than it, so the scan finds the desk
+    and calls it the chair.
+
+    Rows stop at 665: below that the seat slab and the armrest join the same
+    silhouette, and the leftmost chair pixel on the row stops being the
+    backrest's edge.
+
+    Both halves are asserted, and the second is the one that matters: the
+    polygon must COVER the painted edge, and it must NOT reach left of it
+    into the space the figure occupies.
+    """
+    from PIL import Image
+
+    from scripts.measure_chair import _chair
+
+    manifest = load_manifest()
+    regions = {f["id"]: f for f in manifest.foreground}
+    assert "chair-back-trader" in regions, (
+        "the manifest no longer measures the chair back, so /world has "
+        "nothing to draw in front of the seated trader"
+    )
+    poly = [tuple(p) for p in regions["chair-back-trader"]["poly"]]
+    px = Image.open(PLATE_PNG).convert("RGB").load()
+
+    checked = 0
+    for y in range(570, 666, 10):
+        edge = next((x for x in range(1360, 1420) if _chair(px, x, y)), None)
+        assert edge, f"no painted backrest edge found on row y={y}"
+        checked += 1
+        assert _inside(poly, edge + 4, y), (
+            f"row y={y}: the painted backrest edge is at x={edge}, but the "
+            f"foreground polygon does not cover x={edge + 4} - the chair "
+            "would render with a sliver of itself behind the trader"
+        )
+        assert not _inside(poly, edge - 12, y), (
+            f"row y={y}: the foreground polygon reaches x={edge - 12}, left "
+            f"of the painted backrest edge at x={edge} - it would paint bare "
+            "chair over the trader's own body"
+        )
+    assert checked >= 8, "too few rows sampled to call this measured"
+
+
+def test_a_manifest_with_no_foreground_is_absence_not_an_exception(tmp_path):
+    """Same degrade rule `text_surfaces` and `ambient_lights` already have:
+    an older plate, or a repaint that drops the key, renders the flat room
+    that shipped all sprint rather than throwing on the boot path.
+    """
+    raw = _minimal()
+    raw.pop("foreground", None)
+    path = tmp_path / "plate.json"
+    path.write_text(json.dumps(raw))
+    assert load_manifest(path).foreground == ()

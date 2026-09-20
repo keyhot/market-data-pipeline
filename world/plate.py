@@ -84,6 +84,16 @@ class PlateManifest:
     # manifest or a repaint that dropped it degrades to a dark, still
     # skyline, never a throw.
     ambient_lights: tuple[dict, ...] = field(default=())
+    # Painted furniture that stands BETWEEN the camera and the cast, each a
+    # polygon over the plate's own pixels. `/world` re-draws these slices of
+    # the plate above the character layer, so a figure can sit *in* the chair
+    # instead of in front of it — the plate is one flat image, so without this
+    # every character is a sticker on the front of the room.
+    #
+    # Optional, like `text_surfaces`/`ambient_lights` above: an older manifest
+    # or a repaint that drops it degrades to the flat room that shipped all
+    # sprint, never a throw.
+    foreground: tuple[dict, ...] = field(default=())
 
     def as_dict(self) -> dict:
         return {
@@ -101,6 +111,7 @@ class PlateManifest:
             "light": dict(self.light),
             "text_surfaces": [dict(s) for s in self.text_surfaces],
             "text": [dict(t) for t in self.text],
+            "foreground": [dict(f) for f in self.foreground],
         }
 
     def characters(self) -> dict[str, dict]:
@@ -170,6 +181,7 @@ def load_manifest(path: Path | None = None) -> PlateManifest | None:
             light=dict(raw.get("light", {})),
             text_surfaces=tuple(raw.get("text_surfaces", ())),
             text=tuple(raw.get("text", ())),
+            foreground=tuple(raw.get("foreground", ())),
         )
     except FileNotFoundError:
         logger.warning("plate manifest missing", extra={"path": str(path)})

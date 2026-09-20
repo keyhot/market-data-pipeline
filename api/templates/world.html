@@ -883,9 +883,14 @@
       // its shadow off the floor with it. Added first, so they stay behind.
       layers.shadows = new PIXI.Container();
       layers.chars.addChild(layers.shadows);
+      // The painted furniture that stands in FRONT of the cast — the chair
+      // back the trader sits against. It is a second draw of the plate's own
+      // pixels, masked to a polygon the manifest measures, so it lands above
+      // `layers.chars` and below the labels. See `drawForeground`.
+      layers.foreground = new PIXI.Container();
       app.stage.addChild(
         layers.plate, layers.room, layers.glow, layers.monitors,
-        layers.props, layers.chars, layers.nameplates);
+        layers.props, layers.chars, layers.foreground, layers.nameplates);
       // Pixel-art rule: no sub-pixel compositing for anything the cast or its
       // furniture draws. The plate and the vignette stay off this list on
       // purpose — they are painted art and a soft light falloff, not part of
@@ -1207,6 +1212,58 @@
     // the success path is the special case: no plate, no manifest, or a texture
     // that will not decode all land in the procedural room the stream already
     // ships.
+    // A second draw of the plate, masked to the painted furniture that stands
+    // between the camera and the cast, parented above `layers.chars`.
+    //
+    // The plate is ONE flat image, so without this every character is a
+    // sticker on the front of the room: measured at the anchor it actually
+    // renders at, the trader's torso stopped at screen x 1375 and the painted
+    // backrest's left edge starts at 1375 — he was drawn flush against the
+    // chair, never into it.
+    //
+    // It re-draws the WHOLE plate sprite rather than a cropped frame on
+    // purpose. Built exactly the way `drawPlate` builds the background one
+    // (same texture, same `PLATE.canvas` size, same layer coordinate space),
+    // it lands pixel-for-pixel over it BY CONSTRUCTION, with no frame offset
+    // to get wrong; the mask is the only thing deciding what shows. A crop
+    // would be the same picture plus arithmetic that can drift from the
+    // manifest.
+    //
+    // No `foreground` in the manifest — an older plate, or a repaint that
+    // dropped it — means no sprite and no mask, which is the flat room that
+    // shipped all sprint. Same degrade rule `text_surfaces` and
+    // `ambient_lights` already follow.
+    // It carries its OWN try/catch, and that is the most important line in
+    // it. It is called from inside `drawPlate`'s try, so without one a
+    // malformed polygon would not cost the chair slice — it would cost the
+    // glows, the live monitors, the city lights and the plate itself, and
+    // drop a painted room to the procedural one. A chair back is cosmetic;
+    // the room is not. The suite measured exactly that collapse the first
+    // time this was wired without the catch (`test_a_throwing_builder_
+    // degrades_to_a_clean_procedural_room` went red on the GLOW count).
+    function drawForeground(texture) {
+      try {
+        const regions = (PLATE && PLATE.foreground) || [];
+        if (!layers.foreground || !regions.length) return;
+        const mask = new PIXI.Graphics();
+        for (const region of regions) {
+          // A region with no polygon masks nothing rather than masking
+          // everything: an unmasked full-plate sprite over `layers.chars`
+          // paints the whole room on top of the cast.
+          if (!Array.isArray(region.poly) || region.poly.length < 3) continue;
+          mask.poly(region.poly.flat());
+          mask.fill(0xffffff);
+        }
+        const sprite = new PIXI.Sprite(texture);
+        sprite.width = PLATE.canvas[0];
+        sprite.height = PLATE.canvas[1];
+        sprite.mask = mask;
+        layers.foreground.addChild(mask, sprite);
+      } catch (err) {
+        console.error("foreground failed; the room keeps its plate", err);
+      }
+    }
+
     async function drawPlate() {
       if (!PLATE_SRC) { drawProceduralRoom(); return; }
       try {
@@ -1218,6 +1275,9 @@
         // one thing guaranteed to make it look worse than the room it replaces.
         texture.source.scaleMode = "nearest";
         layers.plate.addChild(sprite);
+        // The same texture again, above the cast, masked to the painted
+        // furniture that stands in front of them.
+        drawForeground(texture);
         // Built once, right here — never inside the per-frame ticker. See
         // buildGlows's own comment for why.
         buildGlows();
@@ -1797,6 +1857,26 @@
       char.shadow.alpha = CONTACT.opacity / (1 + lift * 0.014);
     }
 
+    // Which side of the body an accent composites on. `near` means "on the
+    // camera side" — a forearm that comes forward over the lap, not one
+    // hanging behind a torso that is 48 units wide.
+    //
+    // KI-084: every accent used to go on before the body, and the seated
+    // torso spans ±24, so the seated arms were invisible at rest from the day
+    // the seated rig shipped. The fix is deliberately NOT a change to the
+    // `accents` array — `restAccents`, `gesture()`, the seat-fit drivers and
+    // `character()`'s own `accents[0]`/`accents[1]` arm aliases all index it,
+    // and a partition applied in place would have moved all four of them.
+    // Only the parenting changes; rotation still comes from `restRotation`
+    // regardless of which side of `body` a Graphics is parented on.
+    //
+    // Untagged is FAR, which is the pre-KI-084 behaviour: every standing
+    // `BODIES.*` style tags nothing, and a wick reading as emerging from the
+    // candle depends on staying behind it.
+    function depthOrder(accents, which) {
+      return accents.filter((a) => (a.depth === "near") === (which === "near"));
+    }
+
     function character(name, style) {
       style = BODIES[style] ? style : styleFor(name);
       const container = new PIXI.Container();
@@ -1864,8 +1944,12 @@
       const nameTag = label(name, -40, 22, 18);
       const stat = label("", -80, 46, 14, NEUTRAL);
       const moodTag = label("", -40, headY - 56, 16, NEUTRAL);
-      // Accents go behind the mass, so a wick reads as emerging from it.
-      container.addChild(...accents, body, head, nameTag, stat, moodTag);
+      // Accents go behind the mass, so a wick reads as emerging from it —
+      // all but the ones tagged `near`, which are on the camera side and
+      // composite in front of it (KI-084, see `depthOrder`). Labels stay
+      // last: a name tag a forearm can cover is the same defect as an arm
+      // the torso covers.
+      container.addChild(...depthOrder(accents, "far"), body, head, ...depthOrder(accents, "near"), nameTag, stat, moodTag);
       layers.chars.addChild(container);
 
       // Seeded off the name, so MODEL and TRADER don't blink in unison — two
@@ -2270,43 +2354,46 @@
       // A collar, inside the shoulders, giving the neck somewhere to come out
       // of. `inner`: it is shading on the torso, not a separate object.
       paint(body, litRect(-11, -88, 22, 14, 7), HUMAN.sweater, undefined, inner);
-      // Forearms bent up toward the desk, not hanging at the sides — shorter
-      // than the standing figure's (66 units). Pivot at 14: the arm's own
-      // local rect snaps to [-4, 8], so a wider pivot pushes its outer edge
-      // past the chest and becomes the new widest part.
+      // Arms down the front of the body to hands resting on the lap — not
+      // hanging out at the sides, and not bent back up toward a keyboard that
+      // is behind this figure's left shoulder. The reference paints an arm as
+      // ONE tapering sleeve from shoulder to a chunky hand with no articulated
+      // elbow (`Docs/char-redesign-reference/ref-trader.png`), so this is one
+      // capsule and one hand circle rather than two bones.
       for (const side of [-1, 1]) {
         const arm = new PIXI.Graphics();
-        // Sleeve then hand: the forearm is sweater to within 8 units of its
+        // Sleeve then hand: the arm is sweater to within a hand's width of its
         // end, and the hand is skin. Both authored, so an arm keeps being an
         // arm in every mood. `shadeFactor` still lightens the mood's RIM on
         // this accent (see `applyMood`) — which is the whole remaining job it
         // has here, and the reason the arms still read apart from the torso.
-        paint(arm, litRect(-5, 0, 10, 30, 5), HUMAN.sweater, undefined, { keepFill: true });
-        paint(arm, litCircle(0, 32, 5), HUMAN.skin, undefined, { keepFill: true });
-        // x ±21, not ±14. `character()` adds the accents BEFORE the body
-        // (`container.addChild(...accents, body, head, ...)`) so an arm renders
-        // BEHIND the torso — and the torso spans ±24, which means the seated
-        // arms have been completely invisible at rest for as long as the seated
-        // rig has existed. Nothing was wrong with the animation; there was
-        // simply never anything on screen to animate. At ±21 the sleeve spans
-        // 15..27, clear of the torso edge and still inside the ±31.2 the
-        // painted seat allows at this anchor.
-        arm.x = side * 25; arm.y = -68;
-        arm.restRotation = side < 0 ? -0.55 : 0.5;
+        paint(arm, litRect(-6, 0, 12, 74, 6), HUMAN.sweater, undefined, { keepFill: true });
+        paint(arm, litCircle(0, 76, 6), HUMAN.skin, undefined, { keepFill: true });
+        // x ±16, and the two halves of that number are the KI-084 fix.
+        //
+        // It used to be ±25, pushed OUT there because `character()` added every
+        // accent before the body and the torso spans ±24 — an arm inside that
+        // was simply invisible, which is why the seated arms have never been on
+        // screen. Now that `depth: "near"` composites them in FRONT of the
+        // torso, an arm no longer has to clear it to be seen, so it comes back
+        // inside where a person's arms actually are.
+        //
+        // And coming back inside is what retires the seat exemption below:
+        // at ±16 the sleeve spans 12..24, inside the ±24 the painted cushion
+        // budgets at `sit_anchor.x`. The old comment promised exactly this
+        // ("when KI-084 lands the arm comes back inside ±24 and this exemption
+        // should be revisited, not inherited") — so `arm.limb` is gone, and
+        // the arms answer to the seat-fit tests again like the torso does.
+        arm.x = side * 16; arm.y = -66;
+        // Near-vertical, tilted a few degrees inward so the hands land on the
+        // thighs rather than beside them. Uneven on purpose — dead-straight
+        // symmetrical arms read as a mannequin, the same reason `restAccents`
+        // exists at all.
+        arm.restRotation = side < 0 ? 0.13 : -0.16;
         arm.shadeFactor = 1.35;
-        // An arm is a limb, and the seat budgets what SITS on it. That is not
-        // a convenience here, it is forced: at the REAL seated anchor
-        // (`sit_anchor.x` 1346, which is what `sitAnchorFor` pins the rig to)
-        // the painted cushion allows local x -37.6..25.6, and an arm has to
-        // start beyond the torso's own ±24 to be visible at all for as long as
-        // it is drawn BEHIND the torso (KI-084). That leaves a 1.6-unit window
-        // for a 10-unit sleeve, so the two constraints cannot both be met and
-        // the budget is the torso's. The comment above claiming "±31.2 the
-        // painted seat allows at this anchor" was computed against the
-        // STANDING anchor 1339; at 1346 the allowance is 25.6. When KI-084
-        // lands and near limbs draw in front, the arm comes back inside ±24
-        // and this exemption should be revisited, not inherited.
-        arm.limb = "arm";
+        // On the camera side of the body: forearms come FORWARD over the lap,
+        // and in this projection forward is down-the-screen and in front.
+        arm.depth = "near";
         accents.push(arm);
       }
       // ---------------------------------------------------------------------
@@ -2323,34 +2410,74 @@
       //
       // Lengths and widths are the trace's own, converted through the HEAD and
       // nothing else (1 head = 44 units = the approved `litCircle(0, -4, 22)`
-      // in `character()`), so there is no `k` anywhere in this block. Angles
-      // are the model sheet's RE-POSED column, and the lean in them is the
-      // PAINTED chair's measured 8.2° (`scripts/measure_chair.py`) — not the
-      // reference art's ~50°, which belongs to a headrest this chair does not
-      // have and which read as reclining in mid-air when it was tried.
+      // in `character()`), so there is no `k` anywhere in this block.
       //
-      // The hip offsets are the traced ones carried over UNROTATED. That looks
-      // like laziness and is the opposite: reclining is a rotation about the
-      // body's own lateral axis, so that axis is precisely what a recline does
-      // NOT move. Rotating them with the spine grows the legs out of the air
-      // behind the figure's back.
+      // The figure FACES THE CAMERA. The angles used to be the model sheet's
+      // re-posed column, which put the legs out to the LEFT in near-profile —
+      // a figure sitting side-on in a chair the plate paints facing the room.
+      // They are no longer angles at all: a bone is now a direction in the
+      // room (lateral, toward-camera, up) at its TRUE traced length, and the
+      // projection below is what turns it into screen pixels. That keeps the
+      // ratio finding — legs 3.5x short, the whole point of increment 3 —
+      // legible in the source, instead of burying it in twelve hand-typed
+      // screen lengths that have been silently foreshortened.
+      //
+      // Crown-to-ankle drops from 5.47 heads to ~4.9 by doing this, and that
+      // is CORRECT rather than a regression of increment 3: a seated figure
+      // seen front-on genuinely is shorter on screen than the same figure in
+      // profile. The measurement that still has to hold is the feet, and it
+      // holds against the painted floor (below), not against a head count.
       const SEATED_LEGS = {
-        // [x, y] hip, then [length, degrees] per bone, then the three widths.
+        // [x, y] hip, then [trueLength, [lateral, towardCamera, up]] per bone,
+        // then the three widths. Widths do NOT foreshorten — a limb's diameter
+        // is the same however it is pointed — so they are the trace's own.
         // The near leg is the one toward the camera; the far one is shorter on
         // screen and lands higher, which is the floor receding, not an error.
+        // Knees apart and shins angled back INWARD under the body, which is
+        // how a person actually sits and also what keeps the feet inside the
+        // chair's own castor base instead of planted wide outside it.
+        //
+        // The thighs slope DOWN (`up: -0.40`) rather than running level out
+        // of the hip. A level thigh is the anatomically obvious choice and it
+        // was the first thing tried; it does not read. Pointed at the camera
+        // a level thigh projects to a ~20-unit stub, and the knee capsule is
+        // 19 units WIDE, so the whole thigh disappears into the joint at
+        // either end and the figure reads as standing in front of the chair.
+        // Sloping the thighs gives a 44-unit thigh against a 19-unit width,
+        // and that ratio is the only thing on this rig that says "lap".
         far: {
-          hip: [-7.4, -4.4], thigh: [57.6, 159], shin: [62.5, 90],
-          foot: [24.5, 174], width: [19.2, 14.8, 11.1],
+          hip: [11, -3],
+          thigh: [57.5, [0.38, 0.834, -0.40]], shin: [62.5, [-0.25, 0.1, -0.96]],
+          foot: [24.5, [0.4, 0.9, 0]], width: [19.2, 14.8, 11.1],
         },
         near: {
-          hip: [5.9, 7.4], thigh: [57.5, 150], shin: [62.4, 98],
-          foot: [29.8, 166], width: [20.7, 16.3, 11.8],
+          hip: [-11, 4],
+          thigh: [57.6, [-0.38, 0.834, -0.40]], shin: [62.4, [0.25, 0.1, -0.96]],
+          foot: [29.8, [-0.4, 0.9, 0]], width: [20.7, 16.3, 11.8],
         },
       };
-      const step = (from, deg, len) => {
-        const r = (deg * Math.PI) / 180;
-        return { x: from.x + Math.cos(r) * len, y: from.y + Math.sin(r) * len };
-      };
+      // The camera looks DOWN on this room, so a bone pointing at it is
+      // foreshortened and a bone pointing up the wall is not.
+      //
+      // `SIN_PHI`/`COS_PHI` are one elevation, and the honest thing to say
+      // about it is that the plate does not agree with itself: the castor
+      // base — a circle in plan, so its projected aspect IS sin(phi) — reads
+      // 33 degrees, while the tube bores (`bore_ry` over half `width`, the
+      // same construction) read 14. Hand-painted art is allowed that.
+      //
+      // It does not matter here, and that is the point: run this pose at 14,
+      // 21 or 33 degrees and the foot lands at screen y 798, 808 or 822, all
+      // three inside the painted floor band (768, 845) that
+      // `scripts/measure_chair.py::measure_floor_band` measures off the
+      // chair's own castors. So the number below is the middle of a bracket
+      // the answer is insensitive to, not a fourth estimate pretending to
+      // settle the other two. The floor band is the constraint; the elevation
+      // is only how the pose reaches it.
+      const SIN_PHI = 0.358, COS_PHI = 0.934;   // phi = 21 degrees
+      const reach = (from, len, dir) => ({
+        x: from.x + dir[0] * len,
+        y: from.y + (dir[1] * SIN_PHI - dir[2] * COS_PHI) * len,
+      });
       // One bone as a lit capsule laid along a->b. Local to `seatedRig`
       // because the node drivers in the suite extract this one function by
       // name; a helper at module scope would be undefined inside them.
@@ -2393,9 +2520,9 @@
       for (const side of ["far", "near"]) {
         const L = SEATED_LEGS[side];
         const hip = { x: L.hip[0], y: L.hip[1] };
-        const knee = step(hip, L.thigh[1], L.thigh[0]);
-        const ankle = step(knee, L.shin[1], L.shin[0]);
-        const toe = step(ankle, L.foot[1], L.foot[0]);
+        const knee = reach(hip, L.thigh[0], L.thigh[1]);
+        const ankle = reach(knee, L.shin[0], L.shin[1]);
+        const toe = reach(ankle, L.foot[0], L.foot[1]);
         const jeans = side === "far"
           ? mixHex(HUMAN.jeans, LIGHT.ambient, 0.3) : HUMAN.jeans;
         const shoes = side === "far"
