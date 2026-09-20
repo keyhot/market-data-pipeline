@@ -6,6 +6,7 @@ rule that keeps event payloads from becoming markup."""
 import dataclasses
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -404,12 +405,15 @@ def test_a_shadow_is_a_sibling_of_its_body_not_a_child_of_it():
     made = re.search(
         r"function character\(name, style\) \{(.*?)\n    \}", body, re.S
     ).group(1)
-    # KI-084 split the accents either side of the body (`depthOrder`), so the
-    # claim this test actually makes — accents are parented to the character's
-    # own container, and the shadow is NOT — is checked on the parts that
-    # survived the split rather than on the old literal.
-    assert 'container.addChild(...depthOrder(accents, "far"), body, head' in made
+    # KI-084 split the accents either side of the body (`depthOrder`), and the
+    # per-figure scale then moved that whole composite onto a `rig` node inside
+    # the container, so the claim this test actually makes — the body and its
+    # accents hang off the character, and the shadow does NOT — is checked on
+    # the parts that survived both rather than on the old literal.
+    assert 'rig.addChild(...depthOrder(accents, "far"), body, head' in made
+    assert "container.addChild(rig," in made
     assert "container.addChild(shadow" not in made, "the shadow is parented to the body"
+    assert "rig.addChild(shadow" not in made, "the shadow scales with the figure"
 
 
 def test_hiding_a_character_also_hides_its_shadow():
@@ -1144,11 +1148,22 @@ def test_the_cast_stands_where_the_plate_painted_it():
         "x": cast["model"]["x"],
         "baseY": cast["model"]["base_y"],
         "pose": "standing",
+        # A body with no painted furniture beside it has no chair to face and
+        # nothing to be measured against, so both degrade rather than being
+        # absent — which is why `character()` needs no branch for the standing
+        # cast.
+        "facing": None,
+        "figureScale": 1,
     }
     assert emitted["trader"] == {
         "x": cast["trader"]["x"],
         "baseY": cast["trader"]["base_y"],
         "pose": "seated",
+        # The two measurements the painted chair carries: which way its cushion
+        # points, and how big a body sitting in it has to be drawn
+        # (`scripts/measure_chair.py::measure_seat_axes`).
+        "facing": cast["trader"]["facing"],
+        "figureScale": cast["trader"]["figure_scale"],
     }
 
     # And it is the manifest being read, not this plate's numbers being known:
@@ -1164,7 +1179,13 @@ def test_the_cast_stands_where_the_plate_painted_it():
             manifest=repainted,
         )
     )
-    assert moved == {"x": 111, "baseY": 222, "pose": "standing"}
+    assert moved == {
+        "x": 111,
+        "baseY": 222,
+        "pose": "standing",
+        "facing": None,
+        "figureScale": 1,
+    }
 
 
 @needs_node
@@ -1185,6 +1206,8 @@ def test_a_settings_key_in_cast_is_not_a_character_on_the_page_either():
         "x": pytest.approx(1920 * 0.5),
         "baseY": pytest.approx(960 * 0.66),
         "pose": "standing",
+        "facing": None,
+        "figureScale": 1,
     }, "a settings key resolved to an anchor instead of falling back"
 
 
@@ -1924,8 +1947,14 @@ def test_the_near_limbs_composite_in_front_of_the_torso_and_under_the_labels():
     torso covers.
     """
     source = _world_source()
-    line = re.search(r"^\s*container\.addChild\(.*\);$", source, re.M)
-    assert line, "the page no longer composites the character on one addChild line"
+    # Two lines now, because the per-figure scale needs a node of its own: the
+    # body composites onto `rig`, and `rig` composites into the container with
+    # the labels after it. Both are driven, so "the labels stay last" is still
+    # checked against the page rather than against this test's memory of it.
+    rig_line = re.search(r"^\s*rig\.addChild\(.*\);$", source, re.M)
+    outer_line = re.search(r"^\s*container\.addChild\(rig.*\);$", source, re.M)
+    assert rig_line, "the page no longer composites the body on one addChild line"
+    assert outer_line, "the page no longer composites the rig into the container"
     driver = (
         _js_block(source, "function depthOrder(")
         + """
@@ -1936,18 +1965,24 @@ def test_the_near_limbs_composite_in_front_of_the_torso_and_under_the_labels():
           { id: "legFar", depth: "far" }, { id: "legNear", depth: "far" },
           { id: "armL", depth: "near" }, { id: "armR", depth: "near" },
         ];
-        const order = [];
-        const container = {
+        const order = [], outer = [];
+        const rig = {
+          id: "rig",
           addChild(...kids) { order.push(...kids.map((k) => k.id)); },
         };
+        const container = {
+          addChild(...kids) { outer.push(...kids.map((k) => k.id)); },
+        };
         """
-        + line.group(0).strip()
-        + "\nconsole.log(JSON.stringify(order));\n"
+        + rig_line.group(0).strip()
+        + "\n"
+        + outer_line.group(0).strip()
+        + "\nconsole.log(JSON.stringify({ order, outer }));\n"
     )
-    assert _run_node(driver) == [
-        "legFar", "legNear", "body", "head", "armL", "armR",
-        "nameTag", "stat", "moodTag",
-    ]
+    assert _run_node(driver) == {
+        "order": ["legFar", "legNear", "body", "head", "armL", "armR"],
+        "outer": ["rig", "nameTag", "stat", "moodTag"],
+    }
 
 
 @needs_node
@@ -2478,17 +2513,24 @@ def test_seated_rest_does_not_touch_the_chair():
 
 
 @needs_node
-def test_the_seated_head_stays_under_the_painted_backrest():
-    """CAST_SCALE went to 1.5 for the grid, not for the chair (Task 7's
-    Override 2) - the seated rig was measured against the plate by hand, not
-    derived from it, so this pins the arithmetic rather than re-deriving it
-    from the PNG on every run. Backrest crown measured off
-    world-plate-btc-eth.png at plate y=462 (screen space, since app.stage
-    scale is 1 at rest); the seat anchor is plate y=682
-    (PLATE.cast.trader.base_y). The skull radius is 28 LOCAL units - 42
-    screen px at CAST_SCALE, not 14 - Sprint 15 review round 1 Finding 1
-    applied to a body part instead of a grid cell; getting that factor wrong
-    is exactly what would let the head silently poke out over the chair.
+def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
+    """How big the trader is, graded against the furniture he uses.
+
+    This test used to assert the opposite of what it now asserts, and the
+    reversal is the finding. It pinned the head *under* the painted backrest
+    — and a figure short enough to hide behind an office chair's back is a
+    doll, which is exactly what the user saw and said ("his size is relatively
+    small comparing to the chair"). The old rule was satisfied by the defect.
+
+    A ratio, so it needs no px/cm and no projection: crown-above-hips against
+    backrest-above-seat, both read off the art (`measure_plate_chair`) rather
+    than typed here as the literals 462/682 this test used to carry. A person
+    in a task chair clears its back by about half again — call it 1.25 to 1.95
+    for hand-painted furniture — and the bracket fails from BOTH ends, which a
+    'must be under the backrest' rule could never do.
+
+    At the shipped `figure_scale` it reads ~1.7; at the 1.0 that shipped
+    through increment 4 it reads 1.08, and that is what this would have caught.
     """
     source = _world_source()
     driver = (
@@ -2532,32 +2574,49 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         const headY = seatedRig(fakeGfx, accents);
         console.log(JSON.stringify({
           headY, castScale: CAST_SCALE,
-          armCount: accents.filter((a) => a.depth === "near").length,
-          armsAreFirst: accents.slice(0, 2).every((a) => a.depth === "near"),
+          // An arm is an accent that is not a leg bone. It used to be read as
+          // `depth === "near"`, and that stopped being true the moment the
+          // figure turned: `seatedRig` derives each arm's depth from the yaw
+          // now, so at this chair's facing one arm is near and one is far.
+          armCount: accents.filter((a) => !a.limb).length,
+          armsAreFirst: accents.slice(0, 2).every((a) => !a.limb),
+          armDepths: accents.filter((a) => !a.limb).map((a) => a.depth),
         }));
         """
     )
+    from scripts.measure_chair import measure_plate_chair
+
     emitted = _run_node(driver)
-    HEAD_RADIUS_LOCAL = 28
-    SEAT_SCREEN_Y = 682
-    BACKREST_CROWN_SCREEN_Y = 462
-    crown_screen = (
-        SEAT_SCREEN_Y
-        - abs(emitted["headY"]) * emitted["castScale"]
-        - HEAD_RADIUS_LOCAL * emitted["castScale"]
+    trader = _manifest()["cast"]["trader"]
+    chair = measure_plate_chair()
+    # Crown above the hips: the head sits at `headY` and its hair circle
+    # (`litCircle(0, -4, 22)` in `character()`) reaches 26 further up.
+    HUMAN_CROWN_ABOVE_HEAD_Y = 26
+    figure = (
+        (abs(emitted["headY"]) + HUMAN_CROWN_ABOVE_HEAD_Y)
+        * emitted["castScale"]
+        * trader["figure_scale"]
     )
-    assert crown_screen >= BACKREST_CROWN_SCREEN_Y, (
-        f"the seated head's crown lands at screen y={crown_screen}, above "
-        f"the painted backrest's crown at y={BACKREST_CROWN_SCREEN_Y} - the "
-        "trader pokes out over the top of the chair"
+    # ...against the chair's own back, measured behind HIM rather than at the
+    # chair's highest painted pixel: the far side of the backrest sits higher
+    # on screen only because it is further away.
+    backrest = trader["sit_anchor"]["y"] - chair["crown_behind_trader_y"]
+    ratio = figure / backrest
+
+    assert 1.25 <= ratio <= 1.95, (
+        f"the seated figure stands {figure:.0f}px above its own hips against "
+        f"a backrest {backrest}px above the seat (ratio {ratio:.2f}): a person "
+        "in an office chair clears its back by about half again, so this is "
+        + ("a doll in a grown-up's chair" if ratio < 1.25 else "a giant in a toy one")
     )
-    # Counted over the accents tagged `near`, which since KI-084 is what an
-    # arm IS in this rig: the posed legs are six more real Graphics on the same
-    # array (each bone carries its own rotation, so each must be its own
-    # object) and they all stay far. Counting `limb === "arm"` was how this
-    # read until the arms came back inside the torso's ±24 and gave up their
-    # seat-fit exemption — see `arm.depth` in `seatedRig`.
     assert emitted["armCount"] == 2, "seatedRig must build exactly two arms"
+    # One arm in front of the torso and one behind it, because the figure is
+    # turned: hand-tagging both `near` was right only while he faced the
+    # camera, and would now draw his far forearm across his own back.
+    assert sorted(emitted["armDepths"]) == ["far", "near"], (
+        "both arms composite on the same side of a turned torso: "
+        f"{emitted['armDepths']}"
+    )
     # ...and they are still `accents[0]`/`accents[1]`, which `character()`
     # aliases as `armNear`/`armFar` BY INDEX. The legs are pushed after the
     # arms for exactly this reason, and nothing else in the suite would notice
@@ -2567,6 +2626,142 @@ def test_the_seated_head_stays_under_the_painted_backrest():
         "the two arms must stay accents[0] and accents[1] - character() "
         "aliases armNear/armFar by index"
     )
+
+
+@needs_node
+def test_the_seated_figure_points_where_the_painted_cushion_points():
+    """He faces the way the chair does, and the chair's own edges say which way.
+
+    The direction is NOT eyeballed off the picture, and the picture is exactly
+    what misleads here: the backrest is painted up-and-right of the cushion,
+    which reads as "the back is at the back" and would point the chair
+    down-left, out into the room. `measure_seat_axes` settles it off the
+    backrest's crown line — parallel to the cushion's upper-left edge, so the
+    slab stands on the edge parallel to THAT, the lower-right one it hides
+    itself — and the chair faces up-left, toward the desk.
+
+    What is asserted is the rig's own drawn geometry, not the constant:
+
+    * the HIP LINE is perpendicular to the facing. Both hips sit at the same
+      height, so their screen offset un-foreshortens exactly (no `up` term to
+      contaminate it) and this is the one clean read of the body's yaw.
+    * the KNEES lie on the facing side of the hips, by most of a thigh. That
+      is what fails if the hips turn and the legs do not — a figure sitting
+      square in a chair with its shoulders twisted.
+
+    Both are measured in the flat-ground metric (`y / SIN_PHI`), which is the
+    only space in which "perpendicular" means anything on a plate drawn in
+    three-quarter view.
+    """
+    from scripts.measure_chair import SIN_PHI
+
+    source = _world_source()
+    facing = _manifest()["cast"]["trader"]["facing"]
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + """
+        class FakeGraphics {
+          constructor() {
+            this.calls = []; this.x = 0; this.y = 0;
+            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+          }
+          roundRect(x, y, w, h, r) { this.calls.push([x, y, w, h]); return this; }
+          circle() { return this; }
+          fill() { return this; }
+          stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const fakeGfx = { roundRect() { return this; }, circle() { return this; },
+                           fill() { return this; }, stroke() { return this; } };
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _shading_prelude(source)
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        seatedRig(fakeGfx, accents);
+        // Every third leg bone is a thigh: `bone()` is called hip->knee,
+        // knee->ankle, ankle->toe per leg, and pushes each onto `accents`.
+        const legs = accents.filter((a) => a.limb === "leg");
+        const thighs = legs.filter((_, i) => i % 3 === 0).map((t) => {
+          // A bone's pose IS its rotation, and it is drawn along its own +y
+          // from the pivot, so the knee is the far end of that axis.
+          const [, , width, boxed] = t.calls[0];
+          const len = boxed - width;
+          return {
+            hip: { x: t.x, y: t.y },
+            knee: {
+              x: t.x - Math.sin(t.restRotation) * len,
+              y: t.y + Math.cos(t.restRotation) * len,
+            },
+            len,
+          };
+        });
+        console.log(JSON.stringify({ thighs }));
+        """
+    )
+    emitted = _run_node(driver)
+    thighs = emitted["thighs"]
+    assert len(thighs) == 2, f"expected two thighs, got {len(thighs)}"
+
+    def ground(dx: float, dy: float) -> tuple[float, float]:
+        return (dx, dy / SIN_PHI)
+
+    def angle_between(a, b) -> float:
+        dot = a[0] * b[0] + a[1] * b[1]
+        return math.degrees(
+            math.acos(max(-1.0, min(1.0, dot / (math.hypot(*a) * math.hypot(*b)))))
+        )
+
+    face = ground(*facing)
+    hips = ground(
+        thighs[0]["hip"]["x"] - thighs[1]["hip"]["x"],
+        thighs[0]["hip"]["y"] - thighs[1]["hip"]["y"],
+    )
+    assert abs(angle_between(hips, face) - 90) <= 6, (
+        f"the hip line is {angle_between(hips, face):.0f} degrees from the "
+        "chair's facing, not the 90 a seated body's hips make with it — the "
+        "figure is not turned with the chair"
+    )
+
+    unit = (face[0] / math.hypot(*face), face[1] / math.hypot(*face))
+    for thigh in thighs:
+        reach = ground(
+            thigh["knee"]["x"] - thigh["hip"]["x"],
+            thigh["knee"]["y"] - thigh["hip"]["y"],
+        )
+        forward = reach[0] * unit[0] + reach[1] * unit[1]
+        assert forward >= 0.6 * thigh["len"], (
+            f"a thigh reaches {forward:.0f} units along the chair's facing out "
+            f"of {thigh['len']:.0f}: the hips turned and the legs did not"
+        )
+
+
+def test_the_pages_fallback_facing_is_the_measured_one():
+    """A fallback that disagrees with the manifest is a figure only the tests
+    can see.
+
+    `seatedRig` takes the facing as an argument and falls back to a literal
+    when there is no plate — the `CAST_SCALE` pattern — and every node driver
+    in this file runs with `PLATE = null`, so that literal is the pose the
+    whole suite grades. If it drifts from the manifest, the suite measures one
+    figure and the stream shows another. (`test_the_scale_is_manifest_data_
+    not_a_page_constant` makes the same check for the cast scale.)
+    """
+    source = _world_source()
+    literal = re.search(r"const FACE_DIR = facing \|\| \[([-\d., ]+)\];", source)
+    assert literal, "seatedRig no longer carries a measured facing fallback"
+    assert [float(n) for n in literal.group(1).split(",")] == [
+        float(n) for n in _manifest()["cast"]["trader"]["facing"]
+    ], "the page's fallback facing is not the one the manifest measures"
 
 
 @needs_node
@@ -2798,8 +2993,18 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
         """
     )
     emitted = _run_node(driver)
-    sit = _manifest()["cast"]["trader"]["sit_anchor"]
-    foot_screen = sit["y"] + emitted["bottom"] * emitted["castScale"]
+    trader = _manifest()["cast"]["trader"]
+    sit = trader["sit_anchor"]
+    # The rig is drawn `figure_scale` bigger than its own units before the
+    # layer's CAST_SCALE touches it, so both factors are here or this measures
+    # a figure nobody draws. It is also the direction this bracket BINDS from:
+    # the chair asks for a bigger body than the page drew, and the floor is
+    # what stops that getting bigger still — every tenth of scale walks the
+    # ankle a further 8px down a band that is 77px wide.
+    foot_screen = (
+        sit["y"]
+        + emitted["bottom"] * emitted["castScale"] * trader["figure_scale"]
+    )
     far, near = measure_floor_band()
     assert far <= foot_screen <= near, (
         f"the seated figure's lowest point is at screen y={foot_screen:.0f}, "
@@ -5962,7 +6167,8 @@ def test_a_built_characters_nametag_is_reachable_from_outside_character():
     const container = {{ y: 5 }}, body = {{}}, head = {{}}, skull = {{}},
       eyeL = {{}}, eyeR = {{}}, mouth = {{}}, browL = {{}}, browR = {{}},
       visor = {{}}, accents = [], style = "bars", stat = {{}}, moodTag = {{}},
-      nameTag = {{ text: "TRADER" }}, seed = 1, shadow = {{}};
+      nameTag = {{ text: "TRADER" }}, seed = 1, shadow = {{}},
+      figureScale = 1;
     const FACE_KIND = {{ bars: "circle" }};
     const SHADOW_WIDTH = {{ bars: 10 }};
     function rng32() {{ return () => 0; }}

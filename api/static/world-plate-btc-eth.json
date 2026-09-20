@@ -56,14 +56,19 @@
       "base_y": 682,
       "pose": "seated",
       "seat": {
-        "x": 1299,
-        "y": 682,
-        "width": 79
+        "x": 1294,
+        "y": 707,
+        "width": 131
       },
       "sit_anchor": {
-        "x": 1346,
-        "y": 690
-      }
+        "x": 1388,
+        "y": 707
+      },
+      "facing": [
+        -100.5,
+        -32.0
+      ],
+      "figure_scale": 1.6
     }
   },
   "screens": [

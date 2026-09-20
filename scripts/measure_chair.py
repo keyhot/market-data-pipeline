@@ -61,6 +61,14 @@ CHAIR_B_OVER_R = 18
 # be read as more chair. The backrest ends well before it.
 CHAIR_X_LIMIT = 1505
 
+# The camera's elevation, as sin(phi) -- the SAME constant `seatedRig` poses the
+# legs with (`api/templates/world.html`), stated once here so the two cannot
+# drift. It is only ever used to un-foreshorten a DEPTH, never to derive a
+# distance: the plate disagrees with itself about the elevation (castor base 33
+# degrees, tube bores 14) and the answers below are checked for insensitivity to
+# that rather than resting on it.
+SIN_PHI = 0.358
+
 
 def _chair(px, x: int, y: int) -> bool:
     r, g, b = px[x, y]
@@ -114,6 +122,166 @@ def measure_floor_band() -> tuple[int, int]:
             "or the chair predicate no longer matches its upholstery"
         )
     return min(contacts), max(contacts)
+
+
+# The seat's own top face, which is the one surface on this chair that lies flat
+# on the ground plane -- so its edges ARE the room's two ground axes, and the
+# direction the chair points can be read off them without a projection.
+#
+# Only two of the cushion's four edges are painted: the upper-left pair. The
+# lower-right pair is occluded by the chair's own backrest and base, so it is
+# closed by parallelism (R = T + (B - L)) rather than measured. That occlusion
+# is not a nuisance, it is the finding: a backrest standing on the NEAR edge is
+# what hides it.
+SEAT_TOP_ROWS = (667, 728)          # below the backrest's lit left edge strip
+SEAT_X_RANGE = (1230, 1470)
+
+
+def _is_cushion(px, x: int, y: int) -> bool:
+    """The seat's lit top face: the brightest upholstery band on the chair.
+
+    Tighter than `_chair`, deliberately -- the backrest's front face is the
+    same material two values darker, and the whole measurement below depends
+    on reading the CUSHION's edge rather than the slab standing behind it.
+    """
+    r, g, b = px[x, y]
+    return 44 <= r <= 64 and 58 <= g <= 80 and 74 <= b <= 98
+
+
+def measure_seat_axes() -> dict:
+    """The chair's two ground axes and the direction it faces, off the cushion.
+
+    The question this answers is which way the trader should be pointed, and
+    the honest version of it is not "which way does the chair look like it
+    points" but "which cushion edge does the BACKREST stand on". The facing is
+    perpendicular to that edge, away from it.
+
+    That is measurable, and it does not need the occluded edges: the backrest
+    is a slab whose width runs along the edge it stands on, so its CROWN line
+    is parallel to that edge. The crown falls 569 -> 533 over x 1388 -> 1490
+    (slope -0.35), which is the upper-left edge's slope (-0.32) and not the
+    lower-left edge's (+0.31). So the backrest's width axis is the T->L axis,
+    it stands on the edge parallel to that one -- the lower-right edge, the
+    hidden one -- and the chair faces along the OTHER axis, up-left, out over
+    the cushion's front-left corner toward the desk.
+
+    It is worth saying why that is not obvious from looking: the backrest is
+    painted up-and-right of the cushion, which reads as "the back is at the
+    back" and puts the chair facing down-left, out into the room. It is the
+    near-side edge seen over the top of a tall slab from a camera above it.
+    The crown line settles it; the eye does not.
+
+    Returned in SCREEN pixels (the vectors) and in ground units (the lengths,
+    with depth un-foreshortened through SIN_PHI), because the page needs the
+    first and the scale bracket needs the second.
+    """
+    from PIL import Image
+
+    px = Image.open(PLATE_PNG).convert("RGB").load()
+
+    left_edge = {}
+    for y in range(*SEAT_TOP_ROWS):
+        xs = [x for x in range(*SEAT_X_RANGE) if _is_cushion(px, x, y)]
+        if xs:
+            left_edge[y] = min(xs)
+    if len(left_edge) < 20:
+        raise SystemExit(
+            "the seat's top face is not where it was painted: the cushion "
+            "predicate found nothing to fit two edges to"
+        )
+
+    # The L corner is where the two visible edges meet -- the leftmost point of
+    # the silhouette, which is a corner rather than a tangent because both
+    # edges are straight.
+    apex_y = min(left_edge, key=lambda y: left_edge[y])
+
+    def _fit(rows: list[int]) -> tuple[float, float]:
+        """x = a*y + b, least squares. Fitted, not cornered: two single pixels
+        would carry the plate's own dithering straight into the angle."""
+        mean_y = sum(rows) / len(rows)
+        mean_x = sum(left_edge[y] for y in rows) / len(rows)
+        cov = sum((y - mean_y) * (left_edge[y] - mean_x) for y in rows)
+        var = sum((y - mean_y) ** 2 for y in rows)
+        return cov / var, mean_x - (cov / var) * mean_y
+
+    back_rows = [y for y in left_edge if SEAT_TOP_ROWS[0] + 3 <= y <= apex_y - 2]
+    front_rows = [y for y in left_edge if apex_y + 2 <= y <= SEAT_TOP_ROWS[1] - 3]
+    a_far, b_far = _fit(back_rows)
+    a_near, b_near = _fit(front_rows)
+
+    top_y, bottom_y = float(SEAT_TOP_ROWS[0]), float(SEAT_TOP_ROWS[1] - 1)
+    T = (a_far * top_y + b_far, top_y)
+    L = ((a_far * apex_y + b_far + a_near * apex_y + b_near) / 2, float(apex_y))
+    B = (a_near * bottom_y + b_near, bottom_y)
+    R = (T[0] + B[0] - L[0], T[1] + B[1] - L[1])
+
+    # The axis the backrest's width runs along (T->L), and the one the chair
+    # faces along (B->L). Both point left; they differ in whether they rise.
+    across = (L[0] - T[0], L[1] - T[1])
+    facing = (L[0] - B[0], L[1] - B[1])
+
+    def _ground(v: tuple[float, float]) -> tuple[float, float]:
+        return (v[0], v[1] / SIN_PHI)
+
+    g_across, g_facing = _ground(across), _ground(facing)
+    dot = g_across[0] * g_facing[0] + g_across[1] * g_facing[1]
+    span_across = math.hypot(*g_across)
+    span_facing = math.hypot(*g_facing)
+
+    return {
+        "corners": {"T": T, "L": L, "B": B, "R_by_parallelism": R},
+        # What the page is given: a measured screen vector, never an angle.
+        "facing_screen": facing,
+        "across_screen": across,
+        # What a scale bracket is allowed to compare a body against: the seat
+        # in the same flat-ground metric the rig's own lateral axis lives in.
+        "seat_width_u": span_across,
+        "seat_depth_u": span_facing,
+        # A grade on SIN_PHI rather than a use of it: a real seat is square in
+        # plan, so these two axes should come out perpendicular. They do, to
+        # within 6 degrees, which is the same "independent agreement" the
+        # traced legs gave the floor band.
+        "axes_angle_deg": math.degrees(math.acos(dot / (span_across * span_facing))),
+        "yaw_deg": math.degrees(math.atan2(g_facing[0], g_facing[1])),
+    }
+
+
+def measure_sit_anchor(back_fraction: float = 0.2) -> dict:
+    """Where the hips go, and the cushion's own width there.
+
+    Both fall out of `measure_seat_axes`, and neither is a number anyone should
+    type again. The seat's centre line runs from the middle of the front edge
+    to the middle of the back edge; a person sitting properly back has their
+    hips a fifth of the seat's depth in front of the backrest, not on the
+    cushion's centre and not on its front lip.
+
+    `seat_width` is the cushion's own horizontal chord AT that row, which is
+    the budget the rig has to fit inside. The 79px this replaced was measured
+    somewhere else on a parallelogram — a chord through a diamond depends
+    entirely on which row you take it at, and 79 was narrow enough to forbid
+    any figure big enough for the chair (`test_the_seated_figure_is_drawn_to_
+    the_chairs_own_proportion`).
+    """
+    from PIL import Image
+
+    axes = measure_seat_axes()
+    corners = axes["corners"]
+    front = tuple((a + b) / 2 for a, b in zip(corners["T"], corners["L"]))
+    back = tuple((a + b) / 2 for a, b in zip(corners["B"], corners["R_by_parallelism"]))
+    hips = tuple(b - back_fraction * (b - f) for f, b in zip(front, back))
+
+    px = Image.open(PLATE_PNG).convert("RGB").load()
+    row = round(hips[1])
+    xs = [x for x in range(*SEAT_X_RANGE) if _is_cushion(px, x, row)]
+    if not xs:
+        raise SystemExit(f"no cushion painted at the hip row y={row}")
+
+    return {
+        "sit_anchor": {"x": round(hips[0]), "y": row},
+        "seat": {"x": min(xs), "y": row, "width": max(xs) - min(xs)},
+        "front_mid": front,
+        "back_mid": back,
+    }
 
 
 def measure_plate_chair() -> dict:

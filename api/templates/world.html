@@ -1426,12 +1426,20 @@
           x: painted.x,
           baseY: painted.base_y,
           pose: painted.pose || "standing",
+          // Two more measurements the painted furniture carries, both optional
+          // and both degrading to "the figure the page drew before there was a
+          // plate": which way the chair points (`seatedRig` turns the whole
+          // pose through it) and how big this body is beside it.
+          facing: painted.facing || null,
+          figureScale: painted.figure_scale || 1,
         };
       }
       return {
         x: app.screen.width * (CAST_FRACTIONS[name] ?? 0.5),
         baseY: app.screen.height * GROUND,
         pose: "standing",
+        facing: null,
+        figureScale: 1,
       };
     }
 
@@ -1873,6 +1881,17 @@
     // Untagged is FAR, which is the pre-KI-084 behaviour: every standing
     // `BODIES.*` style tags nothing, and a wick reading as emerging from the
     // candle depends on staying behind it.
+    // Is this body turned far enough from the camera to have no face left?
+    //
+    // The facing is a screen vector measured off the painted furniture, and
+    // its y component alone answers this: negative means the body points UP
+    // the screen, which in this projection is away from the camera. The 2px
+    // deadband is for a re-measured plate — a chair painted in dead profile
+    // should not flip the head around on a pixel of dithering.
+    function facesAway(facing) {
+      return !!facing && facing.length === 2 && facing[1] < -2;
+    }
+
     function depthOrder(accents, which) {
       return accents.filter((a) => (a.depth === "near") === (which === "near"));
     }
@@ -1886,7 +1905,15 @@
       // so, not a second decision made here. Every other `name` this function
       // is ever called with (moods and styles, from the gallery/sheet eval
       // surfaces) misses PLATE.cast entirely and gets "standing" back.
-      container.pose = anchorFor(name.toLowerCase()).pose;
+      const anchor = anchorFor(name.toLowerCase());
+      container.pose = anchor.pose;
+      // How big this figure is drawn against the furniture it uses, and which
+      // way that furniture points. Both are measurements off the plate
+      // (`scripts/measure_chair.py`), so both arrive as manifest data rather
+      // than as page constants — the same rule the seat rect and the tube
+      // bores already follow. A body with no painted furniture keeps 1 and a
+      // camera-facing pose, which is every standing style.
+      const figureScale = anchor.figureScale || 1;
 
       const body = new PIXI.Graphics();
       const head = new PIXI.Container();
@@ -1900,7 +1927,7 @@
       const accents = [];
 
       const headY = container.pose === "seated"
-        ? seatedRig(body, accents)
+        ? seatedRig(body, accents, anchor.facing)
         : BODIES[style](body, accents);
       // The orb *is* the face; every other body carries a head above it.
       // Not one of BODIES.*: the orb IS its own face and skips a head
@@ -1933,8 +1960,22 @@
         // person" cue a figure can have, and one no test was ever going to
         // report. The machine keeps r28: a blocky chassis carries a big head,
         // and `SHADOW_WIDTH`/`HEAD_TRAVEL` are tuned to it.
-        paint(skull, litCircle(0, -4, 22), HUMAN.hair, undefined, { keepFill: true });
-        paint(skull, litCircle(0,  2, 19), HUMAN.skin, undefined, { keepFill: true, noRim: true });
+        //
+        // Turned away from the camera, the same two circles go on in the
+        // opposite order: hair OVER skin is the back of a head, and hair under
+        // skin is a face. It is two lines rather than a second head because
+        // that is genuinely all the difference there is at this size — and the
+        // features below are hidden for the same reason, not tuned. (The user
+        // asked for the turn knowing the face goes with it: "I do not care
+        // about his mimics and that face is not visible".)
+        const away = facesAway(anchor.facing);
+        paint(skull, litCircle(0, away ? 2 : -4, away ? 19 : 22),
+              away ? HUMAN.skin : HUMAN.hair, undefined,
+              { keepFill: true, noRim: away });
+        paint(skull, litCircle(0, away ? -4 : 2, away ? 22 : 19),
+              away ? HUMAN.hair : HUMAN.skin, undefined,
+              { keepFill: true, noRim: !away });
+        for (const part of [eyeL, eyeR, mouth, browL, browR]) part.visible = !away;
       } else {
         paint(skull, litCircle(0, 0, 28), BODY_FILL);
       }
@@ -1943,13 +1984,28 @@
 
       const nameTag = label(name, -40, 22, 18);
       const stat = label("", -80, 46, 14, NEUTRAL);
-      const moodTag = label("", -40, headY - 56, 16, NEUTRAL);
+      // The mood tag rides above the head, so it has to follow the SCALED
+      // head: `headY` is in rig units and the rig is drawn `figureScale`
+      // bigger than them.
+      const moodTag = label("", -40, headY * figureScale - 56, 16, NEUTRAL);
       // Accents go behind the mass, so a wick reads as emerging from it —
       // all but the ones tagged `near`, which are on the camera side and
       // composite in front of it (KI-084, see `depthOrder`). Labels stay
       // last: a name tag a forearm can cover is the same defect as an arm
       // the torso covers.
-      container.addChild(...depthOrder(accents, "far"), body, head, ...depthOrder(accents, "near"), nameTag, stat, moodTag);
+      //
+      // The body is scaled as ONE node, with the labels deliberately outside
+      // it — type at 1.7x is a separate decision from a figure at 1.7x. It
+      // cannot be `container.scale`: `playAnimation`'s pulse/cheer/flicker and
+      // `resetIdle` write that every tick, so a per-figure scale parked there
+      // would render for one frame and then be overwritten — the same failure
+      // `bone()`'s `restRotation` comment describes. One container in between
+      // survives both, and every animation below keeps writing rig-local units
+      // to `body`/`head`/the accents exactly as it did.
+      const rig = new PIXI.Container();
+      rig.scale.set(figureScale);
+      rig.addChild(...depthOrder(accents, "far"), body, head, ...depthOrder(accents, "near"));
+      container.addChild(rig, nameTag, stat, moodTag);
       layers.chars.addChild(container);
 
       // Seeded off the name, so MODEL and TRADER don't blink in unison — two
@@ -1965,7 +2021,9 @@
         accents, style, stat, moodTag, nameTag, faceKind: FACE_KIND[style],
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
         rand: rng32(seed || 1),
-        shadow, shadowW: SHADOW_WIDTH[style],
+        // The shadow is cast by the figure, so it grows with it — a 1.7x body
+        // over a 1x smudge is a figure standing on someone else's shadow.
+        shadow, shadowW: SHADOW_WIDTH[style] * figureScale,
       };
       // The two arms `seatedRig` pushed onto `accents` are real Graphics,
       // already children of `container` — aliased under their own names so
@@ -2305,7 +2363,64 @@
     // what's below the neck is re-drawn here, hips at the container's own
     // origin: `positionCharacters` puts that on the seat of the painted
     // chair, not on a floor 148px below it (Task 7's Override 2).
-    function seatedRig(body, accents) {
+    function seatedRig(body, accents, facing) {
+      // Which way the painted chair points, and so which way the figure does.
+      //
+      // Measured, never typed: `facing` is the screen vector the cushion's own
+      // edges give (`scripts/measure_chair.py::measure_seat_axes`), handed down
+      // from the manifest by `character()`. The literal is that same
+      // measurement, so a page with no plate draws the figure the tests
+      // describe — the `CAST_SCALE` pattern, and for the same reason.
+      //
+      // The finding behind the number matters, because the eye gets it wrong.
+      // The backrest is painted up-and-RIGHT of the cushion, which reads as
+      // "the back is at the back" and points the chair down-left, out into the
+      // room. It is the near-side edge, seen over the top of a tall slab by a
+      // camera above it. What settles it is the backrest's own crown line: it
+      // runs parallel to the cushion's upper-left edge, so the slab's width
+      // lies on that axis and it stands on the edge parallel to it — the
+      // lower-right one, the one the slab itself hides. The chair therefore
+      // faces UP-LEFT, over the cushion's front corner toward the desk, and
+      // the camera gets his back. (Which is why the face below is allowed to
+      // go: at this yaw there is no face to read.)
+      const FACE_DIR = facing || [-100.5, -32.0];
+      // The camera looks DOWN on this room, so a bone pointing at it is
+      // foreshortened and a bone pointing up the wall is not.
+      //
+      // `SIN_PHI`/`COS_PHI` are one elevation, and the honest thing to say
+      // about it is that the plate does not agree with itself: the castor
+      // base — a circle in plan, so its projected aspect IS sin(phi) — reads
+      // 33 degrees, while the tube bores (`bore_ry` over half `width`, the
+      // same construction) read 14. Hand-painted art is allowed that.
+      //
+      // It does not matter here, and that is the point: the pose is graded
+      // against the painted floor BAND (768, 845) that
+      // `scripts/measure_chair.py::measure_floor_band` measures off the
+      // chair's own castors, and the band is wide enough to swallow the
+      // disagreement. The floor band is the constraint; the elevation is only
+      // how the pose reaches it. The seat's two axes come out 84 degrees apart
+      // under this value — a real seat is square in plan, so that is a grade
+      // on the number rather than another use of it.
+      const SIN_PHI = 0.358, COS_PHI = 0.934;   // phi = 21 degrees
+      // A ground direction is [lateral, towardCamera]. The rig is authored
+      // facing the camera, so yaw 0 is [0, +1] and every direction below is
+      // turned through `turn()` rather than re-typed at a new angle: the bones
+      // keep their TRUE traced lengths, which is what increment 3 bought, and
+      // the turn stays one number that can be re-measured off a repaint.
+      const YAW = Math.atan2(FACE_DIR[0], FACE_DIR[1] / SIN_PHI);
+      const COS_Y = Math.cos(YAW), SIN_Y = Math.sin(YAW);
+      const turn = (lat, tow) => [
+        lat * COS_Y + tow * SIN_Y,
+        tow * COS_Y - lat * SIN_Y,
+      ];
+      // Where an offset from the hips lands, and how deep it ended up. `depth`
+      // is what decides which arm composites in front of the torso and which
+      // leg is drawn first — derived from the turn, never hand-assigned, so a
+      // re-measured facing cannot leave the near arm behind the body.
+      const plant = (lat, tow) => {
+        const [l, t] = turn(lat, tow);
+        return { x: l, y: t * SIN_PHI, depth: t };
+      };
       // Thighs: short and low, at the front edge of the seat rather than
       // dropping to a floor this plate doesn't give the chair.
       // Jeans. The thigh rects keep the exact geometry the seat-fit tests were
@@ -2350,10 +2465,22 @@
       // it meets the thighs, so the legs hung off a tapering point instead of
       // out of a body. Shoulders stay at ±24 — the extent the seat-fit tests
       // measure.
-      paint(body, litRect(-24, -78, 48, 72, 12), HUMAN.sweater, undefined, { keepFill: true });
+      // A turned torso is NARROWER on screen, and that narrowing is most of
+      // what sells the turn: a full-width slab at any yaw is a cardboard
+      // cut-out on a turntable. The width is this body's own cross-section as
+      // the camera sees it — half-axes 24 across the shoulders and 13 through
+      // the chest — so it is hypot(24 cos, 13 sin), never 24 cos, which would
+      // flatten him to a plank edge-on. Shoulders are still ±24 in the room;
+      // only their projection moved, which is why the seat budget below is
+      // measured off THIS rect rather than off the authored 48.
+      const HALF_W = snap(Math.hypot(24 * COS_Y, 13 * SIN_Y));
+      paint(body, litRect(-HALF_W, -78, HALF_W * 2, 72, 12), HUMAN.sweater, undefined, { keepFill: true });
       // A collar, inside the shoulders, giving the neck somewhere to come out
-      // of. `inner`: it is shading on the torso, not a separate object.
-      paint(body, litRect(-11, -88, 22, 14, 7), HUMAN.sweater, undefined, inner);
+      // of. `inner`: it is shading on the torso, not a separate object. It
+      // narrows with the shoulders — 22 wide inside a turned 40-wide body
+      // reads as a bib, not a collar.
+      const HALF_C = snap(HALF_W * 11 / 24);
+      paint(body, litRect(-HALF_C, -88, HALF_C * 2, 14, 7), HUMAN.sweater, undefined, inner);
       // Arms down the front of the body to hands resting on the lap — not
       // hanging out at the sides, and not bent back up toward a keyboard that
       // is behind this figure's left shoulder. The reference paints an arm as
@@ -2384,16 +2511,23 @@
         // ("when KI-084 lands the arm comes back inside ±24 and this exemption
         // should be revisited, not inherited") — so `arm.limb` is gone, and
         // the arms answer to the seat-fit tests again like the torso does.
-        arm.x = side * 16; arm.y = -66;
+        // The shoulder an arm hangs from is a point in the ROOM, so it turns
+        // with the body: ±16 lateral becomes a screen offset AND a depth.
+        const shoulder = plant(side * 16, 0);
+        arm.x = snap(shoulder.x); arm.y = -66 + shoulder.y;
         // Near-vertical, tilted a few degrees inward so the hands land on the
         // thighs rather than beside them. Uneven on purpose — dead-straight
         // symmetrical arms read as a mannequin, the same reason `restAccents`
         // exists at all.
         arm.restRotation = side < 0 ? 0.13 : -0.16;
         arm.shadeFactor = 1.35;
-        // On the camera side of the body: forearms come FORWARD over the lap,
-        // and in this projection forward is down-the-screen and in front.
-        arm.depth = "near";
+        // Which side of the torso this arm composites on is now a consequence
+        // of the turn, not a decision: the shoulder that ended up nearer the
+        // camera carries the arm that crosses in front (KI-084's `depthOrder`
+        // still does the parenting). Both arms were hand-tagged "near" while
+        // the figure faced the camera, which was right then and would put the
+        // far forearm over his own back now.
+        arm.depth = shoulder.depth > 0 ? "near" : "far";
         accents.push(arm);
       }
       // ---------------------------------------------------------------------
@@ -2412,72 +2546,49 @@
       // nothing else (1 head = 44 units = the approved `litCircle(0, -4, 22)`
       // in `character()`), so there is no `k` anywhere in this block.
       //
-      // The figure FACES THE CAMERA. The angles used to be the model sheet's
-      // re-posed column, which put the legs out to the LEFT in near-profile —
-      // a figure sitting side-on in a chair the plate paints facing the room.
-      // They are no longer angles at all: a bone is now a direction in the
-      // room (lateral, toward-camera, up) at its TRUE traced length, and the
-      // projection below is what turns it into screen pixels. That keeps the
-      // ratio finding — legs 3.5x short, the whole point of increment 3 —
-      // legible in the source, instead of burying it in twelve hand-typed
-      // screen lengths that have been silently foreshortened.
-      //
-      // Crown-to-ankle drops from 5.47 heads to ~4.9 by doing this, and that
-      // is CORRECT rather than a regression of increment 3: a seated figure
-      // seen front-on genuinely is shorter on screen than the same figure in
-      // profile. The measurement that still has to hold is the feet, and it
-      // holds against the painted floor (below), not against a head count.
+      // A bone is a direction in the ROOM (lateral, toward-camera, up) at its
+      // TRUE traced length; `reach` is what turns that into screen pixels.
+      // That keeps the ratio finding — legs 3.5x short, the whole point of
+      // increment 3 — legible in the source, instead of burying it in twelve
+      // hand-typed screen lengths that have been silently foreshortened. It is
+      // also what lets the whole figure turn with the chair for one constant:
+      // every direction here goes through `turn()` before it is projected.
       const SEATED_LEGS = {
-        // [x, y] hip, then [trueLength, [lateral, towardCamera, up]] per bone,
-        // then the three widths. Widths do NOT foreshorten — a limb's diameter
-        // is the same however it is pointed — so they are the trace's own.
-        // The near leg is the one toward the camera; the far one is shorter on
-        // screen and lands higher, which is the floor receding, not an error.
-        // Knees apart and shins angled back INWARD under the body, which is
-        // how a person actually sits and also what keeps the feet inside the
-        // chair's own castor base instead of planted wide outside it.
+        // hip LATERAL offset (a room offset, not a screen one — it turns), then
+        // [trueLength, [lateral, towardCamera, up]] per bone, then the three
+        // widths. Widths do NOT foreshorten — a limb's diameter is the same
+        // however it is pointed — so they are the trace's own. Knees apart and
+        // shins angled back INWARD under the body, which is how a person
+        // actually sits.
         //
-        // The thighs slope DOWN (`up: -0.40`) rather than running level out
-        // of the hip. A level thigh is the anatomically obvious choice and it
-        // was the first thing tried; it does not read. Pointed at the camera
-        // a level thigh projects to a ~20-unit stub, and the knee capsule is
-        // 19 units WIDE, so the whole thigh disappears into the joint at
-        // either end and the figure reads as standing in front of the chair.
-        // Sloping the thighs gives a 44-unit thigh against a 19-unit width,
-        // and that ratio is the only thing on this rig that says "lap".
-        far: {
-          hip: [11, -3],
-          thigh: [57.5, [0.38, 0.834, -0.40]], shin: [62.5, [-0.25, 0.1, -0.96]],
+        // The thighs run very nearly LEVEL (`up: -0.12`), which is what
+        // sitting anatomically is — and increment 4 had to slope them at -0.40
+        // to get a lap at all. That slope was a workaround for a pose this
+        // increment no longer has: pointed straight at the camera a level
+        // thigh projects to a ~20-unit stub behind a 19-unit knee, so there
+        // was nothing to see. Turned 132 degrees the same thigh lies ACROSS
+        // the screen at nearly its full 57 units, so the lap reads from the
+        // length rather than from a slope — and the drop it no longer spends
+        // on the way to the knee is what leaves room to grow the figure
+        // without putting its feet through the painted floor.
+        left: {
+          hipLat: 11,
+          thigh: [57.5, [0.40, 0.906, -0.12]], shin: [62.5, [-0.25, 0.1, -0.96]],
           foot: [24.5, [0.4, 0.9, 0]], width: [19.2, 14.8, 11.1],
         },
-        near: {
-          hip: [-11, 4],
-          thigh: [57.6, [-0.38, 0.834, -0.40]], shin: [62.4, [0.25, 0.1, -0.96]],
+        right: {
+          hipLat: -11,
+          thigh: [57.6, [-0.40, 0.906, -0.12]], shin: [62.4, [0.25, 0.1, -0.96]],
           foot: [29.8, [-0.4, 0.9, 0]], width: [20.7, 16.3, 11.8],
         },
       };
-      // The camera looks DOWN on this room, so a bone pointing at it is
-      // foreshortened and a bone pointing up the wall is not.
-      //
-      // `SIN_PHI`/`COS_PHI` are one elevation, and the honest thing to say
-      // about it is that the plate does not agree with itself: the castor
-      // base — a circle in plan, so its projected aspect IS sin(phi) — reads
-      // 33 degrees, while the tube bores (`bore_ry` over half `width`, the
-      // same construction) read 14. Hand-painted art is allowed that.
-      //
-      // It does not matter here, and that is the point: run this pose at 14,
-      // 21 or 33 degrees and the foot lands at screen y 798, 808 or 822, all
-      // three inside the painted floor band (768, 845) that
-      // `scripts/measure_chair.py::measure_floor_band` measures off the
-      // chair's own castors. So the number below is the middle of a bracket
-      // the answer is insensitive to, not a fourth estimate pretending to
-      // settle the other two. The floor band is the constraint; the elevation
-      // is only how the pose reaches it.
-      const SIN_PHI = 0.358, COS_PHI = 0.934;   // phi = 21 degrees
-      const reach = (from, len, dir) => ({
-        x: from.x + dir[0] * len,
-        y: from.y + (dir[1] * SIN_PHI - dir[2] * COS_PHI) * len,
-      });
+      const reach = (from, len, dir) => {
+        const [lat, tow] = turn(dir[0], dir[1]);
+        return {
+          x: from.x + lat * len,
+          y: from.y + (tow * SIN_PHI - dir[2] * COS_PHI) * len,
+        };
+      };
       // One bone as a lit capsule laid along a->b. Local to `seatedRig`
       // because the node drivers in the suite extract this one function by
       // name; a helper at module scope would be undefined inside them.
@@ -2517,15 +2628,23 @@
       // darkness constant: the far side of a body catches less of the key
       // light, and without that a correct depth ORDER still reads as a flat
       // person.
-      for (const side of ["far", "near"]) {
-        const L = SEATED_LEGS[side];
-        const hip = { x: L.hip[0], y: L.hip[1] };
+      //
+      // WHICH leg is the far one is a consequence of the turn now, not a key
+      // in the table: the hip that ended up deeper is drawn first. Hand-naming
+      // them `far`/`near` was true only while the figure faced the camera, and
+      // would have silently swapped the lighting the moment he turned.
+      const legOrder = ["left", "right"]
+        .map((side) => ({ L: SEATED_LEGS[side], seated: plant(SEATED_LEGS[side].hipLat, 0) }))
+        .sort((a, b) => a.seated.depth - b.seated.depth);
+      legOrder.forEach(({ L, seated }, index) => {
+        const isFar = index === 0;
+        const hip = { x: seated.x, y: seated.y };
         const knee = reach(hip, L.thigh[0], L.thigh[1]);
         const ankle = reach(knee, L.shin[0], L.shin[1]);
         const toe = reach(ankle, L.foot[0], L.foot[1]);
-        const jeans = side === "far"
+        const jeans = isFar
           ? mixHex(HUMAN.jeans, LIGHT.ambient, 0.3) : HUMAN.jeans;
-        const shoes = side === "far"
+        const shoes = isFar
           ? mixHex(HUMAN.shoes, LIGHT.ambient, 0.3) : HUMAN.shoes;
         // The shin is `inner`: it runs between a thigh and a shoe, so a cream
         // keyline on it cuts the leg into three outlined links of a chain —
@@ -2534,16 +2653,18 @@
         bone(hip, knee, L.width[0], jeans, legs);
         bone(knee, ankle, L.width[1], jeans, inner);
         bone(ankle, toe, L.width[2], shoes, legs);
-      }
+      });
       // -96, not -108: the human head is r22 rather than the machine's r28, so
       // the old value left it floating a dozen units clear of its own
-      // shoulders. This sits the skull ON the collar. Lower is also strictly
-      // safer for the backrest test below.
+      // shoulders. This sits the skull ON the collar.
       //
-      // Chair back measures ~220 screen px above the seat (backrest crown at
-      // plate y≈462 vs the seat anchor y≈682) — 147 local units at
-      // CAST_SCALE 1.5. -108 leaves the 42px head crown at screen y≈478:
-      // inside the backrest. Unaffected by the width change - orthogonal axis.
+      // It used to be kept low enough to stay INSIDE the painted backrest, and
+      // that constraint is gone: at the scale the chair actually asks for, a
+      // seated person's crown clears the back of an office chair, and the
+      // figure that satisfied the old rule was the doll-sized one. What the
+      // head answers to now is the chair's own proportion — crown-above-hips
+      // against backrest-above-seat — which is a bracket a too-small figure
+      // fails from below and a giant fails from above.
       return -96;
     }
 
