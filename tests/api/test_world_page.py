@@ -3212,7 +3212,12 @@ def _seated_rig_bounds():
     emitted = _run_node(driver)
     manifest = _manifest()
     sit_anchor = manifest["cast"]["trader"]["sit_anchor"]
-    scale = emitted["castScale"]
+    # BOTH scales, or this measures a figure nobody draws: the rig node is
+    # drawn `figure_scale` bigger than its own units before the cast layer's
+    # CAST_SCALE touches it. Missing the second one is how a label-clearance
+    # check keeps passing while the figure it clears grows by 1.6x — the same
+    # quiet substitution the floor-band test's own docstring warns about.
+    scale = emitted["castScale"] * manifest["cast"]["trader"]["figure_scale"]
     return {
         "x": sit_anchor["x"] + emitted["x0"] * scale,
         "y": sit_anchor["y"] + emitted["y0"] * scale,
