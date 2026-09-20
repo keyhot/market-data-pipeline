@@ -2779,6 +2779,141 @@ def test_the_seated_figure_has_a_neck():
     )
 
 
+def _leg_bone_driver(source: str) -> str:
+    """`seatedRig`, with every painted volume tagged by the bone it went into.
+
+    The driver above throws `g` away, which is enough to ask "what was
+    drawn" and not enough to ask "what was drawn OVER what". A joint is a
+    relationship between two bones, so this one keeps the Graphics: each gets
+    an id and reports its final transform, because `boneGfx` sets `x`/`y`
+    AFTER it paints and a transform read at paint time is all zeroes.
+    """
+    return (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "const HUMAN = {")
+        + ";\n"
+        + _js_block(source, "function mixHex(")
+        + "\n"
+        + """
+        let nextId = 0;
+        class FakeGraphics {
+          constructor() {
+            this.gid = nextId++;
+            this.pivot = { x: 0, y: 0 };
+            this.rotation = 0; this.x = 0; this.y = 0;
+          }
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
+          roundRect() { return this; } circle() { return this; }
+          fill() { return this; } stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const drawn = [];
+        const litRect = (x, y, w, h, r) => ({
+          shape: "rect", at: [x, y, w, h], band: (g) => g, rim: (g) => g });
+        const litCircle = (cx, cy, rad) => ({
+          shape: "circle", at: [cx, cy, rad], band: (g) => g, rim: (g) => g });
+        function paint(g, volume, fill, rim, opts) {
+          drawn.push({
+            gid: g.gid, shape: volume.shape, at: volume.at,
+            fill, opts: opts || {},
+          });
+        }
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        seatedRig(new FakeGraphics(), accents);
+        // Only the bones report a width, and only legs are tagged `leg`. The
+        // ORDER is the accent order, which is the order they render in.
+        const bones = accents
+          .filter((g) => g.limb === "leg")
+          .map((g, order) => ({
+            gid: g.gid, order, x: g.x, y: g.y,
+            width: g.boneWidth, length: g.boneLength,
+          }));
+        console.log(JSON.stringify({ bones, drawn }));
+        """
+    )
+
+
+@needs_node
+def test_the_knee_does_not_wear_a_keyline_across_it():
+    """The thigh's rim stops at the knee instead of cutting the leg in two.
+
+    A bone is a capsule that overruns its joint by half a width, so the thigh
+    reaches PAST the knee and its two long edges carry the rim out with them.
+    The shin is `inner` and draws no rim of its own, but it is 4.4 units
+    narrower than the thigh (19.2 vs 14.8 on the left leg), so its fill cannot
+    cover what the thigh's edges left sticking out. What ships is a cream line
+    running straight across the joint — the leg reads as two outlined links of
+    a chain rather than as one leg, which is the "die-cut sticker" read the
+    redesign exists to remove and which the shin's own `inner` was chosen to
+    avoid.
+
+    So the knee is CAPPED: a fill-only disc, painted into the shin (which
+    renders after the thigh) at the shin's own proximal end, and sized to the
+    THIGH's half-width rather than the shin's — a cap cut to the shin is
+    exactly the cap that changes nothing, because the shin's fill already
+    reaches that far.
+
+    Graded on the geometry rather than on the frame: two identical screenshots
+    of this page differ by ~70 keyline pixels of animation, and a cap is worth
+    about thirty.
+    """
+    source = _world_source()
+    emitted = _run_node(_leg_bone_driver(source))
+    bones, drawn = emitted["bones"], emitted["drawn"]
+
+    assert len(bones) == 6, (
+        f"expected two legs of three bones, got {len(bones)}: this test reads "
+        "them in threes and a change to the leg's bone count invalidates that"
+    )
+
+    for leg, start in enumerate((0, 3)):
+        thigh, shin = bones[start], bones[start + 1]
+        # `boneGfx` pivots at (w/2, w/2) and parks that on the joint, so the
+        # shin's own origin IS the knee and the cap's local centre is known
+        # without projecting anything.
+        centre = shin["width"] / 2
+        needed = thigh["width"] / 2
+
+        caps = [
+            d
+            for d in drawn
+            if d["gid"] == shin["gid"]
+            and d["shape"] == "circle"
+            and abs(d["at"][0] - centre) <= 1
+            and abs(d["at"][1] - centre) <= 1
+        ]
+        assert caps, (
+            f"leg {leg}: nothing caps the knee. The thigh is {thigh['width']} "
+            f"units wide and the shin {shin['width']}, so "
+            f"{(thigh['width'] - shin['width']) / 2:.1f} units of thigh rim "
+            "stick out past the shin on each side and draw a keyline across "
+            "the joint."
+        )
+        cap = max(caps, key=lambda d: d["at"][2])
+        assert cap["at"][2] >= needed, (
+            f"leg {leg}: the knee cap has radius {cap['at'][2]:.1f} where the "
+            f"thigh's rim reaches {needed:.1f}. A cap cut to the shin's own "
+            "width covers nothing the shin did not already cover."
+        )
+        assert cap["opts"].get("noRim"), (
+            f"leg {leg}: the knee cap is drawn WITH a rim, so it replaces the "
+            "keyline across the joint with a circular one. A cap is shading, "
+            "not a volume."
+        )
+
+
 @needs_node
 def test_the_seated_arms_bend_at_an_elbow():
     """Two bones and a joint, and the forearm hangs off the upper arm.

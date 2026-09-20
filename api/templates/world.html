@@ -2801,8 +2801,26 @@
         // the "die-cut sticker" read this redesign exists to remove. Only the
         // parts that make the silhouette keep their edge.
         bone(hip, knee, L.width[0], jeans, legs);
-        bone(knee, ankle, L.width[1], jeans, inner);
+        const shin = bone(knee, ankle, L.width[1], jeans, inner);
         bone(ankle, toe, L.width[2], shoes, legs);
+        // ...and the knee is CAPPED, because `inner` on the shin is only half
+        // the join. A bone overruns its joint by half a width, so the thigh
+        // reaches past the knee and carries its two long rim edges out with
+        // it; the shin is 4.4 units narrower and cannot cover what sticks out.
+        // The result on the frame is a cream line straight across the joint —
+        // the leg in two outlined links, which is the read `inner` was chosen
+        // to avoid in the first place.
+        //
+        // Painted INTO the shin, which renders after the thigh, at the shin's
+        // own origin — `boneGfx` parks the (w/2, w/2) pivot on the joint, so
+        // that local point IS the knee and nothing has to be projected. Sized
+        // to the THIGH's half-width: a disc cut to the shin's own width is
+        // exactly the disc that changes nothing.
+        //
+        // `inner`, so it is shading rather than a volume: a rimmed cap would
+        // only trade a straight keyline across the joint for a circular one.
+        paint(shin, litCircle(L.width[1] / 2, L.width[1] / 2, L.width[0] / 2),
+              jeans, undefined, inner);
       });
       // -100, and the 4 units it moved up are a NECK.
       //
