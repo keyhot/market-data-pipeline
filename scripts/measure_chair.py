@@ -337,15 +337,27 @@ def measure_plate_chair() -> dict:
     }
 
 
-# The shipped seated trader, read off `seatedRig` and `character()` so the
-# comparison below is against what actually goes out. Crown is the hair
-# circle's top: `headY` -108, `litCircle(0, -4, 22)` -> -134. The ankle is
-# where the shin rect `litRect(-20, 6, 15, 20, 5)` meets the shoe
-# `litRect(-23, 24, 18, 8, 3)` -> +24. Crown-to-ankle, so it is the same
-# anatomical span as the reference chain and not a foot-thickness longer.
-SHIPPED_CROWN_U = -134
-SHIPPED_ANKLE_U = 24
+# The head is the unit, and it is the one number the user already graded:
+# `character()` paints the trader's hair as `litCircle(0, -4, 22)`, so the
+# silhouette is 44 units across and every reference length below is expressed
+# as a multiple of it. There is no px/cm anywhere in that sentence.
 SHIPPED_HEAD_D_U = 44          # litCircle(0, -4, 22) silhouette
+
+# This script measures the ART. It deliberately does NOT carry a copy of what
+# the page currently draws.
+#
+# It used to. `SHIPPED_CROWN_U`/`SHIPPED_ANKLE_U` and a per-part `shipped_u`
+# column were hand-typed literals, and they froze at the pre-increment-3
+# figure: for three increments after the legs were rebuilt to their traced
+# lengths this script went on reporting "thigh ships as 16u, 3.6x short" and
+# "the shipped figure is 3.59 heads" against a page that had shipped 57.5u
+# and 5.50 heads since `6d79698`. A measuring tool that reports a fixed defect
+# is worse than one that reports nothing: the next session re-fixes the legs.
+#
+# So the split is now explicit. This script says what the REFERENCE asks for;
+# `tests/api/test_world_page.py` runs the real `seatedRig` in node and grades
+# what the PAGE does against these targets. Only one of those two can go
+# stale without a test going red, and it is no longer this one.
 
 
 def head_unit(chair: dict) -> dict:
@@ -373,15 +385,24 @@ def head_unit(chair: dict) -> dict:
         + dist("neck", "head") + dist("head", "crown")
         + dist("hip_near", "knee_near") + dist("knee_near", "ankle_near")
     )
-    shipped_crown_to_ankle = SHIPPED_ANKLE_U - SHIPPED_CROWN_U
 
-    # Where the length actually went missing, limb by limb, in head-diameters.
+    # The VISIBLE neck, which is not `neck`->`head` and this is the whole
+    # trick. `head` is traced at the head's CENTRE, so `neck`->`head` is a
+    # neck plus a head radius bundled together; subtracting the radius leaves
+    # the bare span of skin between the shoulder line and the chin. It comes
+    # out about a sixth of a head -- small, which is exactly why a rig can
+    # bury it and still look "nearly right" on every total-height check.
+    ref_head_r = dist("head", "crown")
+    ref_neck = dist("neck", "head") - ref_head_r
+
+    # Where the length goes, limb by limb, in head-diameters. Reference only:
+    # what the page does with these is the suite's business, not this file's.
     parts = {
-        "spine pelvis->neck": (dist("pelvis", "chest") + dist("chest", "neck"),
-                               72),        # litRect(-24, -78, 48, 72)
-        "neck->head centre": (dist("neck", "head"), 20),   # -88 collar to -108
-        "thigh hip->knee": (dist("hip_near", "knee_near"), 16),   # y -6..10
-        "shin knee->ankle": (dist("knee_near", "ankle_near"), 18),  # y 6..24
+        "spine pelvis->neck": dist("pelvis", "chest") + dist("chest", "neck"),
+        "neck->head centre": dist("neck", "head"),
+        "visible neck (shoulder->chin)": ref_neck,
+        "thigh hip->knee": dist("hip_near", "knee_near"),
+        "shin knee->ankle": dist("knee_near", "ankle_near"),
     }
 
     return {
@@ -389,14 +410,12 @@ def head_unit(chair: dict) -> dict:
         "head_unit_u": SHIPPED_HEAD_D_U,
         "px_per_head": ref_head_d,
         "heads_tall_reference": ref_crown_to_ankle / ref_head_d,
-        "heads_tall_shipped": shipped_crown_to_ankle / SHIPPED_HEAD_D_U,
         "parts": {
             name: {
                 "ref_heads": ref_px / ref_head_d,
                 "should_be_u": ref_px / ref_head_d * SHIPPED_HEAD_D_U,
-                "shipped_u": shipped_u,
             }
-            for name, (ref_px, shipped_u) in parts.items()
+            for name, ref_px in parts.items()
         },
     }
 
@@ -426,19 +445,15 @@ def main() -> int:
     print(f"\nTHE UNIT: 1 head = {s['px_per_head']:.1f} reference px"
           f" = {s['head_unit_u']} rig units (the approved litCircle(0,-4,22))")
 
-    print("\nTHE PROPORTION DEFECT -- a ratio, so no scale is involved")
+    print("\nWHAT THE REFERENCE ASKS FOR -- ratios, so no scale is involved")
     print(f"  reference figure  {s['heads_tall_reference']:.2f} heads, crown to ankle")
-    print(f"  shipped figure    {s['heads_tall_shipped']:.2f} heads, crown to ankle")
-    print("\n  where the length went missing:")
-    print(f"    {'part':<22}{'ref':>7}{'should be':>12}{'ships as':>10}{'':>3}")
+    print(f"\n    {'part':<32}{'ref':>7}{'should be':>12}")
     for name, p in s["parts"].items():
-        ratio = p["should_be_u"] / p["shipped_u"]
-        print(f"    {name:<22}{p['ref_heads']:>6.2f}h{p['should_be_u']:>11.0f}u"
-              f"{p['shipped_u']:>9.0f}u   {ratio:>4.1f}x")
-    print("\n  The head is right and the TORSO is very nearly right. The defect")
-    print("  is concentrated in the legs, which is why the figure reads as a")
-    print("  doll rather than as a small person: dolls are short-legged.")
-    print("  A redistribution, not the wholesale rescale anthropometry argued for.")
+        print(f"    {name:<32}{p['ref_heads']:>6.2f}h{p['should_be_u']:>11.0f}u")
+    print("\n  These are TARGETS, not a diff. What the page actually draws is")
+    print("  graded by tests/api/test_world_page.py, which runs the real")
+    print("  seatedRig in node -- see the note above SHIPPED_HEAD_D_U for why")
+    print("  this script no longer keeps its own copy of the shipped numbers.")
     return 0
 
 

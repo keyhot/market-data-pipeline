@@ -2628,6 +2628,153 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
     )
 
 
+# The trader's head, as `character()` paints it on the `facesAway` branch this
+# chair's yaw selects: skin `litCircle(0, 2, 19)` under hair
+# `litCircle(0, -4, 22)`. The chin is the lowest painted head pixel, 21 below
+# `headY`. The neck test below measures FROM it, so
+# `test_the_head_literals_these_measurements_depend_on_still_ship` guards it —
+# a redesigned head must break that test loudly rather than quietly re-point
+# every span that starts at the chin.
+HUMAN_CHIN_BELOW_HEAD_Y = 21
+HUMAN_AWAY_SKULL = "litCircle(0, away ? 2 : -4, away ? 19 : 22)"
+
+
+def test_the_head_literals_these_measurements_depend_on_still_ship():
+    """The chin is a derived number, so its source has to be pinned.
+
+    `HUMAN_CHIN_BELOW_HEAD_Y` is 2 + 19 read off one line in `character()`. If
+    that line changes, every neck measurement silently measures from the wrong
+    place and still passes — the failure mode `measure_chair.py`'s frozen
+    `shipped_u` column already demonstrated once on this same figure.
+    """
+    assert HUMAN_AWAY_SKULL in _world_source(), (
+        "character() no longer paints the away-facing head as "
+        f"{HUMAN_AWAY_SKULL} - re-derive HUMAN_CHIN_BELOW_HEAD_Y from the "
+        "new line"
+    )
+
+
+@needs_node
+def test_the_seated_figure_has_a_neck():
+    """There is skin between his collar and his jaw, and the trace says how much.
+
+    A head resting straight on a collar is the loudest "this is not a person"
+    signal a seated figure can send, and it was invisible to every check this
+    suite had: total height, seat fit and the chair-proportion bracket all
+    pass with the head sunk to the shoulders, because sinking it barely moves
+    the figure's overall span.
+
+    So this measures the one span that does move: the gap between the chin and
+    the topmost SWEATER volume. Sweater, not torso — the collar is what would
+    actually cover the neck, and a torso-top measurement would happily report
+    a neck that a high collar swallows whole.
+
+    The target is not typed here. `measure_chair.head_unit` derives it from the
+    trace as `neck`->`head` minus the head RADIUS: the trace puts `head` at the
+    head's centre, so that subtraction is what separates a bare neck from a
+    neck-plus-half-a-head. It comes out ~0.17 heads, about 7 rig units.
+
+    The bracket fails from both ends, because "more neck" is not the goal and a
+    giraffe is as wrong as a mole. It reads about -13 on the figure that
+    shipped through increment 5 — the collar stood 13 units ABOVE the chin.
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "const HUMAN = {")
+        + ";\n"
+        # The far leg mixes its jeans toward ambient; that is the only piece of
+        # the shading chain this driver needs, because the stubs below replace
+        # `litRect`/`litCircle`/`paint` wholesale.
+        + _js_block(source, "function mixHex(")
+        + "\n"
+        + """
+        class FakeGraphics {
+          constructor() { this.pivot = { x: 0, y: 0 }; this.rotation = 0; }
+          roundRect() { return this; } circle() { return this; }
+          fill() { return this; } stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        // The authored volumes, before banding and snapping smear them. A
+        // recording `litRect` reports the rect `seatedRig` asked for, which is
+        // what this test is about; the real one is graded elsewhere.
+        const drawn = [];
+        const litRect = (x, y, w, h, r) => ({
+          rect: [x, y, w, h], band: (g) => g, rim: (g) => g });
+        const litCircle = (cx, cy, rad) => ({
+          rect: [cx - rad, cy - rad, 2 * rad, 2 * rad],
+          band: (g) => g, rim: (g) => g });
+        function paint(g, volume, fill, rim, opts) {
+          drawn.push({ rect: volume.rect, fill, opts: opts || {} });
+        }
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + "\n"
+        + _js_block(source, "function seatedRig(")
+        + "\n"
+        + """
+        const accents = [];
+        const headY = seatedRig(new FakeGraphics(), accents);
+        // The palette rides along rather than being restated in python: a
+        // recoloured sweater must not silently empty the filter below.
+        console.log(JSON.stringify({ headY, drawn, HUMAN }));
+        """
+    )
+    from scripts.measure_chair import head_unit, measure_plate_chair
+
+    emitted = _run_node(driver)
+    drawn = emitted["drawn"]
+    palette = emitted["HUMAN"]
+
+    sweater = [d for d in drawn if d["fill"] == palette["sweater"]]
+    assert sweater, "seatedRig paints no sweater volume at all"
+    sweater_top = min(d["rect"][1] for d in sweater)
+    chin = emitted["headY"] + HUMAN_CHIN_BELOW_HEAD_Y
+    # Positive means skin shows: the collar stops BELOW the jaw.
+    neck = sweater_top - chin
+
+    target = head_unit(measure_plate_chair())["parts"][
+        "visible neck (shoulder->chin)"
+    ]["should_be_u"]
+
+    assert 0.5 * target <= neck <= 1.8 * target, (
+        f"the chin sits at {chin} and the collar tops out at {sweater_top}, "
+        f"leaving {neck:.0f} units of neck where the reference trace asks for "
+        f"{target:.0f} ({target / 44:.2f} heads): "
+        + (
+            "his head is sunk into his shoulders"
+            if neck < 0.5 * target
+            else "that is a giraffe, not a trader"
+        )
+    )
+
+    # ...and something has to FILL that gap, or the neck is a hole with the
+    # room showing through it. A skin volume, narrower than the collar, and
+    # reaching from under the jaw down into the sweater.
+    skin = [d for d in drawn if d["fill"] == palette["skin"]]
+    collar_w = max(
+        d["rect"][2] for d in sweater if d["rect"][1] <= sweater_top + 4
+    )
+    bridging = [
+        d
+        for d in skin
+        if d["rect"][1] <= chin
+        and d["rect"][1] + d["rect"][3] >= sweater_top
+        and d["rect"][2] < collar_w
+    ]
+    assert bridging, (
+        "nothing skin-coloured bridges the collar and the jaw: the neck gap "
+        f"({chin} to {sweater_top}) would show the room through it. Skin "
+        f"volumes drawn: {[d['rect'] for d in skin]}"
+    )
+
+
 @needs_node
 def test_the_seated_figure_points_where_the_painted_cushion_points():
     """He faces the way the chair does, and the chair's own edges say which way.

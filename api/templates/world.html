@@ -2473,14 +2473,39 @@
       // flatten him to a plank edge-on. Shoulders are still ±24 in the room;
       // only their projection moved, which is why the seat budget below is
       // measured off THIS rect rather than off the authored 48.
+      // The spine, pelvis to shoulder line. 68 units from the hips at 0 to a
+      // shoulder line at -72, against the trace's 1.58 heads = 70: it used to
+      // be 76, and the 6 units it gives back are what let the head rise into
+      // a neck below without the crown outgrowing the chair.
       const HALF_W = snap(Math.hypot(24 * COS_Y, 13 * SIN_Y));
-      paint(body, litRect(-HALF_W, -78, HALF_W * 2, 72, 12), HUMAN.sweater, undefined, { keepFill: true });
-      // A collar, inside the shoulders, giving the neck somewhere to come out
-      // of. `inner`: it is shading on the torso, not a separate object. It
-      // narrows with the shoulders — 22 wide inside a turned 40-wide body
-      // reads as a bib, not a collar.
+      paint(body, litRect(-HALF_W, -72, HALF_W * 2, 68, 12), HUMAN.sweater, undefined, { keepFill: true });
+      // THE NECK. Drawn between the torso and the collar so the collar laps
+      // over its base and the head covers its top, which is what makes a
+      // cylinder read as a neck rather than as a peg.
+      //
+      // It is skin, and that is the whole point: a sweater-coloured collar
+      // climbing to the jaw is what the figure had for five increments, and
+      // it reads as a head balanced on a bolster. The trace asks for 0.17
+      // heads of bare skin between the shoulder line and the chin — about 7
+      // units — and `test_the_seated_figure_has_a_neck` measures exactly that
+      // gap, from the topmost SWEATER volume rather than from the torso,
+      // because the collar is what would cover it.
+      //
+      // Width 12 is the trace's own neck bone (16 reference px / 59.5 px per
+      // head x 44), and it has to stay narrower than the collar or the collar
+      // stops reading as clothing over it.
+      paint(body, litRect(-6, -82, 12, 14, 6), HUMAN.skin, undefined, inner);
+      // A collar, inside the shoulders, sitting AT the shoulder line rather
+      // than above it. `inner`: it is shading on the torso, not a separate
+      // object. It narrows with the shoulders — 22 wide inside a turned
+      // 40-wide body reads as a bib, not a collar.
+      //
+      // It used to top out at -88, thirteen units ABOVE the chin, which is
+      // how a figure ends up with no neck while every height check passes.
+      // Anything that raises this above the torso top re-buries the jaw, so
+      // the neck test grades it from here and fails from both ends.
       const HALF_C = snap(HALF_W * 11 / 24);
-      paint(body, litRect(-HALF_C, -88, HALF_C * 2, 14, 7), HUMAN.sweater, undefined, inner);
+      paint(body, litRect(-HALF_C, -72, HALF_C * 2, 10, 5), HUMAN.sweater, undefined, inner);
       // Arms down the front of the body to hands resting on the lap — not
       // hanging out at the sides, and not bent back up toward a keyboard that
       // is behind this figure's left shoulder. The reference paints an arm as
@@ -2654,9 +2679,19 @@
         bone(knee, ankle, L.width[1], jeans, inner);
         bone(ankle, toe, L.width[2], shoes, legs);
       });
-      // -96, not -108: the human head is r22 rather than the machine's r28, so
-      // the old value left it floating a dozen units clear of its own
-      // shoulders. This sits the skull ON the collar.
+      // -100, and the 4 units it moved up are a NECK.
+      //
+      // `character()` paints this head as skin `litCircle(0, 2, 19)` under
+      // hair `litCircle(0, -4, 22)`, so the chin — the lowest painted head
+      // pixel — is 21 below whatever this returns. At -96 the chin landed at
+      // -75, one unit BELOW the shoulder line, and the collar then climbed to
+      // -88 on top of that: the head was not sitting on the shoulders, it was
+      // sunk into them. At -100 the chin is at -79 and the shoulder line is
+      // at -72, which is the trace's 0.17 heads of bare skin.
+      //
+      // Three numbers move together here and only together — this return, the
+      // torso's top, and the collar's top. `test_the_seated_figure_has_a_neck`
+      // is the one that grades the span they produce.
       //
       // It used to be kept low enough to stay INSIDE the painted backrest, and
       // that constraint is gone: at the scale the chair actually asks for, a
@@ -2665,7 +2700,7 @@
       // head answers to now is the chair's own proportion — crown-above-hips
       // against backrest-above-seat — which is a bracket a too-small figure
       // fails from below and a giant fails from above.
-      return -96;
+      return -100;
     }
 
     // Every write below moves the torso (`body`), the head, or an arm —
