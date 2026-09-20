@@ -2779,7 +2779,7 @@ def test_the_seated_figure_has_a_neck():
     )
 
 
-def _leg_bone_driver(source: str) -> str:
+def _rig_bone_driver(source: str) -> str:
     """`seatedRig`, with every painted volume tagged by the bone it went into.
 
     The driver above throws `g` away, which is enough to ask "what was
@@ -2840,78 +2840,117 @@ def _leg_bone_driver(source: str) -> str:
             gid: g.gid, order, x: g.x, y: g.y,
             width: g.boneWidth, length: g.boneLength,
           }));
-        console.log(JSON.stringify({ bones, drawn }));
+        // An arm is the accent that carries a forearm. They are not tagged
+        // `limb` — `arm.limb` was deliberately removed when the arms came back
+        // inside the cushion and answered to the seat-fit tests again — so the
+        // child IS the identification.
+        const arms = accents
+          .filter((g) => g.forearm)
+          .map((g) => ({
+            gid: g.gid, width: g.boneWidth,
+            foreGid: g.forearm.gid, foreWidth: g.forearm.boneWidth,
+          }));
+        // The palette rides along rather than being restated in python: the
+        // hand is identified by its skin fill, and a recoloured hand must not
+        // silently empty that lookup.
+        console.log(JSON.stringify({ bones, arms, drawn, HUMAN }));
         """
     )
 
 
+def _bone_capsule(drawn: list, gid: int) -> dict | None:
+    """The capsule `boneGfx` paints when it builds a bone.
+
+    Always the FIRST volume to go into that Graphics — anything else painted
+    there (the hand on the forearm) arrives afterwards.
+    """
+    return next((d for d in drawn if d["gid"] == gid), None)
+
+
 @needs_node
-def test_the_knee_does_not_wear_a_keyline_across_it():
-    """The thigh's rim stops at the knee instead of cutting the leg in two.
+def test_only_the_ends_of_a_limb_carry_the_outline():
+    """A limb is one thing that bends, not three outlined links of a chain.
 
-    A bone is a capsule that overruns its joint by half a width, so the thigh
-    reaches PAST the knee and its two long edges carry the rim out with them.
-    The shin is `inner` and draws no rim of its own, but it is 4.4 units
-    narrower than the thigh (19.2 vs 14.8 on the left leg), so its fill cannot
-    cover what the thigh's edges left sticking out. What ships is a cream line
-    running straight across the joint — the leg reads as two outlined links of
-    a chain rather than as one leg, which is the "die-cut sticker" read the
-    redesign exists to remove and which the shin's own `inner` was chosen to
-    avoid.
+    The page states the rule — "volumes on the outline keep their rim; volumes
+    that sit inside another (a face inside its hair, a shin between a thigh and
+    a shoe) pass `noRim`" — and then the legs obeyed it while the arms did not.
+    Increment 6 built the arms after the legs and restated the OPTION at the
+    new call sites instead of the RULE, so the forearm shipped with a cream
+    keyline and the arm read as two sausages meeting at a point.
 
-    So the knee is CAPPED: a fill-only disc, painted into the shin (which
-    renders after the thigh) at the shin's own proximal end, and sized to the
-    THIGH's half-width rather than the shin's — a cap cut to the shin is
-    exactly the cap that changes nothing, because the shin's fill already
-    reaches that far.
+    Both limbs are the same three links, so this grades them the same way:
 
-    Graded on the geometry rather than on the frame: two identical screenshots
-    of this page differ by ~70 keyline pixels of animation, and a cap is worth
-    about thirty.
+        thigh  / shin     / shoe   ->  rimmed / noRim / rimmed
+        upper  / forearm  / hand   ->  rimmed / noRim / rimmed
+
+    The `ends keep theirs` half is what stops this passing if rims are simply
+    deleted wholesale, which is the other way to make a figure stop reading as
+    a chain and is a different picture entirely.
+
+    A joint CAP was tried first and rejected on the frame: a fill-only disc
+    painted over the join covers the keyline, but `paint` bands a circle
+    concentrically, so the disc reads as a ball joint and the trader becomes a
+    wooden mannequin. Per-volume `noRim` cannot express a per-END defect; that
+    is the rim-policy increment, not this one.
     """
     source = _world_source()
-    emitted = _run_node(_leg_bone_driver(source))
-    bones, drawn = emitted["bones"], emitted["drawn"]
+    emitted = _run_node(_rig_bone_driver(source))
+    bones, arms = emitted["bones"], emitted["arms"]
+    drawn, palette = emitted["drawn"], emitted["HUMAN"]
 
     assert len(bones) == 6, (
         f"expected two legs of three bones, got {len(bones)}: this test reads "
         "them in threes and a change to the leg's bone count invalidates that"
     )
+    assert len(arms) == 2, f"expected two arms carrying a forearm, got {len(arms)}"
 
+    chains = []
     for leg, start in enumerate((0, 3)):
-        thigh, shin = bones[start], bones[start + 1]
-        # `boneGfx` pivots at (w/2, w/2) and parks that on the joint, so the
-        # shin's own origin IS the knee and the cap's local centre is known
-        # without projecting anything.
-        centre = shin["width"] / 2
-        needed = thigh["width"] / 2
+        thigh, shin, shoe = bones[start : start + 3]
+        chains.append(
+            (
+                f"leg {leg}",
+                ("thigh", _bone_capsule(drawn, thigh["gid"])),
+                ("shin", _bone_capsule(drawn, shin["gid"])),
+                ("shoe", _bone_capsule(drawn, shoe["gid"])),
+            )
+        )
+    for side, arm in enumerate(arms):
+        # The hand is not a bone: it is painted INTO the forearm, after the
+        # sleeve, so it is the skin-coloured volume sharing that Graphics.
+        hand = next(
+            (
+                d
+                for d in drawn
+                if d["gid"] == arm["foreGid"] and d["fill"] == palette["skin"]
+            ),
+            None,
+        )
+        chains.append(
+            (
+                f"arm {side}",
+                ("upper arm", _bone_capsule(drawn, arm["gid"])),
+                ("forearm", _bone_capsule(drawn, arm["foreGid"])),
+                ("hand", hand),
+            )
+        )
 
-        caps = [
-            d
-            for d in drawn
-            if d["gid"] == shin["gid"]
-            and d["shape"] == "circle"
-            and abs(d["at"][0] - centre) <= 1
-            and abs(d["at"][1] - centre) <= 1
-        ]
-        assert caps, (
-            f"leg {leg}: nothing caps the knee. The thigh is {thigh['width']} "
-            f"units wide and the shin {shin['width']}, so "
-            f"{(thigh['width'] - shin['width']) / 2:.1f} units of thigh rim "
-            "stick out past the shin on each side and draw a keyline across "
-            "the joint."
+    for limb, (outer_name, outer), (mid_name, mid), (end_name, end) in chains:
+        for name, volume in ((outer_name, outer), (mid_name, mid), (end_name, end)):
+            assert volume, f"{limb}: no {name} volume is painted at all"
+
+        assert mid["opts"].get("noRim"), (
+            f"{limb}: the {mid_name} carries a rim. It runs between the "
+            f"{outer_name} and the {end_name} and makes no silhouette of its "
+            "own, so its keyline cuts the limb into outlined links -- the "
+            "die-cut sticker read this redesign exists to remove."
         )
-        cap = max(caps, key=lambda d: d["at"][2])
-        assert cap["at"][2] >= needed, (
-            f"leg {leg}: the knee cap has radius {cap['at'][2]:.1f} where the "
-            f"thigh's rim reaches {needed:.1f}. A cap cut to the shin's own "
-            "width covers nothing the shin did not already cover."
-        )
-        assert cap["opts"].get("noRim"), (
-            f"leg {leg}: the knee cap is drawn WITH a rim, so it replaces the "
-            "keyline across the joint with a circular one. A cap is shading, "
-            "not a volume."
-        )
+        for name, volume in ((outer_name, outer), (end_name, end)):
+            assert not volume["opts"].get("noRim"), (
+                f"{limb}: the {name} has lost its rim. Deleting the outline "
+                "is not the same fix as moving it off the interior: the ends "
+                "are what give the limb an edge against the room."
+            )
 
 
 @needs_node
