@@ -481,6 +481,40 @@
     // So: volumes on the outline keep their rim; volumes that sit inside
     // another (a face inside its hair, a shin between a thigh and a shoe) pass
     // `noRim` and read as shading instead of as separate objects.
+    //
+    // ...and then the rim came off the PERSON entirely, which is the end of
+    // that road rather than a break with it. `noRim` is per-VOLUME, and the
+    // defect it could never reach was per-END: the thigh is 4.4 units wider
+    // than the shin, so its rim overhung the knee whatever the shin did. The
+    // only per-volume cover for that was a disc over the joint, and `paint`
+    // bands a circle concentrically, so the disc read as a BALL joint and the
+    // trader became a wooden mannequin.
+    //
+    // A `keepFill` volume gets no rim at all. That is not a new predicate:
+    // `keepFill` is this file's own definition of a volume of a PERSON (see
+    // above — "a person is not one colour"), and the rule is that a person is
+    // not outlined. The machine head takes the other branch
+    // (`paint(skull, litCircle(0, 0, 28), BODY_FILL)`) and keeps its rim, as
+    // every market glyph does: a glyph is a shape that needs an edge against a
+    // busy room; a face is not.
+    //
+    // Measured before it was believed (vault `Docs/character-redesign.md`,
+    // increment 8). The rim was the human's only COLOUR mood channel, and that
+    // channel is CONSTANT in the shipped configuration — `react()` sends a
+    // mood to the trader only from `trader_*` events, which exist only when
+    // the opt-in freqtrade sidecar runs, and `draw(state)` re-pins him to
+    // "idle" every update. What the rim delivered was the LAMP and not the
+    // mood: `rimStyle` mixes every rim 30% toward `LIGHT.warmth`, so the
+    // trader's edge measured hue 26° / sat 0.16 regardless, against authored
+    // tints of sat 0.31–1.00. Mood still reaches him through the other two of
+    // the brief's three channels, face and posture.
+    //
+    // At 1:1 viewer scale the unrimmed figure reads as a painted person and
+    // the rimmed one as an assembly of outlined tubes. The lit/shade bands
+    // were always doing the separating; the rim competed with them.
+    // `test_a_person_is_not_outlined` grades this at the mechanism, because
+    // the one thing increment 6 proved is that a rule restated at a call site
+    // is a rule the next limb will get wrong.
     function paint(g, volume, fill, rim, opts) {
       const keepFill = opts && opts.keepFill;
       const noRim = !!(opts && opts.noRim);
@@ -490,7 +524,7 @@
       volume.band(g, BAND_INSET.shade);  g.fill(shade(fill, rampLevel("shade")));
       volume.band(g, BAND_INSET.base);   g.fill(shade(fill, rampLevel("base")));
       volume.band(g, BAND_INSET.lit);    g.fill(shade(fill, rampLevel("lit")));
-      if (!noRim) volume.rim(g, rimStyle(rim));
+      if (!noRim && !keepFill) volume.rim(g, rimStyle(rim));
     }
 
     // A rim's stroke style at a given base colour, lit like the volume's own

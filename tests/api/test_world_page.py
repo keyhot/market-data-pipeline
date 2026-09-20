@@ -2868,30 +2868,23 @@ def _bone_capsule(drawn: list, gid: int) -> dict | None:
 
 
 @needs_node
-def test_only_the_ends_of_a_limb_carry_the_outline():
-    """A limb is one thing that bends, not three outlined links of a chain.
+def test_the_seated_figure_paints_every_volume_in_its_own_colour():
+    """Every volume of the trader is `keepFill` — which is now what decides he
+    carries no outline, so it is worth grading directly.
 
-    The page states the rule — "volumes on the outline keep their rim; volumes
-    that sit inside another (a face inside its hair, a shin between a thigh and
-    a shoe) pass `noRim`" — and then the legs obeyed it while the arms did not.
-    Increment 6 built the arms after the legs and restated the OPTION at the
-    new call sites instead of the RULE, so the forearm shipped with a cream
-    keyline and the arm read as two sausages meeting at a point.
+    This replaces `test_only_the_ends_of_a_limb_carry_the_outline`, which
+    encoded the PREVIOUS policy (thigh rimmed / shin `noRim` / shoe rimmed, and
+    the same for the arm). That policy is gone: `paint` gives a `keepFill`
+    volume no rim at all, so "the ends keep theirs" is no longer true and the
+    old assertion could only fail. See `test_a_person_is_not_outlined` for the
+    rule and the measurements behind it.
 
-    Both limbs are the same three links, so this grades them the same way:
-
-        thigh  / shin     / shoe   ->  rimmed / noRim / rimmed
-        upper  / forearm  / hand   ->  rimmed / noRim / rimmed
-
-    The `ends keep theirs` half is what stops this passing if rims are simply
-    deleted wholesale, which is the other way to make a figure stop reading as
-    a chain and is a different picture entirely.
-
-    A joint CAP was tried first and rejected on the frame: a fill-only disc
-    painted over the join covers the keyline, but `paint` bands a circle
-    concentrically, so the disc reads as a ball joint and the trader becomes a
-    wooden mannequin. Per-volume `noRim` cannot express a per-END defect; that
-    is the rim-policy increment, not this one.
+    What still needs grading here is the half that rule DEPENDS on: the rig
+    paints itself in authored colours rather than in the mood's `BODY_FILL`.
+    A volume that forgot `keepFill` would silently take a rim back, and it
+    would take it back on a LIMB, which is exactly where the die-cut read was
+    worst. Both limbs are still read in threes so the check keeps naming the
+    part that broke.
     """
     source = _world_source()
     emitted = _run_node(_rig_bone_driver(source))
@@ -2939,18 +2932,116 @@ def test_only_the_ends_of_a_limb_carry_the_outline():
         for name, volume in ((outer_name, outer), (mid_name, mid), (end_name, end)):
             assert volume, f"{limb}: no {name} volume is painted at all"
 
-        assert mid["opts"].get("noRim"), (
-            f"{limb}: the {mid_name} carries a rim. It runs between the "
-            f"{outer_name} and the {end_name} and makes no silhouette of its "
-            "own, so its keyline cuts the limb into outlined links -- the "
-            "die-cut sticker read this redesign exists to remove."
-        )
-        for name, volume in ((outer_name, outer), (end_name, end)):
-            assert not volume["opts"].get("noRim"), (
-                f"{limb}: the {name} has lost its rim. Deleting the outline "
-                "is not the same fix as moving it off the interior: the ends "
-                "are what give the limb an edge against the room."
+        for name, volume in (
+            (outer_name, outer),
+            (mid_name, mid),
+            (end_name, end),
+        ):
+            assert volume["opts"].get("keepFill"), (
+                f"{limb}: the {name} is not painted `keepFill`, so it takes "
+                "the mood as its fill and -- because `paint` keys the outline "
+                "off exactly that flag -- takes a cream keyline back with it. "
+                "A person is painted in skin, hair, sweater and jeans; only a "
+                "market glyph is painted in the mood."
             )
+
+
+@needs_node
+def test_a_person_is_not_outlined():
+    """`paint` strokes no rim for a `keepFill` volume, and still strokes one
+    for a volume that takes the mood as its fill.
+
+    This is the rim POLICY, graded at the mechanism rather than at the call
+    sites -- which is the lesson increment 6 taught when it restated the option
+    beside the new arms instead of the rule, and the forearm shipped outlined.
+
+    `keepFill` is not a proxy chosen here; it is the page's own definition of
+    "a volume of a person" -- "`keepFill` is the human's exemption, and it
+    exists because a person is not one colour". The machine head takes the
+    other branch (`paint(skull, litCircle(0, 0, 28), BODY_FILL)`) and keeps its
+    rim, as every market glyph does: a glyph is a shape that needs an edge
+    against a busy room, and a person is not.
+
+    WHY the human's rim goes, measured on the delivered frame rather than
+    argued (vault `Docs/character-redesign.md`, increment 8):
+
+    * The rim was the human's only COLOUR mood channel, and that channel is
+      constant in the shipped configuration: `react()` routes a mood to the
+      trader only from `trader_*` events, which come only from the opt-in
+      freqtrade sidecar, and `draw(state)` re-pins the trader to `"idle"` on
+      every state update. Mood still reaches the figure through the other two
+      of the brief's three channels -- face and posture -- which this does not
+      touch.
+    * What the rim actually delivered was the LAMP, not the mood:
+      `rimStyle` mixes every rim 30% toward `LIGHT.warmth` (`#f0a848`), so the
+      trader's edge measured hue 26 deg / sat 0.16 whatever the mood, against
+      authored tints of sat 0.31-1.00.
+    * At 1:1 viewer scale the unrimmed figure reads as a painted person and the
+      rimmed one as an assembly of outlined tubes -- the die-cut sticker read
+      KI-051 exists to remove. The lit/shade bands were always doing the
+      separating; the rim competed with them.
+
+    This also dissolves the per-END defect the cap was invented for: with no
+    rim on the human there is no keyline to overhang the knee, and no reason to
+    paint a disc over the joint (which read as a ball joint and made the trader
+    a wooden mannequin).
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0x8899aa;\n"
+        + "const BODY_RIM = { width: 1.5, color: 0xffffff, alignment: 1 };\n"
+        + _js_const(source, "LIGHT")
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _shading_prelude(source)
+        + """
+        // A rim is the ONE thing drawn with `stroke`; every band is a `fill`.
+        // So counting strokes counts rims, without this test having to know
+        // how `rimStroke` builds its path.
+        let strokes = [];
+        class FakeGraphics {
+          roundRect() { return this; } circle() { return this; }
+          fill() { return this; }
+          stroke(style) { strokes.push(style ?? null); return this; }
+        }
+        const run = (opts) => {
+          strokes = [];
+          paint(new FakeGraphics(), litRect(0, 0, 20, 40, 10),
+                HUMAN.sweater, 0x223344, opts);
+          const rect = strokes.length;
+          strokes = [];
+          paint(new FakeGraphics(), litCircle(0, 0, 20),
+                HUMAN.skin, 0x223344, opts);
+          return { rect, circle: strokes.length };
+        };
+        console.log(JSON.stringify({
+          person: run({ keepFill: true }),
+          glyph: run(undefined),
+          // The interior exemption still has to work for the glyph path.
+          glyphInner: run({ noRim: true }),
+        }));
+        """
+    )
+    out = _run_node(driver)
+
+    for shape in ("rect", "circle"):
+        assert out["person"][shape] == 0, (
+            f"a keepFill {shape} volume still strokes a rim "
+            f"({out['person'][shape]} of them). A person is not outlined: the "
+            "figure's edge is carried by the lit/shade bands, and a keyline "
+            "over them is the die-cut sticker read."
+        )
+        assert out["glyph"][shape] == 1, (
+            f"a plain {shape} volume has lost its rim. This increment takes "
+            "the outline off the HUMAN, not off the market glyphs and the "
+            "model -- a glyph needs an edge against a busy room."
+        )
+        assert out["glyphInner"][shape] == 0, (
+            f"`noRim` stopped working for a plain {shape} volume. The "
+            "interior exemption is still what the model's own volumes use."
+        )
 
 
 @needs_node
