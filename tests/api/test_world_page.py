@@ -352,16 +352,49 @@ def test_a_character_does_not_sink_into_the_background():
         assert body_contrast(mood) >= SILHOUETTE_MIN_CONTRAST, mood
 
 
+def _without_comments(js: str) -> str:
+    """The same JS with its `//` comments removed.
+
+    A string-matching assertion over page source passes on a comment that
+    merely MENTIONS what it is looking for - the `d1ad270` shape this file
+    keeps re-learning. It bit again in increment 11: the machine's new body
+    explains in prose why it no longer pumps, and the old assertion, which
+    searched for `"pump"`, read that sentence and went green on the exact
+    change it existed to catch.
+    """
+    return re.sub(r"//[^\n]*", "", js)
+
+
 def test_an_accent_gestures_by_kind_rather_than_all_of_them_rotating():
-    """Rotating a bar about its own base swings it like a felled tree, and the
-    cluster came apart on cheer/wave/shrug. Only what hangs from a joint
-    swings; a bar pumps and a base shifts its weight."""
+    """Rotating an accent about its own base swings it like a felled tree, and
+    the candle cluster came apart on cheer/wave/shrug. Only what hangs from a
+    joint swings; a wick pumps and a base shifts its weight.
+
+    The rule is that the choice is MADE, per body, out of the registry - not
+    that any one body makes a particular choice. Increment 11 is why that
+    distinction now matters: the MODEL stopped being a cluster of candles and
+    became a plated machine with two arms, so the body that used to pump now
+    correctly swings, and an assertion naming `bars` and `"pump"` would have
+    had to be deleted rather than re-read. What survives the redesign is that
+    every mode a body asks for is one the dispatcher can serve, and that they
+    are not all the same mode.
+    """
     body = client.get("/world").text
     assert "const GESTURE = {" in body
-    for mode in ("swing:", "pump:", "shift:"):
-        assert mode in body, mode
-    bars = re.search(r"      bars\(body, accents\) \{(.*?)\n      \},", body, re.S)
-    assert '"pump"' in bars.group(1), "the bar cluster still swings"
+    declared = set(re.findall(r"(\w+): \(", _js_block(body, "const GESTURE = {")))
+    assert {"swing", "pump", "shift"} <= declared, declared
+    asked = re.findall(r'gestureMode\s*=\s*"(\w+)"', _without_comments(body))
+    assert asked, "no body chooses a gesture at all; every accent would swing"
+    unknown = sorted(set(asked) - declared)
+    assert not unknown, (
+        f"{unknown} is asked for but `GESTURE` cannot serve it, so `gesture()` "
+        "falls back to swinging the accent about its own origin - silently, "
+        "and only on the animations that use it"
+    )
+    assert len(set(asked)) > 1, (
+        f"every accent on the page now gestures by {asked[0]!r}. The registry "
+        "exists because one motion does not fit every body"
+    )
 
 
 def test_how_far_a_head_may_sink_is_declared_per_body():
@@ -380,9 +413,14 @@ def test_how_far_a_head_may_sink_is_declared_per_body():
 
 def test_every_body_declares_its_own_contact_patch():
     """A shadow is the only thing telling a viewer where the floor is, and its
-    width is a property of the body — the bar cluster stands wider than the
-    figure. Same registry shape as HEAD_TRAVEL, checked for the same reason:
-    a new body silently inheriting someone else's footprint reads as floating."""
+    width is a property of the body — the MODEL stands wider than the figure.
+    Same registry shape as HEAD_TRAVEL, checked for the same reason: a new
+    body silently inheriting someone else's footprint reads as floating.
+
+    The ordering outlived the body that first justified it. It used to be the
+    candle cluster's five splayed bars; since increment 11 it is the machine's
+    two legs, which plant 48 units apart against the figure's 38.
+    """
     body = client.get("/world").text
     listed = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
     styles = set(re.findall(r'"([a-z]+)"', listed))
@@ -966,6 +1004,9 @@ def _shading_prelude(source: str) -> str:
         # reason as every other entry here — a second copy of the palette in
         # this file would drift and stop proving anything about what ships.
         + _js_block(source, "const HUMAN = {") + "\n"
+        # And increment 11 does the same for the other half of the cast:
+        # `BODIES.bars` paints the cuts between its plates in `MACHINE.seam`.
+        + _js_block(source, "const MACHINE = {") + ";\n"
     )
 
 
@@ -3547,6 +3588,336 @@ def test_the_fingers_hang_from_the_hands_screen_downward_edge():
             )
 
 
+# --- The MODEL: increment 11, the machine stops being a cluster of candles --
+#
+# The trader's ten increments all landed on `seatedRig`. This is the other
+# half of the same user ask (2026-09-11): *"the model needs to be a robot"*,
+# decided the same day as **a plated machine: panelled chassis, visible
+# joints, antenna, glowing eyes — no candle glyphs**. That decision overrides
+# the reference art, which builds the robot out of teal candlesticks.
+#
+# `BODIES.bars` is the body every frame of the stream has drawn for MODEL
+# (`CAST.MODEL`). Unlike the trader's rig it is a plain function in a plain
+# registry, so it runs in node exactly as the page defines it — which is why
+# the body comes before the head: it can be GRADED, where the skull fork in
+# `character()` is only reachable through the page.
+
+
+def _machine_body_driver(source: str) -> str:
+    """`BODIES.bars` executed, with every volume and every accent recorded.
+
+    The same shape as `_rig_bone_driver` pointed at the other half of the
+    cast: `paint`/`litRect`/`litCircle` are stubs that record rather than
+    draw, and `snap` is the page's own, so a volume reports both what the
+    call site authored (`at`) and where the CELL grid actually puts it
+    (`snapped`). Increment 10 is why both are kept — a separation authored
+    3.9 units from its neighbour snaps onto it, and only the snapped rect
+    says so.
+
+    The accents come back carrying the fields the animation layer reads off
+    them (`gestureMode`, `restRotation`, `shadeFactor`), because for a
+    limb-less body those fields ARE the design: a chassis with nothing on
+    `accents` is inert, and `gesture()` would have nothing to move.
+    """
+    return (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "const MACHINE = {")
+        + ";\n"
+        + _js_block(source, "function mixHex(")
+        + "\n"
+        + """
+        let nextId = 0;
+        class FakeGraphics {
+          constructor() {
+            this.gid = nextId++;
+            this.pivot = { x: 0, y: 0 };
+            this.rotation = 0; this.x = 0; this.y = 0;
+            this.scale = { set() {} };
+          }
+          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
+          roundRect() { return this; } circle() { return this; }
+          fill() { return this; } stroke() { return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const drawn = [];
+        const litRect = (x, y, w, h, r) => ({
+          shape: "rect", at: [x, y, w, h], snapped: [snap(x), snap(y), w, h],
+          band: (g) => g, rim: (g) => g });
+        const litCircle = (cx, cy, rad) => ({
+          shape: "circle", at: [cx - rad, cy - rad, 2 * rad, 2 * rad],
+          snapped: [snap(cx) - rad, snap(cy) - rad, 2 * rad, 2 * rad],
+          band: (g) => g, rim: (g) => g });
+        function paint(g, volume, fill, rim, opts) {
+          drawn.push({
+            gid: g.gid, shape: volume.shape, at: volume.at,
+            snapped: volume.snapped, fill, opts: opts || {},
+          });
+        }
+        """
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CELL")
+        + "\n"
+        + _js_block(source, "const BODIES = {")
+        + ";\n"
+        + """
+        const accents = [];
+        const trunk = new FakeGraphics();
+        const headY = BODIES.bars(trunk, accents);
+        const limbs = accents.map((g, order) => ({
+          gid: g.gid, order, x: g.x, y: g.y,
+          // Rest is not zero, and `gesture` falls back to `swing` for an
+          // untagged accent, so both are reported as the page RESOLVES them
+          // rather than as the page happens to spell them.
+          restRotation: g.restRotation ?? 0,
+          gestureMode: g.gestureMode ?? "swing",
+          shadeFactor: g.shadeFactor ?? 1,
+        }));
+        console.log(JSON.stringify({
+          trunkGid: trunk.gid, headY, limbs, drawn, MACHINE, BODY_FILL,
+        }));
+        """
+    )
+
+
+def _touching(a: list, b: list) -> bool:
+    """Do two snapped rects share any area, or any edge?
+
+    Abutting counts: two plates flush against each other render as one mass.
+    A GAP does not — that is the picket fence.
+    """
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax <= bx + bw and bx <= ax + aw and ay <= by + bh and by <= ay + ah
+
+
+def _inside(inner: list, outer: list) -> bool:
+    """Is `inner` wholly within `outer`? Both are snapped `x, y, w, h`."""
+    ix, iy, iw, ih = inner
+    ox, oy, ow, oh = outer
+    return (
+        ix >= ox - 1e-9
+        and iy >= oy - 1e-9
+        and ix + iw <= ox + ow + 1e-9
+        and iy + ih <= oy + oh + 1e-9
+    )
+
+
+def _components(rects: list) -> list:
+    """The rects grouped into connected masses, by `_touching`."""
+    groups: list[list[int]] = []
+    for i in range(len(rects)):
+        joined = [g for g in groups if any(_touching(rects[i], rects[j]) for j in g)]
+        merged = [i]
+        for group in joined:
+            merged.extend(group)
+            groups.remove(group)
+        groups.append(merged)
+    return groups
+
+
+@needs_node
+def test_the_machine_is_one_connected_chassis_not_a_cluster_of_bars():
+    """The MODEL's body is a single mass, not five free-standing columns.
+
+    Shipped, `BODIES.bars` paints five candlestick rects 18 units apart with
+    6 units of clear room between them, plus a stem. At 1:1 that reads as a
+    lollipop over a picket fence — a head on a stick above a row of bars that
+    touch neither each other nor it. No amount of shading fixes a silhouette
+    that is not connected.
+
+    The rule is connectivity of the SNAPPED rects, not a count of volumes or
+    a list of part names: a chassis can be authored out of any number of
+    plates, and what makes it one machine is that every plate meets another.
+    That is pose-independent, and it is what the defect actually is. Abutting
+    counts — two plates flush against each other render as one mass — so this
+    fails only on a real gap.
+    """
+    emitted = _run_node(_machine_body_driver(_world_source()))
+    trunk = [
+        d["snapped"] for d in emitted["drawn"] if d["gid"] == emitted["trunkGid"]
+    ]
+    assert len(trunk) >= 4, (
+        f"the machine's body paints {len(trunk)} volumes on its trunk; a "
+        "chassis with a pelvis and two legs is at least four"
+    )
+    groups = _components(trunk)
+    assert len(groups) == 1, (
+        f"the machine's trunk falls into {len(groups)} disconnected masses "
+        f"{[sorted(g) for g in groups]} — a body whose parts do not touch is "
+        "the candle cluster this increment replaces, not a machine"
+    )
+
+
+@needs_node
+def test_the_machines_arms_hang_from_shoulders_and_swing():
+    """Two arms on `accents`, swinging from a joint near the top of the body.
+
+    This is the constraint that can invalidate the whole redesign, and it is
+    not a matter of looks. `gesture()` only ever moves what is on `accents`;
+    the candle cluster put five bars there and let the ripple BE the gesture
+    (`gestureMode: "pump"`). A plated chassis has no ripple, so if nothing
+    replaces those five entries the robot goes inert for every one of `ANIM`'s
+    animations — the exact failure the redesign's "detail vs. animation"
+    constraint exists to prevent.
+
+    So the arms are the gesture, and they have to be real arms: hung from the
+    top of the body rather than rooted at its feet (`GESTURE.swing` rotates an
+    accent about its own origin — a bar rooted at the floor swings like a
+    felled tree, which is why the cluster pumped instead), mirrored, and not
+    dead-symmetrical.
+    """
+    emitted = _run_node(_machine_body_driver(_world_source()))
+    limbs = emitted["limbs"]
+    assert len(limbs) == 2, (
+        f"the machine puts {len(limbs)} accents on the gesture layer; a "
+        "plated robot gestures with two arms"
+    )
+    trunk = [
+        d["snapped"] for d in emitted["drawn"] if d["gid"] == emitted["trunkGid"]
+    ]
+    top = min(r[1] for r in trunk)
+    bottom = max(r[1] + r[3] for r in trunk)
+    shoulder_floor = top + (bottom - top) / 2
+
+    for limb in limbs:
+        assert limb["gestureMode"] == "swing", (
+            f"arm {limb['order']} gestures by {limb['gestureMode']!r}. What "
+            "hangs from a joint swings; pump and shift are for bodies that "
+            "have no joint to hang from"
+        )
+        assert limb["y"] < shoulder_floor, (
+            f"arm {limb['order']} pivots at y {limb['y']:.0f}, in the lower "
+            f"half of a body spanning {top:.0f}..{bottom:.0f}. An accent "
+            "rotates about its own origin, so an arm rooted low swings the "
+            "whole limb like a felled tree"
+        )
+        assert limb["shadeFactor"] > 1, (
+            f"arm {limb['order']} is painted at the chassis's own value, so a "
+            "resting robot reads as one slab and its arms appear only "
+            "mid-animation"
+        )
+        assert any(d["gid"] == limb["gid"] for d in emitted["drawn"]), (
+            f"arm {limb['order']} is on the gesture layer with nothing "
+            "painted into it"
+        )
+
+    left, right = sorted(limbs, key=lambda limb: limb["x"])
+    assert left["x"] < 0 < right["x"], (
+        f"both arms hang on the same side of the body ({left['x']}, "
+        f"{right['x']})"
+    )
+    assert abs(abs(left["x"]) - abs(right["x"])) < 1e-9, (
+        "the shoulders are not mirrored, which reads as a body wearing one "
+        "arm further out than the other"
+    )
+    assert left["restRotation"] != right["restRotation"], (
+        "both arms rest at the same angle. Dead-symmetrical limbs read as a "
+        "mannequin, and the asymmetry costs two numbers"
+    )
+
+
+@needs_node
+def test_the_machines_plates_are_divided_by_cuts_that_keep_their_own_colour():
+    """"Visible joints" and "panelled chassis" are CUTS, never small volumes.
+
+    The joint cap is the standing precedent, and it is why this is a rule
+    rather than a preference: `paint` lays three banded insets into every
+    volume, and on a small shape those come out as a dark ring round a pale
+    core — a bolt. Four finger volumes would have repeated it eight times per
+    figure (increment 10), and a robot authored as a stack of little plates
+    and pins would repeat it everywhere. One slab with the divisions cut into
+    it keeps the bands reading as shading.
+
+    A cut is `{ keepFill, matte }` for the reason `shod` and the hand's
+    creases are: `shade` mixes an absolute 0.3 toward `LIGHT.warmth` on the
+    lit rung, and a seam lifted toward the lamp reads as a scratch ON the
+    plate rather than a gap BETWEEN two.
+
+    And the complement, which is the one place the machine parts company with
+    the trader: **the chassis itself stays on the mood fill.** A human cannot
+    be recoloured and so stopped carrying mood in his body (increment 8), but
+    a machine can, and the MODEL's mood is the live one — `react()` moods it
+    from real model events, where `draw()` re-pins the trader to `idle` every
+    update. So only the cuts are authored; every plate takes `BODY_FILL` and
+    lets `repaint` carry the mood onto it.
+    """
+    emitted = _run_node(_machine_body_driver(_world_source()))
+    seam_fill = emitted["MACHINE"]["seam"]
+    cuts = [d for d in emitted["drawn"] if d["fill"] == seam_fill]
+    plates = [d for d in emitted["drawn"] if d["fill"] != seam_fill]
+
+    assert len(cuts) >= 4, (
+        f"the machine cuts {len(cuts)} seams into itself. A panelled chassis "
+        "plus a visible joint on each arm is at least four"
+    )
+    by_gid: dict[int, int] = {}
+    for cut in cuts:
+        by_gid[cut["gid"]] = by_gid.get(cut["gid"], 0) + 1
+    assert emitted["trunkGid"] in by_gid, (
+        "every seam is on a limb and none on the chassis, which is the volume "
+        "the word 'panelled' is about"
+    )
+    for limb in emitted["limbs"]:
+        assert by_gid.get(limb["gid"]), (
+            f"arm {limb['order']} carries no joint cut, so it reads as one "
+            "smooth tube — the mitten, one limb up"
+        )
+
+    for plate in plates:
+        assert plate["fill"] == emitted["BODY_FILL"], (
+            "a plate is painted in an authored colour. The machine's mood IS "
+            "its body colour and that mood is live, so a plate takes "
+            "BODY_FILL and lets `repaint` carry the mood onto it"
+        )
+        assert not plate["opts"].get("keepFill"), (
+            "a plate is `keepFill`, which pins it to one colour for the life "
+            "of the stream and takes its rim away. That is the TRADER's rule "
+            "— a person is not outlined and cannot be recoloured — and a "
+            "machine is neither"
+        )
+
+    for cut in cuts:
+        assert cut["opts"].get("keepFill") and cut["opts"].get("matte"), (
+            f"a seam at {cut['at']} is not `{{ keepFill, matte }}`: without "
+            "keepFill it takes the mood and is outlined, and without matte "
+            "its lit rung is mixed 0.3 toward the lamp's hue, which reads as "
+            "a scratch on the plate instead of a gap between two"
+        )
+        host = next(
+            (
+                p
+                for p in plates
+                if p["gid"] == cut["gid"] and _inside(cut["snapped"], p["snapped"])
+            ),
+            None,
+        )
+        assert host, (
+            f"a seam at {cut['snapped']} is not contained in any plate on its "
+            "own Graphics: it is cut out of thin air rather than out of "
+            "something"
+        )
+        cut_w, cut_h = cut["snapped"][2], cut["snapped"][3]
+        host_w, host_h = host["snapped"][2], host["snapped"][3]
+        assert min(cut_w, cut_h) < min(host_w, host_h), (
+            f"a seam is {cut_w:.0f}x{cut_h:.0f} inside a "
+            f"{host_w:.0f}x{host_h:.0f} plate. A seam is a LINE across a "
+            "plate; one as thick as its host is a second plate wearing a "
+            "seam's colour"
+        )
+        for axis, along in ((0, "across"), (1, "down")):
+            offset = cut["at"][axis] - host["at"][axis]
+            assert offset % CELL_U == pytest.approx(0, abs=1e-6), (
+                f"a seam sits {offset:.2f} units {along} its plate, which is "
+                f"not a whole {CELL_U}-unit CELL. `litRect` snaps both "
+                "coordinates, so only a whole cell survives — an offset that "
+                "happens to round correctly at this pose collapses two seams "
+                "into one at the next, and nothing in the drawn output says so"
+            )
+
+
 @needs_node
 def test_the_two_thighs_read_as_two_legs_not_one_mass():
     """Both thighs draw at a comparable length, and neither is a lump.
@@ -5748,26 +6119,39 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
         r"litRect\(([-\d.]+), ([-\d.]+), (\w+|[\d.]+), (\w+|[\d.]+), ([\d.]+)\)", rig
     )
     circles = re.findall(r"litCircle\(([-\d.]+), ([-\d.]+), ([\d.]+)\)", rig)
-    assert len(rects) + len(circles) >= 15, (
-        f"only found {len(rects)} rect and {len(circles)} circle volumes in the "
-        "rig - the call-site shapes changed and this test stopped covering them"
-    )
-    # `bars` builds its rects from a loop variable, so its heights have to be
-    # substituted - read out of the page, never restated here. A literal list
-    # would keep this test green while it checked geometry the page had stopped
+    # A size may be written as a named constant rather than as a literal -
+    # `bars` spells its seam thickness `cut` so the number lives in one place.
+    # The value is read out of the page, never restated here: a literal copy
+    # would keep this test green while it graded geometry the page had stopped
     # drawing, which is the shape of test this sprint exists to stop writing.
-    declared = re.search(r"const heights = \[([\d,\s]+)\];", rig)
-    assert declared, (
-        "BODIES.bars no longer declares `const heights = [...]` - this test "
-        "can no longer see what the bar cluster actually draws"
+    # (This replaced a `const heights = [...]` substitution written for the
+    # candle cluster, which increment 11 deleted along with the cluster.)
+    scalars = {
+        name: float(value)
+        for name, value in re.findall(r"const (\w+) = ([-\d.]+);", rig)
+    }
+
+    def _size(token: str) -> float:
+        return scalars[token] if token in scalars else float(token)
+
+    # The floor is the count this extraction ACTUALLY reaches, not a round
+    # number below it. Six of the rig's `litRect` calls size themselves from
+    # expressions the regex cannot read (`H.across`, `HALF_W * 2`, the
+    # forearm's own `width`), so the gap between what is drawn and what is
+    # graded is real and is recorded here rather than papered over: a volume
+    # that silently drops out of the extraction has to fail, or this test
+    # quietly stops covering whatever was removed.
+    assert (len(rects), len(circles)) == (22, 5), (
+        f"the extraction now reaches {len(rects)} rect and {len(circles)} "
+        "circle volumes, not 22 and 5. Either a volume was added (raise these "
+        "numbers, having checked the new one is graded) or one stopped being "
+        "readable - and an unreadable volume is an ungraded volume"
     )
-    bar_heights = [float(v) for v in declared.group(1).split(",")]
-    assert len(bar_heights) >= 3, f"only {len(bar_heights)} bar heights found"
     volumes = []
     for x, y, w, h, r in rects:
-        for hh in (bar_heights if h == "h" else [h]):
-            yy = -float(hh) if y == "-h" or h == "h" else float(y)
-            volumes.append(["rect", float(x), yy, float(w), float(hh), float(r)])
+        volumes.append(
+            ["rect", float(x), float(y), _size(w), _size(h), float(r)]
+        )
     for cx, cy, rad in circles:
         volumes.append(["circle", float(cx), float(cy), float(rad)])
 

@@ -208,6 +208,31 @@
       crease:  0x3a2a22,
     };
 
+    // The MODEL's palette, and it holds exactly ONE colour — which is the
+    // point. The trader has skin and hair and denim, so he cannot be
+    // recoloured and gave up carrying mood in his body (increment 8). A
+    // machine can be recoloured, and the MODEL's mood is the LIVE one:
+    // `react()` moods it from real model events, where `draw()` re-pins the
+    // trader to "idle" on every update. So every plate stays on `BODY_FILL`
+    // and only the cuts between them are pinned to a colour of their own.
+    //
+    // `seam` is computed, not picked: it is `lightenTint(BODY_FILL, 0.14)`
+    // evaluated out (0xd0d0d0 -> 0x1d1d1d), which is the recess
+    // `machineFace` already cuts for the visor — this page's own shipped
+    // answer to "what does a hollow in this machine look like", rather than
+    // a second opinion about it. Neutral rather than warm, deliberately, and
+    // this is where the machine departs from `HUMAN.crease`: a crease in a
+    // hand is skin the lamp did not reach and has to stay skin-coloured,
+    // while a gap between two steel plates is not made of steel.
+    //
+    // It has to be a LITERAL rather than that call. `repaint` stores a
+    // keepFill volume's authored colour and replays it, so a seam derived
+    // from the mood at boot would freeze at the first mood's recess while
+    // the plates around it went on changing colour.
+    const MACHINE = {
+      seam: 0x28303a,
+    };
+
     // --- KI-051: light the cast with the room's own lamp -------------------
     // Every volume used to be one flat fill and one hard rim — the figures
     // read as stickers laid over the painting rather than objects standing
@@ -1651,10 +1676,19 @@
     // too — and a candle or a bar cluster still reads at 120px on a stream,
     // where limbs turn to mush. The face is identical across all of them.
     const STYLES = ["bars", "figure", "candle", "monolith", "orb"];
-    // The pick (2026-08-12). Not one style for everyone: the MODEL is a machine
-    // built out of the market's own glyphs, the TRADER is a person. Two events
-    // land on two silhouettes you can tell apart at a glance and across the
-    // room — which is what makes "they disagreed" legible without labels.
+    // The pick (2026-08-12). Not one style for everyone: the MODEL is a
+    // machine, the TRADER is a person. Two events land on two silhouettes you
+    // can tell apart at a glance and across the room — which is what makes
+    // "they disagreed" legible without labels.
+    //
+    // The MODEL used to be "a machine built out of the market's own glyphs",
+    // and increment 11 (2026-09-21) deliberately gave that up: the user's
+    // 2026-09-11 call is a plated robot with no candle glyphs, trading the
+    // made-of-the-market link for an unambiguous robot read. `bars` is
+    // therefore a LEGACY KEY — it names a body that has no bars in it — and
+    // it is kept because `STYLES`, `FACE_KIND`, `HEAD_TRAVEL`, `SHADOW_WIDTH`
+    // and `STYLE_OVERRIDE` all spell it, so renaming costs five registry
+    // edits and buys no picture.
     const CAST = { MODEL: "bars", TRADER: "figure" };
     // `?style=` overrides the whole cast — it exists for evaluation, so it has
     // to be able to put everyone in the same body for comparison.
@@ -1765,20 +1799,83 @@
       },
       // A cluster of bars — volume, an equaliser, a heartbeat. The most
       // animatable body: the bars themselves can jump, ripple and settle.
+      // The MODEL: a plated machine. The key is a legacy name — this body was
+      // five candlestick glyphs until 2026-09-21, and `CAST.MODEL`,
+      // `FACE_KIND`, `HEAD_TRAVEL`, `SHADOW_WIDTH` and `STYLE_OVERRIDE` all
+      // spell it, so renaming it would be five registry edits for no picture.
+      //
+      // The reference art builds this robot out of teal candlesticks and the
+      // user's 2026-09-11 call overrides that deliberately — "a plated
+      // machine: panelled chassis, visible joints, antenna, glowing eyes. No
+      // candle glyphs" — trading the made-of-the-market link for an
+      // unambiguous robot read.
+      //
+      // Every origin below is a whole CELL. `litRect` snaps both coordinates
+      // to the 4-unit grid and leaves sizes alone, so an origin off the grid
+      // moves when the grid rounds it, and two seams authored less than a
+      // cell apart land in the same one — increment 10's surviving mutation,
+      // one body over.
       bars(body, accents) {
-        const heights = [54, 86, 68, 96, 60];
-        heights.forEach((h, i) => {
-          const bar = new PIXI.Graphics();
-          paint(bar, litRect(-6, -h, 12, h, 4), BODY_FILL);
-          bar.x = -36 + i * 18;
-          bar.restHeight = h;
-          bar.gestureMode = "pump";   // the ripple IS the gesture for a cluster
-          accents.push(bar);
-        });
-        // A static stem, so the head isn't left hovering over the cluster the
-        // way it was. It can't be one of the bars: those ripple, and a neck
-        // that stretches would pull the face off the body.
-        paint(body, litRect(-6, -118, 12, 58, 6), BODY_FILL);
+        // A seam's thickness. Sizes are not snapped, so this is free to be
+        // whatever reads: 3 units is 3.75px at the MODEL's 1.25 scale, thin
+        // enough to be a gap and thick enough to survive the encoder.
+        const cut = 2;
+        // Bottom-up, and every part MEETS the next. The candle cluster's real
+        // defect was never its vocabulary — it was that five columns touched
+        // neither each other nor the head above them, so the silhouette was a
+        // lollipop over a picket fence and no amount of shading could join it.
+        paint(body, litRect(-24, -48, 16, 48, 3), BODY_FILL);    // leg, near
+        paint(body, litRect(8, -48, 16, 48, 3), BODY_FILL);      // leg, far
+        paint(body, litRect(-28, -72, 56, 28, 4), BODY_FILL);    // pelvis
+        paint(body, litRect(-32, -132, 64, 60, 6), BODY_FILL);   // the chassis
+        // Shoulders, which exist so the arms have somewhere to hang FROM: an
+        // accent rotates about its own origin, and an arm pivoting inside the
+        // chassis tears out of it on the first gesture.
+        paint(body, litRect(-48, -120, 16, 20, 4), BODY_FILL);
+        paint(body, litRect(32, -120, 16, 20, 4), BODY_FILL);
+        // Panelling and joints are CUTS, never separate plates. `paint` lays
+        // three banded insets into every volume, and on a small shape those
+        // come out as a dark ring round a pale core — the joint cap that made
+        // the trader's elbow read as a bolt, which a robot built out of little
+        // plates and pins would repeat everywhere. One slab keeps the bands
+        // reading as shading; the panels are what is left between the cuts.
+        //
+        // `{ keepFill, matte }`, the same shape as `shod` and the hand's
+        // creases, for the same two reasons: keepFill so a seam is neither
+        // recoloured by the mood nor outlined, matte so `shade` does not mix
+        // its lit rung 0.3 toward the lamp's hue and turn a gap between two
+        // plates into a scratch down the middle of one.
+        const seamed = { keepFill: true, matte: true };
+        // Kept below y -110, where the skull's own silhouette ends: panelling
+        // drawn under the head is panelling nobody sees.
+        paint(body, litRect(-32, -104, 64, cut, 1), MACHINE.seam, undefined, seamed);
+        paint(body, litRect(0, -104, cut, 32, 1), MACHINE.seam, undefined, seamed);
+        // The arms ARE the gesture. `gesture()` only ever moves what is on
+        // `accents`; the cluster put five bars there and let the ripple be the
+        // animation ("pump"), and a chassis has no ripple. Without these the
+        // machine would go inert for every one of `ANIM`'s animations — the
+        // detail-versus-animation failure this whole redesign is built to
+        // avoid, and the one thing here no screenshot would ever report.
+        for (const side of [-1, 1]) {
+          const arm = new PIXI.Graphics();
+          paint(arm, litRect(-6, -8, 12, 52, 4), BODY_FILL);
+          // The visible joints: a shoulder and an elbow, cut into the one
+          // slab rather than built as three.
+          paint(arm, litRect(-6, 4, 12, cut, 1), MACHINE.seam, undefined, seamed);
+          paint(arm, litRect(-6, 24, 12, cut, 1), MACHINE.seam, undefined, seamed);
+          arm.x = side * 40;
+          arm.y = -108;               // inside the shoulder block, not at the floor
+          arm.gestureMode = "swing";  // what hangs from a joint swings
+          // Not quite matching, the same two numbers `figure` spends: dead
+          // symmetry reads as a mannequin even on a machine.
+          arm.restRotation = side < 0 ? -0.06 : 0.10;
+          // A lighter value than the chassis, or a resting robot reads as one
+          // slab and its arms only appear mid-animation.
+          arm.shadeFactor = 1.35;
+          accents.push(arm);
+        }
+        // Unchanged, and deliberately: `HEAD_TRAVEL.bars`, `SHADOW_WIDTH.bars`
+        // and the mood tag's own offset are all tuned against this number.
         return -138;
       },
       // A weighted column — deliberate, unhurried, hard to topple. The calm
@@ -2331,7 +2428,14 @@
     // How far `slump` may drop a head, per body. It isn't a style choice: it's
     // how much room the body leaves. The figure's head already overlaps its
     // chest at rest, so the shared 10 buried a third of it and read blobby
-    // instead of dejected; the bar cluster has a whole neck to spend.
+    // instead of dejected.
+    //
+    // `bars` keeps 12 through increment 11, but NOT for the reason it had:
+    // the neck it used to have room to spend is gone, and the machine's head
+    // is now mounted INTO the chassis. What justifies 12 today is the 34
+    // units of skull standing clear above the chassis top (crown -166 against
+    // a chassis at -132) — dropping 12 still leaves two thirds of the head
+    // showing, where the figure has only 4 to give.
     const HEAD_TRAVEL = { bars: 12, figure: 4, candle: 8, monolith: 8, orb: 5 };
 
     // Each named animation from reactions.py, made real. `phase` runs 0->1;

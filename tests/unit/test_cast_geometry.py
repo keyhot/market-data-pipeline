@@ -246,6 +246,12 @@ def _shading_prelude(source: str) -> str:
         + _js_block(source, "function paint(") + "\n"
         + _js_block(source, "function rimStroke(") + "\n"
         + _js_block(source, "function rimStrokeCircle(") + "\n"
+        # Increment 11: `BODIES.bars` is a plated machine and paints the cuts
+        # between its plates in an authored colour, so the palette is now as
+        # much a prerequisite for EXECUTING the registry as `paint` is. Pulled
+        # from the page for the reason every other entry here is — a second
+        # copy would drift and stop proving anything about what ships.
+        + _js_block(source, "const MACHINE = {") + ";\n"
     )
 
 
