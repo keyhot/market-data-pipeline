@@ -2810,13 +2810,20 @@ def _rig_bone_driver(source: str) -> str:
         }
         const PIXI = { Graphics: FakeGraphics };
         const drawn = [];
+        // `at` is what the call site authored; `snapped` is where `litRect`
+        // actually puts it, because `band()` runs both coordinates through
+        // `snap()` and the CELL grid is coarser than a finger is wide. A check
+        // written against `at` would pass a hand whose separations authored
+        // 3.9 units apart all landed in the same cell.
         const litRect = (x, y, w, h, r) => ({
-          shape: "rect", at: [x, y, w, h], band: (g) => g, rim: (g) => g });
+          shape: "rect", at: [x, y, w, h], snapped: [snap(x), snap(y), w, h],
+          band: (g) => g, rim: (g) => g });
         const litCircle = (cx, cy, rad) => ({
           shape: "circle", at: [cx, cy, rad], band: (g) => g, rim: (g) => g });
         function paint(g, volume, fill, rim, opts) {
           drawn.push({
             gid: g.gid, shape: volume.shape, at: volume.at,
+            snapped: volume.snapped || volume.at,
             fill, opts: opts || {},
           });
         }
@@ -2849,6 +2856,11 @@ def _rig_bone_driver(source: str) -> str:
           .map((g) => ({
             gid: g.gid, width: g.boneWidth,
             foreGid: g.forearm.gid, foreWidth: g.forearm.boneWidth,
+            // The forearm's rotation is stored RELATIVE to its parent, so the
+            // angle that says which way its local axes point on screen is the
+            // sum. Carried here rather than recomputed per test: "which side of
+            // the hand is downward" is a fact about the rig, not about a caller.
+            foreWorldRotation: g.rotation + g.forearm.rotation,
           }));
         // The palette rides along rather than being restated in python: the
         // hand is identified by its skin fill, and a recoloured hand must not
@@ -3324,6 +3336,215 @@ def test_the_seated_arms_bend_at_an_elbow():
             f"arm {index}'s hand starts at {hand_top} but its sleeve ends at "
             f"{sleeve_end:.0f}: the hand is floating off the end of the arm"
         )
+
+
+# The hand, measured off `ref-trader.png` and converted through the one unit
+# this redesign uses (1 head = 59.5 reference px = 44 rig units).
+#
+# `ref-trader.png` is an exact 3x upscale of the traced frame — every run
+# length in the reference hand is a multiple of 3 — so its pixels divide by 3
+# before they convert. The far hand is the one measured: the near one overlaps
+# the armrest and its lower edge cannot be separated from it.
+#
+#   the slab, along the forearm         18.7 px -> 13.8 u   (fingers splay to 19)
+#   slab + fingers, across it           19 px   -> 14.1 u
+#   the FINGER half of that across      9 px    ->  6.7 u
+#   one dark separation, along          2 px    ->  1.5 u
+#
+# The Next list called this an aspect defect ("broader than tall, against the
+# shipped 14 x 15.4"). It is not: the shipped footprint is already within 10%
+# of the reference on both axes. What the reference spends differently is the
+# ACROSS axis — half of it is a thin slab and half is four fingers — and the
+# shipped hand spends all of it on one solid mass. Hence a mitten.
+#
+# The along-extent is the one number the ART does not get to set alone.
+# `litRect` snaps both coordinates to the 4-unit CELL, and only an offset that
+# is itself a whole number of cells survives that snap unchanged
+# (`snap(y + 4k) == snap(y) + 4k`). So three separations can only sit at +4,
+# +8 and +12, and a hand shorter than 16 leaves the fourth finger a stub. 16
+# units sits inside the reference's own range — its slab traces 13.8 and its
+# splayed fingers reach 19 — and is what the grid allows.
+HAND_ALONG_U = 16.0
+HAND_ACROSS_U = 14.1
+FINGER_DEPTH_FRACTION = 0.5
+# `const CELL = (PLATE && PLATE.cell) || 4`, and the rig runs with no plate in
+# these drivers. Restated here rather than parsed because it is the grid the
+# ASSERTION is about: if the page's cell ever moves, this check should be read
+# again rather than silently follow it.
+CELL_U = 4
+
+
+def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict]]:
+    """The one skin volume on a forearm, and the separations cut into it.
+
+    Identified by fill rather than by draw order: order is how `paint` stacks
+    them and a test that encoded it would pass a hand whose creases had been
+    painted UNDER the slab and were invisible.
+    """
+    palette = emitted["HUMAN"]
+    on_fore = [d for d in emitted["drawn"] if d["gid"] == arm["foreGid"]]
+    slabs = [d for d in on_fore if d["fill"] == palette["skin"]]
+    creases = [d for d in on_fore if d["fill"] == palette.get("crease")]
+    return (slabs[0] if len(slabs) == 1 else None), creases
+
+
+@needs_node
+def test_the_hand_is_a_slab_with_three_finger_separations():
+    """Four fingers, so three dark lines cut into the hand's outer half.
+
+    The reference paints a hand as a broad pale slab whose lower half is
+    divided into fingers by near-black shadow (`#262127` sampled between the
+    far hand's fingers, against `#a67265` on the lit slab above them). The
+    shipped hand was a single rounded rect with nothing cut into it, which at
+    1:1 is a mitten on the end of a stick.
+
+    Three separations and not four fingers, deliberately. `paint` draws three
+    banded insets per volume, and four finger-sized volumes would each take a
+    set — the joint-cap failure that made the elbow read as a bolt, repeated
+    four times per hand. One slab keeps the bands at a size that reads as
+    shading, and the fingers are the gaps between what is cut out of it.
+
+    The separations are FILLS, never `stroke` — `paint` gives a `keepFill`
+    volume no rim precisely because a person is not outlined
+    (`test_a_person_is_not_outlined`), and an outlined hand would undo
+    increment 8 on the one volume that most needs internal detail.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+    arms = emitted["arms"]
+    assert len(arms) == 2, f"expected two arms, got {len(arms)}"
+
+    for index, arm in enumerate(arms):
+        slab, creases = _hand_parts(emitted, arm)
+        assert slab, (
+            f"arm {index} has no single skin volume on its forearm: the hand "
+            "is one slab, and the fingers are cut out of it rather than "
+            "painted as separate volumes"
+        )
+        assert len(creases) == 3, (
+            f"arm {index} cuts {len(creases)} separations into its hand; four "
+            "fingers need three, and the reference's hand has four"
+        )
+
+        _, _, across, along = slab["snapped"]
+        assert along == pytest.approx(HAND_ALONG_U, abs=1.0), (
+            f"arm {index}'s hand reaches {along:.1f} units past the wrist "
+            f"where the reference traces {HAND_ALONG_U}"
+        )
+        assert across == pytest.approx(HAND_ACROSS_U, abs=1.0), (
+            f"arm {index}'s hand is {across:.1f} units across where the "
+            f"reference traces {HAND_ACROSS_U}"
+        )
+
+        for crease in creases:
+            assert crease["opts"].get("keepFill"), (
+                f"arm {index}: a finger separation is not `keepFill`, so it "
+                "takes the mood as its fill and -- because `paint` keys the "
+                "outline off exactly that flag -- strokes a rim. A crease in "
+                "a hand is shadow, and shadow does not change with the mood."
+            )
+            cx, cy, cw, ch = crease["snapped"]
+            assert ch < cw, (
+                f"arm {index}: a separation is {cw:.1f} across by {ch:.1f} "
+                "along the forearm. A finger gap is a thin line ACROSS the "
+                "hand, not a band running down its length"
+            )
+            assert cw == pytest.approx(across * FINGER_DEPTH_FRACTION, abs=1.5), (
+                f"arm {index}: a separation cuts {cw:.1f} units into a "
+                f"{across:.1f}-unit hand. The reference divides the across "
+                "axis in half -- slab above, fingers below -- and a cut that "
+                "reaches further turns the hand into a fork"
+            )
+            sx, sy, sw, sh = slab["snapped"]
+            assert sx <= cx and cx + cw <= sx + sw + 1e-9, (
+                f"arm {index}: a separation spans {cx:.1f}..{cx + cw:.1f} "
+                f"across a hand spanning {sx:.1f}..{sx + sw:.1f}: it is cut "
+                "outside the hand it is meant to divide"
+            )
+            assert sy <= cy and cy + ch <= sy + sh + 1e-9, (
+                f"arm {index}: a separation spans {cy:.1f}..{cy + ch:.1f} "
+                f"along a hand spanning {sy:.1f}..{sy + sh:.1f}: it is cut "
+                "outside the hand it is meant to divide"
+            )
+
+        # The separations are authored a whole CELL apart, which is the RULE
+        # rather than its outcome. `snap(v + 4k) == snap(v) + 4k` holds for
+        # every v, so a whole-cell offset survives the snap at any pose; an
+        # offset of 3.9 survives it at THIS one and collapses two separations
+        # into one cell at the next pose someone authors. The evenness check
+        # below cannot see that — it measures the hand the page draws today,
+        # and today's arm happens to round the right way.
+        sy_raw = slab["at"][1]
+        for crease in creases:
+            offset = crease["at"][1] - sy_raw
+            assert offset % CELL_U == pytest.approx(0, abs=1e-9), (
+                f"arm {index}: a separation is authored {offset:.2f} units "
+                f"down a hand, which is not a whole {CELL_U}-unit CELL. "
+                "`litRect` snaps it, and only a whole cell survives that "
+                "unchanged -- at some other arm pose two of these land in the "
+                "same cell and two fingers silently become one."
+            )
+
+        # Four fingers of roughly one width. Measured as the gaps BETWEEN the
+        # separations rather than as their positions, so this states the thing
+        # the eye reads and stays true if the hand is ever re-placed.
+        edges = sorted(c["snapped"][1] for c in creases)
+        gap = creases[0]["snapped"][3]
+        sy, sh = slab["snapped"][1], slab["snapped"][3]
+        fingers = (
+            [edges[0] - sy]
+            + [b - a - gap for a, b in zip(edges, edges[1:])]
+            + [sy + sh - (edges[-1] + gap)]
+        )
+        assert min(fingers) > 0, (
+            f"arm {index}'s fingers measure {[round(f, 1) for f in fingers]}: "
+            "two separations overlap, so a finger has no width at all"
+        )
+        assert max(fingers) <= 2.2 * min(fingers), (
+            f"arm {index}'s fingers measure {[round(f, 1) for f in fingers]} "
+            "units. The reference's four are within a whisker of each other; "
+            "one much wider than the rest reads as a thumb, which a hand seen "
+            "from behind on an armrest does not show"
+        )
+
+
+@needs_node
+def test_the_fingers_hang_from_the_hands_screen_downward_edge():
+    """The fingers droop, on both arms, whichever way the forearm points.
+
+    This is the half a literal would get wrong. The hand is drawn in the
+    FOREARM's local frame, and which way that frame's `x` axis points on screen
+    is a consequence of the shoulder pose, the elbow bend and the body turn --
+    none of which this file restates. So the rule is graded as a rule: rotate
+    the local axis into the room and require the separations to be on the side
+    the floor is.
+
+    A sign that is right for one arm and wrong for the other gives the trader
+    one hand with fingers and one with a comb sticking up out of the wrist, and
+    at 1:1 in a moving room that reads as damage rather than as a mistake.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+
+    for index, arm in enumerate(emitted["arms"]):
+        slab, creases = _hand_parts(emitted, arm)
+        assert slab and len(creases) == 3, (
+            f"arm {index} has no hand to check; see "
+            "test_the_hand_is_a_slab_with_three_finger_separations"
+        )
+        # Local +x, rotated into the room. Screen y grows downward, so a
+        # positive y component means local +x points at the floor.
+        downward = math.sin(arm["foreWorldRotation"])
+        sx, sw = slab["snapped"][0], slab["snapped"][2]
+        mid = sx + sw / 2
+        for crease in creases:
+            cx, cw = crease["snapped"][0], crease["snapped"][2]
+            on_plus_x = (cx + cw / 2) > mid
+            assert on_plus_x == (downward > 0), (
+                f"arm {index}: its forearm's local +x points "
+                f"{'down' if downward > 0 else 'up'} the screen "
+                f"(sin={downward:+.2f}), but the separations are cut into the "
+                f"{'+x' if on_plus_x else '-x'} half of the hand. The fingers "
+                "are pointing at the ceiling."
+            )
 
 
 @needs_node

@@ -198,6 +198,14 @@
       sweater: 0x8a97a8,
       jeans:   0x5a6478,
       shoes:   0x2a2e3c,
+      // The shadow between two fingers — the only place on this figure where
+      // one volume has to read as two. Sampled off the reference rather than
+      // picked: its far hand measures `#262127` between the fingers against
+      // `#a67265` on the lit slab above them, a luminance ratio of 0.28. Held
+      // against skin's own lit rung (`#ce975e`, L 0.63) that asks for L 0.18,
+      // which is this colour. Warm, not neutral: a crease in a hand is skin
+      // the light did not reach, and a blue-black one reads as a crack.
+      crease:  0x3a2a22,
     };
 
     // --- KI-051: light the cast with the room's own lamp -------------------
@@ -2704,7 +2712,13 @@
         // object, which is the same failure the thighs have below.
         fore:  [43, [0.10, 0.94, -0.12]],    // forward along the armrest
         width: [14, 12],
-        hand: 7,
+        // The hand, traced off `ref-trader.png` and converted through the one
+        // unit this redesign uses. `along` is the reach past the wrist,
+        // `across` the full depth including the fingers, `finger` how far a
+        // separation cuts into that depth, `gap` a separation's own width.
+        // The measurements and why `along` is 16 rather than the traced 13.8
+        // are in tests/api/test_world_page.py beside HAND_ALONG_U.
+        hand: { along: 16, across: 14, finger: 6, gap: 1.5 },
       };
       for (const side of [-1, 1]) {
         // x ±16, and the two halves of that number are the KI-084 fix.
@@ -2764,10 +2778,46 @@
         // 28 on screen at this yaw, so a hand parked at 43 floats free of the
         // arm it belongs to with a gap of clear room between them — which is
         // exactly what the first version of this did.
-        paint(fore, litRect(ARM.width[1] / 2 - ARM.hand,
-                            fore.boneLength + ARM.width[1] / 2 - 2,
-                            ARM.hand * 2, ARM.hand * 2.2, ARM.hand * 0.7),
+        const H = ARM.hand;
+        const handX = ARM.width[1] / 2 - H.across / 2;
+        const handY = fore.boneLength + ARM.width[1] / 2 - 2;
+        // The corner radius is one CELL because the first separation is one
+        // CELL down: any rounder and the crease's outer end would overhang the
+        // corner arc and nick the room.
+        paint(fore, litRect(handX, handY, H.across, H.along, CELL),
               HUMAN.skin, undefined, { keepFill: true });
+        // Four fingers, cut as three dark lines rather than painted as four
+        // volumes. `paint` gives every volume three banded insets, and on a
+        // finger-sized shape those come out as a dark ring round a pale core —
+        // the joint cap that turned the elbow into a bolt, which would happen
+        // here eight times over. One slab keeps the bands reading as shading.
+        //
+        // A crease is shadow, so it takes no lamp band: `shade` mixes an
+        // absolute 0.3 toward `LIGHT.warmth` on the lit rung, and a crease
+        // lifted toward the lamp reads as a scratch ON the hand instead of a
+        // gap BETWEEN two fingers. Same reasoning as `shod`, same shape.
+        const creased = { keepFill: true, matte: true };
+        // Which way the fingers hang is a consequence of the pose, never a
+        // literal: `litRect` draws in the forearm's own frame, and PIXI maps
+        // that frame's +x to `(cos r, sin r)`. Screen y grows downward, so a
+        // positive sine means +x is the floor-facing side. Both arms read it
+        // from their own bone, so a turn that swings one of them past vertical
+        // cannot leave the trader with a comb growing out of one wrist.
+        //
+        // `fore.restRotation` is still ABSOLUTE here — the reparenting below
+        // makes it relative to the upper arm, and does so after this line.
+        const fingersOnPlusX = Math.sin(fore.restRotation) > 0;
+        // Offsets are whole CELLs on purpose, and this is the whole reason the
+        // hand is 16 units long. `litRect` snaps both coordinates, and only a
+        // whole number of cells survives that: `snap(v + 4k) === snap(v) + 4k`,
+        // while three separations authored 3.9 apart can land two to a cell and
+        // merge two fingers into one. Nothing in the drawn output would say so.
+        const fingerX = handX + (fingersOnPlusX ? H.across - H.finger : 0);
+        for (let i = 1; i <= 3; i++) {
+          paint(fore, litRect(fingerX, handY + i * CELL,
+                              H.finger, H.gap, H.gap / 2),
+                HUMAN.crease, undefined, creased);
+        }
         // The forearm becomes a CHILD of the upper arm, which is the only
         // arrangement where a shoulder swing carries the whole limb. `gesture`
         // and `cheer` write `armNear.rotation`/`armFar.rotation`; a forearm
