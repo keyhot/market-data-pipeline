@@ -365,6 +365,21 @@ def _without_comments(js: str) -> str:
     return re.sub(r"//[^\n]*", "", js)
 
 
+def test_a_comment_cannot_satisfy_a_source_assertion():
+    """The guard that makes the test below honest, graded rather than trusted.
+
+    `_without_comments` is the fix for a real green-on-prose failure, so it
+    gets a test of its own: the machinery a test depends on is production
+    code for that test. A line of commented-out JS that mentions the exact
+    assignment must not survive the strip, and a real one must.
+    """
+    stripped = _without_comments(
+        '        // was arm.gestureMode = "pump" until increment 11\n'
+        '        arm.gestureMode = "swing";\n'
+    )
+    assert re.findall(r'gestureMode\s*=\s*"(\w+)"', stripped) == ["swing"], stripped
+
+
 def test_an_accent_gestures_by_kind_rather_than_all_of_them_rotating():
     """Rotating an accent about its own base swings it like a felled tree, and
     the candle cluster came apart on cheer/wave/shrug. Only what hangs from a

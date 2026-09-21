@@ -1941,6 +1941,13 @@
     // How wide a body's contact patch is, per style — the same registry shape
     // as HEAD_TRAVEL, and checked against STYLES for the same reason: a new
     // body that silently inherits someone else's footprint reads as floating.
+    //
+    // `bars: 34` was tuned against the candle cluster's five splayed columns.
+    // Increment 11 replaced those with two legs, and the stance was MEASURED
+    // rather than left open: they plant x -24..24, i.e. 48 units apart,
+    // against the figure's 38. The 34 was kept — a contact patch narrower
+    // than the stance is what a shadow under two feet looks like — but it is
+    // now a number with a measurement behind it rather than an inheritance.
     const SHADOW_WIDTH = { bars: 34, figure: 30, candle: 22, monolith: 26, orb: 20 };
 
     // How tall a contact patch is against its own width: a roughly circular
