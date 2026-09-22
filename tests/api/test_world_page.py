@@ -3831,7 +3831,7 @@ def test_nothing_blunt_is_painted_at_the_fingertips():
 # `character()` is only reachable through the page.
 
 
-def _machine_body_driver(source: str) -> str:
+def _machine_body_driver(source: str, run: bool = True) -> str:
     """`BODIES.bars` executed, with every volume and every accent recorded.
 
     The same shape as `_rig_bone_driver` pointed at the other half of the
@@ -3895,7 +3895,7 @@ def _machine_body_driver(source: str) -> str:
         + "\n"
         + _js_block(source, "const BODIES = {")
         + ";\n"
-        + """
+        + ("\n" if not run else """
         const accents = [];
         const trunk = new FakeGraphics();
         const headY = BODIES.bars(trunk, accents);
@@ -3911,7 +3911,7 @@ def _machine_body_driver(source: str) -> str:
         console.log(JSON.stringify({
           trunkGid: trunk.gid, headY, limbs, drawn, MACHINE, BODY_FILL,
         }));
-        """
+        """)
     )
 
 
@@ -4149,6 +4149,313 @@ def test_the_machines_plates_are_divided_by_cuts_that_keep_their_own_colour():
                 "happens to round correctly at this pose collapses two seams "
                 "into one at the next, and nothing in the drawn output says so"
             )
+
+
+# --- The MODEL's head (increment 13) ---------------------------------------
+#
+# The body went first because it could be graded and the head could not: the
+# skull was built inline in `character()`. The box head is a builder in a
+# style-keyed registry (`MACHINE_HEADS`, the shape of `BODIES`) precisely so it
+# runs in node here, and its geometry lives in `MACHINE.head`, which both
+# preludes already carry.
+#
+# The hazard the head was deferred over is WIRING, not looks: `machineFace`'s
+# visor and `machineEyes` are separate Graphics authored against a 56-unit
+# circle and added after the skull. A head of a different shape mis-registers
+# them silently — nothing errors, the eyes just sit on the side of the box.
+
+
+def _machine_head_driver(source: str) -> str:
+    """The box head built, and the machine face swept over every mood.
+
+    `machineFace` is run for valence -1..1 and arousal 0..1 — arousal 0 is
+    also what a blink passes to `machineEyes` — with recorder doubles for the
+    feature Graphics, so every rect and every mouth vertex the face can ever
+    draw comes back in head-local units alongside the head's own volumes.
+    """
+    return (
+        _machine_body_driver(source, run=False)
+        + _js_block(source, "function lightenTint(") + "\n"
+        + _js_block(source, "function machineFace(") + "\n"
+        + _js_block(source, "function machineEyes(") + "\n"
+        + _js_block(source, "function boxHead(") + "\n"
+        + _js_block(source, "const MACHINE_HEADS = {") + ";\n"
+        + """
+        function recorder() {
+          const calls = [];
+          return {
+            calls,
+            clear() { calls.length = 0; return this; },
+            roundRect(x, y, w, h) { calls.push({ box: [x, y, w, h] }); return this; },
+            moveTo(x, y) { calls.push({ pt: [x, y] }); return this; },
+            lineTo(x, y) { calls.push({ pt: [x, y] }); return this; },
+            fill() { return this; },
+            stroke(s) { calls.push({ stroke: s.width }); return this; },
+          };
+        }
+        const skull = new FakeGraphics();
+        const beacon = recorder();
+        const crown = MACHINE_HEADS.bars(skull, beacon);
+        const features = [];
+        function collect(g, part) {
+          const width = (g.calls.find((c) => c.stroke) || { stroke: 0 }).stroke;
+          for (const c of g.calls) {
+            if (c.box) features.push({ part, box: c.box });
+            if (c.pt) features.push({ part, box: [
+              c.pt[0] - width / 2, c.pt[1] - width / 2, width, width] });
+          }
+        }
+        for (const valence of [-1, -0.5, 0, 0.5, 1]) {
+          for (const arousal of [0, 0.25, 0.5, 0.75, 1]) {
+            const char = { style: "bars" };
+            for (const k of ["visor", "eyeL", "eyeR", "mouth", "browL", "browR"]) {
+              char[k] = recorder();
+            }
+            machineFace(char, valence, arousal, 0x4db6ac);
+            for (const k of ["visor", "eyeL", "eyeR", "mouth", "browL", "browR"]) {
+              collect(char[k], k);
+            }
+            machineEyes(char, 0);
+            collect(char.eyeL, "eyeL"); collect(char.eyeR, "eyeR");
+          }
+        }
+        const trunk = new FakeGraphics();
+        BODIES.bars(trunk, []);
+        console.log(JSON.stringify({
+          skullGid: skull.gid, trunkGid: trunk.gid, crown, drawn, features,
+          beacon: beacon.calls.filter((c) => c.box).map((c) => c.box),
+          MACHINE, BODY_FILL, headStyles: Object.keys(MACHINE_HEADS),
+        }));
+        """
+    )
+
+
+def _snapped_rect(rect: list) -> list:
+    x, y, w, h = rect
+    return [round(x / CELL_U) * CELL_U, round(y / CELL_U) * CELL_U, w, h]
+
+
+def _head_parts(emitted: dict) -> tuple[list, list]:
+    """The head's plates and its seams, as drawn on the skull."""
+    seam = emitted["MACHINE"]["seam"]
+    mine = [d for d in emitted["drawn"] if d["gid"] == emitted["skullGid"]]
+    return (
+        [d for d in mine if d["fill"] != seam],
+        [d for d in mine if d["fill"] == seam],
+    )
+
+
+@needs_node
+def test_the_machines_head_is_a_box_not_the_shared_ball():
+    """The MODEL's skull is plates, not `litCircle(0, 0, 28)`.
+
+    Until increment 13 every machine style wore the same ball, which is what
+    made the MODEL read as a figure with a bauble on it rather than as a robot.
+    The reference's head is an extruded box; so is this one.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    plates, _ = _head_parts(emitted)
+    assert plates, "the box head paints nothing onto the skull"
+    shapes = {d["shape"] for d in plates}
+    assert shapes == {"rect"}, (
+        f"the MODEL's head is built from {sorted(shapes)} — a machine head is "
+        "plates, and a circle among them is the shared ball back again"
+    )
+
+
+@needs_node
+def test_every_face_feature_lands_on_the_front_face():
+    """The visor, the eyes and the mouth stay on the FACE of the box.
+
+    The silhouette is the wrong thing to grade: a box with visible depth has
+    a side and a top, and an eye that lands on the side strip is exactly the
+    mis-registration this head was deferred over. So the features are graded
+    against the front plate — `MACHINE.head`'s own rect, which must also be a
+    plate the builder actually paints — at every mood the face can take,
+    including the blink, and with the mouth's stroke width counted.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    head = emitted["MACHINE"]["head"]
+    front = _snapped_rect([head["x"], head["y"], head["w"], head["h"]])
+    plates, _ = _head_parts(emitted)
+    assert any(d["snapped"] == front for d in plates), (
+        f"`MACHINE.head` describes a front face at {front} that the builder "
+        "never paints — the constant the face is graded against is not the "
+        "head on screen"
+    )
+    stray = [
+        f for f in emitted["features"] if not _inside(f["box"], front)
+    ]
+    assert not stray, (
+        f"{len(stray)} face features fall off the front face {front}, e.g. "
+        f"{stray[0]} — an eye or a visor on the side of the box"
+    )
+
+
+@needs_node
+def test_the_head_shows_one_depth_on_its_top_and_one_side():
+    """The box is extruded, and extruded ONE way.
+
+    An oblique box shows its top and one side, by the same depth — two
+    different depths is two boxes, and a back plate centred behind the front
+    is a frame, not a solid. The reference's head shows its side face on the
+    viewer's LEFT (`ref-model.png`, the same room and lamp), so the depth
+    grows up and to the left.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    head = emitted["MACHINE"]["head"]
+    front = _snapped_rect([head["x"], head["y"], head["w"], head["h"]])
+    plates, _ = _head_parts(emitted)
+    # The box is the plates the size of its face: the far faces are one
+    # plate the face's size, offset by the depth. The antenna is not the box.
+    rects = [d["snapped"] for d in plates if d["snapped"][2:] == front[2:]]
+    assert len(rects) >= 2, (
+        "the head paints no plate behind its face, so it has no depth at all"
+    )
+    x0 = min(r[0] for r in rects)
+    y0 = min(r[1] for r in rects)
+    x1 = max(r[0] + r[2] for r in rects)
+    y1 = max(r[1] + r[3] for r in rects)
+    left, top = front[0] - x0, front[1] - y0
+    right, bottom = x1 - (front[0] + front[2]), y1 - (front[1] + front[3])
+    assert left > 0 and top > 0, (
+        f"the head shows depth left {left} / top {top}: a box with no visible "
+        "side is a flat plate, the ball traded for a tile"
+    )
+    assert left == top, (
+        f"the head's side is {left} deep and its top {top}. One box has one "
+        "depth"
+    )
+    assert right == 0 and bottom == 0, (
+        f"the head also overhangs its face on the right ({right}) / bottom "
+        f"({bottom}): a plate centred behind the face is a picture frame"
+    )
+
+
+@needs_node
+def test_the_heads_face_is_cut_from_its_depth():
+    """A seam separates the face from the side and top it stands in front of.
+
+    Both are `BODY_FILL`, and `paint` bands every volume toward the one lamp,
+    so without a cut the side face comes out the same value as the front and
+    the extrusion reads as a notched silhouette. The reference draws a dark
+    gap there. Cuts follow the body's rule — `{ keepFill, matte }` in
+    `MACHINE.seam` — and plates stay on the mood fill, because the MODEL's mood
+    is the live one.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    head = emitted["MACHINE"]["head"]
+    fx, fy, fw, fh = _snapped_rect([head["x"], head["y"], head["w"], head["h"]])
+    plates, cuts = _head_parts(emitted)
+    for plate in plates:
+        assert plate["fill"] == emitted["BODY_FILL"] and not plate["opts"].get(
+            "keepFill"
+        ), f"a head plate at {plate['at']} is not on the mood fill"
+    for cut in cuts:
+        assert cut["opts"].get("keepFill") and cut["opts"].get("matte"), (
+            f"a head seam at {cut['at']} is not `{{ keepFill, matte }}`"
+        )
+    edges = {"left": False, "top": False}
+    for cut in cuts:
+        cx, cy, cw, ch = cut["snapped"]
+        if cx == fx and cw < ch and cy <= fy and cy + ch >= fy + fh:
+            edges["left"] = True
+        if cy == fy and ch < cw and cx <= fx and cx + cw >= fx + fw:
+            edges["top"] = True
+    assert all(edges.values()), (
+        f"the face is not cut from its depth along {edges}: a seam must run "
+        "the full length of the face's edge on each side the depth shows"
+    )
+
+
+@needs_node
+def test_the_antenna_stands_on_the_head_and_the_beacon_on_the_antenna():
+    """"Antenna" is in the user's own spec (2026-09-11), and it must be
+    attached: the body's connectivity rule, one storey up. A mast that floats
+    a cell above the crown is a second object, and a beacon off the mast's tip
+    is a star behind the robot.
+
+    The beacon is drawn on its own Graphics, not the skull, because `repaint`
+    clears the skull on every mood change and replays only what `paint`
+    recorded — a plain lit fill on the skull would vanish the first time the
+    MODEL changed mood.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    plates, _ = _head_parts(emitted)
+    beacon = [_snapped_rect(b) for b in emitted["beacon"]]
+    assert beacon, "the head carries no beacon"
+    rects = [d["snapped"] for d in plates] + beacon
+    groups = _components(rects)
+    assert len(groups) == 1, (
+        f"the head, its antenna and its beacon fall into {len(groups)} "
+        "separate masses"
+    )
+    crown = min(r[1] for r in rects)
+    body = [d["snapped"] for d in plates]
+    assert crown < min(r[1] for r in body[:2]), (
+        "nothing stands above the box — the antenna is missing"
+    )
+    head = emitted["MACHINE"]["head"]
+    top_mid = head["x"] - head["depth"] + head["w"] / 2
+    above = [r for r in rects if r[1] + r[3] <= head["y"] - head["depth"]]
+    for r in above:
+        mid = r[0] + r[2] / 2
+        assert abs(mid - top_mid) <= CELL_U / 2, (
+            f"the antenna stands at x {mid} on a top face centred at "
+            f"{top_mid} — off to one edge it reads as a handle, not a mast"
+        )
+    assert emitted["crown"] == crown, (
+        f"the builder reports its crown at {emitted['crown']} but draws up to "
+        f"{crown}; the mood tag is placed from that number"
+    )
+
+
+@needs_node
+def test_the_machines_head_is_no_wider_than_its_chassis():
+    """Width budget: the head's silhouette fits the chassis under it.
+
+    The human rule from increment 1 ("a head wider than the shoulders is the
+    loudest not-a-person cue"), turned for a machine: here the chassis, not
+    the shoulders, is the budget, because the shoulders exist only to hang the
+    arms from. Depth counts — the side face is part of the silhouette.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    plates, _ = _head_parts(emitted)
+    head = [d["snapped"] for d in plates]
+    head_w = max(r[0] + r[2] for r in head) - min(r[0] for r in head)
+    trunk = [
+        d["snapped"]
+        for d in emitted["drawn"]
+        if d["gid"] == emitted["trunkGid"] and d["fill"] == emitted["BODY_FILL"]
+    ]
+    chassis_w = max(r[2] for r in trunk)
+    assert head_w <= chassis_w, (
+        f"the MODEL's head is {head_w} units across on a {chassis_w}-unit "
+        "chassis"
+    )
+
+
+@needs_node
+def test_only_the_model_wears_the_box_head():
+    """`MACHINE_HEADS` forks the MODEL alone, and `character()` reads it.
+
+    `FACE_KIND` puts candle and monolith on the machine face too, and they are
+    gallery bodies with their own proportions; they keep the ball. The fork
+    itself lives in `character()`, which node cannot run, so its call is
+    pinned in the source — with comments stripped, because the comments
+    around it name the registry too (increment 11's green-on-prose trap).
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    assert emitted["headStyles"] == ["bars"], (
+        f"the box head is registered for {emitted['headStyles']}"
+    )
+    body = _without_comments(_js_block(_world_source(), "function character("))
+    assert re.search(r"MACHINE_HEADS\[style\]\(skull, beacon\)", body), (
+        "`character()` never builds a registered machine head"
+    )
+    assert "litCircle(0, 0, 28)" in body, (
+        "the ball the other machine bodies wear is gone from `character()`"
+    )
 
 
 @needs_node

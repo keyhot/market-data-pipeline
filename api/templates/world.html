@@ -231,6 +231,14 @@
     // the plates around it went on changing colour.
     const MACHINE = {
       seam: 0x28303a,
+      // The MODEL's head (increment 13): an oblique box. `x/y/w/h` is the
+      // FRONT face, the one `machineFace`'s visor, eyes and mouth are drawn
+      // onto — they were authored against the 56-unit ball this replaces, so
+      // the face is 56 across and reaches y +24 to clear the mouth's lowest
+      // step (`snap(12 + 6)` = 20, plus its stroke). `depth` is how far the
+      // top and the near side show, up and to the LEFT, which is the
+      // reference's own direction (`ref-model.png`, same room, same lamp).
+      head: { x: -28, y: -28, w: 56, h: 52, depth: 8, radius: 4 },
     };
 
     // --- KI-051: light the cast with the room's own lamp -------------------
@@ -526,8 +534,9 @@
     // A `keepFill` volume gets no rim at all. That is not a new predicate:
     // `keepFill` is this file's own definition of a volume of a PERSON (see
     // above — "a person is not one colour"), and the rule is that a person is
-    // not outlined. The machine head takes the other branch
-    // (`paint(skull, litCircle(0, 0, 28), BODY_FILL)`) and keeps its rim, as
+    // not outlined. The machine heads take the other branch (the ball,
+    // `paint(skull, litCircle(0, 0, 28), BODY_FILL)`, and the MODEL's box,
+    // `boxHead`) and keep their rim, as
     // every market glyph does: a glyph is a shape that needs an edge against a
     // busy room; a face is not.
     //
@@ -1927,6 +1936,40 @@
       },
     };
 
+    // The MODEL's head, built where node can run it (increment 13): a
+    // style-keyed registry, the shape of `BODIES`, so the one piece of the
+    // cast `character()` used to build inline can be graded. Only the MODEL
+    // is registered; candle and monolith are gallery bodies and keep the
+    // ball. Returns the crown — the highest unit it draws — because the mood
+    // tag is placed from it.
+    function boxHead(skull, beacon) {
+      const { x, y, w, h, depth, radius } = MACHINE.head;
+      const cut = 2;
+      const seamed = { keepFill: true, matte: true };
+      // The far faces first, as ONE plate offset by the depth; the front
+      // covers all of it but the top and the near side.
+      paint(skull, litRect(x - depth, y - depth, w, h, radius), BODY_FILL);
+      paint(skull, litRect(x, y, w, h, radius), BODY_FILL);
+      // Both plates are `BODY_FILL` and `paint` bands both toward the one
+      // lamp, so without a cut the side comes out the value of the front and
+      // the extrusion reads as a notch. The reference draws a dark gap here.
+      paint(skull, litRect(x, y, cut, h, 1), MACHINE.seam, undefined, seamed);
+      paint(skull, litRect(x, y, w, cut, 1), MACHINE.seam, undefined, seamed);
+      // The antenna, on the top face's centre. The mast is a plate like any
+      // other; the beacon is a lit fill on its own Graphics, because `repaint`
+      // clears the skull on every mood change and replays only what `paint`
+      // recorded.
+      // The top face spans `x - depth .. x - depth + w`; its centre, less
+      // half the mast.
+      const mastX = x - depth + w / 2 - 2;
+      paint(skull, litRect(mastX, y - depth - 12, 4, 12, 1), BODY_FILL);
+      beacon.roundRect(snap(mastX) - 4, snap(y - depth - 20), 12, 8, 2).fill(0xd1d4dc);
+      return y - depth - 20;
+    }
+    const MACHINE_HEADS = {
+      bars: boxHead,
+    };
+
     // A machine and a person shouldn't wear the same face. The bodies built
     // out of market glyphs get a readout — visor, LED eyes, a stepped mouth,
     // and no brows, because a brow is a muscle. The figure keeps the human
@@ -2098,6 +2141,7 @@
       const browL = new PIXI.Graphics();
       const browR = new PIXI.Graphics();
       const visor = new PIXI.Graphics();
+      const beacon = new PIXI.Graphics();
       const accents = [];
 
       const headY = container.pose === "seated"
@@ -2125,8 +2169,12 @@
       // (eyes at y-4 ±10, brows above them, mouth at y+12) stays well inside
       // it, and they are separate Graphics added after the skull, so the hair
       // can never cover them.
+      // The crown every head but the box keeps: the ball's r28.
+      let crown = -28;
       if (style === "orb") {
         // no head
+      } else if (MACHINE_HEADS[style]) {
+        crown = MACHINE_HEADS[style](skull, beacon);
       } else if (FACE_KIND[style] === "human") {
         // r22/r19, not the machine's r28. The first frame of the redesign had
         // a head 56 units across on a torso 48 across — a head wider than the
@@ -2154,14 +2202,16 @@
         paint(skull, litCircle(0, 0, 28), BODY_FILL);
       }
       head.y = headY;
-      head.addChild(skull, visor, browL, browR, eyeL, eyeR, mouth);
+      head.addChild(skull, beacon, visor, browL, browR, eyeL, eyeR, mouth);
 
       const nameTag = label(name, -40, 22, 18);
       const stat = label("", -80, 46, 14, NEUTRAL);
       // The mood tag rides above the head, so it has to follow the SCALED
       // head: `headY` is in rig units and the rig is drawn `figureScale`
       // bigger than them.
-      const moodTag = label("", -40, headY * figureScale - 56, 16, NEUTRAL);
+      // Lifted by however far a head stands above the ball's crown, so the
+      // box head's antenna does not run through its own tag.
+      const moodTag = label("", -40, (headY + crown + 28) * figureScale - 56, 16, NEUTRAL);
       // Accents go behind the mass, so a wick reads as emerging from it —
       // all but the ones tagged `near`, which are on the camera side and
       // composite in front of it (KI-084, see `depthOrder`). Labels stay
@@ -2442,7 +2492,8 @@
     // is now mounted INTO the chassis. What justifies 12 today is the 34
     // units of skull standing clear above the chassis top (crown -166 against
     // a chassis at -132) — dropping 12 still leaves two thirds of the head
-    // showing, where the figure has only 4 to give.
+    // showing, where the figure has only 4 to give. Increment 13's box head
+    // stands taller still (box top -174, beacon -194), so 12 is only safer.
     const HEAD_TRAVEL = { bars: 12, figure: 4, candle: 8, monolith: 8, orb: 5 };
 
     // Each named animation from reactions.py, made real. `phase` runs 0->1;
