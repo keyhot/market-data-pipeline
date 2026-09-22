@@ -2826,10 +2826,20 @@
         // The hand, traced off `ref-trader.png` and converted through the one
         // unit this redesign uses. `along` is the reach past the wrist,
         // `across` the full depth including the fingers, `finger` how far a
-        // separation cuts into that depth, `gap` a separation's own width.
-        // The measurements and why `along` is 16 rather than the traced 13.8
-        // are in tests/api/test_world_page.py beside HAND_ALONG_U.
-        hand: { along: 16, across: 14, finger: 6, gap: 1.5 },
+        // separation cuts into that depth, `gap` a separation's own width,
+        // `corner` the slab's rounding.
+        //
+        // `across` was 14 and `finger` 6, which put 8 units of palm against 6
+        // of finger — the fingers shallower than the palm they hang off. That
+        // is a notch, not a prong, and at 1:1 the whole hand read as a mitten
+        // with three slots scratched in it. Re-measured 2026-09-22 the
+        // reference hands are 18.5–23.7 units deep and spend MORE of that on
+        // finger than on palm; 20 deep, split 8 palm / 12 finger, is that
+        // ratio on this grid. `along` stays 16 because the CELL forces it —
+        // four fingers want separations at 4, 8 and 12 and nothing else is a
+        // whole cell. Measurements beside HAND_ACROSS_U in
+        // tests/api/test_world_page.py.
+        hand: { along: 16, across: 20, finger: 12, gap: 2, corner: 2 },
       };
       for (const side of [-1, 1]) {
         // x ±16, and the two halves of that number are the KI-084 fix.
@@ -2890,12 +2900,32 @@
         // arm it belongs to with a gap of clear room between them — which is
         // exactly what the first version of this did.
         const H = ARM.hand;
-        const handX = ARM.width[1] / 2 - H.across / 2;
+        // Which way the fingers hang is a consequence of the pose, never a
+        // literal: `litRect` draws in the forearm's own frame, and PIXI maps
+        // that frame's +x to `(cos r, sin r)`. Screen y grows downward, so a
+        // positive sine means +x is the floor-facing side. Both arms read it
+        // from their own bone, so a turn that swings one of them past vertical
+        // cannot leave the trader with a comb growing out of one wrist.
+        //
+        // `fore.restRotation` is still ABSOLUTE here — the reparenting below
+        // makes it relative to the upper arm, and does so after this line.
+        const fingersOnPlusX = Math.sin(fore.restRotation) > 0;
+        // The hand is flush with the BACK of the wrist and hangs off the
+        // front, rather than being centred on the bone. Centring it was
+        // harmless at 14 units deep; at 20 it would bulge 4 units out of the
+        // back of the forearm, and a palm that swells above the wrist reads as
+        // a broken joint. So the edge the fingers do NOT hang from stays on
+        // the sleeve, and the whole extra depth goes where the fingers are.
+        const handX = fingersOnPlusX ? 0 : ARM.width[1] - H.across;
         const handY = fore.boneLength + ARM.width[1] / 2 - 2;
-        // The corner radius is one CELL because the first separation is one
-        // CELL down: any rounder and the crease's outer end would overhang the
-        // corner arc and nick the room.
-        paint(fore, litRect(handX, handY, H.across, H.along, CELL),
+        // The corner may not round away more than the shadow between two
+        // fingers. `litRect` rounds all four corners, the fingertip pair
+        // included, so a radius bigger than a gap withdraws more of the outer
+        // fingers from the SILHOUETTE than a whole separation does — and the
+        // silhouette is where the eye counts digits. This carried `CELL` (4)
+        // against a 1.5-unit gap and the outer two fingers rounded away into a
+        // dome, which is half of why the hand read as a mitten.
+        paint(fore, litRect(handX, handY, H.across, H.along, H.corner),
               HUMAN.skin, undefined, { keepFill: true });
         // Four fingers, cut as three dark lines rather than painted as four
         // volumes. `paint` gives every volume three banded insets, and on a
@@ -2908,16 +2938,6 @@
         // lifted toward the lamp reads as a scratch ON the hand instead of a
         // gap BETWEEN two fingers. Same reasoning as `shod`, same shape.
         const creased = { keepFill: true, matte: true };
-        // Which way the fingers hang is a consequence of the pose, never a
-        // literal: `litRect` draws in the forearm's own frame, and PIXI maps
-        // that frame's +x to `(cos r, sin r)`. Screen y grows downward, so a
-        // positive sine means +x is the floor-facing side. Both arms read it
-        // from their own bone, so a turn that swings one of them past vertical
-        // cannot leave the trader with a comb growing out of one wrist.
-        //
-        // `fore.restRotation` is still ABSOLUTE here — the reparenting below
-        // makes it relative to the upper arm, and does so after this line.
-        const fingersOnPlusX = Math.sin(fore.restRotation) > 0;
         // Offsets are whole CELLs on purpose, and this is the whole reason the
         // hand is 16 units long. `litRect` snaps both coordinates, and only a
         // whole number of cells survives that: `snap(v + 4k) === snap(v) + 4k`,
@@ -2929,6 +2949,20 @@
                               H.finger, H.gap, H.gap / 2),
                 HUMAN.crease, undefined, creased);
         }
+        // THE FINGERTIPS END ON ONE FLAT LINE, and that is a closed question
+        // rather than an oversight. The reference staggers its four tips by one
+        // to three pixels; this grid cannot. A cut's x snaps to the CELL like
+        // every other coordinate, so the smallest step available is 4 units —
+        // about two finger widths at the scale this is seen.
+        //
+        // It was built and shot rather than reasoned away. Shortening the outer
+        // two fingers with a crease-coloured block at the tip is the JOINT CAP
+        // a third time: a 4x4 volume takes `paint`'s three banded insets and
+        // comes out a dark square WITH STRUCTURE, so the outer fingers read as
+        // stubs wearing caps and the count drops from four to "three and some
+        // debris". It is also load-bearing on whatever happens to be behind the
+        // hand — invisible against the dark room, an object against the chair —
+        // and a silhouette may not depend on its backdrop. A/B in the vault.
         // The forearm becomes a CHILD of the upper arm, which is the only
         // arrangement where a shoulder swing carries the whole limb. `gesture`
         // and `cheer` write `armNear.rotation`/`armFar.rotation`; a forearm

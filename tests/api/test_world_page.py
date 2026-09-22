@@ -2873,6 +2873,11 @@ def _rig_bone_driver(source: str) -> str:
         // 3.9 units apart all landed in the same cell.
         const litRect = (x, y, w, h, r) => ({
           shape: "rect", at: [x, y, w, h], snapped: [snap(x), snap(y), w, h],
+          // Alongside `at`/`snapped` rather than inside them: both are unpacked
+          // positionally throughout this file, so a fifth element would
+          // re-point every `x, y, w, h = ...` in it. Gradeable because the
+          // corner is what domes a hand's finger end over.
+          radius: r === undefined ? 0 : r,
           band: (g) => g, rim: (g) => g });
         const litCircle = (cx, cy, rad) => ({
           shape: "circle", at: [cx, cy, rad], band: (g) => g, rim: (g) => g });
@@ -2880,6 +2885,7 @@ def _rig_bone_driver(source: str) -> str:
           drawn.push({
             gid: g.gid, shape: volume.shape, at: volume.at,
             snapped: volume.snapped || volume.at,
+            radius: volume.radius === undefined ? 0 : volume.radius,
             fill, opts: opts || {},
           });
         }
@@ -3421,8 +3427,46 @@ def test_the_seated_arms_bend_at_an_elbow():
 # units sits inside the reference's own range — its slab traces 13.8 and its
 # splayed fingers reach 19 — and is what the grid allows.
 HAND_ALONG_U = 16.0
-HAND_ACROSS_U = 14.1
-FINGER_DEPTH_FRACTION = 0.5
+
+# ACROSS — palm heel to fingertip — was 14.1, and that was the defect.
+#
+# Re-measured 2026-09-22 against both reference hands, converted at the
+# reference's own 1.352 px/unit (59.5 px per head, 44 units per head):
+#
+#   reference NEAR hand    30 px x 32 px  ->  22.2 u along x 23.7 u across
+#   reference FAR  hand    26 px x 25 px  ->  19.2 u along x 18.5 u across
+#   shipped (increment 10) 33 px x 29 px  ->  16.0 u along x 14.0 u across
+#
+# The hand was short on BOTH axes, and short across is what made it a mitten:
+# 14 units of depth split 8 palm / 6 finger leaves the fingers shallower than
+# the palm they hang off, so they cannot read as prongs — only as notches cut
+# into a dome. 20 sits between the two reference hands and is what the fingers
+# need to get free of the palm. ALONG stays 16 because the 4-unit CELL forces
+# it: four fingers want separations at a quarter, a half and three quarters of
+# the span, and 4/8/12 is the only whole-cell answer.
+HAND_ACROSS_U = 20.0
+
+# Of that depth, the fingers take more than the palm — the prong rule, graded
+# on its own in `test_the_fingers_reach_further_than_the_palm_they_hang_from`.
+# The reference divides palm:finger about 1:1.4; 8 palm and 12 finger is 1:1.5.
+FINGER_DEPTH_FRACTION = 0.6
+
+# A separation's own thickness. Four fingers at a 4-unit pitch makes the gap
+# and the finger the same order of size, which is what the reference shows —
+# its gaps measure 3-7 px against fingers of 1-4 px. 2.0 is as wide as the
+# pitch allows while keeping the widest finger inside the evenness bound
+# below: the leading finger has no separation above it, so it is a whole
+# 4 units against the other three at 4 - gap.
+HAND_GAP_U = 2.0
+
+# A separation is a long thin line lying ACROSS the hand. Anything painted in
+# `HUMAN.crease` that is squarer than this is BLUNT — a volume big enough in
+# both axes for `paint`'s three insets to read as a dark object rather than as
+# shading, which is the joint cap this redesign has now hit three times. Told
+# apart by shape rather than by draw order or by count: a classifier keyed on
+# order would quietly re-label them the first time someone reorders the loop.
+# See `test_nothing_blunt_is_painted_at_the_fingertips`.
+SEPARATION_ASPECT = 2.0
 # `const CELL = (PLATE && PLATE.cell) || 4`, and the rig runs with no plate in
 # these drivers. Restated here rather than parsed because it is the grid the
 # ASSERTION is about: if the page's cell ever moves, this check should be read
@@ -3430,18 +3474,26 @@ FINGER_DEPTH_FRACTION = 0.5
 CELL_U = 4
 
 
-def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict]]:
-    """The one skin volume on a forearm, and the separations cut into it.
+def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]:
+    """The one skin volume on a forearm, the separations, and the tip cuts.
 
     Identified by fill rather than by draw order: order is how `paint` stacks
     them and a test that encoded it would pass a hand whose creases had been
     painted UNDER the slab and were invisible.
+
+    Separations and tip cuts share `HUMAN.crease` — they are the same shadow —
+    so they are split by SHAPE: a separation runs the length of a finger and is
+    gap-thin, a tip cut is a blunt block that shortens one. Keying that on the
+    aspect ratio states the difference the eye reads; keying it on the order
+    the loop happens to paint them in would not.
     """
     palette = emitted["HUMAN"]
     on_fore = [d for d in emitted["drawn"] if d["gid"] == arm["foreGid"]]
     slabs = [d for d in on_fore if d["fill"] == palette["skin"]]
     creases = [d for d in on_fore if d["fill"] == palette.get("crease")]
-    return (slabs[0] if len(slabs) == 1 else None), creases
+    seps = [c for c in creases if c["snapped"][2] > SEPARATION_ASPECT * c["snapped"][3]]
+    tips = [c for c in creases if c not in seps]
+    return (slabs[0] if len(slabs) == 1 else None), seps, tips
 
 
 @needs_node
@@ -3470,7 +3522,7 @@ def test_the_hand_is_a_slab_with_three_finger_separations():
     assert len(arms) == 2, f"expected two arms, got {len(arms)}"
 
     for index, arm in enumerate(arms):
-        slab, creases = _hand_parts(emitted, arm)
+        slab, creases, _tips = _hand_parts(emitted, arm)
         assert slab, (
             f"arm {index} has no single skin volume on its forearm: the hand "
             "is one slab, and the fingers are cut out of it rather than "
@@ -3581,7 +3633,7 @@ def test_the_fingers_hang_from_the_hands_screen_downward_edge():
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, creases = _hand_parts(emitted, arm)
+        slab, creases, _tips = _hand_parts(emitted, arm)
         assert slab and len(creases) == 3, (
             f"arm {index} has no hand to check; see "
             "test_the_hand_is_a_slab_with_three_finger_separations"
@@ -3601,6 +3653,167 @@ def test_the_fingers_hang_from_the_hands_screen_downward_edge():
                 f"{'+x' if on_plus_x else '-x'} half of the hand. The fingers "
                 "are pointing at the ceiling."
             )
+
+
+@needs_node
+def test_the_fingers_reach_further_than_the_palm_they_hang_from():
+    """A prong, not a notch — the rule increment 10 got backwards.
+
+    Measured 2026-09-22 at matched scale against both reference hands: the
+    reference spends MORE of the hand's depth on fingers than on palm (about
+    1:1.4), so the digits get free of the palm's silhouette and read as four
+    separate things. The shipped hand spent 8 units of palm against 6 of
+    finger, and at 1:1 that reads as three dark slots scratched into a rounded
+    blob — a mitten with stitching.
+
+    This is graded as an inequality rather than as today's 12-against-8,
+    because the numbers are art and the rule is not: whatever depth the hand
+    ends up with, the cut has to go deeper than what it leaves behind, or
+    there are no fingers on this trader no matter how the rest is tuned.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+
+    for index, arm in enumerate(emitted["arms"]):
+        slab, seps, _tips = _hand_parts(emitted, arm)
+        assert slab and seps, (
+            f"arm {index} has no hand to check; see "
+            "test_the_hand_is_a_slab_with_three_finger_separations"
+        )
+        across = slab["snapped"][2]
+        for sep in seps:
+            finger = sep["snapped"][2]
+            palm = across - finger
+            assert finger > palm, (
+                f"arm {index}: a {across:.1f}-unit hand keeps {palm:.1f} units "
+                f"of palm and cuts only {finger:.1f} units of finger. The "
+                "fingers are shallower than the palm they hang off, so they "
+                "are notches in a dome rather than prongs -- which is exactly "
+                "the mitten this hand was rebuilt to stop being."
+            )
+
+
+@needs_node
+def test_the_hands_corner_does_not_dome_over_its_outer_fingers():
+    """The corner radius is the other half of the mitten, and it is subtle.
+
+    `litRect`'s radius rounds all four corners, including the two at the
+    FINGERTIP end. The arc withdraws the silhouette by up to `r` right where
+    the outermost fingers are, so a radius larger than a separation quietly
+    removes more of an outer finger than a whole gap does -- and it removes it
+    from the silhouette, where the eye reads the digit count. The shipped hand
+    carried `CELL` (4) against a 1.5-unit gap, and its outer two fingers
+    rounded away into the dome.
+
+    Stated against the gap rather than as a literal: both are art, but a
+    corner that eats more than the shadow between two fingers is the
+    condition under which the count stops being readable.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+
+    for index, arm in enumerate(emitted["arms"]):
+        slab, seps, _tips = _hand_parts(emitted, arm)
+        assert slab and seps, (
+            f"arm {index} has no hand to check; see "
+            "test_the_hand_is_a_slab_with_three_finger_separations"
+        )
+        gap = min(s["snapped"][3] for s in seps)
+        assert slab["radius"] <= gap + 1e-9, (
+            f"arm {index}: the hand rounds its corners by {slab['radius']:.1f} "
+            f"units against a {gap:.1f}-unit separation. The fingertip corners "
+            "round away more of the outer fingers than the shadow between two "
+            "fingers does, so the hand ends in a dome and the count is lost."
+        )
+
+
+@needs_node
+def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
+    """The hand hangs off the FRONT of the wrist. It is not centred on it.
+
+    A 14-unit hand centred on a 12-unit forearm overhung the sleeve by one
+    unit either side, which at 1:1 is nothing. At the 20 units of depth the
+    fingers need, centring puts FOUR units of palm out of the back of the
+    wrist -- and a palm that swells above the arm it hangs from reads as a
+    dislocation, not as a hand. So the extra depth all goes to the finger
+    side: the edge the fingers do not hang from stays on the sleeve.
+
+    This test exists because re-centring the hand SURVIVED every other check
+    in this file. The anchoring was stated in a comment and graded by
+    nothing, which is the shape of defect this redesign keeps finding -- see
+    the notes on mutations that survive.
+
+    Graded against the forearm's own painted capsule rather than against
+    `ARM.width`, and the finger side is read off a separation rather than
+    assumed, so the rule survives a pose that flips the hand over.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+
+    for index, arm in enumerate(emitted["arms"]):
+        slab, seps, _blunt = _hand_parts(emitted, arm)
+        capsule = _bone_capsule(emitted["drawn"], arm["foreGid"])
+        assert slab and seps and capsule, (
+            f"arm {index} has no hand to check; see "
+            "test_the_hand_is_a_slab_with_three_finger_separations"
+        )
+        sx, _sy, sw, _sh = slab["snapped"]
+        cx, _cy, cw, _ch = capsule["snapped"]
+        sep = seps[0]["snapped"]
+        fingers_on_plus_x = (sep[0] + sep[2] / 2) > (sx + sw / 2)
+
+        if fingers_on_plus_x:
+            back, sleeve_back, side = sx, cx, "-x"
+            overhangs = back < sleeve_back - 1e-9
+        else:
+            back, sleeve_back, side = sx + sw, cx + cw, "+x"
+            overhangs = back > sleeve_back + 1e-9
+
+        assert not overhangs, (
+            f"arm {index}: its fingers hang off the "
+            f"{'+x' if fingers_on_plus_x else '-x'} side, but the hand's {side} "
+            f"edge is at {back:.1f} where the sleeve's is at "
+            f"{sleeve_back:.1f}. The palm swells out of the back of the wrist "
+            "-- the hand is centred on the bone instead of hung off the front "
+            "of it, which reads as a dislocated joint."
+        )
+
+
+@needs_node
+def test_nothing_blunt_is_painted_at_the_fingertips():
+    """The fingertips end on one flat line, and that is CLOSED, not pending.
+
+    The reference staggers its four tips by 1-3 px and this grid cannot: a
+    cut's x snaps to the CELL like every coordinate here, so the smallest
+    step available is 4 units -- about two finger widths at the size this is
+    seen. The stagger was built anyway and shot, because the cost of being
+    wrong about art is a screenshot.
+
+    It reproduced the JOINT CAP, for the third time in this redesign. A 4x4
+    crease volume takes `paint`'s three banded insets and comes out a dark
+    square with internal structure, so the two outer fingers read as stubs
+    wearing caps and the count drops from four to "three and some debris".
+    Worse, it was legible only against the chair and invisible against the
+    dark room -- a silhouette that depends on its backdrop.
+
+    So this grades the ABSENCE, which is the only half worth keeping: every
+    crease on this hand is a long thin separation, and nothing blunt is
+    painted at the tips. Written as an aspect rule rather than as a count, so
+    it fails for any future square blob at the fingertips and not just for
+    the two this test was born from.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+
+    for index, arm in enumerate(emitted["arms"]):
+        slab, seps, blunt = _hand_parts(emitted, arm)
+        assert slab and seps, (
+            f"arm {index} has no hand to check; see "
+            "test_the_hand_is_a_slab_with_three_finger_separations"
+        )
+        assert not blunt, (
+            f"arm {index} paints {len(blunt)} blunt crease volume(s) on its "
+            f"hand: {[b['snapped'] for b in blunt]}. Every crease here is a "
+            "finger separation -- long across the hand and gap-thin. A volume "
+            "square enough to take `paint`'s insets as a dark object is the "
+            "joint cap again, and at the fingertips it costs the digit count."
+        )
 
 
 # --- The MODEL: increment 11, the machine stops being a cluster of candles --
@@ -3659,6 +3872,11 @@ def _machine_body_driver(source: str) -> str:
         const drawn = [];
         const litRect = (x, y, w, h, r) => ({
           shape: "rect", at: [x, y, w, h], snapped: [snap(x), snap(y), w, h],
+          // Alongside `at`/`snapped` rather than inside them: both are unpacked
+          // positionally throughout this file, so a fifth element would
+          // re-point every `x, y, w, h = ...` in it. Gradeable because the
+          // corner is what domes a hand's finger end over.
+          radius: r === undefined ? 0 : r,
           band: (g) => g, rim: (g) => g });
         const litCircle = (cx, cy, rad) => ({
           shape: "circle", at: [cx - rad, cy - rad, 2 * rad, 2 * rad],
