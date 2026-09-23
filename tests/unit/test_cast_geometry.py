@@ -370,6 +370,7 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
           constructor() { this.calls = []; this.x = 0; this.y = 0; }
           roundRect(x, y, w, h) { this.calls.push([y, h]); return this; }
           circle(x, y, r) { this.calls.push([y - r, 2 * r]); return this; }
+          poly(f) { const ys = f.filter((_, i) => i % 2 === 1); this.calls.push([Math.min(...ys), Math.max(...ys) - Math.min(...ys)]); return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -387,6 +388,7 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
           const gfx = {
             roundRect(x, y, w, h) { calls.push([y, h]); return this; },
             circle(x, y, r) { calls.push([y - r, 2 * r]); return this; },
+            poly(f) { const ys = f.filter((_, i) => i % 2 === 1); calls.push([Math.min(...ys), Math.max(...ys) - Math.min(...ys)]); return this; },
             fill() { return this; },
             stroke() { return this; },
           };

@@ -2614,7 +2614,7 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
           // double that gets fixed, not the page.
           constructor() { this.pivot = { x: 0, y: 0 }; this.rotation = 0; }
           roundRect() { return this; }
-          circle() { return this; }
+          circle() { return this; } poly() { return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -2627,10 +2627,10 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
         + _js_const(source, "CAST_SCALE")
         + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
-        const fakeGfx = { roundRect() { return this; }, circle() { return this; },
+        const fakeGfx = { roundRect() { return this; }, circle() { return this; }, poly() { return this; },
                            fill() { return this; }, stroke() { return this; } };
         const accents = [];
         const headY = seatedRig(fakeGfx, accents);
@@ -2696,6 +2696,15 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
 # measurement starts from is read off that builder's own return value rather
 # than pinned as a literal here, so a redrawn head moves it with the drawing.
 
+
+
+def _seated_rig_block(source: str) -> str:
+    """`seatedRig` with the hand outline it draws from (increment 18)."""
+    return (
+        _js_const(source, "HAND_OUTLINE") + "\n"
+        + _js_block(source, "function outlineDepthAt(") + "\n"
+        + _js_block(source, "function seatedRig(")
+    )
 
 def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
     """`profileHead` built for one `side`, plus the gaze helpers run on the
@@ -3055,7 +3064,7 @@ def _seated_rig_run() -> dict:
         class FakeGraphics {
           addChild(c) { (this.children || (this.children = [])).push(c); return c; }
           constructor() { this.pivot = { x: 0, y: 0 }; this.rotation = 0; }
-          roundRect() { return this; } circle() { return this; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
           fill() { return this; } stroke() { return this; }
         }
         const PIXI = { Graphics: FakeGraphics };
@@ -3068,6 +3077,12 @@ def _seated_rig_run() -> dict:
         const litCircle = (cx, cy, rad) => ({
           rect: [cx - rad, cy - rad, 2 * rad, 2 * rad], radius: rad,
           band: (g) => g, rim: (g) => g });
+        const litPath = (pts, ox = 0, oy = 0) => {
+          const [mnx, mny, mxx, mxy] = [Math.min(...pts.map((q) => q[0])), Math.min(...pts.map((q) => q[1])),
+                                         Math.max(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[1]))];
+          return { rect: [ox + mnx, oy + mny, mxx - mnx, mxy - mny], radius: 0,
+                   band: (g) => g, rim: (g) => g };
+        };
         function paint(g, volume, fill, rim, opts) {
           drawn.push({ rect: volume.rect, fill, opts: opts || {},
                        host: g, radius: volume.radius });
@@ -3079,7 +3094,7 @@ def _seated_rig_run() -> dict:
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -3283,7 +3298,7 @@ def _rig_bone_driver(source: str) -> str:
             this.rotation = 0; this.x = 0; this.y = 0;
           }
           addChild(c) { (this.children || (this.children = [])).push(c); return c; }
-          roundRect() { return this; } circle() { return this; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
           fill() { return this; } stroke() { return this; }
         }
         const PIXI = { Graphics: FakeGraphics };
@@ -3303,10 +3318,21 @@ def _rig_bone_driver(source: str) -> str:
           band: (g) => g, rim: (g) => g });
         const litCircle = (cx, cy, rad) => ({
           shape: "circle", at: [cx, cy, rad], band: (g) => g, rim: (g) => g });
+        // A path reports its BOUNDING BOX as `at`/`snapped` (only its origin
+        // snaps), and its outline, snapped, as `points`.
+        const litPath = (pts, ox = 0, oy = 0) => {
+          const [mnx, mny, mxx, mxy] = [Math.min(...pts.map((q) => q[0])), Math.min(...pts.map((q) => q[1])),
+                                         Math.max(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[1]))];
+          return {
+            shape: "path", at: [ox + mnx, oy + mny, mxx - mnx, mxy - mny],
+            snapped: [snap(ox) + mnx, snap(oy) + mny, mxx - mnx, mxy - mny],
+            radius: null, points: pts.map(([x, y]) => [snap(ox) + x, snap(oy) + y]),
+            band: (g) => g, rim: (g) => g };
+        };
         function paint(g, volume, fill, rim, opts) {
           drawn.push({
             gid: g.gid, shape: volume.shape, at: volume.at,
-            snapped: volume.snapped || volume.at,
+            snapped: volume.snapped || volume.at, points: volume.points,
             radius: volume.radius === undefined ? 0 : volume.radius,
             fill, opts: opts || {},
           });
@@ -3318,7 +3344,7 @@ def _rig_bone_driver(source: str) -> str:
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -3504,7 +3530,7 @@ def test_a_person_is_not_outlined():
         // how `rimStroke` builds its path.
         let strokes = [];
         class FakeGraphics {
-          roundRect() { return this; } circle() { return this; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
           fill() { return this; }
           stroke(style) { strokes.push(style ?? null); return this; }
         }
@@ -3597,7 +3623,7 @@ def test_a_matte_volume_takes_no_lamp_band_even_after_a_mood_change():
         let fills = [];
         class FakeGraphics {
           constructor() { this.children = []; }
-          roundRect() { return this; } circle() { return this; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
           stroke() { return this; } clear() { return this; }
           fill(c) { fills.push(c && c.color !== undefined ? c.color : c); return this; }
         }
@@ -3727,7 +3753,7 @@ def test_the_seated_arms_bend_at_an_elbow():
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
           }
           addChild(c) { this.children.push(c); return c; }
-          roundRect() { return this; } circle() { return this; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
           fill() { return this; } stroke() { return this; }
         }
         const PIXI = { Graphics: FakeGraphics };
@@ -3736,6 +3762,12 @@ def test_the_seated_arms_bend_at_an_elbow():
         const litCircle = (cx, cy, rad) => ({
           rect: [cx - rad, cy - rad, 2 * rad, 2 * rad],
           band: (g) => g, rim: (g) => g });
+        const litPath = (pts, ox = 0, oy = 0) => {
+          const [mnx, mny, mxx, mxy] = [Math.min(...pts.map((q) => q[0])), Math.min(...pts.map((q) => q[1])),
+                                         Math.max(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[1]))];
+          return { rect: [ox + mnx, oy + mny, mxx - mnx, mxy - mny],
+                   band: (g) => g, rim: (g) => g };
+        };
         function paint(g, volume, fill, rim, opts) {
           (g.drawn || (g.drawn = [])).push({ rect: volume.rect, fill });
         }
@@ -3746,7 +3778,7 @@ def test_the_seated_arms_bend_at_an_elbow():
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -3883,6 +3915,18 @@ SEPARATION_ASPECT = 2.0
 # ASSERTION is about: if the page's cell ever moves, this check should be read
 # again rather than silently follow it.
 CELL_U = 4
+
+
+def _outline_depth_at(pts, x: float) -> float:
+    """The lowest (largest-y) crossing of the vertical line through `x` with
+    the polygon `pts`. The test-side twin of the page's `outlineDepthAt`."""
+    depth = -math.inf
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        if not min(ax, bx) - 1e-9 <= x <= max(ax, bx) + 1e-9:
+            continue
+        y = max(ay, by) if ax == bx else ay + (by - ay) * (x - ax) / (bx - ax)
+        depth = max(depth, y)
+    return depth
 
 
 def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]:
@@ -4067,10 +4111,16 @@ def test_the_hand_carries_on_the_line_of_the_forearm():
             "side of the arm instead of carrying on its line"
         )
         for sep in seps:
-            _cx, cy, _cw, ch = sep["snapped"]
-            assert cy + ch == pytest.approx(sy + sh, abs=1e-9), (
-                f"arm {index}: a separation ends at {cy + ch:.1f} where the "
-                f"hand ends at {sy + sh:.1f}. A finger gap has to open at the "
+            cx, cy, cw, ch = sep["snapped"]
+            # The hand is an OUTLINE since increment 18, its tips an arc at the
+            # outer corners, so "where the hand ends" is the outline's own
+            # depth across this gap — the shallower of its two edges, or the
+            # cut either stops short of the tip or paints past it.
+            ends = min(_outline_depth_at(slab["points"], cx),
+                       _outline_depth_at(slab["points"], cx + cw))
+            assert cy + ch == pytest.approx(ends, abs=1e-6), (
+                f"arm {index}: a separation ends at {cy + ch:.2f} where the "
+                f"hand ends at {ends:.2f}. A finger gap has to open at the "
                 "fingertips, or the fingers are welded together at the end"
             )
             assert cy > sy, (
@@ -4142,12 +4192,24 @@ def test_the_hands_corner_does_not_dome_over_its_outer_fingers():
             "test_the_hand_is_a_slab_with_three_finger_separations"
         )
         gap = min(min(s["snapped"][2:4]) for s in seps)
-        assert slab["radius"] <= gap + 1e-9, (
-            f"arm {index}: the hand rounds its corners by {slab['radius']:.1f} "
-            f"units against a {gap:.1f}-unit separation. The fingertip corners "
-            "round away more of the outer fingers than the shadow between two "
-            "fingers does, so the hand ends in a dome and the count is lost."
-        )
+        # Since increment 18 the hand is an outline, and the rule is stated on
+        # the thing the radius stood for: how much shorter the OUTER fingers
+        # come out than the longest one, measured at each outer finger's
+        # middle. A little is a hand's natural arc; more than a gap is a dome.
+        edges = sorted(s["snapped"][0] for s in seps)
+        sx, sw = slab["snapped"][0], slab["snapped"][2]
+        outer = [(sx + edges[0]) / 2, (edges[-1] + gap + sx + sw) / 2]
+        pts = slab["points"]
+        longest = max(y for _, y in pts)
+        for mid in outer:
+            short = longest - _outline_depth_at(pts, mid)
+            assert short <= gap + 1e-9, (
+                f"arm {index}: the outer finger at {mid:.1f} ends {short:.1f} "
+                f"units short of the longest against a {gap:.1f}-unit "
+                "separation. The tips round away more of the outer fingers "
+                "than the shadow between two fingers does, so the hand ends "
+                "in a dome and the count is lost."
+            )
 
 
 @needs_node
@@ -4386,7 +4448,7 @@ def _machine_body_driver(source: str, run: bool = True) -> str:
             this.scale = { set() {} };
           }
           addChild(c) { (this.children || (this.children = [])).push(c); return c; }
-          roundRect() { return this; } circle() { return this; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
           fill() { return this; } stroke() { return this; }
         }
         const PIXI = { Graphics: FakeGraphics };
@@ -4403,6 +4465,15 @@ def _machine_body_driver(source: str, run: bool = True) -> str:
           shape: "circle", at: [cx - rad, cy - rad, 2 * rad, 2 * rad],
           snapped: [snap(cx) - rad, snap(cy) - rad, 2 * rad, 2 * rad],
           band: (g) => g, rim: (g) => g });
+        const litPath = (pts, ox = 0, oy = 0) => {
+          const [mnx, mny, mxx, mxy] = [Math.min(...pts.map((q) => q[0])), Math.min(...pts.map((q) => q[1])),
+                                         Math.max(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[1]))];
+          return {
+            shape: "path", at: [ox + mnx, oy + mny, mxx - mnx, mxy - mny],
+            snapped: [snap(ox) + mnx, snap(oy) + mny, mxx - mnx, mxy - mny],
+            radius: null, points: pts.map(([x, y]) => [snap(ox) + x, snap(oy) + y]),
+            band: (g) => g, rim: (g) => g };
+        };
         function paint(g, volume, fill, rim, opts) {
           drawn.push({
             gid: g.gid, shape: volume.shape, at: volume.at,
@@ -4708,6 +4779,7 @@ def _machine_head_driver(source: str) -> str:
             calls,
             clear() { calls.length = 0; return this; },
             roundRect(x, y, w, h) { calls.push({ box: [x, y, w, h] }); return this; },
+            poly(f) { const xs = f.filter((_, i) => i % 2 === 0), ys = f.filter((_, i) => i % 2 === 1); return this.roundRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0); },
             moveTo(x, y) { calls.push({ pt: [x, y] }); return this; },
             lineTo(x, y) { calls.push({ pt: [x, y] }); return this; },
             fill() { return this; },
@@ -5015,12 +5087,13 @@ def test_the_two_thighs_read_as_two_legs_not_one_mass():
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
           }
           addChild(c) { this.children.push(c); return c; }
-          roundRect() { return this; } circle() { return this; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
           fill() { return this; } stroke() { return this; }
         }
         const PIXI = { Graphics: FakeGraphics };
         const litRect = (x, y, w, h, r) => ({ band: (g) => g, rim: (g) => g });
         const litCircle = (cx, cy, rad) => ({ band: (g) => g, rim: (g) => g });
+        const litPath = () => ({ band: (g) => g, rim: (g) => g });
         function paint(g, volume, fill, rim, opts) {}
         """
         + _js_block(source, "function snap(")
@@ -5029,7 +5102,7 @@ def test_the_two_thighs_read_as_two_legs_not_one_mass():
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + "\n"
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -5145,12 +5218,12 @@ def test_the_seated_figure_points_where_the_painted_cushion_points():
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
           }
           roundRect(x, y, w, h, r) { this.calls.push([x, y, w, h]); return this; }
-          circle() { return this; }
+          circle() { return this; } poly() { return this; }
           fill() { return this; }
           stroke() { return this; }
         }
         const PIXI = { Graphics: FakeGraphics };
-        const fakeGfx = { roundRect() { return this; }, circle() { return this; },
+        const fakeGfx = { roundRect() { return this; }, circle() { return this; }, poly() { return this; },
                            fill() { return this; }, stroke() { return this; } };
         """
         + _js_block(source, "function snap(")
@@ -5160,7 +5233,7 @@ def test_the_seated_figure_points_where_the_painted_cushion_points():
         + _js_const(source, "CAST_SCALE")
         + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -5308,6 +5381,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
           }
           roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
+          poly(f) { const xs = f.filter((_, i) => i % 2 === 0), ys = f.filter((_, i) => i % 2 === 1); return this.roundRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0); }
           circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
           fill() { return this; }
           stroke() { return this; }
@@ -5316,6 +5390,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         const bodyCalls = [];
         const fakeGfx = {
           roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
+          poly(f) { const xs = f.filter((_, i) => i % 2 === 0), ys = f.filter((_, i) => i % 2 === 1); return this.roundRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0); },
           circle(x, y, r) { bodyCalls.push([x - r, 2 * r]); return this; },
           fill() { return this; },
           stroke() { return this; },
@@ -5328,7 +5403,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
         + _js_const(source, "CAST_SCALE")
         + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -5421,6 +5496,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
           }
           roundRect(x, y, w, h, r) { this.calls.push([x, y, w, h]); return this; }
+          poly(f) { const xs = f.filter((_, i) => i % 2 === 0), ys = f.filter((_, i) => i % 2 === 1); return this.roundRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0); }
           circle(x, y, r) {
             this.calls.push([x - r, y - r, 2 * r, 2 * r]); return this;
           }
@@ -5431,6 +5507,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
         const bodyCalls = [];
         const fakeGfx = {
           roundRect(x, y, w, h, r) { bodyCalls.push([x, y, w, h]); return this; },
+          poly(f) { const xs = f.filter((_, i) => i % 2 === 0), ys = f.filter((_, i) => i % 2 === 1); return this.roundRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0); },
           circle(x, y, r) {
             bodyCalls.push([x - r, y - r, 2 * r, 2 * r]); return this;
           },
@@ -5445,7 +5522,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
         + _js_const(source, "CAST_SCALE")
         + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -5536,13 +5613,13 @@ def test_every_seated_leg_bone_carries_its_own_angle_and_opts_out_of_gestures():
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
           }
           roundRect() { return this; }
-          circle() { return this; }
+          circle() { return this; } poly() { return this; }
           fill() { return this; }
           stroke() { return this; }
         }
         const PIXI = { Graphics: FakeGraphics };
         const fakeGfx = {
-          roundRect() { return this; }, circle() { return this; },
+          roundRect() { return this; }, circle() { return this; }, poly() { return this; },
           fill() { return this; }, stroke() { return this; },
         };
         """
@@ -5551,7 +5628,7 @@ def test_every_seated_leg_bone_carries_its_own_angle_and_opts_out_of_gestures():
         + _js_const(source, "CELL")
         + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -5614,6 +5691,7 @@ def _seated_rig_bounds():
         function makeRecorder(calls) {
           return {
             roundRect(x, y, w, h, r) { calls.push([x, y, w, h]); return this; },
+            poly(f) { const xs = f.filter((_, i) => i % 2 === 0), ys = f.filter((_, i) => i % 2 === 1); return this.roundRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0); },
             circle(x, y, r) { calls.push([x - r, y - r, 2 * r, 2 * r]); return this; },
             fill() { return this; },
             stroke() { return this; },
@@ -5629,7 +5707,7 @@ def _seated_rig_bounds():
             // both, so a double without them throws from inside `seatedRig`.
             this.pivot = { x: 0, y: 0 }; this.rotation = 0;
             const r = makeRecorder(this.calls);
-            this.roundRect = r.roundRect; this.circle = r.circle;
+            this.roundRect = r.roundRect; this.circle = r.circle; this.poly = r.poly;
             this.fill = r.fill; this.stroke = r.stroke;
           }
         }
@@ -5646,7 +5724,7 @@ def _seated_rig_bounds():
         + _js_const(source, "CAST_SCALE")
         + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + "\n"
         + """
         const accents = [];
@@ -6983,7 +7061,7 @@ def test_no_body_volume_is_painted_with_the_bare_flat_fill_any_more():
     source = _world_source()
     rig = (
         _js_block(source, "const BODIES = {")
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + _js_block(source, "function character(")
     )
     assert ".fill(BODY_FILL)" not in rig, (
@@ -7075,6 +7153,7 @@ def _geometry_driver(source: str, body: str) -> str:
             shapes.push({ kind: "rect", x, y, w, h, r }); return this;
           },
           circle(x, y, r) { shapes.push({ kind: "circle", x, y, r }); return this; },
+          poly(flat) { shapes.push({ kind: "poly", flat }); return this; },
           fill() { return this; },
           stroke() { return this; },
         };
@@ -7175,7 +7254,7 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     # and counting them let the floor below track prose (increment 16).
     rig = _without_comments(
         _js_block(source, "const BODIES = {")
-        + _js_block(source, "function seatedRig(")
+        + _seated_rig_block(source)
         + _js_block(source, "function character(")
     )
     rects = re.findall(
@@ -7473,6 +7552,7 @@ def test_a_light_without_a_ramp_degrades_instead_of_blanking_the_page():
         const fills = [];
         const rec = {
           roundRect(x, y, w, h, r) { shapes.push([x, y, w, h, r]); return this; },
+          poly(f) { const xs = f.filter((_, i) => i % 2 === 0), ys = f.filter((_, i) => i % 2 === 1); return this.roundRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0); },
           circle(x, y, r) { shapes.push([x, y, r]); return this; },
           fill(c) { fills.push(c); return this; },
           stroke() { return this; },

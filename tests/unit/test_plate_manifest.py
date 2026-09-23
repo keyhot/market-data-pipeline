@@ -537,6 +537,7 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
           }
           roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
           circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
+          poly(f) { const xs = f.filter((_, i) => i % 2 === 0); this.calls.push([Math.min(...xs), Math.max(...xs) - Math.min(...xs)]); return this; }
           fill() { return this; }
           stroke() { return this; }
         }
@@ -545,6 +546,7 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         const fakeGfx = {
           roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
           circle(x, y, r) { bodyCalls.push([x - r, 2 * r]); return this; },
+          poly(f) { const xs = f.filter((_, i) => i % 2 === 0); bodyCalls.push([Math.min(...xs), Math.max(...xs) - Math.min(...xs)]); return this; },
           fill() { return this; },
           stroke() { return this; },
         };
@@ -552,6 +554,8 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     )
     driver += _js_block(source, "function snap(") + "\n"
     driver += _shading_prelude(source)
+    driver += _js_const(source, "HAND_OUTLINE") + "\n"
+    driver += _js_block(source, "function outlineDepthAt(") + "\n"
     driver += _js_block(source, "function seatedRig(") + "\n"
     cast_scale_line = re.search(r"^\s*const CAST_SCALE = .*;$", source, re.M)
     assert cast_scale_line, "the page no longer declares CAST_SCALE as a one-line const"

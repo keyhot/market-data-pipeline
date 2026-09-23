@@ -2051,6 +2051,33 @@
     // through `paint` (hair, face); the small features are FLAT fills on their
     // own Graphics — a 4-unit nose through `paint` is three concentric bands,
     // the joint-cap "dark ring" a fourth time.
+    // The seated trader's hand as a convex outline in its own frame (the
+    // forearm's: +y runs heel to fingertip, x across the four fingers), 16
+    // across by 20 along — `ARM.hand`'s numbers. Authored with the flare on
+    // +x; `seatedRig` mirrors it to whichever side faces the floor. The heel
+    // is 11, a little inside the sleeve's 12, so the wrist does not step out
+    // into a box;
+    // the outer fingers' outside corners round off over 5 units (15 → 20)
+    // where a rect's r2 corner turned a mitten's; the heel's back corner is
+    // rounded where it leaves the cuff. The tips stay flat across the three
+    // separations, so each one still reaches the silhouette and opens the
+    // fingers at their ends (`test_the_hand_carries_on_the_line_of_the_forearm`).
+    // (One line, so the suite's `_js_const` can lift it.)
+    const HAND_OUTLINE = [[0, 1], [2, 0], [11, 0], [14, 3], [16, 8], [16, 15], [15.4, 17.6], [14, 19.3], [12, 20], [4, 20], [2, 19.3], [0.6, 17.6], [0, 15]];
+
+    // How far down (+y) the outline reaches at x: the lowest crossing of the
+    // vertical line through x. -Infinity where x misses the outline.
+    function outlineDepthAt(pts, x) {
+      let depth = -Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
+        if (x < Math.min(ax, bx) || x > Math.max(ax, bx)) continue;
+        const y = ax === bx ? Math.max(ay, by) : ay + (by - ay) * (x - ax) / (bx - ax);
+        depth = Math.max(depth, y);
+      }
+      return depth;
+    }
+
     const PROFILE_HEAD = {
       // The cranium: hair, back of the head and the crown. Painted first.
       skull: [-4, -8, 18],
@@ -3367,7 +3394,17 @@ void main() {
         // silhouette is where the eye counts digits. This carried `CELL` (4)
         // against a 1.5-unit gap and the outer two fingers rounded away into a
         // dome, which is half of why the hand read as a mitten.
-        paint(fore, litRect(handX, handY, H.across, H.along, H.corner),
+        // The OUTLINE, not a rect (increment 18 — "the palm looks like a
+        // square"). The heel is the forearm's own width where it leaves the
+        // sleeve, and the hand flares toward the FLOOR side only (the edge
+        // spreading on the thigh; the back of the hand carries on the line
+        // of the wrist). The tips end on a shallow arc, middle fingers
+        // longest: the stagger this grid refused a rect can be drawn as an
+        // outline, because a path's vertices do not snap — only its origin
+        // does, so the whole-CELL separations below still register.
+        const handOutline = HAND_OUTLINE.map(([x, y]) =>
+          [floorOnPlusX ? x : H.across - x, y]);
+        paint(fore, litPath(handOutline, handX, handY),
               HUMAN.skin, undefined, { keepFill: true });
         // Four fingers, cut as three dark lines rather than painted as four
         // volumes. `paint` gives every volume three banded insets, and on a
@@ -3387,10 +3424,16 @@ void main() {
         // merge two fingers into one. Nothing in the drawn output would say so.
         // Each is cut back from the fingertips, so the palm stays whole at the
         // wrist end.
+        //
+        // Each one ends where the outline does at its own x, so a cut near an
+        // outer finger — where the corner has begun to turn — never paints
+        // shadow on the room past the hand, and still opens the gap.
         const fingerY = handY + H.along - H.finger;
         for (let i = 1; i <= 3; i++) {
-          paint(fore, litRect(handX + i * CELL, fingerY,
-                              H.gap, H.finger, H.gap / 2),
+          const x0 = i * CELL, x1 = x0 + H.gap;
+          const tip = Math.min(outlineDepthAt(handOutline, x0), outlineDepthAt(handOutline, x1));
+          paint(fore, litRect(handX + x0, fingerY,
+                              H.gap, tip - (H.along - H.finger), H.gap / 2),
                 HUMAN.crease, undefined, creased);
         }
         // THE FINGERTIPS END ON ONE FLAT LINE, and that is a closed question
