@@ -425,7 +425,7 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
     source = WORLD_TEMPLATE.read_text()
     blocks = [
         re.search(rf"^    function {name}\(.*?^    \}}$", source, re.S | re.M)
-        for name in ("seatOccluderFor", "occludeBelowKnees")
+        for name in ("seatOccluderFor", "occludeBehindSeat")
     ]
     assert all(blocks), "the page no longer declares the seat occluder at one indent level"
     return _node(
@@ -446,8 +446,8 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
         };
         const added = [];
         const layers = { foreground: { addChild(...k) { added.push(...k); } } };
-        const bone = (name, belowKnee) => ({
-          name, belowKnee, masked: null,
+        const bone = (name, behindSeat) => ({
+          name, behindSeat, masked: null,
           setMask(opts) { if (""" + json.dumps(throw) + """) throw new Error("x"); this.masked = opts; },
         });
         const accents = [bone("thigh", false), bone("shin", true),
@@ -455,7 +455,7 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
         """
         + "\n".join(b.group(0) for b in blocks)
         + """
-        const count = occludeBelowKnees("trader", accents);
+        const count = occludeBehindSeat("trader", accents);
         console.log(JSON.stringify({
           count,
           masked: accents.filter((a) => a.masked).map((a) => a.name),
@@ -474,7 +474,7 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
 
 @needs_node
 def test_the_seat_hides_the_shins_and_nothing_else():
-    """Each below-knee bone gets its own INVERSE mask of the measured cushion,
+    """Each bone tagged `behindSeat` gets its own INVERSE mask of the measured cushion,
     parented to `layers.foreground` - plate space, so the cut stays on the
     painted seat whatever the figure's container is doing. Nothing above the
     knee is masked: a thigh lies on the cushion, in front of it.

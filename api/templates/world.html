@@ -1079,6 +1079,11 @@
       await drawPlate();
       model = character("MODEL");
       trader = character("TRADER");
+      // Only the ROOM's trader, never inside `character()`: the animation
+      // sheet builds seated TRADER samples too, in grid cells nowhere near
+      // the chair, and a plate-space mask would cut them wherever the
+      // painted cushion happens to fall on the sheet.
+      occludeBehindSeat("trader", trader.accents);
       // `character()`'s nameTag is shared with the gallery/animation-sheet
       // eval surfaces (`?gallery=1`/`?anims=1`), which legitimately float a
       // label beside a diagnostic specimen — the design rule ("no text in
@@ -1655,7 +1660,7 @@
     // the chair, so the cushion's front edge is its upper-LEFT edge on screen
     // and his far knee lands on it: the far shin drops through the cushion and
     // was painted over it ("I don't like that his right leg goes on top of
-    // chair"). Each below-knee bone gets an INVERSE mask of the measured
+    // chair"). The far shin and shoe each get an INVERSE mask of the measured
     // cushion (`scripts/measure_chair.py::measure_seat_occluder`).
     //
     // The mask is a SPRITE of the polygon, never a Graphics. PIXI 8.19 routes
@@ -1673,10 +1678,10 @@
     // containers is not something PIXI promises. Its own try/catch, for
     // `drawForeground`'s reason: a cosmetic cut must not cost `character()`
     // the trader.
-    function occludeBelowKnees(name, accents) {
+    function occludeBehindSeat(name, accents) {
       try {
         const poly = seatOccluderFor(name);
-        const hangs = accents.filter((g) => g.belowKnee);
+        const hangs = accents.filter((g) => g.behindSeat);
         if (!poly || !layers.foreground || !hangs.length) return 0;
         const x0 = Math.min(...poly.map((p) => p[0]));
         const y0 = Math.min(...poly.map((p) => p[1]));
@@ -2721,7 +2726,6 @@ void main() {
       // seated figure: the machine keeps its rim, a glyph's own edge.
       const keyline = container.pose === "seated" ? keylineFilter() : null;
       if (keyline) rig.filters = [keyline];
-      if (container.pose === "seated") occludeBelowKnees(name.toLowerCase(), accents);
       container.addChild(rig, nameTag, stat, moodTag);
       layers.chars.addChild(container);
 
@@ -3770,11 +3774,13 @@ void main() {
              { end: L.width[1] * LIMB.hem,
                bulge: [LIMB.calf, LIMB.calfAt, [hip.x - knee.x, hip.y - knee.y]] });
         const shoe = bone(ankle, toe, L.width[2], shoes, shod);
-        // Everything below the knee hangs off the cushion's front edge, and
-        // from behind the chair that edge is the FAR one: the painted seat is
-        // in front of the shin, so `occludeBelowKnees` hides it there
-        // (increment 22). The thigh lies ON the cushion and stays in front.
-        shin.belowKnee = shoe.belowKnee = true;
+        // The far knee lands ON the cushion's front edge, and from behind the
+        // chair that edge is the far one: the painted seat is in front of the
+        // shin below it, so `occludeBehindSeat` hides it there (increment
+        // 22). The thigh lies ON the cushion and stays in front. The near knee
+        // is at the cushion's corner, beside it, not behind — masked too, its
+        // shin lost a 32 px notch to the corner's tip, shot and refused.
+        if (isFar) shin.behindSeat = shoe.behindSeat = true;
       });
       // THE SEAT: jeans from the waist to the cushion, under the sweater's
       // hem. Without it the hips were whatever the thighs' round hip ends
