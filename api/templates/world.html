@@ -808,6 +808,61 @@
       };
     };
 
+    // A CONVEX outline, for the parts of a person a rect cannot draw without
+    // reading as a block: the face, the swept fringe, the hand (increment
+    // 18 — "make him look natural without blocks and squares").
+    //
+    // The same rule as the other two, not a third one: each band is the
+    // outline shrunk about its centroid by `circleBand`'s fraction and slid
+    // toward the lamp as far as it stays inside. Convex because that is what
+    // makes "every vertex inside" the whole containment check — a concave
+    // band pokes out through the concavity it was shrunk past, which is the
+    // corner leak `bandInside` exists to stop on a rect. The concave details
+    // of a profile (nose, lips, the ear's C) are flat features, never paths.
+    //
+    // `points` are relative to an origin that snaps like `litRect`'s, so a
+    // path on a limb keeps the whole-CELL registration of the rects cut into
+    // it; the outline itself is unsnapped, which is what lets it be round.
+    const litPath = (points, ox = 0, oy = 0) => {
+      const x0 = snap(ox), y0 = snap(oy);
+      const pts = points.map(([px, py]) => [x0 + px, y0 + py]);
+      return {
+        band: (g, band) => g.poly(pathBand(pts, band).flat()),
+        rim: (g, style) => g.poly(pts.flat()).stroke(style || BODY_RIM_SHADED),
+      };
+    };
+
+    // Is (px, py) inside (or on) the convex polygon `pts`, either winding?
+    function insideConvex(pts, px, py) {
+      let sign = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
+        const cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+        if (Math.abs(cross) < 1e-9) continue;
+        const s = Math.sign(cross);
+        if (sign && s !== sign) return false;
+        sign = s;
+      }
+      return true;
+    }
+
+    function pathBand(pts, band) {
+      const keep = 1 - Math.min(circleBand(band), BAND_MAX);
+      const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+      const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+      const shrunk = pts.map(([px, py]) => [cx + (px - cx) * keep, cy + (py - cy) * keep]);
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+      const reachMax = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+      const fits = (t) => shrunk.every(([px, py]) =>
+        insideConvex(pts, px - KEY_AXIS[0] * t, py - KEY_AXIS[1] * t));
+      let lo = 0, hi = reachMax;
+      for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        if (fits(mid)) lo = mid; else hi = mid;
+      }
+      return shrunk.map(([px, py]) => [quant(px - KEY_AXIS[0] * lo), quant(py - KEY_AXIS[1] * lo)]);
+    }
+
     // The rim, kept at the volume's true (un-inset) silhouette so it still
     // outlines the shape `paint` was called with, not one of its bands.
     // Reached only through a volume's own `rim(g)`, never from a body method:
@@ -2008,24 +2063,48 @@
       // corner sits right under the ear's back edge, and any rounding there
       // lets a speck of the skull through. `test_no_hair_shows_below_the_ear`.
       nape: [-8, 8, 16, 12, 0],
-      // The face plane, forehead to jaw: the front half of the head only, so
-      // the hair keeps the back half and the ear has hair to sit in.
-      face: [4, -16, 16, 36, 8],
-      // Hair laid back over the brow — the hairline, not a helmet.
-      fringe: [-4, -24, 20, 12, 6],
+      // The face, as one CONVEX outline (increment 18): forehead rounding
+      // into the brow, a straight front for the nose and lips to sit on, a
+      // chin, a jaw angle, and the back edge running up the cheek to the
+      // temple on a DIAGONAL. That diagonal is the haircut: the old face was
+      // a rect whose back edge stopped 8 units short of the ear, so a column
+      // of hair ran from the fringe to the jaw in front of it — "too much
+      // hair on the left of the ear" (the user's catch). Now the cheek is
+      // skin all the way back to the ear's FRONT, and the hair keeps the
+      // head above and behind the ear, where a tapered Ivy League cut leaves
+      // it. (A first cut carried the cheek back UNDER the ear too; the head
+      // read as a bald egg with a cap on, and the ear vanished into skin.)
+      face: [[6, -21], [14, -21], [18, -17], [20, -10], [20, 10], [18, 16],
+             [13, 20], [2, 20], [-3, 16], [-3, -6], [0, -13]],
+      // The top: longer than the sides and swept up and back off the brow,
+      // overlapping the face by 2 so no seam of skull shows between them.
+      // Its underside is the HAIRLINE, and it sits at -19 where it used to
+      // sit at -12 — the forehead the head did not have.
+      fringe: [[-6, -20], [-2, -26], [6, -28], [14, -27], [19, -24],
+               [20, -21], [15, -19], [4, -19]],
       // Flat features, [x, y, w, h] from the head's origin, facing +x. The
-      // nose is a wedge rather than a rect: [bridge x, top y, tip reach,
-      // tip y, base y].
-      nose: [20, -8, 6, 4, 6],
+      // face is in thirds — hairline -19 to brow -7, brow to nose base 6,
+      // nose base to chin 20 — `test_the_profile_face_is_in_thirds`.
+      //
+      // The nose is a small rounded wedge, [x, y] points: it used to start at
+      // eye level and hang 14 units, a third of the head.
+      nose: [[20, -2], [22, 1], [24, 4], [23, 5], [20, 6]],
       // The eye is a white with a pupil in it, and WHERE the pupil sits is
       // the other half of the look: the head nods only `GAZE_HEAD_SHARE` of
       // the way, and the pupil rides the front-upper corner for the rest.
-      eye: [12, -8, 4, 4],
-      pupil: [14, -8, 2, 2],
-      brow: [8, -12, 8, 2],
-      // Brow to jaw-hinge, and its bottom is where the nape starts.
-      ear: [-8, -4, 4, 12],
-      mouth: [16, 12, 4, 2],
+      // Drawn as an ellipse inside this box.
+      eye: [13, -4, 4, 4],
+      // Inside the white's oval, so half a unit in from the box's corner:
+      // the box corner is outside an ellipse, and a pupil there sits on skin.
+      pupil: [14.5, -3.5, 2, 2],
+      brow: [11, -7, 8, 2],
+      // The ear, an ellipse in this box from brow to nose base, and its
+      // bottom is where the nape starts. It sits ON the cheek now.
+      ear: [-8, -6, 6, 14],
+      // The short sideburn a taper leaves in front of the ear: from the
+      // temple hair down to mid-ear, no further.
+      sideburn: [-2, -12, 2, 8],
+      mouth: [16, 11, 4, 2],
       // The joint the head nods about: the top of the neck, under the jaw.
       pivot: [4, 20],
     };
@@ -2040,31 +2119,41 @@
       const [cx, cy, r] = P.skull;
       const hair = { keepFill: true, noRim: true, matte: true };
       const skin = { keepFill: true, noRim: true };
+      const mirror = (pts) => pts.map(([x, y]) => [side * x, y]);
       paint(skull, litCircle(side * cx, cy, r), HUMAN.hair, undefined, hair);
       paint(skull, litRect(...mirrorRect(P.nape, side)), HUMAN.skin, undefined, skin);
-      paint(skull, litRect(...mirrorRect(P.face, side)), HUMAN.skin, undefined, skin);
-      paint(skull, litRect(...mirrorRect(P.fringe, side)), HUMAN.hair, undefined, hair);
+      paint(skull, litPath(mirror(P.face)), HUMAN.skin, undefined, skin);
+      paint(skull, litPath(mirror(P.fringe)), HUMAN.hair, undefined, hair);
       // Not snapped: the pupil is half a CELL by design, and snapping its
       // mirrored x rounds it OUT of the eye on one side — which
-      // `test_the_profile_is_one_head_mirrored` caught. Every other feature
-      // is authored on whole cells already, so snapping them would be a no-op.
+      // `test_the_profile_is_one_head_mirrored` caught.
       const flat = (rect, colour) => {
         const [x, y, w, h] = mirrorRect(rect, side);
         features.rect(x, y, w, h).fill(colour);
       };
+      // An ellipse inscribed in a feature box: an ear or an eye drawn as a
+      // rect is a block, which is the whole of increment 18's brief.
+      const oval = (rect, colour) => {
+        const [x, y, w, h] = mirrorRect(rect, side);
+        features.ellipse(x + w / 2, y + h / 2, w / 2, h / 2).fill(colour);
+      };
       const skinBase = shade(HUMAN.skin, rampLevel("base"));
       const skinShade = shade(HUMAN.skin, rampLevel("shade"));
-      flat(P.ear, skinBase);
-      const [nx, ny, reach, tipY, baseY] = P.nose;
-      features.poly([side * nx, ny, side * (nx + reach), tipY, side * nx, baseY]).fill(skinBase);
+      flat(P.sideburn, HUMAN.hair);
+      oval(P.ear, skinBase);
+      // The ear's hollow: a shadowed oval set toward the FACE side, so the
+      // rim of the ear reads as a C round it rather than as a flat disc.
+      const [ex0, ey0, ew, eh] = P.ear;
+      oval([ex0 + ew / 2, ey0 + eh / 4, ew / 3, eh / 2], skinShade);
+      features.poly(mirror(P.nose).flat()).fill(skinBase);
       flat(P.brow, HUMAN.hair);
-      flat(P.eye, 0xd8c6b0);
+      oval(P.eye, 0xd8c6b0);
       flat(P.pupil, 0x1b1716);
       flat(P.mouth, skinShade);
       const eye = mirrorRect(P.eye, side);
       return {
-        crown: Math.min(cy - r, P.fringe[1]),
-        chin: P.face[1] + P.face[3],
+        crown: Math.min(cy - r, ...P.fringe.map((p) => p[1])),
+        chin: Math.max(...P.face.map((p) => p[1])),
         eye: [eye[0] + eye[2] / 2, eye[1] + eye[3] / 2],
         pivot: [side * P.pivot[0], P.pivot[1]],
       };

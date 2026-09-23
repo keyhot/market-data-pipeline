@@ -1007,6 +1007,9 @@ def _shading_prelude(source: str) -> str:
         + _js_const(source, "MIN_BAND")
         + _js_block(source, "const litRect = ") + "\n"
         + _js_block(source, "const litCircle = ") + "\n"
+        + _js_block(source, "const litPath = ") + "\n"
+        + _js_block(source, "function insideConvex(") + "\n"
+        + _js_block(source, "function pathBand(") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
         + _js_block(source, "function rimStyle(") + "\n"
         + _js_block(source, "function paint(") + "\n"
@@ -2731,6 +2734,7 @@ def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
         const volumes = [];
         const litRect = (x, y, w, h, r) => ({ kind: "rect", geom: [x, y, w, h, r] });
         const litCircle = (cx, cy, rad) => ({ kind: "circle", geom: [cx, cy, rad] });
+        const litPath = (pts) => ({ kind: "path", geom: pts.flat() });
         function paint(g, volume, fill, rim, opts) {
           volumes.push({ kind: volume.kind, geom: volume.geom, fill, opts: opts || {} });
         }
@@ -2739,6 +2743,7 @@ def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
         const recorder = {
           rect(x, y, w, h) { pending = { kind: "rect", geom: [x, y, w, h] }; return this; },
           poly(pts) { pending = { kind: "poly", geom: pts }; return this; },
+          ellipse(cx, cy, rx, ry) { pending = { kind: "ellipse", geom: [cx, cy, rx, ry] }; return this; },
           fill(colour) { features.push({ ...pending, fill: colour }); pending = null; return this; },
         };
         const head = profileHead({}, recorder, SIDE);
@@ -2787,11 +2792,31 @@ def _extent(volume: dict) -> tuple[float, float, float, float]:
     if volume["kind"] == "circle":
         cx, cy, r = g
         return cx - r, cy - r, cx + r, cy + r
-    if volume["kind"] == "poly":
+    if volume["kind"] in ("poly", "path"):
         xs, ys = g[0::2], g[1::2]
         return min(xs), min(ys), max(xs), max(ys)
+    if volume["kind"] == "ellipse":
+        cx, cy, rx, ry = g
+        return cx - rx, cy - ry, cx + rx, cy + ry
+    if volume["kind"] != "rect":
+        raise ValueError(f"no extent for a {volume['kind']!r}")
     x, y, w, h = g[:4]
     return x, y, x + w, y + h
+
+
+def _inside_convex(pts, px, py) -> bool:
+    """Is (px, py) inside or on the convex polygon `pts`, either winding?
+    The test-side twin of the page's `insideConvex`, written separately so
+    the two can disagree."""
+    sign = 0
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+        if abs(cross) < 1e-9:
+            continue
+        if sign and (cross > 0) != (sign > 0):
+            return False
+        sign = cross
+    return True
 
 
 def _mirrored(rect: list, side: int) -> list:
@@ -2906,6 +2931,9 @@ def test_no_hair_shows_below_the_ear():
             g = v["geom"]
             if v["kind"] == "circle":
                 return math.hypot(px - g[0], py - g[1]) <= g[2]
+            if v["kind"] == "path":
+                return _inside_convex(list(zip(g[0::2], g[1::2])), px, py)
+            assert v["kind"] == "rect", v["kind"]
             return _inside_round_rect(px, py, g[:4], g[4] if len(g) > 4 else 0, slack=0)
 
         x0 = min(_extent(v)[0] for v in run["volumes"])
@@ -2995,7 +3023,13 @@ def test_the_trader_looks_at_a_chart():
     assert 0 < run["GAZE_HEAD_SHARE"] < 1, "the eyes do none of the looking"
     rects = [f for f in run["features"] if f["kind"] == "rect"]
     pupil = next(f for f in rects if _mirrored(run["P"]["pupil"], side) == f["geom"])
-    eye_white = next(f for f in rects if _mirrored(run["P"]["eye"], side) == f["geom"])
+    # The white is an oval inscribed in its box (increment 18), so it is
+    # found by its extent rather than by its rect.
+    ex0, ey0, ew, eh = _mirrored(run["P"]["eye"], side)
+    eye_white = next(
+        f for f in run["features"]
+        if f["kind"] == "ellipse" and _extent(f) == (ex0, ey0, ex0 + ew, ey0 + eh)
+    )
     assert pupil["fill"] != eye_white["fill"], "the pupil is the colour of the white"
     wx0, wy0, wx1, wy1 = _extent(eye_white)
     px0, py0, px1, py1 = _extent(pupil)
@@ -7171,17 +7205,19 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     # that silently drops out of the extraction has to fail, or this test
     # quietly stops covering whatever was removed.
     # The profile head (increment 16) authors its volumes as DATA in
-    # `PROFILE_HEAD` and mirrors them, so they are read from there: the three
-    # rects and the one circle `profileHead` paints.
+    # `PROFILE_HEAD` and mirrors them, so they are read from there: the one
+    # rect and the one circle `profileHead` paints. The face and fringe are
+    # convex PATHS since increment 18 and are graded by
+    # `test_no_path_band_leaves_its_outline`.
     profile = dict(
         re.findall(r"^\s+(\w+): \[([-\d, ]+)\],", _js_block(source, "const PROFILE_HEAD = {"), re.M)
     )
-    for key in ("nape", "face", "fringe"):
+    for key in ("nape",):
         rects.append(tuple(v.strip() for v in profile[key].split(",")))
     circles.append(tuple(v.strip() for v in profile["skull"].split(",")))
-    assert (len(rects), len(circles)) == (25, 5), (
+    assert (len(rects), len(circles)) == (23, 5), (
         f"the extraction now reaches {len(rects)} rect and {len(circles)} "
-        "circle volumes, not 25 and 5. Either a volume was added (raise these "
+        "circle volumes, not 23 and 5. Either a volume was added (raise these "
         "numbers, having checked the new one is graded) or one stopped being "
         "readable - and an unreadable volume is an ungraded volume"
     )
@@ -9217,3 +9253,147 @@ def test_both_shoes_are_darker_than_the_floor_they_stand_on():
             f"a shoe authored {authored:#08x} renders {shaded:#08x}, "
             f"{ratio:.2f}x the floor's luminance: it reads as floor, not as a shoe"
         )
+
+
+@needs_node
+def test_no_path_band_leaves_its_outline():
+    """Every `litPath` outline the page paints is CONVEX, and every band
+    `paint` draws inside it stays inside it.
+
+    Increment 18 drew the face and fringe as outlines rather than rects
+    ("natural, without blocks"). A band is the outline shrunk about its
+    centroid and slid toward the lamp; that is contained only while the
+    outline is convex — shrink a concave one and the band pokes out through
+    the notch, the rounded-corner leak `bandInside` was written to stop. So
+    both halves are graded: the shape, and the page's own banding of it,
+    for both sides the profile can face.
+    """
+    source = _world_source()
+    P = _profile_head_run()["P"]
+    outlines = {name: P[name] for name in ("face", "fringe")}
+    assert outlines, "no path volumes to grade"
+    for name, pts in outlines.items():
+        for side in (-1, 1):
+            mirrored = [[side * x, y] for x, y in pts]
+            n = len(mirrored)
+            turns = [
+                (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+                for a, b, c in (
+                    (mirrored[i], mirrored[(i + 1) % n], mirrored[(i + 2) % n])
+                    for i in range(n)
+                )
+            ]
+            assert all(t > 0 for t in turns) or all(t < 0 for t in turns), (
+                f"the {name} outline is not convex (turns {turns}); its bands "
+                "would leak through the concavity"
+            )
+            driver = _geometry_driver(
+                source,
+                f"const PTS = {json.dumps(mirrored)};\n"
+                + """
+                const bands = [];
+                const g = { poly(flat) { bands.push(flat); return this; },
+                            fill() { return this; }, stroke() { return this; } };
+                const vol = litPath(PTS);
+                for (const band of Object.values(BAND_INSET)) vol.band(g, band);
+                console.log(JSON.stringify({ bands, inset: BAND_INSET }));
+                """,
+            )
+            emitted = _run_node(driver)
+            assert len(emitted["bands"]) == len(emitted["inset"])
+            outline = [tuple(p) for p in mirrored]
+            for flat in emitted["bands"]:
+                for px, py in zip(flat[0::2], flat[1::2]):
+                    # One quantum of slack: band vertices land on 1/64.
+                    inside = _inside_convex(outline, px, py) or any(
+                        _inside_convex(outline, px + dx, py + dy)
+                        for dx in (-1 / 64, 1 / 64) for dy in (-1 / 64, 1 / 64)
+                    )
+                    assert inside, (
+                        f"facing {side:+d}, a band of the {name} leaves its "
+                        f"outline at ({px}, {py})"
+                    )
+
+
+@needs_node
+def test_the_profile_face_is_in_thirds():
+    """Hairline to brow, brow to nose base, nose base to chin: three roughly
+    equal thirds, and the eye within a few units of halfway down the head.
+
+    The user's catch (increment 18) was "his forehead is nonexistent": the
+    fringe came down to -12 and the brow sat at -12, so the top third was
+    zero and the nose alone took 14 of the head's 46 units. Pose-free and
+    art-free — it reads the builder's data, so any redraw answers to it.
+    """
+    run = _profile_head_run(1)
+    P = run["P"]
+    hairline = max(y for _, y in P["fringe"])
+    brow = P["brow"][1]
+    nose_base = max(y for _, y in P["nose"])
+    chin = run["head"]["chin"]
+    thirds = [brow - hairline, nose_base - brow, chin - nose_base]
+    assert min(thirds) > 0, f"the thirds {thirds} are out of order"
+    assert max(thirds) <= 1.35 * min(thirds), (
+        f"hairline→brow, brow→nose, nose→chin measure {thirds}: one third "
+        "dwarfs another (the old head's forehead measured 0)"
+    )
+    nose_len = nose_base - min(y for _, y in P["nose"])
+    assert nose_len <= (chin - hairline) / 3, (
+        f"the nose is {nose_len} units long on a {chin - hairline}-unit face; "
+        "a nose longer than the middle third starts above the eyes"
+    )
+    crown = run["head"]["crown"]
+    eye_y = run["head"]["eye"][1]
+    assert abs(eye_y - (crown + chin) / 2) <= 4, (
+        f"the eye sits at {eye_y} on a head from {crown} to {chin}; an eye is "
+        "about halfway down a head, not up in the hairline"
+    )
+
+
+@needs_node
+def test_only_a_sideburn_of_hair_shows_in_front_of_the_ear():
+    """In front of the ear and below the temple, the cheek is SKIN: the one
+    hair allowed there is the sideburn, at most 2 units wide and ending
+    above mid-ear.
+
+    The complement of `test_no_hair_shows_below_the_ear`. The old face was a
+    rect whose back edge stopped 8 units short of the ear, so a column of
+    hair ran from the fringe to the jaw in front of it — "too much hair on
+    the left of the ear" (the user's catch, increment 18). Graded by painting
+    order over the volumes, both sides; the sideburn is a flat feature and is
+    graded on its own numbers.
+    """
+    for side in (-1, 1):
+        run = _profile_head_run(side)
+        P, hair = run["P"], run["HUMAN"]["hair"]
+        ex, ey, ew, eh = P["ear"]
+        # The ear's front edge, facing +x, and the band of cheek in front of
+        # it from ear top to ear bottom: in front means up to the nose.
+        front = ex + ew
+        tufts = []
+        for i in range(0, 17):
+            px = side * (front + i / 2)
+            for j in range(0, eh * 2 + 1):
+                py = ey + j / 2
+                top = None
+                for v in reversed(run["volumes"]):
+                    g = v["geom"]
+                    if v["kind"] == "circle":
+                        hit = math.hypot(px - g[0], py - g[1]) <= g[2]
+                    elif v["kind"] == "path":
+                        hit = _inside_convex(list(zip(g[0::2], g[1::2])), px, py)
+                    else:
+                        hit = _inside_round_rect(px, py, g[:4], g[4] if len(g) > 4 else 0, slack=0)
+                    if hit:
+                        top = v
+                        break
+                if top is not None and top["fill"] == hair:
+                    tufts.append((px, py))
+        assert not tufts, (
+            f"facing {side:+d}, hair shows on the cheek in front of the ear at "
+            f"{len(tufts)} points, e.g. {tufts[:4]}"
+        )
+        sx, sy, sw, sh = P["sideburn"]
+        assert sw <= 2, f"the sideburn is {sw} wide; a taper leaves a line, not a column"
+        assert sy + sh <= ey + eh / 2, "the sideburn runs past mid-ear toward the jaw"
+        assert abs(sx + sw - front) <= 4, "the sideburn is not in front of the ear"

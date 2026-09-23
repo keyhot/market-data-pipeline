@@ -241,6 +241,9 @@ def _shading_prelude(source: str) -> str:
         + _js_const(source, "MIN_BAND")
         + _js_block(source, "const litRect = ") + "\n"
         + _js_block(source, "const litCircle = ") + "\n"
+        + _js_block(source, "const litPath = ") + "\n"
+        + _js_block(source, "function insideConvex(") + "\n"
+        + _js_block(source, "function pathBand(") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
         + _js_block(source, "function rimStyle(") + "\n"
         + _js_block(source, "function paint(") + "\n"
