@@ -2840,57 +2840,49 @@
       // Lengths are the trace's, converted through the one unit this redesign
       // uses (59.5 reference px per head, 44 units per head): 58.1 px of
       // upper arm and 58.1 px of forearm both come out at 43 units.
-      // The forearm is nearly LEVEL: the reference's elbow is 35 px above the
-      // seat surface and its wrist 31 px, a drop of three over a 43-unit
-      // bone. That much the trace gives cleanly, because it is a difference
-      // between two points on the same arm.
       //
-      // The arm's HEIGHT is the one thing this trace cannot settle, and the
-      // reason is worth keeping. An earlier version of this comment read
-      // "35 px above the seat = 26 units, and our hips are at 0, so the elbow
-      // belongs at -26, which is what we have". Those are two different
-      // origins: the trace puts `hip_near` 37 px above the seat as well, so
-      // its elbow is at HIP level, not 26 units above it. Taken literally
-      // that would drop this elbow 27 units.
+      // The arm's HEIGHT is not the trace's to settle: the reference figure is
+      // slumped, and a recline throws the shoulder back and down relative to
+      // the hip, so every hip-relative arm number off it carries the recline
+      // inside it. This rig sits upright, which pins the elbow near -20 at
+      // any upper-arm angle a person could hold — measured, not assumed.
       //
-      // It should not be taken literally. The reference figure is slumped —
-      // reclined, with his hips slid forward and up the cushion — and a
-      // recline throws the shoulder back and down relative to the hip, so
-      // every hip-relative arm measurement off this trace carries the recline
-      // inside it. This rig sits upright. For an upright figure a shoulder at
-      // -66 and a 43-unit upper arm put the elbow near -27, which is about
-      // where a task chair's armrest is, and that is the pose drawn here.
-      //
-      // The projection-free way to settle it, when someone wants to: the
-      // armrest is PAINTED, and `skeleton_ref.json` already carries
-      // `armrest_top`. Measure the plate's own armrest the way
-      // `measure_floor_band` measures the castor contacts, and bracket the
-      // hand against it. That needs no projection and no recline.
+      // THE ARM RESTS ON THE LAP (2026-09-23, the user's call). The old pose
+      // ran the forearm "forward along the armrest", nearly level, and hung it
+      // six units of clear room over the thigh — the plate paints no armrest
+      // on the near side at all (closed 2026-09-21). Now the upper arm swings
+      // a little further BACK, tucking the elbow beside the hip, and since the
+      // elbow cannot come lower the forearm slopes DOWN onto the thigh.
+      // `test_the_near_forearm_rests_on_the_lap` brackets the wrist and the
+      // fingertips between the thigh's top edge and its centreline, and the
+      // window is narrow for a geometric reason: the forearm descends while
+      // the thigh rises toward the knee, so a straight hand gains ~7 units of
+      // sink over its 20. Roughly -0.28 to -0.34 of forearm drop pass.
+      // Both directions are unit vectors, because `reach` does not normalise
+      // and a longer one would draw a bone longer than itself.
       const ARM = {
-        upper: [43, [0.20, -0.18, -0.96]],   // down the side, slightly back
+        upper: [43, [0.199, -0.398, -0.896]],  // down the side, back a little
         // Lateral is POSITIVE, i.e. the forearms splay very slightly OUT. At
         // -0.08 they both angled inward and, seen from behind, converged into
         // one horizontal bar across the chest — two arms reading as a single
         // object, which is the same failure the thighs have below.
-        fore:  [43, [0.10, 0.94, -0.12]],    // forward along the armrest
+        fore:  [43, [0.101, 0.945, -0.312]],   // forward and down onto the thigh
         width: [14, 12],
         // The hand, traced off `ref-trader.png` and converted through the one
-        // unit this redesign uses. `along` is the reach past the wrist,
-        // `across` the full depth including the fingers, `finger` how far a
-        // separation cuts into that depth, `gap` a separation's own width,
-        // `corner` the slab's rounding.
+        // unit this redesign uses. The hand is STRAIGHT — it carries on the
+        // forearm's line, fingers pointing where the arm points — so `along`
+        // is heel to fingertip down the bone, `across` the span of four
+        // fingers side by side, `finger` how far a separation cuts back from
+        // the tips, `gap` a separation's own width, `corner` the rounding.
         //
-        // `across` was 14 and `finger` 6, which put 8 units of palm against 6
-        // of finger — the fingers shallower than the palm they hang off. That
-        // is a notch, not a prong, and at 1:1 the whole hand read as a mitten
-        // with three slots scratched in it. Re-measured 2026-09-22 the
-        // reference hands are 18.5–23.7 units deep and spend MORE of that on
-        // finger than on palm; 20 deep, split 8 palm / 12 finger, is that
-        // ratio on this grid. `along` stays 16 because the CELL forces it —
-        // four fingers want separations at 4, 8 and 12 and nothing else is a
-        // whole cell. Measurements beside HAND_ACROSS_U in
-        // tests/api/test_world_page.py.
-        hand: { along: 16, across: 20, finger: 12, gap: 2, corner: 2 },
+        // Until 2026-09-23 the hand hung off the wrist at a right angle with
+        // its fingers aimed at the floor, which over the knee read as a claw.
+        // The numbers survived the turn with their axes swapped: 20 along,
+        // split 8 palm / 12 finger (the prong rule, increment 12), and 16
+        // across because the CELL forces it — four fingers want separations
+        // at 4, 8 and 12 and nothing else is a whole cell. Measurements beside
+        // HAND_ALONG_U in tests/api/test_world_page.py.
+        hand: { along: 20, across: 16, finger: 12, gap: 2, corner: 2 },
       };
       for (const side of [-1, 1]) {
         // x ±16, and the two halves of that number are the KI-084 fix.
@@ -2951,23 +2943,20 @@
         // arm it belongs to with a gap of clear room between them — which is
         // exactly what the first version of this did.
         const H = ARM.hand;
-        // Which way the fingers hang is a consequence of the pose, never a
-        // literal: `litRect` draws in the forearm's own frame, and PIXI maps
+        // Which local side faces the floor is a consequence of the pose, never
+        // a literal: `litRect` draws in the forearm's own frame, and PIXI maps
         // that frame's +x to `(cos r, sin r)`. Screen y grows downward, so a
         // positive sine means +x is the floor-facing side. Both arms read it
-        // from their own bone, so a turn that swings one of them past vertical
-        // cannot leave the trader with a comb growing out of one wrist.
+        // from their own bone.
         //
         // `fore.restRotation` is still ABSOLUTE here — the reparenting below
         // makes it relative to the upper arm, and does so after this line.
-        const fingersOnPlusX = Math.sin(fore.restRotation) > 0;
-        // The hand is flush with the BACK of the wrist and hangs off the
-        // front, rather than being centred on the bone. Centring it was
-        // harmless at 14 units deep; at 20 it would bulge 4 units out of the
-        // back of the forearm, and a palm that swells above the wrist reads as
-        // a broken joint. So the edge the fingers do NOT hang from stays on
-        // the sleeve, and the whole extra depth goes where the fingers are.
-        const handX = fingersOnPlusX ? 0 : ARM.width[1] - H.across;
+        const floorOnPlusX = Math.sin(fore.restRotation) > 0;
+        // The hand is flush with the BACK of the wrist, and its extra width
+        // goes to the floor side rather than being centred on the bone: a palm
+        // that swells above the arm it hangs from reads as a broken joint,
+        // while the extra below is the edge of a hand spreading on the thigh.
+        const handX = floorOnPlusX ? 0 : ARM.width[1] - H.across;
         const handY = fore.boneLength + ARM.width[1] / 2 - 2;
         // The corner may not round away more than the shadow between two
         // fingers. `litRect` rounds all four corners, the fingertip pair
@@ -2990,14 +2979,16 @@
         // gap BETWEEN two fingers. Same reasoning as `shod`, same shape.
         const creased = { keepFill: true, matte: true };
         // Offsets are whole CELLs on purpose, and this is the whole reason the
-        // hand is 16 units long. `litRect` snaps both coordinates, and only a
+        // hand is 16 units across. `litRect` snaps both coordinates, and only a
         // whole number of cells survives that: `snap(v + 4k) === snap(v) + 4k`,
         // while three separations authored 3.9 apart can land two to a cell and
         // merge two fingers into one. Nothing in the drawn output would say so.
-        const fingerX = handX + (fingersOnPlusX ? H.across - H.finger : 0);
+        // Each is cut back from the fingertips, so the palm stays whole at the
+        // wrist end.
+        const fingerY = handY + H.along - H.finger;
         for (let i = 1; i <= 3; i++) {
-          paint(fore, litRect(fingerX, handY + i * CELL,
-                              H.finger, H.gap, H.gap / 2),
+          paint(fore, litRect(handX + i * CELL, fingerY,
+                              H.gap, H.finger, H.gap / 2),
                 HUMAN.crease, undefined, creased);
         }
         // THE FINGERTIPS END ON ONE FLAT LINE, and that is a closed question

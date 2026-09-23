@@ -2908,6 +2908,7 @@ def _rig_bone_driver(source: str) -> str:
           .map((g, order) => ({
             gid: g.gid, order, x: g.x, y: g.y,
             width: g.boneWidth, length: g.boneLength,
+            rotation: g.rotation, depth: g.depth || null,
           }));
         // An arm is the accent that carries a forearm. They are not tagged
         // `limb` — `arm.limb` was deliberately removed when the arms came back
@@ -2923,6 +2924,11 @@ def _rig_bone_driver(source: str) -> str:
             // sum. Carried here rather than recomputed per test: "which side of
             // the hand is downward" is a fact about the rig, not about a caller.
             foreWorldRotation: g.rotation + g.forearm.rotation,
+            // Enough to place the arm in the room: the shoulder, the upper
+            // arm's angle and drawn length, the forearm's drawn length, and
+            // which side of the torso it composites on.
+            x: g.x, y: g.y, rotation: g.rotation, length: g.boneLength,
+            foreLength: g.forearm.boneLength, depth: g.depth || null,
           }));
         // The palette rides along rather than being restated in python: the
         // hand is identified by its skin fill, and a recoloured hand must not
@@ -3403,69 +3409,50 @@ def test_the_seated_arms_bend_at_an_elbow():
 # The hand, measured off `ref-trader.png` and converted through the one unit
 # this redesign uses (1 head = 59.5 reference px = 44 rig units).
 #
-# `ref-trader.png` is an exact 3x upscale of the traced frame — every run
-# length in the reference hand is a multiple of 3 — so its pixels divide by 3
-# before they convert. The far hand is the one measured: the near one overlaps
-# the armrest and its lower edge cannot be separated from it.
+# `ref-trader.png` is an exact 3x upscale of the traced frame, so its pixels
+# divide by 3 before they convert. Re-measured 2026-09-22 against both hands:
 #
-#   the slab, along the forearm         18.7 px -> 13.8 u   (fingers splay to 19)
-#   slab + fingers, across it           19 px   -> 14.1 u
-#   the FINGER half of that across      9 px    ->  6.7 u
-#   one dark separation, along          2 px    ->  1.5 u
+#   reference NEAR hand    30 px x 32 px  ->  22.2 u x 23.7 u
+#   reference FAR  hand    26 px x 25 px  ->  19.2 u x 18.5 u
 #
-# The Next list called this an aspect defect ("broader than tall, against the
-# shipped 14 x 15.4"). It is not: the shipped footprint is already within 10%
-# of the reference on both axes. What the reference spends differently is the
-# ACROSS axis — half of it is a thin slab and half is four fingers — and the
-# shipped hand spends all of it on one solid mass. Hence a mitten.
+# THE HAND IS STRAIGHT (2026-09-23, the user's call on the open pose
+# question): it carries on the line of the forearm, fingers pointing where the
+# forearm points, and lies flat on the thigh. Until then it hung off the wrist
+# at a right angle with the fingers aimed at the floor -- a claw over the
+# knee, not a hand at rest.
 #
-# The along-extent is the one number the ART does not get to set alone.
-# `litRect` snaps both coordinates to the 4-unit CELL, and only an offset that
-# is itself a whole number of cells survives that snap unchanged
-# (`snap(y + 4k) == snap(y) + 4k`). So three separations can only sit at +4,
-# +8 and +12, and a hand shorter than 16 leaves the fourth finger a stub. 16
-# units sits inside the reference's own range — its slab traces 13.8 and its
-# splayed fingers reach 19 — and is what the grid allows.
-HAND_ALONG_U = 16.0
+# So the two axes swapped roles. ALONG is now heel to fingertip, down the
+# forearm's own line, and it carries the palm AND the fingers: 8 of palm and 12
+# of finger, the 1:1.5 split increment 12 measured (the reference divides palm
+# to finger about 1:1.4). 20 sits between the two reference hands.
+HAND_ALONG_U = 20.0
 
-# ACROSS — palm heel to fingertip — was 14.1, and that was the defect.
-#
-# Re-measured 2026-09-22 against both reference hands, converted at the
-# reference's own 1.352 px/unit (59.5 px per head, 44 units per head):
-#
-#   reference NEAR hand    30 px x 32 px  ->  22.2 u along x 23.7 u across
-#   reference FAR  hand    26 px x 25 px  ->  19.2 u along x 18.5 u across
-#   shipped (increment 10) 33 px x 29 px  ->  16.0 u along x 14.0 u across
-#
-# The hand was short on BOTH axes, and short across is what made it a mitten:
-# 14 units of depth split 8 palm / 6 finger leaves the fingers shallower than
-# the palm they hang off, so they cannot read as prongs — only as notches cut
-# into a dome. 20 sits between the two reference hands and is what the fingers
-# need to get free of the palm. ALONG stays 16 because the 4-unit CELL forces
-# it: four fingers want separations at a quarter, a half and three quarters of
-# the span, and 4/8/12 is the only whole-cell answer.
-HAND_ACROSS_U = 20.0
+# ACROSS is now the span of four fingers side by side, and it is the number the
+# CELL forces: `litRect` snaps both coordinates, only a whole-cell offset
+# survives that snap unchanged (`snap(x + 4k) == snap(x) + 4k`), so three
+# separations can only sit at +4, +8 and +12 -- and a hand narrower than 16
+# leaves the fourth finger a stub. 16 is also inside the reference's range.
+HAND_ACROSS_U = 16.0
 
-# Of that depth, the fingers take more than the palm — the prong rule, graded
-# on its own in `test_the_fingers_reach_further_than_the_palm_they_hang_from`.
-# The reference divides palm:finger about 1:1.4; 8 palm and 12 finger is 1:1.5.
+# Of the ALONG extent, the fingers take more than the palm -- the prong rule,
+# graded on its own in `test_the_fingers_reach_further_than_the_palm_they_hang_from`.
 FINGER_DEPTH_FRACTION = 0.6
 
 # A separation's own thickness. Four fingers at a 4-unit pitch makes the gap
-# and the finger the same order of size, which is what the reference shows —
+# and the finger the same order of size, which is what the reference shows --
 # its gaps measure 3-7 px against fingers of 1-4 px. 2.0 is as wide as the
 # pitch allows while keeping the widest finger inside the evenness bound
-# below: the leading finger has no separation above it, so it is a whole
+# below: the leading finger has no separation beside it, so it is a whole
 # 4 units against the other three at 4 - gap.
 HAND_GAP_U = 2.0
 
-# A separation is a long thin line lying ACROSS the hand. Anything painted in
-# `HUMAN.crease` that is squarer than this is BLUNT — a volume big enough in
-# both axes for `paint`'s three insets to read as a dark object rather than as
-# shading, which is the joint cap this redesign has now hit three times. Told
-# apart by shape rather than by draw order or by count: a classifier keyed on
-# order would quietly re-label them the first time someone reorders the loop.
-# See `test_nothing_blunt_is_painted_at_the_fingertips`.
+# A separation is a long thin line running the length of a finger. Anything
+# painted in `HUMAN.crease` that is squarer than this -- in EITHER axis -- is
+# BLUNT: a volume big enough both ways for `paint`'s three insets to read as a
+# dark object rather than as shading, the joint cap this redesign has now hit
+# three times. Told apart by shape, not by orientation or draw order: the hand
+# turned a right angle on 2026-09-23 and a classifier keyed on "wide in x"
+# filed every separation as debris.
 SEPARATION_ASPECT = 2.0
 # `const CELL = (PLATE && PLATE.cell) || 4`, and the rig runs with no plate in
 # these drivers. Restated here rather than parsed because it is the grid the
@@ -3484,33 +3471,43 @@ def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]
     Separations and tip cuts share `HUMAN.crease` — they are the same shadow —
     so they are split by SHAPE: a separation runs the length of a finger and is
     gap-thin, a tip cut is a blunt block that shortens one. Keying that on the
-    aspect ratio states the difference the eye reads; keying it on the order
-    the loop happens to paint them in would not.
+    aspect ratio -- long axis against short, whichever way the hand lies --
+    states the difference the eye reads; keying it on the order the loop
+    happens to paint them in, or on which axis is long, would not.
     """
     palette = emitted["HUMAN"]
     on_fore = [d for d in emitted["drawn"] if d["gid"] == arm["foreGid"]]
     slabs = [d for d in on_fore if d["fill"] == palette["skin"]]
     creases = [d for d in on_fore if d["fill"] == palette.get("crease")]
-    seps = [c for c in creases if c["snapped"][2] > SEPARATION_ASPECT * c["snapped"][3]]
+    seps = [
+        c
+        for c in creases
+        if max(c["snapped"][2:4]) > SEPARATION_ASPECT * min(c["snapped"][2:4])
+    ]
     tips = [c for c in creases if c not in seps]
     return (slabs[0] if len(slabs) == 1 else None), seps, tips
 
 
 @needs_node
 def test_the_hand_is_a_slab_with_three_finger_separations():
-    """Four fingers, so three dark lines cut into the hand's outer half.
+    """Four fingers, so three dark lines cut into the hand's far end.
 
-    The reference paints a hand as a broad pale slab whose lower half is
-    divided into fingers by near-black shadow (`#262127` sampled between the
-    far hand's fingers, against `#a67265` on the lit slab above them). The
-    shipped hand was a single rounded rect with nothing cut into it, which at
-    1:1 is a mitten on the end of a stick.
+    The reference paints a hand as a broad pale slab divided into fingers by
+    near-black shadow (`#262127` sampled between the far hand's fingers,
+    against `#a67265` on the lit slab). The shipped hand was once a single
+    rounded rect with nothing cut into it, which at 1:1 is a mitten on the end
+    of a stick.
 
     Three separations and not four fingers, deliberately. `paint` draws three
     banded insets per volume, and four finger-sized volumes would each take a
     set — the joint-cap failure that made the elbow read as a bolt, repeated
     four times per hand. One slab keeps the bands at a size that reads as
     shading, and the fingers are the gaps between what is cut out of it.
+
+    The hand is STRAIGHT: the fingers run down the forearm's own local y, so a
+    separation is long in y and gap-thin in x, and the four fingers sit side by
+    side across x. `test_the_hand_carries_on_the_line_of_the_forearm` grades
+    where along the hand they are cut.
 
     The separations are FILLS, never `stroke` — `paint` gives a `keepFill`
     volume no rim precisely because a person is not outlined
@@ -3535,12 +3532,12 @@ def test_the_hand_is_a_slab_with_three_finger_separations():
 
         _, _, across, along = slab["snapped"]
         assert along == pytest.approx(HAND_ALONG_U, abs=1.0), (
-            f"arm {index}'s hand reaches {along:.1f} units past the wrist "
-            f"where the reference traces {HAND_ALONG_U}"
+            f"arm {index}'s hand reaches {along:.1f} units past the wrist, "
+            f"heel to fingertip, where the reference traces {HAND_ALONG_U}"
         )
         assert across == pytest.approx(HAND_ACROSS_U, abs=1.0), (
-            f"arm {index}'s hand is {across:.1f} units across where the "
-            f"reference traces {HAND_ACROSS_U}"
+            f"arm {index}'s hand is {across:.1f} units across its four "
+            f"fingers where the grid and the reference agree on {HAND_ACROSS_U}"
         )
 
         for crease in creases:
@@ -3551,16 +3548,17 @@ def test_the_hand_is_a_slab_with_three_finger_separations():
                 "a hand is shadow, and shadow does not change with the mood."
             )
             cx, cy, cw, ch = crease["snapped"]
-            assert ch < cw, (
+            assert cw < ch, (
                 f"arm {index}: a separation is {cw:.1f} across by {ch:.1f} "
-                "along the forearm. A finger gap is a thin line ACROSS the "
-                "hand, not a band running down its length"
+                "along the forearm. The hand is straight, so a finger gap runs "
+                "DOWN the hand with the fingers -- a line across it is the "
+                "old drooping hand's cut, turned a right angle from its fingers"
             )
-            assert cw == pytest.approx(across * FINGER_DEPTH_FRACTION, abs=1.5), (
-                f"arm {index}: a separation cuts {cw:.1f} units into a "
-                f"{across:.1f}-unit hand. The reference divides the across "
-                "axis in half -- slab above, fingers below -- and a cut that "
-                "reaches further turns the hand into a fork"
+            assert ch == pytest.approx(along * FINGER_DEPTH_FRACTION, abs=1.5), (
+                f"arm {index}: a separation cuts {ch:.1f} units into a "
+                f"{along:.1f}-unit hand. The fingers take a little over half "
+                "of the heel-to-tip length; a cut that reaches further turns "
+                "the hand into a fork"
             )
             sx, sy, sw, sh = slab["snapped"]
             assert sx <= cx and cx + cw <= sx + sw + 1e-9, (
@@ -3581,12 +3579,12 @@ def test_the_hand_is_a_slab_with_three_finger_separations():
         # into one cell at the next pose someone authors. The evenness check
         # below cannot see that — it measures the hand the page draws today,
         # and today's arm happens to round the right way.
-        sy_raw = slab["at"][1]
+        sx_raw = slab["at"][0]
         for crease in creases:
-            offset = crease["at"][1] - sy_raw
+            offset = crease["at"][0] - sx_raw
             assert offset % CELL_U == pytest.approx(0, abs=1e-9), (
                 f"arm {index}: a separation is authored {offset:.2f} units "
-                f"down a hand, which is not a whole {CELL_U}-unit CELL. "
+                f"across a hand, which is not a whole {CELL_U}-unit CELL. "
                 "`litRect` snaps it, and only a whole cell survives that "
                 "unchanged -- at some other arm pose two of these land in the "
                 "same cell and two fingers silently become one."
@@ -3595,13 +3593,13 @@ def test_the_hand_is_a_slab_with_three_finger_separations():
         # Four fingers of roughly one width. Measured as the gaps BETWEEN the
         # separations rather than as their positions, so this states the thing
         # the eye reads and stays true if the hand is ever re-placed.
-        edges = sorted(c["snapped"][1] for c in creases)
-        gap = creases[0]["snapped"][3]
-        sy, sh = slab["snapped"][1], slab["snapped"][3]
+        edges = sorted(c["snapped"][0] for c in creases)
+        gap = creases[0]["snapped"][2]
+        sx, sw = slab["snapped"][0], slab["snapped"][2]
         fingers = (
-            [edges[0] - sy]
+            [edges[0] - sx]
             + [b - a - gap for a, b in zip(edges, edges[1:])]
-            + [sy + sh - (edges[-1] + gap)]
+            + [sx + sw - (edges[-1] + gap)]
         )
         assert min(fingers) > 0, (
             f"arm {index}'s fingers measure {[round(f, 1) for f in fingers]}: "
@@ -3611,47 +3609,50 @@ def test_the_hand_is_a_slab_with_three_finger_separations():
             f"arm {index}'s fingers measure {[round(f, 1) for f in fingers]} "
             "units. The reference's four are within a whisker of each other; "
             "one much wider than the rest reads as a thumb, which a hand seen "
-            "from behind on an armrest does not show"
+            "from behind lying on a thigh does not show"
         )
 
 
 @needs_node
-def test_the_fingers_hang_from_the_hands_screen_downward_edge():
-    """The fingers droop, on both arms, whichever way the forearm points.
+def test_the_hand_carries_on_the_line_of_the_forearm():
+    """The hand is straight: palm at the wrist, fingers at the far end.
 
-    This is the half a literal would get wrong. The hand is drawn in the
-    FOREARM's local frame, and which way that frame's `x` axis points on screen
-    is a consequence of the shoulder pose, the elbow bend and the body turn --
-    none of which this file restates. So the rule is graded as a rule: rotate
-    the local axis into the room and require the separations to be on the side
-    the floor is.
+    This replaces `test_the_fingers_hang_from_the_hands_screen_downward_edge`,
+    which graded the pose the user overruled on 2026-09-23. The hand used to
+    hang off the wrist at a right angle with its fingers aimed at the floor;
+    over the knee that read as a claw rather than as a hand at rest.
 
-    A sign that is right for one arm and wrong for the other gives the trader
-    one hand with fingers and one with a comb sticking up out of the wrist, and
-    at 1:1 in a moving room that reads as damage rather than as a mistake.
+    Graded in the forearm's OWN frame, which is what makes it pose-free: the
+    bone runs down local +y, so a straight hand is one whose long axis is y,
+    whose separations run the same way, and whose fingers are cut from the end
+    FURTHEST from the wrist. A separation cut from the heel would put the
+    fingers inside the sleeve and a palm on the end -- a hand on backwards.
     """
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, creases, _tips = _hand_parts(emitted, arm)
-        assert slab and len(creases) == 3, (
+        slab, seps, _tips = _hand_parts(emitted, arm)
+        assert slab and len(seps) == 3, (
             f"arm {index} has no hand to check; see "
             "test_the_hand_is_a_slab_with_three_finger_separations"
         )
-        # Local +x, rotated into the room. Screen y grows downward, so a
-        # positive y component means local +x points at the floor.
-        downward = math.sin(arm["foreWorldRotation"])
-        sx, sw = slab["snapped"][0], slab["snapped"][2]
-        mid = sx + sw / 2
-        for crease in creases:
-            cx, cw = crease["snapped"][0], crease["snapped"][2]
-            on_plus_x = (cx + cw / 2) > mid
-            assert on_plus_x == (downward > 0), (
-                f"arm {index}: its forearm's local +x points "
-                f"{'down' if downward > 0 else 'up'} the screen "
-                f"(sin={downward:+.2f}), but the separations are cut into the "
-                f"{'+x' if on_plus_x else '-x'} half of the hand. The fingers "
-                "are pointing at the ceiling."
+        _sx, sy, sw, sh = slab["snapped"]
+        assert sh > sw, (
+            f"arm {index}'s hand is {sw:.1f} across by {sh:.1f} down the "
+            "forearm: it lies ACROSS the bone, so the fingers point off the "
+            "side of the arm instead of carrying on its line"
+        )
+        for sep in seps:
+            _cx, cy, _cw, ch = sep["snapped"]
+            assert cy + ch == pytest.approx(sy + sh, abs=1e-9), (
+                f"arm {index}: a separation ends at {cy + ch:.1f} where the "
+                f"hand ends at {sy + sh:.1f}. A finger gap has to open at the "
+                "fingertips, or the fingers are welded together at the end"
+            )
+            assert cy > sy, (
+                f"arm {index}: a separation starts {cy - sy:.1f} units past "
+                "the heel. The fingers are at the far end of the hand, with "
+                "the palm between them and the wrist"
             )
 
 
@@ -3679,12 +3680,12 @@ def test_the_fingers_reach_further_than_the_palm_they_hang_from():
             f"arm {index} has no hand to check; see "
             "test_the_hand_is_a_slab_with_three_finger_separations"
         )
-        across = slab["snapped"][2]
+        along = slab["snapped"][3]
         for sep in seps:
-            finger = sep["snapped"][2]
-            palm = across - finger
+            finger = sep["snapped"][3]
+            palm = along - finger
             assert finger > palm, (
-                f"arm {index}: a {across:.1f}-unit hand keeps {palm:.1f} units "
+                f"arm {index}: a {along:.1f}-unit hand keeps {palm:.1f} units "
                 f"of palm and cuts only {finger:.1f} units of finger. The "
                 "fingers are shallower than the palm they hang off, so they "
                 "are notches in a dome rather than prongs -- which is exactly "
@@ -3716,7 +3717,7 @@ def test_the_hands_corner_does_not_dome_over_its_outer_fingers():
             f"arm {index} has no hand to check; see "
             "test_the_hand_is_a_slab_with_three_finger_separations"
         )
-        gap = min(s["snapped"][3] for s in seps)
+        gap = min(min(s["snapped"][2:4]) for s in seps)
         assert slab["radius"] <= gap + 1e-9, (
             f"arm {index}: the hand rounds its corners by {slab['radius']:.1f} "
             f"units against a {gap:.1f}-unit separation. The fingertip corners "
@@ -3727,14 +3728,14 @@ def test_the_hands_corner_does_not_dome_over_its_outer_fingers():
 
 @needs_node
 def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
-    """The hand hangs off the FRONT of the wrist. It is not centred on it.
+    """The hand is flush with the BACK of the wrist. It is not centred on it.
 
-    A 14-unit hand centred on a 12-unit forearm overhung the sleeve by one
-    unit either side, which at 1:1 is nothing. At the 20 units of depth the
-    fingers need, centring puts FOUR units of palm out of the back of the
-    wrist -- and a palm that swells above the arm it hangs from reads as a
-    dislocation, not as a hand. So the extra depth all goes to the finger
-    side: the edge the fingers do not hang from stays on the sleeve.
+    A hand wider than the sleeve has to put its extra somewhere, and it goes
+    on the floor side. Centring a 16-unit hand on a 12-unit forearm puts two
+    units of palm above the wrist's back edge -- and a hand that swells out of
+    the top of the arm it hangs from reads as a dislocation, not as a hand.
+    Seen from behind on a thigh, the extra on the floor side is the palm's edge
+    lying on the leg, which is where a resting hand spreads.
 
     This test exists because re-centring the hand SURVIVED every other check
     in this file. The anchoring was stated in a comment and graded by
@@ -3742,8 +3743,10 @@ def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
     the notes on mutations that survive.
 
     Graded against the forearm's own painted capsule rather than against
-    `ARM.width`, and the finger side is read off a separation rather than
-    assumed, so the rule survives a pose that flips the hand over.
+    `ARM.width`, and which local side is the back is read off the forearm's
+    rotation in the room rather than assumed, so the rule survives a pose
+    that flips the arm over. (It used to read the back off the side the
+    fingers hung from; a straight hand's fingers are on neither side.)
     """
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
@@ -3756,10 +3759,11 @@ def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
         )
         sx, _sy, sw, _sh = slab["snapped"]
         cx, _cy, cw, _ch = capsule["snapped"]
-        sep = seps[0]["snapped"]
-        fingers_on_plus_x = (sep[0] + sep[2] / 2) > (sx + sw / 2)
+        # Local +x rotated into the room; screen y grows downward, so a
+        # positive sine means local +x faces the floor and the back is -x.
+        floor_on_plus_x = math.sin(arm["foreWorldRotation"]) > 0
 
-        if fingers_on_plus_x:
+        if floor_on_plus_x:
             back, sleeve_back, side = sx, cx, "-x"
             overhangs = back < sleeve_back - 1e-9
         else:
@@ -3767,13 +3771,106 @@ def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
             overhangs = back > sleeve_back + 1e-9
 
         assert not overhangs, (
-            f"arm {index}: its fingers hang off the "
-            f"{'+x' if fingers_on_plus_x else '-x'} side, but the hand's {side} "
+            f"arm {index}: the floor is on its forearm's "
+            f"{'+x' if floor_on_plus_x else '-x'} side, but the hand's {side} "
             f"edge is at {back:.1f} where the sleeve's is at "
             f"{sleeve_back:.1f}. The palm swells out of the back of the wrist "
-            "-- the hand is centred on the bone instead of hung off the front "
-            "of it, which reads as a dislocated joint."
+            "-- the hand is centred on the bone instead of spreading toward "
+            "the floor, which reads as a dislocated joint."
         )
+
+
+def _bone_point(origin, rotation, width, local):
+    """A point in a bone's local frame, carried into the room.
+
+    `boneGfx` parks the Graphics at the joint with its pivot at `(w/2, w/2)`,
+    and PIXI maps a local point by `origin + R(rotation) * (local - pivot)`.
+    """
+    lx, ly = local[0] - width / 2, local[1] - width / 2
+    c, s = math.cos(rotation), math.sin(rotation)
+    return (origin[0] + lx * c - ly * s, origin[1] + lx * s + ly * c)
+
+
+@needs_node
+def test_the_near_forearm_rests_on_the_lap():
+    """The forearm lies ON the near thigh, and the hand lies there with it.
+
+    The user's call on 2026-09-23, closing the pose question increment 12 left
+    open: the arm rests on the lap. Until then the forearm went "forward along
+    the armrest" -- an armrest this plate does not paint on the near side --
+    and hung six units of clear room above the thigh, with the hand clawing
+    down at the knee.
+
+    A BRACKET, so it can fail from both ends. The floor-side edge of the
+    forearm at the wrist, and of the hand at its fingertips, must each sit
+    between the near thigh's top edge and its centreline: above the top edge
+    is the old float, below the centreline is an arm sunk THROUGH the leg.
+    And the fingertips may not run off the end of the knee -- a hand past the
+    kneecap is hanging off the lap, not resting on it.
+
+    The ORDER is graded too, because it is what makes "on" readable: the
+    near arm composites in front of the torso (`depthOrder`) and the legs do
+    not, so a forearm lying on the thigh draws over it rather than into it.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+    bones = emitted["bones"]
+    near = [a for a in emitted["arms"] if a["depth"] == "near"]
+    assert len(near) == 1, f"expected one near arm, got {len(near)}"
+    arm = near[0]
+    # Legs are built far side first, three bones each, so the near thigh is
+    # the first bone of the second chain.
+    thigh = bones[3]
+    assert thigh["depth"] != "near", (
+        "the near thigh composites in front of the torso group, so it would "
+        "paint OVER a forearm resting on it"
+    )
+
+    def end(bone_origin, rotation, length):
+        return (
+            bone_origin[0] - math.sin(rotation) * length,
+            bone_origin[1] + math.cos(rotation) * length,
+        )
+
+    hip = (thigh["x"], thigh["y"])
+    knee = end(hip, thigh["rotation"], thigh["length"])
+    half = thigh["width"] / 2
+
+    def along_thigh(x):
+        return (x - hip[0]) / (knee[0] - hip[0])
+
+    def thigh_centre(x):
+        return hip[1] + along_thigh(x) * (knee[1] - hip[1])
+
+    elbow = end((arm["x"], arm["y"]), arm["rotation"], arm["length"])
+    r = arm["foreWorldRotation"]
+    fw = arm["foreWidth"]
+    floor_x = fw if math.sin(r) > 0 else 0.0  # the forearm's floor-side edge
+    wrist_under = _bone_point(elbow, r, fw, (floor_x, arm["foreLength"] + fw / 2))
+
+    slab, _seps, _tips = _hand_parts(emitted, arm)
+    assert slab, "the near arm has no hand; see test_the_hand_is_a_slab..."
+    sx, sy, sw, sh = slab["snapped"]
+    hand_floor_x = sx + sw if math.sin(r) > 0 else sx
+    tip_under = _bone_point(elbow, r, fw, (hand_floor_x, sy + sh))
+
+    for name, (px, py) in (("wrist", wrist_under), ("fingertips", tip_under)):
+        top, centre = thigh_centre(px) - half, thigh_centre(px)
+        assert py >= top - 1e-9, (
+            f"the underside of the near {name} is at y={py:.1f}, above the "
+            f"thigh's top edge at {top:.1f}: the arm hovers "
+            f"{top - py:.1f} units over the lap instead of resting on it"
+        )
+        assert py <= centre + 1e-9, (
+            f"the underside of the near {name} is at y={py:.1f}, below the "
+            f"thigh's centreline at {centre:.1f}: the arm has sunk through "
+            "the leg rather than lying on it"
+        )
+
+    reach = along_thigh(tip_under[0])
+    assert 0 < reach <= 1 + half / math.dist(hip, knee), (
+        f"the near fingertips land {reach:.2f} of the way from hip to knee: "
+        "past the end of the kneecap the hand is hanging off the lap"
+    )
 
 
 @needs_node
