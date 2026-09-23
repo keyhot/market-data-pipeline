@@ -2828,6 +2828,27 @@ def _inside_convex(pts, px, py) -> bool:
     return True
 
 
+def _convex_span(pts, value, axis=1):
+    """Where the line `coord[axis] == value` crosses a convex polygon: the
+    (min, max) of the OTHER coordinate, or None if it misses.
+
+    `axis=1` cuts across a bone at a height in its own frame (its width
+    there); `axis=0` cuts a room outline at an x (its top and bottom).
+    """
+    other = 1 - axis
+    hits = []
+    for a, b in zip(pts, pts[1:] + pts[:1]):
+        lo, hi = sorted((a[axis], b[axis]))
+        if not lo <= value <= hi:
+            continue
+        if a[axis] == b[axis]:
+            hits += [a[other], b[other]]
+        else:
+            t = (value - a[axis]) / (b[axis] - a[axis])
+            hits.append(a[other] + t * (b[other] - a[other]))
+    return (min(hits), max(hits)) if hits else None
+
+
 def _mirrored(rect: list, side: int) -> list:
     """A `PROFILE_HEAD` rect as `mirrorRect` places it for `side`."""
     x, y, w, h = rect[:4]
@@ -3358,6 +3379,9 @@ def _rig_bone_driver(source: str) -> str:
             gid: g.gid, order, x: g.x, y: g.y,
             width: g.boneWidth, length: g.boneLength,
             rotation: g.rotation, depth: g.depth || null,
+            // The drawn outline in the bone's own frame (`limbOutline`), or
+            // null for a bone still painted as a capsule.
+            outline: g.outline || null,
           }));
         // An arm is the accent that carries a forearm. They are not tagged
         // `limb` — `arm.limb` was deliberately removed when the arms came back
@@ -3378,6 +3402,7 @@ def _rig_bone_driver(source: str) -> str:
             // which side of the torso it composites on.
             x: g.x, y: g.y, rotation: g.rotation, length: g.boneLength,
             foreLength: g.forearm.boneLength, depth: g.depth || null,
+            outline: g.outline || null, foreOutline: g.forearm.outline || null,
           }));
         // The palette rides along rather than being restated in python: the
         // hand is identified by its skin fill, and a recoloured hand must not
@@ -3387,13 +3412,20 @@ def _rig_bone_driver(source: str) -> str:
     )
 
 
-def _bone_capsule(drawn: list, gid: int) -> dict | None:
-    """The capsule `boneGfx` paints when it builds a bone.
+def _bone_capsule(drawn: list, gid: int, palette: dict) -> dict | None:
+    """The limb volume `boneGfx` builds for a bone: the one painted into that
+    Graphics that is not skin or a crease.
 
-    Always the FIRST volume to go into that Graphics — anything else painted
-    there (the hand on the forearm) arrives afterwards.
+    It used to be simply the FIRST volume there. Increment 20 paints the
+    forearm's sleeve AFTER the hand, so its cuff laps over the wrist, and
+    "first" then quietly returned the hand -- a test comparing the palm with
+    the sleeve compared the palm with itself and passed.
     """
-    return next((d for d in drawn if d["gid"] == gid), None)
+    return next(
+        (d for d in drawn if d["gid"] == gid
+         and d["fill"] not in (palette["skin"], palette["crease"])),
+        None,
+    )
 
 
 @needs_node
@@ -3432,9 +3464,9 @@ def test_the_seated_figure_paints_every_volume_in_its_own_colour():
         chains.append(
             (
                 f"leg {leg}",
-                ("thigh", _bone_capsule(drawn, thigh["gid"])),
-                ("shin", _bone_capsule(drawn, shin["gid"])),
-                ("shoe", _bone_capsule(drawn, shoe["gid"])),
+                ("thigh", _bone_capsule(drawn, thigh["gid"], palette)),
+                ("shin", _bone_capsule(drawn, shin["gid"], palette)),
+                ("shoe", _bone_capsule(drawn, shoe["gid"], palette)),
             )
         )
     for side, arm in enumerate(arms):
@@ -3451,8 +3483,8 @@ def test_the_seated_figure_paints_every_volume_in_its_own_colour():
         chains.append(
             (
                 f"arm {side}",
-                ("upper arm", _bone_capsule(drawn, arm["gid"])),
-                ("forearm", _bone_capsule(drawn, arm["foreGid"])),
+                ("upper arm", _bone_capsule(drawn, arm["gid"], palette)),
+                ("forearm", _bone_capsule(drawn, arm["foreGid"], palette)),
                 ("hand", hand),
             )
         )
@@ -4239,7 +4271,7 @@ def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
 
     for index, arm in enumerate(emitted["arms"]):
         slab, seps, _blunt = _hand_parts(emitted, arm)
-        capsule = _bone_capsule(emitted["drawn"], arm["foreGid"])
+        capsule = _bone_capsule(emitted["drawn"], arm["foreGid"], emitted["HUMAN"])
         assert slab and seps and capsule, (
             f"arm {index} has no hand to check; see "
             "test_the_hand_is_a_slab_with_three_finger_separations"
@@ -4321,6 +4353,23 @@ def test_the_near_forearm_rests_on_the_lap():
     hip = (thigh["x"], thigh["y"])
     knee = end(hip, thigh["rotation"], thigh["length"])
     half = thigh["width"] / 2
+    # The thigh's TOP is read off the outline it is drawn with, never off
+    # `centre - width/2`: a limb tapers toward the knee and bows up at the
+    # quad (increment 20), so a constant half-width passes a hand hovering
+    # over the real edge near the kneecap.
+    assert thigh["outline"] and arm["foreOutline"], (
+        "the near thigh and forearm carry no drawn outline to grade the lap "
+        "against; see test_a_limb_is_an_outline_that_tapers_into_the_next_one"
+    )
+    thigh_room = [
+        _bone_point(hip, thigh["rotation"], thigh["width"], p)
+        for p in thigh["outline"]
+    ]
+
+    def thigh_top(x):
+        span = _convex_span(thigh_room, x, axis=0)
+        assert span, f"x={x:.1f} is off the end of the near thigh"
+        return span[0]
 
     def along_thigh(x):
         return (x - hip[0]) / (knee[0] - hip[0])
@@ -4331,8 +4380,12 @@ def test_the_near_forearm_rests_on_the_lap():
     elbow = end((arm["x"], arm["y"]), arm["rotation"], arm["length"])
     r = arm["foreWorldRotation"]
     fw = arm["foreWidth"]
-    floor_x = fw if math.sin(r) > 0 else 0.0  # the forearm's floor-side edge
-    wrist_under = _bone_point(elbow, r, fw, (floor_x, arm["foreLength"] + fw / 2))
+    # The forearm's floor-side edge at the wrist, off its drawn outline too:
+    # it narrows toward the wrist, so the capsule's edge is no longer there.
+    wrist_y = arm["foreLength"] + fw / 2
+    across = _convex_span(arm["foreOutline"], wrist_y)
+    floor_x = across[1] if math.sin(r) > 0 else across[0]
+    wrist_under = _bone_point(elbow, r, fw, (floor_x, wrist_y))
 
     slab, _seps, _tips = _hand_parts(emitted, arm)
     assert slab, "the near arm has no hand; see test_the_hand_is_a_slab..."
@@ -4341,7 +4394,7 @@ def test_the_near_forearm_rests_on_the_lap():
     tip_under = _bone_point(elbow, r, fw, (hand_floor_x, sy + sh))
 
     for name, (px, py) in (("wrist", wrist_under), ("fingertips", tip_under)):
-        top, centre = thigh_centre(px) - half, thigh_centre(px)
+        top, centre = thigh_top(px), thigh_centre(px)
         assert py >= top - 1e-9, (
             f"the underside of the near {name} is at y={py:.1f}, above the "
             f"thigh's top edge at {top:.1f}: the arm hovers "
@@ -4358,6 +4411,162 @@ def test_the_near_forearm_rests_on_the_lap():
         f"the near fingertips land {reach:.2f} of the way from hip to knee: "
         "past the end of the kneecap the hand is hanging off the lap"
     )
+
+
+@needs_node
+def test_a_limb_is_an_outline_that_tapers_into_the_next_one():
+    """A thigh, a shin, an upper arm and a forearm are LIMBS, not capsules.
+
+    Increment 20, the user's catch: "the knee, where the wider thigh meets
+    the shin in a square step; the forearm and cuff, which are still a slab;
+    and the flat top of the thigh". A capsule is one width end to end, so a
+    21-unit thigh ended on a 16-unit shin in a notch, and every long edge was
+    a ruler line. Three rules, all pose-free, so a re-measured chair or a new
+    arm angle still answers to them:
+
+    1. At a joint INSIDE a garment (knee, elbow) the parent's width at its far
+       end is the child's width at its start -- a curve, not a step. (The
+       ankle is a hem over a shoe, where a step is the picture.)
+    2. No slab: each of these bones is at least 1.5 units narrower at one end.
+    3. The thigh's up-facing edge bows proud of the straight line between its
+       two ends -- the quad -- while its underside, on the cushion, does not.
+
+    And every outline is convex with no zero turn, which is what keeps
+    `litPath`'s bands inside it (`test_no_path_band_leaves_its_outline`).
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+    bones, arms = emitted["bones"], emitted["arms"]
+    chains = []
+    for start in (0, 3):
+        thigh, shin = bones[start], bones[start + 1]
+        chains.append(("knee", thigh, shin))
+    for arm in arms:
+        upper = {"outline": arm["outline"], "width": arm["width"],
+                 "length": arm["length"]}
+        fore = {"outline": arm["foreOutline"], "width": arm["foreWidth"],
+                "length": arm["foreLength"]}
+        chains.append(("elbow", upper, fore))
+
+    def width_at(bone, y):
+        span = _convex_span(bone["outline"], y)
+        assert span, f"no outline at y={y}"
+        return span[1] - span[0]
+
+    def ends(bone):
+        c = bone["width"] / 2
+        return width_at(bone, c), width_at(bone, c + bone["length"])
+
+    for joint, parent, child in chains:
+        for name, bone in ((f"{joint} parent", parent), (f"{joint} child", child)):
+            pts = bone["outline"]
+            assert pts, f"the {name} is still a capsule, not a drawn outline"
+            n = len(pts)
+            turns = [
+                (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+                for a, b, c in ((pts[i], pts[(i + 1) % n], pts[(i + 2) % n])
+                                for i in range(n))
+            ]
+            assert all(t > 1e-9 for t in turns) or all(t < -1e-9 for t in turns), (
+                f"the {name} outline is not strictly convex; its bands would "
+                "leak through the concavity"
+            )
+        parent_end = ends(parent)[1]
+        child_start = ends(child)[0]
+        # Half a unit, under one screen pixel at CAST_SCALE 1.5: the hull's
+        # tangent meets the smaller disc a little behind its centre, so the
+        # width measured AT the joint runs ~0.4 over the disc's. The step this
+        # replaced was 4.4 units.
+        assert abs(parent_end - child_start) <= 0.5, (
+            f"at the {joint} the parent ends {parent_end:.2f} wide and the child "
+            f"starts {child_start:.2f} wide: a {abs(parent_end - child_start):.2f}"
+            "-unit square step where a joint should be one curve"
+        )
+
+    slabs = [("thigh", bones[i]) for i in (0, 3)] + [("shin", bones[i]) for i in (1, 4)]
+    slabs += [("forearm", {"outline": a["foreOutline"], "width": a["foreWidth"],
+                           "length": a["foreLength"]}) for a in arms]
+    for name, bone in slabs:
+        a, b = ends(bone)
+        assert abs(a - b) >= 1.5, (
+            f"a {name} is {a:.2f} wide at one end and {b:.2f} at the other: "
+            "a constant-width slab, not a limb"
+        )
+
+    for thigh in (bones[0], bones[3]):
+        c, length = thigh["width"] / 2, thigh["length"]
+        (lo0, hi0), (lo1, hi1) = (_convex_span(thigh["outline"], y) for y in (c, c + length))
+        # Which local side is UP: local +x lands on screen at (cos r, sin r).
+        up_is_plus = math.sin(thigh["rotation"]) < 0
+        proud = {True: 0.0, False: 0.0}
+        for k in range(1, 20):
+            t = k / 20
+            lo, hi = _convex_span(thigh["outline"], c + length * t)
+            proud[True] = max(proud[True], hi - (hi0 + t * (hi1 - hi0)))
+            proud[False] = max(proud[False], (lo0 + t * (lo1 - lo0)) - lo)
+        up, down = proud[up_is_plus], proud[not up_is_plus]
+        assert up >= 2, (
+            f"the thigh's top stands only {up:.2f} proud of the line between "
+            "its ends: a flat top, not a quad"
+        )
+        assert down <= 0.5, (
+            f"the thigh's underside bows {down:.2f} out of line: it is sitting "
+            "on the cushion and should run flat along it"
+        )
+
+
+@needs_node
+def test_the_sleeve_laps_over_the_wrist_as_a_cuff():
+    """The sweater's cuff lies OVER the heel of the hand, and only the heel.
+
+    Increment 20 ("the forearm and cuff are still a slab"): the hand was
+    painted over the sleeve, so the join was the palm's own straight heel
+    edge laid across a constant-width slab. Now the sleeve is painted after
+    the hand and its flattened end laps the palm in a curve.
+
+    A bracket, both ends: the sleeve must reach past the heel (or the hand is
+    pasted on again), and must stop well short of the finger separations (or
+    it swallows the palm and the hand becomes a fist of fingers).
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+    drawn, palette = emitted["drawn"], emitted["HUMAN"]
+    fingers = json.loads(_js_const(_world_source(), "HAND_OUTLINE").split("=", 1)[1]
+                         .strip().rstrip(";"))
+    along = max(y for _, y in fingers)
+    for index, arm in enumerate(emitted["arms"]):
+        on_fore = [d for d in drawn if d["gid"] == arm["foreGid"]]
+        order = [d["fill"] for d in on_fore]
+        hand = next(d for d in on_fore if d["fill"] == palette["skin"])
+        sleeve = _bone_capsule(drawn, arm["foreGid"], palette)
+        seps = [d for d in on_fore if d["fill"] == palette["crease"]]
+        assert order.index(palette["sweater"]) > order.index(palette["skin"]), (
+            f"arm {index}: the sleeve is painted before the hand, so the hand "
+            "lies over it and the wrist is the palm's straight heel edge"
+        )
+        heel = min(y for _, y in hand["points"])
+        cuff = max(y for _, y in sleeve["points"])
+        first_finger = min(d["snapped"][1] for d in seps)
+        overlap = cuff - heel
+        assert overlap >= 1, (
+            f"arm {index}: the cuff ends {overlap:.2f} units past the heel -- "
+            "it does not reach over the hand"
+        )
+        # And the end is a CURVE: it stands proud of the wrist's own line
+        # (the end disc's centre) by at least 1.5 units. A cuff cut flat
+        # across the wrist is the straight slab edge this replaced.
+        wrist_line = arm["foreWidth"] / 2 + arm["foreLength"]
+        assert cuff - wrist_line >= 1.5, (
+            f"arm {index}: the cuff bows only {cuff - wrist_line:.2f} past the "
+            "wrist -- a flat end, the slab edge again"
+        )
+        # Half a CELL of palm must show between the cuff and the first finger
+        # separation. (The near hand's origin snaps 1.5 units back up the
+        # bone, so its cuff covers 6 of 8 palm units -- shot, and it reads as
+        # a hand leaving a sleeve. The line that matters is the fingers.)
+        assert cuff <= first_finger - 2, (
+            f"arm {index}: the cuff reaches y={cuff:.2f}, within 2 units of the "
+            f"finger separations at {first_finger:.2f} (heel {heel:.2f}); the "
+            f"hand ({along} long) is swallowed by its sleeve"
+        )
 
 
 @needs_node
@@ -5245,8 +5454,10 @@ def test_the_seated_figure_points_where_the_painted_cushion_points():
         const thighs = legs.filter((_, i) => i % 3 === 0).map((t) => {
           // A bone's pose IS its rotation, and it is drawn along its own +y
           // from the pivot, so the knee is the far end of that axis.
-          const [, , width, boxed] = t.calls[0];
-          const len = boxed - width;
+          // `boneLength` is the joint-to-joint length `boneGfx` drew it at;
+          // it used to be recovered from the capsule's roundRect, and a limb
+          // is a convex outline now (increment 20).
+          const len = t.boneLength;
           return {
             hip: { x: t.x, y: t.y },
             knee: {
@@ -9363,6 +9574,13 @@ def test_no_path_band_leaves_its_outline():
         # The torso (increment 19) mirrors with the chair's facing.
         "torso": [[[s * x, y] for x, y in _torso_outline()] for s in (-1, 1)],
     }
+    # The limbs (increment 20) are built at runtime from the pose, so they
+    # come off the rig itself: one outline per side, both chains.
+    rig = _run_node(_rig_bone_driver(source))
+    for name, index in (("thigh", 0), ("shin", 1)):
+        placements[name] = [rig["bones"][index]["outline"], rig["bones"][index + 3]["outline"]]
+    placements["upper arm"] = [a["outline"] for a in rig["arms"]]
+    placements["forearm"] = [a["foreOutline"] for a in rig["arms"]]
     for name, both in placements.items():
         for side, mirrored in zip((-1, 1), both):
             n = len(mirrored)

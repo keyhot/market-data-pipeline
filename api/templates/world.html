@@ -3183,25 +3183,90 @@ void main() {
       // One bone as a lit capsule laid along a->b. Local to `seatedRig`
       // because the node drivers in the suite extract this one function by
       // name; a helper at module scope would be undefined inside them.
-      const boneGfx = (a, b, width, fill, opts) => {
+      // A LIMB, not a capsule (increment 20 — "the knee, the forearm and
+      // cuff, the flat top of the thigh: make them not blocky"). A capsule is
+      // one width from end to end, so the wide thigh stepped down onto the
+      // narrower shin in a square notch, the thigh's top was a ruler line and
+      // the forearm was a slab. The outline is the convex hull of a disc at
+      // each joint — `end` sets the far one's width, and a parent's end
+      // equals its child's start, which is what makes a joint a curve rather
+      // than a step — plus one muscle point `bulge` units proud of that line,
+      // `at` of the way along, on whichever side faces `toward` on screen:
+      // the quad bulges UP, the calf BACK, and the undersides that rest on
+      // the cushion and the lap stay flat. Convex by construction, so its
+      // bands answer to `litPath`'s containment rule.
+      // `test_a_limb_is_an_outline_that_tapers_into_the_next_one`.
+      const limbOutline = (len, w0, shape, rotation) => {
+        const w1 = shape.end, c = w0 / 2;
+        const pts = [];
+        // `cap` flattens the far end along the bone (1 = a round end): a
+        // sleeve's cuff is a shallow curve over the wrist, not a half-disc.
+        for (const [cy, r, k] of [[c, w0 / 2, 1], [c + len, w1 / 2, shape.cap || 1]]) {
+          for (let i = 0; i < 24; i++) {
+            const t = (i / 24) * 2 * Math.PI;
+            const s = Math.sin(t);
+            pts.push([c + r * Math.cos(t), cy + r * s * (s > 0 ? k : 1)]);
+          }
+        }
+        if (shape.bulge) {
+          const [amount, at, toward] = shape.bulge;
+          // Local +x lands on screen at (cos r, sin r).
+          const dot = Math.cos(rotation) * toward[0] + Math.sin(rotation) * toward[1];
+          const side = dot >= 0 ? 1 : -1;
+          // An ARCH, not a vertex: one point proud of the line hulls into
+          // two straight facets meeting at a kink, which is a slab with a
+          // corner. A half-sine peaking at `at` curves off each tangent.
+          for (let i = 1; i < 12; i++) {
+            const s = i / 12;
+            const t = s < 0.5 ? 2 * s * at : at + (2 * s - 1) * (1 - at);
+            const half = (w0 + (w1 - w0) * t) / 2;
+            pts.push([c + side * (half + amount * Math.sin(Math.PI * s)), c + len * t]);
+          }
+        }
+        // Andrew's monotone chain, strict: a collinear or repeated point is
+        // dropped, so every turn of the result is a real one.
+        // `quant`'s 1/64, restated: the suite runs this function without the
+        // module scope `quant` lives in.
+        const quantPt = (v) => Math.round(v * 64) / 64;
+        const q = pts.map(([x, y]) => [quantPt(x), quantPt(y)])
+          .sort((p, r) => p[0] - r[0] || p[1] - r[1]);
+        const cross = (o, p, r) => (p[0] - o[0]) * (r[1] - o[1]) - (p[1] - o[1]) * (r[0] - o[0]);
+        const half = (list) => {
+          const out = [];
+          for (const p of list) {
+            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], p) <= 1e-9) out.pop();
+            out.push(p);
+          }
+          return out.slice(0, -1);
+        };
+        return half(q).concat(half(q.slice().reverse()));
+      };
+      const boneGfx = (a, b, width, fill, opts, shape) => {
         const dx = b.x - a.x, dy = b.y - a.y;
         const len = Math.hypot(dx, dy);
         const g = new PIXI.Graphics();
-        // Authored from its own corner and centred with `pivot`, never with a
-        // negative x: `litRect` snaps x to CELL, so `litRect(-w/2, ...)` with
-        // an odd half-width lands off-centre and thickens the limb on one
-        // side. The rect also runs half a width PAST the joint at each end and
-        // rounds to w/2, so consecutive bones interlock instead of leaving a
-        // notch on the outside of every bend.
-        paint(g, litRect(0, 0, width, len + width, width / 2), fill, undefined, opts);
-        g.pivot.x = width / 2;
-        g.pivot.y = width / 2;
-        g.x = a.x; g.y = a.y;
         // `restAccents` rewrites every accent's rotation from `restRotation`
         // on each tick, so a bone whose entire pose IS its rotation must carry
         // the angle THERE. Setting only `.rotation` renders correctly once and
         // then snaps bolt upright on the first frame.
         g.restRotation = Math.atan2(dy, dx) - Math.PI / 2;
+        // Authored from its own corner and centred with `pivot`, never with a
+        // negative x: `litRect` snaps x to CELL, so `litRect(-w/2, ...)` with
+        // an odd half-width lands off-centre and thickens the limb on one
+        // side. The rect also runs half a width PAST the joint at each end and
+        // rounds to w/2, so consecutive bones interlock instead of leaving a
+        // notch on the outside of every bend. A shaped limb keeps the same
+        // frame — pivot on the START disc — so every joint reads as before.
+        if (shape) {
+          g.outline = limbOutline(len, width, shape, g.restRotation);
+          // `later`: the caller paints it, after whatever must lie UNDER it.
+          if (!shape.later) paint(g, litPath(g.outline), fill, undefined, opts);
+        } else {
+          paint(g, litRect(0, 0, width, len + width, width / 2), fill, undefined, opts);
+        }
+        g.pivot.x = width / 2;
+        g.pivot.y = width / 2;
+        g.x = a.x; g.y = a.y;
         g.rotation = g.restRotation;
         // The PROJECTED length, which is what the capsule actually measures on
         // screen and what the attachment maths below needs. It is not the
@@ -3212,8 +3277,8 @@ void main() {
         g.boneWidth = width;
         return g;
       };
-      const bone = (a, b, width, fill, opts) => {
-        const g = boneGfx(a, b, width, fill, opts);
+      const bone = (a, b, width, fill, opts, shape) => {
+        const g = boneGfx(a, b, width, fill, opts, shape);
         // Legs are not arms. `gesture()` swings every accent it is handed, and
         // swinging each bone of a leg about its own joint takes the leg apart
         // — the same "felled tree" failure the GESTURE table already names for
@@ -3321,6 +3386,19 @@ void main() {
         // object, which is the same failure the thighs have below.
         fore:  [43, [0.101, 0.945, -0.312]],   // forward and down onto the thigh
         width: [14, 12],
+        // The forearm is not a slab: it leaves the elbow at the upper arm's
+        // end width, carries its muscle on the upper side a third of the way
+        // down, and narrows to a wrist the hand's heel (x 2..11 of
+        // HAND_OUTLINE) sits across. The underside, lying on the lap, is flat.
+        wrist: 10, foreBulge: [1.5, 0.3],
+        // THE CUFF: the sleeve is painted AFTER the hand, so its end laps over
+        // the heel of the palm in a shallow curve (`cap`, the end flattened to
+        // half its round) — the hand comes OUT of the sleeve instead of being
+        // pasted on the end of a slab, which is what the straight heel edge
+        // over the sleeve read as. A separate cuff volume would be the joint
+        // cap again (a banded ring = a bracelet); this is the sleeve's own end.
+        // `test_the_sleeve_laps_over_the_wrist_as_a_cuff` bounds the overlap.
+        cuff: 0.5,
         // The hand, traced off `ref-trader.png` and converted through the one
         // unit this redesign uses. The hand is STRAIGHT — it carries on the
         // forearm's line, fingers pointing where the arm points — so `along`
@@ -3364,7 +3442,8 @@ void main() {
                             [side * ARM.upper[1][0], ARM.upper[1][1], ARM.upper[1][2]]);
         const wrist = reach(elbow, ARM.fore[0],
                             [side * ARM.fore[1][0], ARM.fore[1][1], ARM.fore[1][2]]);
-        const arm = boneGfx(root, elbow, ARM.width[0], HUMAN.sweater, cloth);
+        const arm = boneGfx(root, elbow, ARM.width[0], HUMAN.sweater, cloth,
+                            { end: ARM.width[1] });
         // `inner`, for the reason the shin is: the forearm is the MIDDLE
         // bone of its chain. An upper arm, a forearm and a hand is the same
         // three links a thigh, a shin and a shoe are, and only the ends make
@@ -3373,7 +3452,8 @@ void main() {
         // "die-cut sticker" read the redesign exists to remove. It shipped
         // rimmed because increment 6 built the arms after the legs and
         // restated the option rather than the rule.
-        const fore = boneGfx(elbow, wrist, ARM.width[1], HUMAN.sweater, clothInner);
+        const fore = boneGfx(elbow, wrist, ARM.width[1], HUMAN.sweater, clothInner,
+                             { end: ARM.wrist, bulge: [...ARM.foreBulge, [0, -1]], cap: ARM.cuff, later: true });
         // The lengths BEFORE the turn foreshortened them, so the suite can
         // hold them against the trace rather than against a projection that
         // legitimately changes whenever the chair is re-measured.
@@ -3429,6 +3509,8 @@ void main() {
           [floorOnPlusX ? x : H.across - x, y]);
         paint(fore, litPath(handOutline, handX, handY),
               HUMAN.skin, undefined, { keepFill: true });
+        // The sleeve, now that the hand is under it (see `ARM.cuff`).
+        paint(fore, litPath(fore.outline), HUMAN.sweater, undefined, clothInner);
         // Four fingers, cut as three dark lines rather than painted as four
         // volumes. `paint` gives every volume three banded insets, and on a
         // finger-sized shape those come out as a dark ring round a pale core —
@@ -3567,6 +3649,10 @@ void main() {
           foot: [29.8, [-0.25, 0.97, 0]], width: [20.7, 16.3, 16],
         },
       };
+      // The limbs' flesh, in units (see `limbOutline`): how far a muscle
+      // stands proud of the line between two joints, and where along the
+      // bone it peaks. `hem` is the jeans' width at the ankle over the knee's.
+      const LIMB = { quad: 3, quadAt: 0.65, calf: 2, calfAt: 0.3, hem: 0.8 };
       // Far side first so it renders behind the near one. The far leg is also
       // mixed toward the room's own ambient rather than given a second
       // darkness constant: the far side of a body catches less of the key
@@ -3596,8 +3682,16 @@ void main() {
         // keyline on it cuts the leg into three outlined links of a chain —
         // the "die-cut sticker" read this redesign exists to remove. Only the
         // parts that make the silhouette keep their edge.
-        bone(hip, knee, L.width[0], jeans, cloth);
-        bone(knee, ankle, L.width[1], jeans, clothInner);
+        // The thigh narrows to exactly the shin's width at the knee, so the
+        // two discs there coincide and the knee is one round; its quad bows
+        // UP off the chord, and the side sitting on the cushion stays flat.
+        // The shin tapers toward the hem and carries its calf at the BACK —
+        // the way the thigh came from, since the toes point the way it went.
+        bone(hip, knee, L.width[0], jeans, cloth,
+             { end: L.width[1], bulge: [LIMB.quad, LIMB.quadAt, [0, -1]] });
+        bone(knee, ankle, L.width[1], jeans, clothInner,
+             { end: L.width[1] * LIMB.hem,
+               bulge: [LIMB.calf, LIMB.calfAt, [hip.x - knee.x, hip.y - knee.y]] });
         bone(ankle, toe, L.width[2], shoes, shod);
       });
       // THE SEAT: jeans from the waist to the cushion, under the sweater's
