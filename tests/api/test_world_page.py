@@ -3081,11 +3081,12 @@ def _seated_rig_run() -> dict:
           const [mnx, mny, mxx, mxy] = [Math.min(...pts.map((q) => q[0])), Math.min(...pts.map((q) => q[1])),
                                          Math.max(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[1]))];
           return { rect: [ox + mnx, oy + mny, mxx - mnx, mxy - mny], radius: 0,
+                   pts: pts.map(([x, y]) => [ox + x, oy + y]),
                    band: (g) => g, rim: (g) => g };
         };
         function paint(g, volume, fill, rim, opts) {
           drawn.push({ rect: volume.rect, fill, opts: opts || {},
-                       host: g, radius: volume.radius });
+                       host: g, radius: volume.radius, pts: volume.pts || null });
         }
         """
         + _js_block(source, "function snap(")
@@ -9359,6 +9360,8 @@ def test_no_path_band_leaves_its_outline():
         "face": [[[s * x, y] for x, y in P["face"]] for s in (-1, 1)],
         "fringe": [[[s * x, y] for x, y in P["fringe"]] for s in (-1, 1)],
         "hand": [[[x, y] for x, y in hand], [[across - x, y] for x, y in hand]],
+        # The torso (increment 19) mirrors with the chair's facing.
+        "torso": [[[s * x, y] for x, y in _torso_outline()] for s in (-1, 1)],
     }
     for name, both in placements.items():
         for side, mirrored in zip((-1, 1), both):
@@ -9484,3 +9487,96 @@ def test_only_a_sideburn_of_hair_shows_in_front_of_the_ear():
         assert sw <= 2, f"the sideburn is {sw} wide; a taper leaves a line, not a column"
         assert sy + sh <= ey + eh / 2, "the sideburn runs past mid-ear toward the jaw"
         assert abs(sx + sw - front) <= 4, "the sideburn is not in front of the ear"
+
+
+def _torso_outline() -> list[list[float]]:
+    """The sweater outline `seatedRig` paints onto `body`, rig-local."""
+    run = _seated_rig_run()
+    torso = [
+        d for d in run["drawn"]
+        if d["host"] == "body" and d["fill"] == run["HUMAN"]["sweater"] and d["pts"]
+    ]
+    assert len(torso) == 1, (
+        f"expected the torso as ONE outline on the body, found {len(torso)} "
+        "sweater paths — a rounded rect is the slab increment 19 replaced"
+    )
+    return torso[0]["pts"]
+
+
+@needs_node
+def test_the_torso_is_an_outline_not_a_slab():
+    """The torso is a shaped outline — shoulders that fall away from a flat
+    neckline, a chest wider than the hips — not a rounded rect.
+
+    The user's brief, again: "natural, without blocks". A rounded slab has
+    its full width at its top corners; a person's shoulders slope off the
+    neck. Graded as rules, not as today's points: the neckline is narrower
+    than the chest, the widest span sits BELOW the neckline, and the hips
+    still carry most of that width so the thighs have somewhere to hang
+    from (the r18 slab hung them off a point). The three measured budgets —
+    top at -72 for the neck, ±24 for the seat — hold too.
+    """
+    pts = _torso_outline()
+    xs = [x for x, _ in pts]
+    ys = [y for _, y in pts]
+    width = max(xs) - min(xs)
+    top = min(ys)
+    assert top == -72, f"the torso tops out at {top}, the neck test's -72 moved"
+    assert max(abs(x) for x in xs) <= 24, "the torso overran the seat budget"
+
+    neckline = [x for x, y in pts if y == top]
+    assert max(neckline) - min(neckline) <= 0.6 * width, (
+        f"the neckline spans {max(neckline) - min(neckline)} of {width}: "
+        "the shoulders do not fall away, it is a slab"
+    )
+    for extreme in (min(xs), max(xs)):
+        y_at = min(y for x, y in pts if x == extreme)
+        assert y_at >= top + 8, (
+            f"the torso is widest at y {y_at}, within 8 of the neckline: "
+            "square shoulders"
+        )
+    bottom = max(ys)
+    hips = [x for x, y in pts if y == bottom]
+    assert max(hips) - min(hips) >= 0.6 * width, (
+        "the hips narrowed to a point — the legs hang off nothing"
+    )
+
+
+@needs_node
+def test_the_profile_eye_is_tired():
+    """A slight shadow under the eye (the user's ask, increment 19): below
+    the eye box, across it, inside the face, and lighter than the mouth's
+    shade so it reads as tired rather than bruised. Both mirrors."""
+    for side in (-1, 1):
+        run = _profile_head_run(side)
+        P = run["P"]
+        ex0, ey0, ew, eh = P["eye"]
+        if side < 0:
+            ex0 = -(ex0 + ew)
+        white = [f for f in run["features"] if f["kind"] == "ellipse"
+                 and f["geom"][:2] == [ex0 + ew / 2, ey0 + eh / 2]]
+        assert white, "the eye white moved off `P.eye`"
+        order = run["features"].index(white[0])
+        below = [f for f in run["features"][:order] if f["kind"] == "ellipse"]
+        bags = [f for f in below
+                if f["geom"][1] + f["geom"][3] >= ey0 + eh + 2
+                and abs(f["geom"][0] - (ex0 + ew / 2)) <= ew / 2]
+        assert bags, f"facing {side:+d}: no shadow drawn under (and before) the eye"
+        cx, cy, rx, ry = bags[0]["geom"]
+        assert cy - ry <= ey0 + eh, "the shadow does not meet the eye — a smudge"
+        face = [[side * x, y] for x, y in P["face"]]
+        for px, py in ((cx - rx, cy), (cx + rx, cy), (cx, cy + ry)):
+            assert _inside_convex(face, px, py), (
+                f"facing {side:+d}: the shadow leaves the face at ({px}, {py})"
+            )
+        mouth = [f for f in run["features"] if f["kind"] == "rect"
+                 and f["geom"][1] == P["mouth"][1]]
+        assert mouth, "the mouth moved off `P.mouth`"
+        # The nose is filled with the skin's own base value.
+        nose = [f for f in run["features"] if f["kind"] == "poly"]
+        assert nose, "the nose is no longer a poly"
+        lum = lambda c: _relative_luminance(c)
+        assert lum(mouth[0]["fill"]) < lum(bags[0]["fill"]) < lum(nose[0]["fill"]), (
+            "the under-eye shadow must sit between the mouth's shade and the "
+            "skin — at the mouth's value it is a bruise"
+        )

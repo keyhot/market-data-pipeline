@@ -2121,6 +2121,9 @@
       // the way, and the pupil rides the front-upper corner for the rest.
       // Drawn as an ellipse inside this box.
       eye: [13, -4, 4, 4],
+      // The shadow under it: wider than the eye and hanging 3 units below
+      // it, since anything under 2 is lost to the keyline's 2px grid.
+      eyeBag: [12, -1, 6, 4],
       // Inside the white's oval, so half a unit in from the box's corner:
       // the box corner is outside an ellipse, and a pupil there sits on skin.
       pupil: [14.5, -3.5, 2, 2],
@@ -2174,6 +2177,12 @@
       oval([ex0 + ew / 2, ey0 + eh / 4, ew / 3, eh / 2], skinShade);
       features.poly(mirror(P.nose).flat()).fill(skinBase);
       flat(P.brow, HUMAN.hair);
+      // A tired shadow under the eye (increment 19): an oval the white laps
+      // the top of, so what shows is a crescent below it. Halfway between the
+      // skin's base and the mouth's shade — at the mouth's own value it reads
+      // as a bruise. Tied to the eye box, never the pupil, which moves with
+      // the gaze. `test_the_profile_eye_is_tired`.
+      oval(P.eyeBag, mixHex(skinBase, skinShade, 0.5));
       oval(P.eye, 0xd8c6b0);
       flat(P.pupil, 0x1b1716);
       flat(P.mouth, skinShade);
@@ -3221,7 +3230,21 @@ void main() {
       // be 76, and the 6 units it gives back are what let the head rise into
       // a neck below without the crown outgrowing the chair.
       const HALF_W = snap(Math.hypot(24 * COS_Y, 13 * SIN_Y));
-      paint(body, litRect(-HALF_W, -72, HALF_W * 2, 68, 12), HUMAN.sweater, undefined, cloth);
+      // The torso as one CONVEX outline (increment 19), not a rounded slab:
+      // "natural, without blocks". Authored in `u` — +1 is the side his chest
+      // faces, -1 his back — and in fractions of HALF_W, because the width is
+      // the turn's. Min y stays -72 (the neck test reads the sweater's top)
+      // and |u| never passes 1 (the seat budget). The top runs flat across
+      // the collar before the shoulders fall away — a slope starting at the
+      // neck would leave the collar's corners standing above it — and the
+      // back rounds over at the top: he has been at this desk a while.
+      // `test_the_torso_is_an_outline_not_a_slab`.
+      const front = FACE_DIR[0] < 0 ? -1 : 1;
+      const TORSO = [[-0.45, -72], [0.45, -72], [0.72, -69], [0.92, -62], [1, -50],
+                     [0.97, -34], [0.86, -14], [0.76, -4], [-0.72, -4], [-0.86, -10],
+                     [-0.97, -26], [-1, -52], [-0.92, -64], [-0.72, -70]];
+      paint(body, litPath(TORSO.map(([u, y]) => [front * u * HALF_W, y])),
+            HUMAN.sweater, undefined, cloth);
       // THE NECK. Drawn between the torso and the collar so the collar laps
       // over its base and the head covers its top, which is what makes a
       // cylinder read as a neck rather than as a peg.
