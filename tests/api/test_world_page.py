@@ -2883,6 +2883,51 @@ def test_the_profile_is_one_head_mirrored():
 
 
 @needs_node
+def test_no_hair_shows_below_the_ear():
+    """The profile's hair stops at the ear: below the ear's bottom, whatever
+    is painted last at a point is never hair.
+
+    The skull is a circle, and a circle does not end on a line. With the nape
+    laid UNDER it, the circle's lower arc hung a tuft of hair below the ear —
+    down the jaw and the back of the neck, which reads as a sideburn gone
+    wrong (the user's catch). Graded by painting order, both sides: the last
+    volume covering each point is the one the viewer sees. "Under the ear" is
+    the ear's own column and everything in front of it; the skull may still
+    curve down BEHIND the ear, which is the back of a head, not a tuft.
+    """
+    for side in (-1, 1):
+        run = _profile_head_run(side)
+        hair = run["HUMAN"]["hair"]
+        ear_bottom = run["P"]["ear"][1] + run["P"]["ear"][3]
+        ear = _mirrored(run["P"]["ear"], side)
+        ear_back = ear[0] if side > 0 else ear[0] + ear[2]
+
+        def covers(v, px, py):
+            g = v["geom"]
+            if v["kind"] == "circle":
+                return math.hypot(px - g[0], py - g[1]) <= g[2]
+            return _inside_round_rect(px, py, g[:4], g[4] if len(g) > 4 else 0, slack=0)
+
+        x0 = min(_extent(v)[0] for v in run["volumes"])
+        x1 = max(_extent(v)[2] for v in run["volumes"])
+        y1 = max(_extent(v)[3] for v in run["volumes"])
+        tufts = []
+        for i in range(int((x1 - x0) * 2) + 1):
+            px = x0 + i / 2
+            if side * (px - ear_back) < 0:
+                continue   # behind the ear
+            for j in range(int((y1 - ear_bottom) * 2) + 1):
+                py = ear_bottom + j / 2
+                top = next((v for v in reversed(run["volumes"]) if covers(v, px, py)), None)
+                if top is not None and top["fill"] == hair:
+                    tufts.append((px, py))
+        assert not tufts, (
+            f"facing {side:+d}, hair shows below the ear (bottom y {ear_bottom}) "
+            f"at {len(tufts)} points, e.g. {tufts[:4]}"
+        )
+
+
+@needs_node
 def test_the_hair_is_matte_whichever_way_the_head_faces():
     """Every head volume painted in `HUMAN.hair` carries `matte`; skin never.
 
@@ -2985,12 +3030,13 @@ def _seated_rig_run() -> dict:
         // what this test is about; the real one is graded elsewhere.
         const drawn = [];
         const litRect = (x, y, w, h, r) => ({
-          rect: [x, y, w, h], band: (g) => g, rim: (g) => g });
+          rect: [x, y, w, h], radius: r || 0, band: (g) => g, rim: (g) => g });
         const litCircle = (cx, cy, rad) => ({
-          rect: [cx - rad, cy - rad, 2 * rad, 2 * rad],
+          rect: [cx - rad, cy - rad, 2 * rad, 2 * rad], radius: rad,
           band: (g) => g, rim: (g) => g });
         function paint(g, volume, fill, rim, opts) {
-          drawn.push({ rect: volume.rect, fill, opts: opts || {} });
+          drawn.push({ rect: volume.rect, fill, opts: opts || {},
+                       host: g, radius: volume.radius });
         }
         """
         + _js_block(source, "function snap(")
@@ -3003,10 +3049,26 @@ def _seated_rig_run() -> dict:
         + "\n"
         + """
         const accents = [];
-        const headY = seatedRig(new FakeGraphics(), accents);
+        const BODY = new FakeGraphics();
+        const headY = seatedRig(BODY, accents);
+        // Each leg bone as the joint it starts at, the joint it ends at and
+        // its width — `boneGfx` sets these after painting, in rig space.
+        const legs = accents.filter((a) => a.limb === "leg").map((a) => ({
+          start: [a.x, a.y],
+          end: [a.x - Math.sin(a.restRotation) * a.boneLength,
+                a.y + Math.cos(a.restRotation) * a.boneLength],
+          width: a.boneWidth,
+        }));
+        // Where each volume went: the torso (`body`, which the seated
+        // animations move), or an accent — by the part it plays.
+        for (const d of drawn) {
+          const g = d.host;
+          d.host = g === BODY ? "body"
+            : accents.includes(g) ? (g.limb || g.gestureMode || "accent") : "child";
+        }
         // The palette rides along rather than being restated in python: a
         // recoloured sweater must not silently empty the filter below.
-        console.log(JSON.stringify({ headY, drawn, HUMAN }));
+        console.log(JSON.stringify({ headY, drawn, HUMAN, legs, CELL }));
         """
     )
 
@@ -3083,6 +3145,82 @@ def test_the_seated_figure_has_a_neck():
         f"({chin} to {sweater_top}) would show the room through it. Skin "
         f"volumes drawn: {[d['rect'] for d in skin]}"
     )
+
+
+def _inside_round_rect(px, py, rect, r, slack=0.5) -> bool:
+    """Is (px, py) inside `rect` [x, y, w, h] with corners rounded to `r`?"""
+    x, y, w, h = rect
+    hw, hh = w / 2, h / 2
+    ax, ay = abs(px - (x + hw)), abs(py - (y + hh))
+    if ax > hw + slack or ay > hh + slack:
+        return False
+    dx, dy = max(0.0, ax - (hw - r)), max(0.0, ay - (hh - r))
+    return math.hypot(dx, dy) <= r + slack
+
+
+@needs_node
+def test_the_seated_figure_sits_on_a_seat_not_on_the_ball_of_a_thigh():
+    """His hips are a jeans SEAT under the sweater, and the rear thigh's round
+    hip end stays inside it.
+
+    With no seat, the hips were whatever the thighs' capsule ends made of
+    them: the sweater's rounded bottom corners cut the back away, and the far
+    thigh's hip cap — a disc half the thigh's width round the hip joint —
+    filled the notch as a ball bulging out under the chair back. The user's
+    word for it was "fix his butt".
+
+    So this grades the rule rather than the one pose: every thigh whose hip
+    sits BEHIND the body's centre (the deeper one, drawn first) has its whole
+    hip cap inside a jeans seat volume, and that volume is flat
+    underneath — corners no rounder than a CELL — because it is sitting on
+    something. The near thigh is exempt: its cap is the top of the lap, in
+    front of the seat, and the lap is supposed to show. And the seat stays
+    with the hips when the torso breathes.
+    """
+    emitted = _seated_rig_run()
+    jeans = emitted["HUMAN"]["jeans"]
+    seats = [
+        d for d in emitted["drawn"]
+        if d["fill"] == jeans and d["host"] not in ("leg", "child")
+    ]
+    assert seats, "nothing but the legs wears jeans: his hips are the thighs' round ends"
+    for seat in seats:
+        # `breathe` moves `body.y` a whole CELL; the thighs never move. A
+        # seat on the torso lifts off them and shows the ball every breath.
+        assert seat["host"] == "seat", (
+            f"the seat is painted on {seat['host']!r}, which moves while the "
+            "thighs under it stay put"
+        )
+    for seat in seats:
+        assert seat["radius"] <= emitted["CELL"], (
+            f"the seat is rounded to {seat['radius']}: a pelvis sitting on a "
+            "cushion is flat underneath, not a ball"
+        )
+
+    ends = [tuple(bone["end"]) for bone in emitted["legs"]]
+    thighs = [
+        bone for bone in emitted["legs"]
+        if not any(math.dist(bone["start"], e) < 0.01 for e in ends)
+    ]
+    assert len(thighs) == 2, f"expected two thighs, found {len(thighs)}"
+    rear = [t for t in thighs if t["start"][1] < 0]
+    assert rear, "no thigh has its hip behind the body's centre to grade"
+    for thigh in rear:
+        hx, hy = thigh["start"]
+        r = thigh["width"] / 2
+        rim = [
+            (hx + r * math.cos(a), hy + r * math.sin(a))
+            for a in (i * math.tau / 72 for i in range(72))
+        ]
+        outside = [
+            (round(px, 1), round(py, 1)) for px, py in rim
+            if not any(_inside_round_rect(px, py, s["rect"], s["radius"]) for s in seats)
+        ]
+        assert not outside, (
+            f"the rear thigh's hip cap (centre {hx:.1f},{hy:.1f}, r {r:.1f}) "
+            f"pokes out of the seat {[s['rect'] for s in seats]} at "
+            f"{outside[:4]}: that is the ball under the chair back"
+        )
 
 
 def _rig_bone_driver(source: str) -> str:

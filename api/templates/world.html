@@ -209,9 +209,16 @@
       // picked: its far hand measures `#262127` between the fingers against
       // `#a67265` on the lit slab above them, a luminance ratio of 0.28. Held
       // against skin's own lit rung (`#ce975e`, L 0.63) that asks for L 0.18,
-      // which is this colour. Warm, not neutral: a crease in a hand is skin
+      // which was `#3a2a22`. Warm, not neutral: a crease in a hand is skin
       // the light did not reach, and a blue-black one reads as a crack.
-      crease:  0x3a2a22,
+      //
+      // That ratio did not survive the frame. The reference's separations are
+      // one or two pixels wide; ours are 2 units x the figure scale, and at
+      // that width a near-black line three times over reads as a BARCODE
+      // stamped on the hand. Lifted to a deep skin shadow — still clearly
+      // darker than the slab, so the four fingers still count (A/B 1:1 and
+      // 4x, `data/visual-qa/char-redesign/inc17-*`).
+      crease:  0x6e4a34,
     };
 
     // The MODEL's palette, and it holds exactly ONE colour — which is the
@@ -1994,8 +2001,13 @@
       skull: [-4, -8, 18],
       // Skin under the back of the skull: the jaw's back and the nape. Hair
       // hanging to the jaw behind a profile reads as a BEARD, so the hair
-      // stops at the ear and this is what shows below it.
-      nape: [-8, 4, 16, 16, 6],
+      // stops at the ear and this is what shows below it. Painted OVER the
+      // skull, from the ear's bottom down: laid under it, the skull's lower
+      // arc still hung a tuft of hair below the ear (the user's catch), and
+      // no circle ends on a straight line. Square-cornered: its back-top
+      // corner sits right under the ear's back edge, and any rounding there
+      // lets a speck of the skull through. `test_no_hair_shows_below_the_ear`.
+      nape: [-8, 8, 16, 12, 0],
       // The face plane, forehead to jaw: the front half of the head only, so
       // the hair keeps the back half and the ear has hair to sit in.
       face: [4, -16, 16, 36, 8],
@@ -2011,7 +2023,8 @@
       eye: [12, -8, 4, 4],
       pupil: [14, -8, 2, 2],
       brow: [8, -12, 8, 2],
-      ear: [-8, -4, 4, 10],
+      // Brow to jaw-hinge, and its bottom is where the nape starts.
+      ear: [-8, -4, 4, 12],
       mouth: [16, 12, 4, 2],
       // The joint the head nods about: the top of the neck, under the jaw.
       pivot: [4, 20],
@@ -2027,8 +2040,8 @@
       const [cx, cy, r] = P.skull;
       const hair = { keepFill: true, noRim: true, matte: true };
       const skin = { keepFill: true, noRim: true };
-      paint(skull, litRect(...mirrorRect(P.nape, side)), HUMAN.skin, undefined, skin);
       paint(skull, litCircle(side * cx, cy, r), HUMAN.hair, undefined, hair);
+      paint(skull, litRect(...mirrorRect(P.nape, side)), HUMAN.skin, undefined, skin);
       paint(skull, litRect(...mirrorRect(P.face, side)), HUMAN.skin, undefined, skin);
       paint(skull, litRect(...mirrorRect(P.fringe, side)), HUMAN.hair, undefined, hair);
       // Not snapped: the pupil is half a CELL by design, and snapping its
@@ -3432,6 +3445,30 @@ void main() {
         bone(knee, ankle, L.width[1], jeans, clothInner);
         bone(ankle, toe, L.width[2], shoes, shod);
       });
+      // THE SEAT: jeans from the waist to the cushion, under the sweater's
+      // hem. Without it the hips were whatever the thighs' round hip ends
+      // made of them — the sweater's r12 corners cut away the bottom of the
+      // back, and the far thigh's cap filled the notch as a ball bulging out
+      // under the chair back (the user's "fix his butt"). A seated pelvis is
+      // as wide as the waist over it and FLAT underneath, because it is
+      // sitting on something: small corners, bottom `SEAT_DEPTH` below the
+      // hips — enough to swallow the rear hip cap; 12 swallows both and was
+      // shot as a box sticking out behind the chair.
+      //
+      // Its own still accent, NOT a volume on `body`: `breathe` moves
+      // `body.y` a whole CELL, and a seat that breathes lifts off the thighs
+      // and hands the ball back for half of every breath. Pushed after the
+      // legs, so it covers their hip ends; no `depth`, so `depthOrder` puts
+      // it behind the torso and the sweater's hem laps over it.
+      const SEAT_DEPTH = 8;
+      const seat = new PIXI.Graphics();
+      paint(seat, litRect(-HALF_W, -16, HALF_W * 2, 16 + SEAT_DEPTH, 4), HUMAN.jeans, undefined, cloth);
+      seat.gestureMode = "still";
+      // Tagged so nothing counts it as a third arm: an untagged accent IS an
+      // arm to every reader of `accents`.
+      seat.limb = "seat";
+      seat.restRotation = 0;
+      accents.push(seat);
       // -100, and the 4 units it moved up are a NECK.
       //
       // The chin sat 21 below whatever this returns when `character()`
