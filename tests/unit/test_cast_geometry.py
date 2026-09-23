@@ -166,10 +166,11 @@ def _stripped_manifest(*keys: str) -> dict:
     repaint caught mid-edit. Neither may take the room down with it."""
     raw = load_manifest().as_dict()
     raw["cast"] = {k: v for k, v in raw["cast"].items() if k not in keys}
-    if "sit_anchor" in keys:
-        raw["cast"]["trader"] = {
-            k: v for k, v in raw["cast"]["trader"].items() if k != "sit_anchor"
-        }
+    for key in ("sit_anchor", "seat_occluder"):
+        if key in keys:
+            raw["cast"]["trader"] = {
+                k: v for k, v in raw["cast"]["trader"].items() if k != key
+            }
     return raw
 
 
@@ -418,3 +419,95 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
     assert manifest.cast["rig_height"] == max(drawn.values()), (
         f"rig_height disagrees with what the page draws: {drawn}"
     )
+
+
+def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
+    source = WORLD_TEMPLATE.read_text()
+    blocks = [
+        re.search(rf"^    function {name}\(.*?^    \}}$", source, re.S | re.M)
+        for name in ("seatOccluderFor", "occludeBelowKnees")
+    ]
+    assert all(blocks), "the page no longer declares the seat occluder at one indent level"
+    return _node(
+        f"const PAINTED_CAST = {json.dumps(painted_cast)};\n"
+        f"const plateReady = {json.dumps(plate_ready)};\n"
+        + """
+        // The mask is drawn on a 2D canvas and handed to PIXI as a Sprite
+        // texture; these record the path and where the sprite lands.
+        const path = [];
+        const ctx = { beginPath() {}, closePath() {}, fill() { path.push("fill"); },
+                      moveTo(x, y) { path.push([x, y]); }, lineTo(x, y) { path.push([x, y]); } };
+        const document = { createElement: () => ({ getContext: () => ctx }) };
+        class FakeGraphics {}
+        class FakeSprite { constructor(texture) { this.texture = texture; } }
+        const PIXI = {
+          Graphics: FakeGraphics, Sprite: FakeSprite,
+          Texture: { from: (canvas) => ({ canvas, source: {} }) },
+        };
+        const added = [];
+        const layers = { foreground: { addChild(...k) { added.push(...k); } } };
+        const bone = (name, belowKnee) => ({
+          name, belowKnee, masked: null,
+          setMask(opts) { if (""" + json.dumps(throw) + """) throw new Error("x"); this.masked = opts; },
+        });
+        const accents = [bone("thigh", false), bone("shin", true),
+                         bone("shoe", true), bone("arm", undefined)];
+        """
+        + "\n".join(b.group(0) for b in blocks)
+        + """
+        const count = occludeBelowKnees("trader", accents);
+        console.log(JSON.stringify({
+          count,
+          masked: accents.filter((a) => a.masked).map((a) => a.name),
+          inverse: accents.filter((a) => a.masked).map((a) => a.masked.inverse),
+          ownMasks: new Set(accents.filter((a) => a.masked).map((a) => a.masked.mask)).size,
+          inForeground: accents.filter((a) => a.masked).every((a) => added.includes(a.masked.mask)),
+          sprites: added.every((m) => m instanceof FakeSprite),
+          textures: new Set(added.map((m) => m.texture)).size,
+          at: added.map((m) => [m.x, m.y]),
+          size: added.length ? [added[0].texture.canvas.width, added[0].texture.canvas.height] : null,
+          path,
+        }));
+        """
+    )
+
+
+@needs_node
+def test_the_seat_hides_the_shins_and_nothing_else():
+    """Each below-knee bone gets its own INVERSE mask of the measured cushion,
+    parented to `layers.foreground` - plate space, so the cut stays on the
+    painted seat whatever the figure's container is doing. Nothing above the
+    knee is masked: a thigh lies on the cushion, in front of it.
+    """
+    poly = load_manifest().cast["trader"]["seat_occluder"]
+    got = _occlude_run(load_manifest().cast_payload())
+    assert got["masked"] == ["shin", "shoe"]
+    assert got["count"] == 2
+    assert got["inverse"] == [True, True]
+    # One mask per bone: a Graphics masking two containers is not something
+    # PIXI v8 promises to render.
+    assert got["ownMasks"] == 2
+    assert got["inForeground"]
+    # A SPRITE, never a Graphics: PIXI 8.19's stencil mask (what a Graphics
+    # becomes) clips the masked bounds even when inverse, and the keyline
+    # filter then cut both shoes off the frame. One texture, drawn once.
+    assert got["sprites"] and got["textures"] == 1
+    x0 = min(x for x, _ in poly)
+    y0 = min(y for _, y in poly)
+    assert got["at"] == [[x0, y0]] * 2
+    assert got["size"] == [max(x for x, _ in poly) - x0, max(y for _, y in poly) - y0]
+    assert got["path"] == [[x - x0, y - y0] for x, y in poly] + ["fill"]
+
+
+@needs_node
+def test_a_plate_without_a_seat_occluder_masks_nothing():
+    """No `seat_occluder` (an older plate), no plate, or a mask that throws:
+    the legs draw exactly as they did before increment 22 - over the seat,
+    never missing - and the throw does not escape into `character()`."""
+    for painted, ready in ((_painted_cast(_stripped_manifest("seat_occluder")), True),
+                           (load_manifest().cast_payload(), False),
+                           (None, True)):
+        got = _occlude_run(painted, plate_ready=ready)
+        assert got["masked"] == [] and got["count"] == 0 and got["path"] == []
+    thrown = _occlude_run(load_manifest().cast_payload(), throw=True)
+    assert thrown["masked"] == []

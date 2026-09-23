@@ -294,6 +294,84 @@ def measure_sit_anchor(back_fraction: float = 0.35) -> dict:
     }
 
 
+
+# The cushion as an OCCLUDER (increment 22). Seen from behind, the cushion's
+# front edge is its upper-left edge on screen, so a shin hanging below it is
+# BEHIND the seat — and the painted seat has to hide it. The lit top face is
+# `_is_cushion`; the two side faces are the same upholstery two values down,
+# ~(35, 41, 58), which the floor under it (~(24, 27, 39)) never reaches.
+OCCLUDER_SEED = (1320, 700)
+OCCLUDER_BOX = ((1255, 1431), (666, 765))   # rows from the backrest's foot down; columns stop short of the backrest strip, which the foreground hides anyway
+
+
+def _seat_face(px, x: int, y: int) -> bool:
+    r, g, b = px[x, y]
+    return b >= 48 and (b - r) >= 18 and g >= r
+
+
+def _outline(px, x: int, y: int) -> bool:
+    r, g, b = px[x, y]
+    return r + g + b < 80
+
+
+def _simplify(points: list, eps: float) -> list:
+    """Ramer-Douglas-Peucker over an open polyline."""
+    if len(points) < 3:
+        return points
+    (ax, ay), (bx, by) = points[0], points[-1]
+    length = math.hypot(bx - ax, by - ay) or 1.0
+    far, index = 0.0, 0
+    for i in range(1, len(points) - 1):
+        px_, py_ = points[i]
+        d = abs((bx - ax) * (ay - py_) - (ax - px_) * (by - ay)) / length
+        if d > far:
+            far, index = d, i
+    if far <= eps:
+        return [points[0], points[-1]]
+    return _simplify(points[: index + 1], eps)[:-1] + _simplify(points[index:], eps)
+
+
+def measure_seat_occluder(eps: float = 1.5) -> list[list[int]]:
+    """The painted cushion's silhouette — top face, both side faces and the
+    dark outline round them — as a screen polygon.
+
+    Flood-filled from a seed on the cushion inside `OCCLUDER_BOX`, then read
+    PER COLUMN (topmost and bottommost filled pixel, each pushed out across
+    the chair's own near-black outline) rather than hulled: the underside is
+    curved, and a hull's chords would hide shin the painting shows. Including
+    the outline is what makes a shin that re-emerges below the seat meet the
+    chair's line instead of painting a pixel over it.
+    """
+    from PIL import Image
+
+    px = Image.open(PLATE_PNG).convert("RGB").load()
+    (x0, x1), (y0, y1) = OCCLUDER_BOX
+    seen, stack = set(), [OCCLUDER_SEED]
+    while stack:
+        x, y = stack.pop()
+        if (x, y) in seen or not (x0 <= x < x1 and y0 <= y < y1):
+            continue
+        if not _seat_face(px, x, y):
+            continue
+        seen.add((x, y))
+        stack += [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+    if not seen:
+        raise SystemExit(f"no cushion painted at the seed {OCCLUDER_SEED}")
+
+    top, bottom = [], []
+    for x in sorted({x for x, _ in seen}):
+        ys = [y for sx, y in seen if sx == x]
+        t, b = min(ys), max(ys)
+        while t - 1 >= y0 and _outline(px, x, t - 1) and min(ys) - t < 2:
+            t -= 1
+        while b + 1 < y1 and _outline(px, x, b + 1) and b - max(ys) < 2:
+            b += 1
+        top.append((x, t))
+        bottom.append((x + 1, b + 1))   # pixel (x, b) covers up to x+1, b+1
+    top = _simplify(top, eps)
+    bottom = _simplify(bottom[::-1], eps)
+    return [[int(x), int(y)] for x, y in top + bottom]
+
 def measure_plate_chair() -> dict:
     from PIL import Image
 

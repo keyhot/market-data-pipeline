@@ -1641,6 +1641,70 @@
       return { x: sit.x, baseY: sit.y };
     }
 
+    // The painted cushion's silhouette, in plate pixels, or null. Same gate
+    // and same degrade as `sitAnchorFor`: an older manifest has no polygon,
+    // and no polygon means the legs draw over the seat as they always did.
+    function seatOccluderFor(name) {
+      const painted =
+        plateReady && PAINTED_CAST ? PAINTED_CAST.characters[name] : null;
+      const poly = painted ? painted.seat_occluder : null;
+      return Array.isArray(poly) && poly.length >= 3 ? poly : null;
+    }
+
+    // The seat hides what hangs behind it (increment 22). The camera is behind
+    // the chair, so the cushion's front edge is its upper-LEFT edge on screen
+    // and his far knee lands on it: the far shin drops through the cushion and
+    // was painted over it ("I don't like that his right leg goes on top of
+    // chair"). Each below-knee bone gets an INVERSE mask of the measured
+    // cushion (`scripts/measure_chair.py::measure_seat_occluder`).
+    //
+    // The mask is a SPRITE of the polygon, never a Graphics. PIXI 8.19 routes
+    // a Graphics mask to its StencilMask, whose `addBounds` clips the masked
+    // object's bounds to the mask's rectangle even when the mask is inverse
+    // (its AlphaMask checks `inverse`; the stencil one does not). The keyline
+    // filter on `rig` sizes its texture from those bounds, so with a Graphics
+    // mask both SHOES — wholly outside the cushion — vanished and the shins
+    // ended on a flat line at the texture's edge. Shot, then fixed.
+    //
+    // The masks live on `layers.foreground`, in plate space like the chair
+    // back's, so the cut stays on the painted seat whatever the figure's own
+    // container is doing — a hop or a pulse moves the shin, never the chair.
+    // One sprite per bone (one texture), because one mask shared by several
+    // containers is not something PIXI promises. Its own try/catch, for
+    // `drawForeground`'s reason: a cosmetic cut must not cost `character()`
+    // the trader.
+    function occludeBelowKnees(name, accents) {
+      try {
+        const poly = seatOccluderFor(name);
+        const hangs = accents.filter((g) => g.belowKnee);
+        if (!poly || !layers.foreground || !hangs.length) return 0;
+        const x0 = Math.min(...poly.map((p) => p[0]));
+        const y0 = Math.min(...poly.map((p) => p[1]));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(...poly.map((p) => p[0])) - x0;
+        canvas.height = Math.max(...poly.map((p) => p[1])) - y0;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        poly.forEach(([x, y], i) => (i ? ctx.lineTo(x - x0, y - y0) : ctx.moveTo(x - x0, y - y0)));
+        ctx.closePath();
+        ctx.fill();
+        const texture = PIXI.Texture.from(canvas);
+        texture.source.scaleMode = "nearest";
+        for (const g of hangs) {
+          const mask = new PIXI.Sprite(texture);
+          mask.x = x0;
+          mask.y = y0;
+          g.setMask({ mask, inverse: true });
+          layers.foreground.addChild(mask);
+        }
+        return hangs.length;
+      } catch (err) {
+        console.error("seat occluder failed; the legs draw over the seat", err);
+        return 0;
+      }
+    }
+
     // How tall the newcomer banner must be to sit on the strip the plate left
     // quiet for it. `null` means "no plate — leave the CSS alone". A value
     // rather than a branch inside drawPlate, because a test can only run a
@@ -2657,6 +2721,7 @@ void main() {
       // seated figure: the machine keeps its rim, a glyph's own edge.
       const keyline = container.pose === "seated" ? keylineFilter() : null;
       if (keyline) rig.filters = [keyline];
+      if (container.pose === "seated") occludeBelowKnees(name.toLowerCase(), accents);
       container.addChild(rig, nameTag, stat, moodTag);
       layers.chars.addChild(container);
 
@@ -3701,10 +3766,15 @@ void main() {
         // the way the thigh came from, since the toes point the way it went.
         bone(hip, knee, L.width[0], jeans, cloth,
              { end: L.width[1], bulge: [LIMB.quad, LIMB.quadAt, [0, -1]] });
-        bone(knee, ankle, L.width[1], jeans, clothInner,
+        const shin = bone(knee, ankle, L.width[1], jeans, clothInner,
              { end: L.width[1] * LIMB.hem,
                bulge: [LIMB.calf, LIMB.calfAt, [hip.x - knee.x, hip.y - knee.y]] });
-        bone(ankle, toe, L.width[2], shoes, shod);
+        const shoe = bone(ankle, toe, L.width[2], shoes, shod);
+        // Everything below the knee hangs off the cushion's front edge, and
+        // from behind the chair that edge is the FAR one: the painted seat is
+        // in front of the shin, so `occludeBelowKnees` hides it there
+        // (increment 22). The thigh lies ON the cushion and stays in front.
+        shin.belowKnee = shoe.belowKnee = true;
       });
       // THE SEAT: jeans from the waist to the cushion, under the sweater's
       // hem. Without it the hips were whatever the thighs' round hip ends

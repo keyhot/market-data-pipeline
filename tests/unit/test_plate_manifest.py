@@ -1249,3 +1249,23 @@ def test_the_trader_sits_where_the_measurement_puts_him():
         f"the seat budget {trader['seat']} was not re-measured at the hip row "
         f"{measured['seat']}"
     )
+
+
+def test_the_seat_occluder_is_the_measured_cushion():
+    """`cast.trader.seat_occluder` is `measure_seat_occluder()`'s output, not a
+    hand-drawn polygon.
+
+    Increment 22: the camera is behind the chair, so the cushion's front edge
+    is its upper-left edge on screen and his FAR knee lands on it — the far
+    shin hangs behind the seat and must be hidden by it ("I don't like that
+    his right leg goes on top of chair"). The page masks the shins with this
+    polygon, so it has to be the painted cushion's own silhouette; a hand edit,
+    or a changed tolerance without a re-measure, fails here.
+    """
+    from scripts.measure_chair import measure_seat_occluder
+
+    trader = load_manifest().cast["trader"]
+    assert trader.get("seat_occluder") == measure_seat_occluder(), (
+        "the manifest's seat occluder is not the painted cushion: re-run "
+        "measure_seat_occluder() and copy it into cast.trader.seat_occluder"
+    )

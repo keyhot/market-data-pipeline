@@ -3129,6 +3129,7 @@ def _seated_rig_run() -> dict:
           end: [a.x - Math.sin(a.restRotation) * a.boneLength,
                 a.y + Math.cos(a.restRotation) * a.boneLength],
           width: a.boneWidth,
+          belowKnee: !!a.belowKnee,
         }));
         // Where each volume went: the torso (`body`, which the seated
         // animations move), or an accent — by the part it plays.
@@ -3143,6 +3144,37 @@ def _seated_rig_run() -> dict:
         """
     )
 
+
+
+@needs_node
+def test_only_what_hangs_below_the_knee_goes_behind_the_seat():
+    """The shins and shoes are tagged to be hidden by the cushion; the thighs
+    are not.
+
+    Increment 22. The camera is behind the chair, so the cushion's front edge
+    is its upper-left edge on screen and his far knee lands on it: the far
+    shin hangs down BEHIND the seat and was painted over it ("I don't like
+    that his right leg goes on top of chair"). A thigh lies ON the cushion
+    and must stay in front of it, so the rule is structural, not a list of
+    names: a leg bone is below the knee exactly when it starts where another
+    leg bone ends.
+    """
+    legs = _seated_rig_run()["legs"]
+    ends = [leg["end"] for leg in legs]
+
+    def hangs(leg):
+        return any(math.dist(leg["start"], end) < 1e-6 for end in ends)
+
+    assert [leg["belowKnee"] for leg in legs] == [hangs(leg) for leg in legs], (
+        "the below-knee tag must mark exactly the bones that hang off another "
+        "bone - shins and shoes - and never a thigh, which sits on the seat"
+    )
+    assert sum(leg["belowKnee"] for leg in legs) == 4, "two shins and two shoes"
+    # And the tag is acted on: the seated branch of `character()` hands its
+    # accents to the occluder. Comments stripped, so the prose above the call
+    # cannot pass for it.
+    body = _without_comments(_js_block(_world_source(), "function character("))
+    assert 'if (container.pose === "seated") occludeBelowKnees(' in body
 
 
 @needs_node
