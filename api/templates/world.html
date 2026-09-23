@@ -1970,6 +1970,122 @@
       bars: boxHead,
     };
 
+    // THE TRADER IN PROFILE (increment 16). The chair faces up-left, away from
+    // the camera, and for two increments that bought the back of a head: a
+    // hair disc over a nape, which read as a ball on a collar. The user's call
+    // was that he should be LOOKING AT THE CHARTS, which is a side view — so
+    // the head turns out of the body's three-quarter-back into profile toward
+    // the painted chart screens, and the body keeps the chair's measured yaw
+    // (`seatedRig`'s bones, lap bracket and seat budget all hang off it).
+    //
+    // Authored facing +x and mirrored by `side`; every coordinate is a whole
+    // CELL so the mirror lands on the grid `litRect` snaps to. Big masses go
+    // through `paint` (hair, face); the small features are FLAT fills on their
+    // own Graphics — a 4-unit nose through `paint` is three concentric bands,
+    // the joint-cap "dark ring" a fourth time.
+    const PROFILE_HEAD = {
+      // The cranium: hair, back of the head and the crown. Painted first.
+      skull: [-4, -8, 18],
+      // Skin under the back of the skull: the jaw's back and the nape. Hair
+      // hanging to the jaw behind a profile reads as a BEARD, so the hair
+      // stops at the ear and this is what shows below it.
+      nape: [-8, 4, 16, 16, 6],
+      // The face plane, forehead to jaw: the front half of the head only, so
+      // the hair keeps the back half and the ear has hair to sit in.
+      face: [4, -16, 16, 36, 8],
+      // Hair laid back over the brow — the hairline, not a helmet.
+      fringe: [-4, -24, 20, 12, 6],
+      // Flat features, [x, y, w, h] from the head's origin, facing +x. The
+      // nose is a wedge rather than a rect: [bridge x, top y, tip reach,
+      // tip y, base y].
+      nose: [20, -8, 6, 4, 6],
+      // The eye is a white with a pupil in it, and WHERE the pupil sits is
+      // the other half of the look: the head nods only `GAZE_HEAD_SHARE` of
+      // the way, and the pupil rides the front-upper corner for the rest.
+      eye: [12, -8, 4, 4],
+      pupil: [14, -8, 2, 2],
+      brow: [8, -12, 8, 2],
+      ear: [-8, -4, 4, 10],
+      mouth: [16, 12, 4, 2],
+      // The joint the head nods about: the top of the neck, under the jaw.
+      pivot: [4, 20],
+    };
+
+    // A rect mirrored about x = 0 when the head faces -x.
+    function mirrorRect([x, y, w, h, ...rest], side) {
+      return [side < 0 ? -(x + w) : x, y, w, h, ...rest];
+    }
+
+    function profileHead(skull, features, side) {
+      const P = PROFILE_HEAD;
+      const [cx, cy, r] = P.skull;
+      const hair = { keepFill: true, noRim: true, matte: true };
+      const skin = { keepFill: true, noRim: true };
+      paint(skull, litRect(...mirrorRect(P.nape, side)), HUMAN.skin, undefined, skin);
+      paint(skull, litCircle(side * cx, cy, r), HUMAN.hair, undefined, hair);
+      paint(skull, litRect(...mirrorRect(P.face, side)), HUMAN.skin, undefined, skin);
+      paint(skull, litRect(...mirrorRect(P.fringe, side)), HUMAN.hair, undefined, hair);
+      // Not snapped: the pupil is half a CELL by design, and snapping its
+      // mirrored x rounds it OUT of the eye on one side — which
+      // `test_the_profile_is_one_head_mirrored` caught. Every other feature
+      // is authored on whole cells already, so snapping them would be a no-op.
+      const flat = (rect, colour) => {
+        const [x, y, w, h] = mirrorRect(rect, side);
+        features.rect(x, y, w, h).fill(colour);
+      };
+      const skinBase = shade(HUMAN.skin, rampLevel("base"));
+      const skinShade = shade(HUMAN.skin, rampLevel("shade"));
+      flat(P.ear, skinBase);
+      const [nx, ny, reach, tipY, baseY] = P.nose;
+      features.poly([side * nx, ny, side * (nx + reach), tipY, side * nx, baseY]).fill(skinBase);
+      flat(P.brow, HUMAN.hair);
+      flat(P.eye, 0xd8c6b0);
+      flat(P.pupil, 0x1b1716);
+      flat(P.mouth, skinShade);
+      const eye = mirrorRect(P.eye, side);
+      return {
+        crown: Math.min(cy - r, P.fringe[1]),
+        chin: P.face[1] + P.face[3],
+        eye: [eye[0] + eye[2] / 2, eye[1] + eye[3] / 2],
+        pivot: [side * P.pivot[0], P.pivot[1]],
+      };
+    }
+
+    // Where the charts are: the centre of every painted screen whose role is
+    // `chart`, averaged. Null with no plate — a head with nothing to look at
+    // looks level.
+    function chartTarget(screens) {
+      const charts = (screens || []).filter((s) => s.role === "chart" && s.quad);
+      if (!charts.length) return null;
+      let x = 0, y = 0;
+      for (const s of charts) {
+        for (const [px, py] of s.quad) { x += px / s.quad.length; y += py / s.quad.length; }
+      }
+      return { x: x / charts.length, y: y / charts.length };
+    }
+
+    // Which way a profile faces: toward the charts, or with no charts to
+    // look at, the way the chair points. Never 0 — a profile has a front.
+    function gazeSide(target, x, facing) {
+      if (target && target.x !== x) return Math.sign(target.x - x);
+      return (facing && Math.sign(facing[0])) || -1;
+    }
+
+    // How far up a head facing `side` must tilt for its eye to point at
+    // `target`, both in screen pixels. Level when there is no target or the
+    // target is behind him; never past GAZE_MAX, a neck's comfortable range.
+    const GAZE_MAX = 0.6;
+    // How much of that the NECK does. People look up at a screen with the
+    // eyes as much as with the head; a head nodding the whole 28 degrees to
+    // the charts reads as a man studying the ceiling.
+    const GAZE_HEAD_SHARE = 0.5;
+    function gazePitch(eye, target, side) {
+      if (!target) return 0;
+      const ahead = side * (target.x - eye.x);
+      if (ahead <= 0) return 0;
+      return Math.max(0, Math.min(GAZE_MAX, Math.atan2(eye.y - target.y, ahead)));
+    }
+
     // A machine and a person shouldn't wear the same face. The bodies built
     // out of market glyphs get a readout — visor, LED eyes, a stepped mouth,
     // and no brows, because a brow is a muscle. The figure keeps the human
@@ -2270,7 +2386,14 @@ void main() {
 
       const body = new PIXI.Graphics();
       const head = new PIXI.Container();
+      // The head's resting nod, on its own node: `head.rotation` belongs to
+      // the animations (`setGaze`, `restSeatedCharacter` zero it every tick),
+      // so a gaze parked there would render one frame and snap level.
+      const aim = new PIXI.Container();
       const skull = new PIXI.Graphics();
+      // A profile's small features: flat fills `repaint` never touches.
+      const features = new PIXI.Graphics();
+      let profile = null;
       const eyeL = new PIXI.Graphics();
       const eyeR = new PIXI.Graphics();
       const mouth = new PIXI.Graphics();
@@ -2327,28 +2450,34 @@ void main() {
         // asked for the turn knowing the face goes with it: "I do not care
         // about his mimics and that face is not visible".)
         const away = facesAway(anchor.facing);
-        // Seen from behind, the skin under the hair is a NAPE, and a nape is
-        // neck-wide. It used to be the face's own 19-radius disc, whose lower
-        // arc showed below the hair as a crescent the width of the skull —
-        // which reads as a CHIN, i.e. a face looking at the camera through a
-        // helmet of hair (increment 15). Same lowest point (4 + 17 = 21, the
-        // chin every neck measurement starts from), a third of the width.
-        paint(skull, away ? litRect(-8, 4, 16, 17, 6) : litCircle(0, -4, 22),
-              away ? HUMAN.skin : HUMAN.hair, undefined,
-              { keepFill: true, noRim: away, matte: !away });
-        // Hair is matte (increment 15) for the reason the clothes are: the
-        // lamp's band on a circle is a concentric disc, and on the crown of
-        // a head seen from behind a tan disc inside dark hair reads as a
-        // bald spot, not as light. Skin keeps the warm band.
-        paint(skull, litCircle(0, away ? -4 : 2, away ? 22 : 19),
-              away ? HUMAN.hair : HUMAN.skin, undefined,
-              { keepFill: true, noRim: !away, matte: away });
-        for (const part of [eyeL, eyeR, mouth, browL, browR]) part.visible = !away;
+        if (away) {
+          // Turned from the camera, the head turns to the CHARTS instead of
+          // showing its back (increment 16, `profileHead`). The side is the
+          // one the charts are on; with no plate, the chair's own.
+          const side = gazeSide(chartTarget(PLATE && PLATE.screens), anchor.x, anchor.facing);
+          profile = profileHead(skull, features, side);
+          profile.side = side;
+          crown = profile.crown;
+          for (const part of [eyeL, eyeR, mouth, browL, browR]) part.visible = false;
+        } else {
+          // Facing the camera: hair behind, face in front. Hair is matte
+          // (increment 15) — a lamp band on a dark disc reads as a bald spot.
+          paint(skull, litCircle(0, -4, 22), HUMAN.hair, undefined,
+                { keepFill: true, noRim: false, matte: true });
+          paint(skull, litCircle(0, 2, 19), HUMAN.skin, undefined,
+                { keepFill: true, noRim: true, matte: false });
+        }
       } else {
         paint(skull, litCircle(0, 0, 28), BODY_FILL);
       }
       head.y = headY;
-      head.addChild(skull, beacon, visor, browL, browR, eyeL, eyeR, mouth);
+      aim.addChild(skull, features, beacon, visor, browL, browR, eyeL, eyeR, mouth);
+      if (profile) {
+        // Nod about the top of the neck, so the chin stays on it.
+        aim.pivot.set(...profile.pivot);
+        aim.position.set(...profile.pivot);
+      }
+      head.addChild(aim);
 
       const nameTag = label(name, -40, 22, 18);
       const stat = label("", -80, 46, 14, NEUTRAL);
@@ -2394,6 +2523,7 @@ void main() {
       const char = {
         container, body, head, skull, eyeL, eyeR, mouth, browL, browR, visor,
         accents, style, stat, moodTag, nameTag, faceKind: FACE_KIND[style],
+        aim, profile, figureScale,
         baseY: container.y, mood: "neutral", anim: null, phase: 0,
         rand: rng32(seed || 1),
         // The shadow is cast by the figure, so it grows with it — a 1.7x body
@@ -3603,6 +3733,20 @@ void main() {
       return entry;
     }
 
+    // Tilt a profile head so its eye points at the charts. Computed here, not
+    // in `character()`, because only now is it known where the head IS: the
+    // eye's screen position is the hips' plate anchor plus the head-local eye
+    // through the layer scale and the figure's own. Positive rotation turns
+    // +x toward +y, so a head facing -x nods UP with a positive angle.
+    function aimAtCharts(char, anchor) {
+      if (!char || !char.profile) return;
+      const k = CAST_SCALE * (char.figureScale || 1);
+      const [ex, ey] = char.profile.eye;
+      const eye = { x: anchor.x + ex * k, y: anchor.baseY + (char.headBaseY + ey) * k };
+      const pitch = gazePitch(eye, chartTarget(PLATE && PLATE.screens), char.profile.side);
+      char.aim.rotation = -char.profile.side * pitch * GAZE_HEAD_SHARE;
+    }
+
     function positionCharacters() {
       layoutRoom();
       layers.chars.scale.set(CAST_SCALE);
@@ -3636,6 +3780,7 @@ void main() {
         char.baseX = char.container.x;
         char.headBaseY = char.head.y;
       }
+      aimAtCharts(trader, anchors.trader);
     }
 
     function draw(state) {

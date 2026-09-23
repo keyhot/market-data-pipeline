@@ -2688,58 +2688,280 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
 
 
 # The trader's head, as `character()` paints it on the `facesAway` branch this
-# chair's yaw selects: a skin nape `litRect(-8, 4, 16, 17, 6)` (increment 15;
-# it was the face's `litCircle(0, 2, 19)`, whose arc read as a chin) under
-# hair `litCircle(0, -4, 22)`. The chin is the lowest painted head pixel, 21 below
-# `headY`. The neck test below measures FROM it, so
-# `test_the_head_literals_these_measurements_depend_on_still_ship` guards it —
-# a redesigned head must break that test loudly rather than quietly re-point
-# every span that starts at the chin.
-HUMAN_CHIN_BELOW_HEAD_Y = 21
-HUMAN_AWAY_SKULL = "away ? litRect(-8, 4, 16, 17, 6) : litCircle(0, -4, 22)"
+# chair's yaw selects: since increment 16 a PROFILE turned to the charts,
+# built by `profileHead` where node can run it. The chin every neck
+# measurement starts from is read off that builder's own return value rather
+# than pinned as a literal here, so a redrawn head moves it with the drawing.
 
 
-def test_the_head_literals_these_measurements_depend_on_still_ship():
-    """The chin is a derived number, so its source has to be pinned.
+def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
+    """`profileHead` built for one `side`, plus the gaze helpers run on the
+    real manifest's chart screens.
 
-    `HUMAN_CHIN_BELOW_HEAD_Y` is 4 + 17 read off one line in `character()`. If
-    that line changes, every neck measurement silently measures from the wrong
-    place and still passes — the failure mode `measure_chair.py`'s frozen
-    `shipped_u` column already demonstrated once on this same figure.
+    `paint` and the feature Graphics are recorders: every volume comes back as
+    `{kind, geom, fill, opts}` in head-local units BEFORE banding, and every
+    flat feature as the rect or polygon it fills. `shade` is the page's own,
+    so a feature colour compares against the palette it is shaded from.
     """
-    assert HUMAN_AWAY_SKULL in _world_source(), (
-        "character() no longer paints the away-facing head as "
-        f"{HUMAN_AWAY_SKULL} - re-derive HUMAN_CHIN_BELOW_HEAD_Y from the "
-        "new line"
+    source = _world_source()
+    plate = manifest or _manifest()
+    return _run_node(
+        f"const PLATE = {json.dumps(plate)};\n"
+        + f"const PAINTED_CAST = {json.dumps(_painted_cast(plate))};\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "const HUMAN = {") + ";\n"
+        + _js_block(source, "function mixHex(") + "\n"
+        + _js_block(source, "function shade(") + "\n"
+        + _js_block(source, "function rampLevel(") + "\n"
+        + _js_block(source, "function snap(") + "\n"
+        + _js_const(source, "CELL")
+        + _js_const(source, "CAST_SCALE")
+        + _js_block(source, "const PROFILE_HEAD = {") + ";\n"
+        + _js_block(source, "function mirrorRect(") + "\n"
+        + _js_block(source, "function profileHead(") + "\n"
+        + _js_block(source, "function chartTarget(") + "\n"
+        + _js_block(source, "function gazeSide(") + "\n"
+        + _js_const(source, "GAZE_MAX")
+        + _js_const(source, "GAZE_HEAD_SHARE")
+        + _js_block(source, "function gazePitch(") + "\n"
+        + _js_block(source, "function aimAtCharts(") + "\n"
+        + f"const SIDE = {int(side)};\n"
+        + """
+        const volumes = [];
+        const litRect = (x, y, w, h, r) => ({ kind: "rect", geom: [x, y, w, h, r] });
+        const litCircle = (cx, cy, rad) => ({ kind: "circle", geom: [cx, cy, rad] });
+        function paint(g, volume, fill, rim, opts) {
+          volumes.push({ kind: volume.kind, geom: volume.geom, fill, opts: opts || {} });
+        }
+        const features = [];
+        let pending = null;
+        const recorder = {
+          rect(x, y, w, h) { pending = { kind: "rect", geom: [x, y, w, h] }; return this; },
+          poly(pts) { pending = { kind: "poly", geom: pts }; return this; },
+          fill(colour) { features.push({ ...pending, fill: colour }); pending = null; return this; },
+        };
+        const head = profileHead({}, recorder, SIDE);
+        const target = chartTarget(PLATE.screens);
+        const cast = PLATE.cast.trader;
+        const side = gazeSide(target, cast.x, cast.facing);
+        console.log(JSON.stringify({
+          head, volumes, features, target, side, HUMAN, P: PROFILE_HEAD,
+          CAST_SCALE, GAZE_MAX, GAZE_HEAD_SHARE,
+          noPlateSide: gazeSide(null, cast.x, cast.facing),
+          noPlatePitch: gazePitch({ x: 0, y: 0 }, null, -1),
+        }));
+        """
     )
 
 
-@needs_node
-def test_the_seated_figure_has_a_neck():
-    """There is skin between his collar and his jaw, and the trace says how much.
-
-    A head resting straight on a collar is the loudest "this is not a person"
-    signal a seated figure can send, and it was invisible to every check this
-    suite had: total height, seat fit and the chair-proportion bracket all
-    pass with the head sunk to the shoulders, because sinking it barely moves
-    the figure's overall span.
-
-    So this measures the one span that does move: the gap between the chin and
-    the topmost SWEATER volume. Sweater, not torso — the collar is what would
-    actually cover the neck, and a torso-top measurement would happily report
-    a neck that a high collar swallows whole.
-
-    The target is not typed here. `measure_chair.head_unit` derives it from the
-    trace as `neck`->`head` minus the head RADIUS: the trace puts `head` at the
-    head's centre, so that subtraction is what separates a bare neck from a
-    neck-plus-half-a-head. It comes out ~0.17 heads, about 7 rig units.
-
-    The bracket fails from both ends, because "more neck" is not the goal and a
-    giraffe is as wrong as a mole. It reads about -13 on the figure that
-    shipped through increment 5 — the collar stood 13 units ABOVE the chin.
-    """
+def _aim_run(head_y: float, side: int) -> dict:
+    """`aimAtCharts` run on a fake trader whose head is `profileHead`'s, at
+    the manifest's own hip anchor — the rotation the page parks on `aim`."""
     source = _world_source()
-    driver = (
+    plate = _manifest()
+    trader = plate["cast"]["trader"]
+    return _run_node(
+        f"const PLATE = {json.dumps(plate)};\n"
+        + f"const PAINTED_CAST = {json.dumps(_painted_cast(plate))};\n"
+        + _js_const(source, "CAST_SCALE")
+        + _js_const(source, "GAZE_MAX")
+        + _js_const(source, "GAZE_HEAD_SHARE")
+        + _js_block(source, "function chartTarget(") + "\n"
+        + _js_block(source, "function gazePitch(") + "\n"
+        + _js_block(source, "function aimAtCharts(") + "\n"
+        + f"const EYE = {json.dumps(_profile_head_run(side)['head'])};\n"
+        + f"""
+        const char = {{ profile: {{ ...EYE, side: {int(side)} }}, figureScale: {trader["figure_scale"]},
+                        headBaseY: {head_y}, aim: {{ rotation: 0 }} }};
+        const anchor = {{ x: {trader["sit_anchor"]["x"]}, baseY: {trader["sit_anchor"]["y"]} }};
+        aimAtCharts(char, anchor);
+        console.log(JSON.stringify({{ rotation: char.aim.rotation }}));
+        """
+    )
+
+
+def _extent(volume: dict) -> tuple[float, float, float, float]:
+    """x0, y0, x1, y1 of a recorded head volume or feature, head-local."""
+    g = volume["geom"]
+    if volume["kind"] == "circle":
+        cx, cy, r = g
+        return cx - r, cy - r, cx + r, cy + r
+    if volume["kind"] == "poly":
+        xs, ys = g[0::2], g[1::2]
+        return min(xs), min(ys), max(xs), max(ys)
+    x, y, w, h = g[:4]
+    return x, y, x + w, y + h
+
+
+def _mirrored(rect: list, side: int) -> list:
+    """A `PROFILE_HEAD` rect as `mirrorRect` places it for `side`."""
+    x, y, w, h = rect[:4]
+    return [-(x + w) if side < 0 else x, y, w, h]
+
+
+def _ray_hits_quad(origin, angle_up: float, side: int, quad) -> bool:
+    """Does a ray from `origin`, pointing `side` in x and `angle_up` radians
+    above level (screen y grows DOWN), cross the convex `quad`?"""
+    ox, oy = origin
+    dx, dy = side * math.cos(angle_up), -math.sin(angle_up)
+    n = len(quad)
+    for i in range(n):
+        (ax, ay), (bx, by) = quad[i], quad[(i + 1) % n]
+        ex, ey = bx - ax, by - ay
+        denom = dx * ey - dy * ex
+        if abs(denom) < 1e-12:
+            continue
+        t = ((ax - ox) * ey - (ay - oy) * ex) / denom
+        u = ((ax - ox) * dy - (ay - oy) * dx) / denom
+        if t > 0 and 0 <= u <= 1:
+            return True
+    return False
+
+
+@needs_node
+def test_the_trader_turns_to_the_charts_side():
+    """The profile faces the side the painted CHARTS are on, read off the
+    manifest's `role: chart` screens rather than typed as "left" — and the
+    nose is what says so: its tip stands proud of the face on that side.
+    With no plate, the chair's own facing decides, and it is never 0.
+    """
+    emitted = _profile_head_run()
+    trader = _manifest()["cast"]["trader"]
+    assert emitted["target"], "no chart screen in the manifest to look at"
+    expected = 1 if emitted["target"]["x"] > trader["x"] else -1
+    assert emitted["side"] == expected
+    assert emitted["noPlateSide"] == (1 if trader["facing"][0] > 0 else -1)
+    assert emitted["noPlatePitch"] == 0
+    for side in (-1, 1):
+        run = _profile_head_run(side)
+        nose = [f for f in run["features"] if f["kind"] == "poly"]
+        assert len(nose) == 1, "the profile has no nose wedge"
+        skin = [v for v in run["volumes"] if v["fill"] == run["HUMAN"]["skin"]]
+        face_front = max(side * e for v in skin for e in _extent(v)[0::2])
+        tip = max(side * x for x in nose[0]["geom"][0::2])
+        assert tip > face_front, (
+            f"facing {side:+d}, the nose tip reaches {tip} and the face "
+            f"{face_front}: the nose is not the front of this head"
+        )
+
+
+@needs_node
+def test_the_profile_eye_sits_in_the_front_of_the_head_above_the_nose_tip():
+    """An eye behind the ear or below the nose is a face drawn on the back of
+    a head. Graded for both sides from the builder's own output."""
+    for side in (-1, 1):
+        run = _profile_head_run(side)
+        ex, ey = run["head"]["eye"]
+        hair = [v for v in run["volumes"] if v["fill"] == run["HUMAN"]["hair"]]
+        x0 = min(_extent(v)[0] for v in hair + run["volumes"])
+        x1 = max(_extent(v)[2] for v in run["volumes"])
+        centre = (x0 + x1) / 2
+        assert side * (ex - centre) > 0, f"facing {side:+d}, the eye is in the back half"
+        nose = next(f for f in run["features"] if f["kind"] == "poly")
+        pts = list(zip(nose["geom"][0::2], nose["geom"][1::2]))
+        tip = max(pts, key=lambda p: side * p[0])
+        assert ey < tip[1], f"facing {side:+d}, the eye ({ey}) is not above the nose tip ({tip[1]})"
+
+
+@needs_node
+def test_the_profile_is_one_head_mirrored():
+    """Facing left is facing right mirrored — every volume and every feature.
+    A per-side hand edit is how the two drift apart."""
+    left, right = _profile_head_run(-1), _profile_head_run(1)
+
+    def mirrored(item):
+        x0, y0, x1, y1 = _extent(item)
+        return (item["kind"], item["fill"], -x1, y0, -x0, y1)
+
+    def plain(item):
+        return (item["kind"], item["fill"], *_extent(item))
+
+    for key in ("volumes", "features"):
+        assert [plain(v) for v in left[key]] == [mirrored(v) for v in right[key]], key
+    assert left["head"]["eye"][0] == -right["head"]["eye"][0]
+
+
+@needs_node
+def test_the_hair_is_matte_whichever_way_the_head_faces():
+    """Every head volume painted in `HUMAN.hair` carries `matte`; skin never.
+
+    The lamp's band on a circle is a concentric disc; on a crown of dark hair
+    a tan disc reads as a bald spot (increment 15). The profile is graded by
+    RUNNING `profileHead`, both sides; the camera-facing head is still two
+    inline calls in `character()`, graded off the source with comments
+    stripped.
+    """
+    for side in (-1, 1):
+        run = _profile_head_run(side)
+        palette = run["HUMAN"]
+        for v in run["volumes"]:
+            if v["fill"] == palette["hair"]:
+                assert v["opts"].get("matte"), f"a hair volume {v['geom']} is lit"
+            elif v["fill"] == palette["skin"]:
+                assert not v["opts"].get("matte"), f"a skin volume {v['geom']} is matte"
+        assert any(v["fill"] == palette["hair"] for v in run["volumes"])
+    body = _without_comments(_js_block(_world_source(), "function character("))
+    facing = re.findall(
+        r"paint\(skull, litCircle\([^)]*\), HUMAN\.(\w+),[^;]*?matte: (true|false) \}\);",
+        body,
+    )
+    assert sorted(facing) == [("hair", "true"), ("skin", "false")], facing
+
+
+@needs_node
+def test_the_trader_looks_at_a_chart():
+    """The line of sight leaves the eye and lands on a painted chart screen.
+
+    The eye's screen position is the manifest's hip anchor plus the head's
+    own eye through the layer and figure scale — the same composition
+    `aimAtCharts` does — and the look is `gazePitch` above level toward the
+    profile's side. It must CROSS a `role: chart` quad. It must also be a
+    look the page actually carries: the neck (`aim.rotation`) takes
+    `GAZE_HEAD_SHARE` of it and the pupil sits in the eye white's front-upper
+    corner for the rest.
+
+    The level ray from the same eye misses every chart — asserted, so this
+    test is known to be able to fail (a head that forgot to look up would).
+    """
+    plate = _manifest()
+    trader = plate["cast"]["trader"]
+    head_y = _seated_rig_run()["headY"]
+    run = _profile_head_run()
+    side = run["side"]
+    k = run["CAST_SCALE"] * trader["figure_scale"]
+    ex, ey = run["head"]["eye"]
+    eye = (trader["sit_anchor"]["x"] + ex * k, trader["sit_anchor"]["y"] + (head_y + ey) * k)
+    target = run["target"]
+    pitch = math.atan2(eye[1] - target["y"], side * (target["x"] - eye[0]))
+    pitch = max(0.0, min(run["GAZE_MAX"], pitch))
+    charts = [s["quad"] for s in plate["screens"] if s.get("role") == "chart"]
+
+    assert any(_ray_hits_quad(eye, pitch, side, q) for q in charts), (
+        f"from the eye at ({eye[0]:.0f}, {eye[1]:.0f}) a look {math.degrees(pitch):.1f} "
+        "degrees up misses every chart screen"
+    )
+    assert not any(_ray_hits_quad(eye, 0.0, side, q) for q in charts), (
+        "a LEVEL look already hits a chart - this test cannot tell a head "
+        "that looks up from one that does not"
+    )
+    rotation = _aim_run(head_y, side)["rotation"]
+    assert rotation == pytest.approx(-side * pitch * run["GAZE_HEAD_SHARE"], abs=1e-6)
+    assert 0 < run["GAZE_HEAD_SHARE"] < 1, "the eyes do none of the looking"
+    rects = [f for f in run["features"] if f["kind"] == "rect"]
+    pupil = next(f for f in rects if _mirrored(run["P"]["pupil"], side) == f["geom"])
+    eye_white = next(f for f in rects if _mirrored(run["P"]["eye"], side) == f["geom"])
+    assert pupil["fill"] != eye_white["fill"], "the pupil is the colour of the white"
+    wx0, wy0, wx1, wy1 = _extent(eye_white)
+    px0, py0, px1, py1 = _extent(pupil)
+    assert side * ((px0 + px1) - (wx0 + wx1)) > 0, "the pupil is not at the front of the eye"
+    assert (py0 + py1) < (wy0 + wy1), "the pupil is not raised toward the charts"
+
+
+def _seated_rig_run() -> dict:
+    """`seatedRig` run in node against recording stubs: `{headY, drawn, HUMAN}`."""
+    source = _world_source()
+    return _run_node(
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
         + _js_const(source, "LIGHT")
@@ -2787,16 +3009,43 @@ def test_the_seated_figure_has_a_neck():
         console.log(JSON.stringify({ headY, drawn, HUMAN }));
         """
     )
+
+
+
+@needs_node
+def test_the_seated_figure_has_a_neck():
+    """There is skin between his collar and his jaw, and the trace says how much.
+
+    A head resting straight on a collar is the loudest "this is not a person"
+    signal a seated figure can send, and it was invisible to every check this
+    suite had: total height, seat fit and the chair-proportion bracket all
+    pass with the head sunk to the shoulders, because sinking it barely moves
+    the figure's overall span.
+
+    So this measures the one span that does move: the gap between the chin and
+    the topmost SWEATER volume. Sweater, not torso — the collar is what would
+    actually cover the neck, and a torso-top measurement would happily report
+    a neck that a high collar swallows whole.
+
+    The target is not typed here. `measure_chair.head_unit` derives it from the
+    trace as `neck`->`head` minus the head RADIUS: the trace puts `head` at the
+    head's centre, so that subtraction is what separates a bare neck from a
+    neck-plus-half-a-head. It comes out ~0.17 heads, about 7 rig units.
+
+    The bracket fails from both ends, because "more neck" is not the goal and a
+    giraffe is as wrong as a mole. It reads about -13 on the figure that
+    shipped through increment 5 — the collar stood 13 units ABOVE the chin.
+    """
     from scripts.measure_chair import head_unit, measure_plate_chair
 
-    emitted = _run_node(driver)
+    emitted = _seated_rig_run()
     drawn = emitted["drawn"]
     palette = emitted["HUMAN"]
 
     sweater = [d for d in drawn if d["fill"] == palette["sweater"]]
     assert sweater, "seatedRig paints no sweater volume at all"
     sweater_top = min(d["rect"][1] for d in sweater)
-    chin = emitted["headY"] + HUMAN_CHIN_BELOW_HEAD_Y
+    chin = emitted["headY"] + _profile_head_run()["head"]["chin"]
     # Positive means skin shows: the collar stops BELOW the jaw.
     neck = sweater_top - chin
 
@@ -6781,9 +7030,18 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     # graded is real and is recorded here rather than papered over: a volume
     # that silently drops out of the extraction has to fail, or this test
     # quietly stops covering whatever was removed.
-    assert (len(rects), len(circles)) == (23, 6), (
+    # The profile head (increment 16) authors its volumes as DATA in
+    # `PROFILE_HEAD` and mirrors them, so they are read from there: the three
+    # rects and the one circle `profileHead` paints.
+    profile = dict(
+        re.findall(r"^\s+(\w+): \[([-\d, ]+)\],", _js_block(source, "const PROFILE_HEAD = {"), re.M)
+    )
+    for key in ("nape", "face", "fringe"):
+        rects.append(tuple(v.strip() for v in profile[key].split(",")))
+    circles.append(tuple(v.strip() for v in profile["skull"].split(",")))
+    assert (len(rects), len(circles)) == (25, 8), (
         f"the extraction now reaches {len(rects)} rect and {len(circles)} "
-        "circle volumes, not 22 and 5. Either a volume was added (raise these "
+        "circle volumes, not 25 and 8. Either a volume was added (raise these "
         "numbers, having checked the new one is graded) or one stopped being "
         "readable - and an unreadable volume is an ungraded volume"
     )
@@ -8254,7 +8512,7 @@ def test_a_built_characters_nametag_is_reachable_from_outside_character():
       eyeL = {{}}, eyeR = {{}}, mouth = {{}}, browL = {{}}, browR = {{}},
       visor = {{}}, accents = [], style = "bars", stat = {{}}, moodTag = {{}},
       nameTag = {{ text: "TRADER" }}, seed = 1, shadow = {{}},
-      figureScale = 1;
+      figureScale = 1, aim = {{}}, profile = null;
     const FACE_KIND = {{ bars: "circle" }};
     const SHADOW_WIDTH = {{ bars: 10 }};
     function rng32() {{ return () => 0; }}
@@ -8754,28 +9012,3 @@ def test_only_the_seated_rig_wears_the_keyline_and_never_its_labels():
     assert guard, "the keyline is no longer attached to the rig under the seated guard"
     assert "container.filters" not in body, "a filter on `container` outlines the labels"
     assert body.count("keylineFilter(") == 1
-
-
-def test_the_hair_is_matte_whichever_way_the_head_faces():
-    """Every head volume painted in `HUMAN.hair` carries `matte`; skin never.
-
-    The lamp's band on a circle is a concentric disc; on the crown of a head
-    seen from behind, a tan disc inside dark hair read as a bald spot
-    (increment 15). The head volumes swap order and colour with `away`, so
-    the option has to follow the COLOUR, not the call: both branches of each
-    ternary are resolved and graded.
-    """
-    body = _without_comments(_js_block(_world_source(), "function character("))
-    calls = re.findall(
-        r"paint\(skull, [^;]*?(away \? HUMAN\.(\w+) : HUMAN\.(\w+))[^;]*?matte: (!?away) \}\);",
-        body,
-    )
-    assert len(calls) == 2, f"expected the two human head volumes, found {len(calls)}"
-    for _, if_away, if_facing, matte in calls:
-        for facing_away, colour in ((True, if_away), (False, if_facing)):
-            is_matte = (matte == "away") == facing_away
-            assert is_matte == (colour == "hair"), (
-                f"the head volume painting {colour} when "
-                f"{'away' if facing_away else 'facing'} is "
-                f"{'matte' if is_matte else 'lit'}: hair must be matte, skin lit."
-            )
