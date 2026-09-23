@@ -2857,7 +2857,10 @@
       // fingertips between the thigh's top edge and its centreline, and the
       // window is narrow for a geometric reason: the forearm descends while
       // the thigh rises toward the knee, so a straight hand gains ~7 units of
-      // sink over its 20. Roughly -0.28 to -0.34 of forearm drop pass.
+      // sink over its 20. Only about -0.30 to -0.33 of (unit) forearm drop
+      // passes, and at the shipped -0.312 both ends clear by under 1.3
+      // units — so a re-measured chair failing that test is expected, not a
+      // regression: re-solve the drop against it.
       // Both directions are unit vectors, because `reach` does not normalise
       // and a longer one would draw a bone longer than itself.
       const ARM = {
