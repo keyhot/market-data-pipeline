@@ -9816,6 +9816,57 @@ def test_the_torso_is_an_outline_not_a_slab():
     )
 
 
+def _luma(rgb: int) -> float:
+    r, g, b = (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+@needs_node
+def test_the_sweater_ends_in_a_hem():
+    """Where the sweater meets the jeans there is a HEM: a band along the
+    torso's bottom edge, darker than both garments, so the waist reads as a
+    line rather than as one blue-grey mass running from the shoulder into
+    the lap (increment 21 — "I don't like how the torso connects to the
+    ass"). Sweater `#3f5a70` against jeans `#34495c` is too close in value
+    to draw that line by itself.
+
+    Graded as rules on the drawn volumes: a volume on `body` (so it breathes
+    with the torso rather than sliding over it) whose bottom IS the torso's
+    bottom, that lies inside the torso outline, runs at least 80% of the
+    torso's width there, is no taller than two CELLs (a band, not a second
+    garment), and is darker than both the sweater and the jeans.
+    """
+    run = _seated_rig_run()
+    human, cell = run["HUMAN"], run["CELL"]
+    torso = _torso_outline()
+    bottom = max(y for _, y in torso)
+    base = [x for x, y in torso if y == bottom]
+    base_w = max(base) - min(base)
+    hems = []
+    for d in run["drawn"]:
+        if d["host"] != "body" or d["fill"] in (human["sweater"], human["skin"]):
+            continue
+        pts = d["pts"] or []
+        if not pts or max(y for _, y in pts) != bottom:
+            continue
+        hems.append(d)
+    assert hems, "nothing on the torso sits along its bottom edge: no hem"
+    hem = hems[0]
+    pts = hem["pts"]
+    for px, py in pts:
+        assert _inside_convex(torso, px, py), f"the hem pokes out of the torso at {px},{py}"
+    at_bottom = [x for x, y in pts if y == bottom]
+    assert max(at_bottom) - min(at_bottom) >= 0.8 * base_w, (
+        "the hem is a patch, not a band round the waist"
+    )
+    height = bottom - min(y for _, y in pts)
+    assert 0 < height <= 2 * cell, f"the hem is {height} tall: a second garment"
+    for name in ("sweater", "jeans"):
+        assert _luma(hem["fill"]) < _luma(human[name]), (
+            f"the hem is no darker than the {name}: no line at the waist"
+        )
+
+
 @needs_node
 def test_the_profile_eye_is_tired():
     """A slight shadow under the eye (the user's ask, increment 19): below

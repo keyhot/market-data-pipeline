@@ -196,6 +196,10 @@
       hair:    0x33261f,
       skin:    0xc08f68,
       sweater: 0x3f5a70,
+      // The sweater's ribbed hem: darker than BOTH garments, because the
+      // sweater and jeans are too close in value to draw a waist on their
+      // own (increment 21). `test_the_sweater_ends_in_a_hem`.
+      hem:     0x2b3d4e,
       jeans:   0x34495c,
       // Darker than the floor they stand on, which is the only way a shoe
       // reads at this size (increment 16). `#2a2e3c` rendered at 1.5-1.8x the
@@ -3310,6 +3314,14 @@ void main() {
                      [-0.97, -26], [-1, -52], [-0.92, -64], [-0.72, -70]];
       paint(body, litPath(TORSO.map(([u, y]) => [front * u * HALF_W, y])),
             HUMAN.sweater, undefined, cloth);
+      // THE HEM: one CELL of ribbing along the torso's bottom, on `body` so it
+      // breathes with the sweater. Between the forearm and the backrest it is
+      // the one stretch of waist on screen (~40x12 px), and without it the
+      // sweater ran into the jeans as one mass — the torso read as a column
+      // stuck into the seat. Its corners sit on the torso's own edges.
+      const HEM = [[0.8, -8], [0.76, -4], [-0.72, -4], [-0.81, -8]];
+      paint(body, litPath(HEM.map(([u, y]) => [front * u * HALF_W, y])),
+            HUMAN.hem, undefined, clothInner);
       // THE NECK. Drawn between the torso and the collar so the collar laps
       // over its base and the head covers its top, which is what makes a
       // cylinder read as a neck rather than as a peg.
