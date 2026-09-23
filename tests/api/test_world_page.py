@@ -2688,20 +2688,21 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
 
 
 # The trader's head, as `character()` paints it on the `facesAway` branch this
-# chair's yaw selects: skin `litCircle(0, 2, 19)` under hair
-# `litCircle(0, -4, 22)`. The chin is the lowest painted head pixel, 21 below
+# chair's yaw selects: a skin nape `litRect(-8, 4, 16, 17, 6)` (increment 15;
+# it was the face's `litCircle(0, 2, 19)`, whose arc read as a chin) under
+# hair `litCircle(0, -4, 22)`. The chin is the lowest painted head pixel, 21 below
 # `headY`. The neck test below measures FROM it, so
 # `test_the_head_literals_these_measurements_depend_on_still_ship` guards it —
 # a redesigned head must break that test loudly rather than quietly re-point
 # every span that starts at the chin.
 HUMAN_CHIN_BELOW_HEAD_Y = 21
-HUMAN_AWAY_SKULL = "litCircle(0, away ? 2 : -4, away ? 19 : 22)"
+HUMAN_AWAY_SKULL = "away ? litRect(-8, 4, 16, 17, 6) : litCircle(0, -4, 22)"
 
 
 def test_the_head_literals_these_measurements_depend_on_still_ship():
     """The chin is a derived number, so its source has to be pinned.
 
-    `HUMAN_CHIN_BELOW_HEAD_Y` is 2 + 19 read off one line in `character()`. If
+    `HUMAN_CHIN_BELOW_HEAD_Y` is 4 + 17 read off one line in `character()`. If
     that line changes, every neck measurement silently measures from the wrong
     place and still passes — the failure mode `measure_chair.py`'s frozen
     `shipped_u` column already demonstrated once on this same figure.
@@ -6780,7 +6781,7 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     # graded is real and is recorded here rather than papered over: a volume
     # that silently drops out of the extraction has to fail, or this test
     # quietly stops covering whatever was removed.
-    assert (len(rects), len(circles)) == (22, 5), (
+    assert (len(rects), len(circles)) == (23, 6), (
         f"the extraction now reaches {len(rects)} rect and {len(circles)} "
         "circle volumes, not 22 and 5. Either a volume was added (raise these "
         "numbers, having checked the new one is graded) or one stopped being "
@@ -8666,17 +8667,23 @@ def _keyline_driver(source: str, scenario: str) -> str:
         + """
         const window = {};
         const scenario = %s;
-        // A 32x32 target the stub "renders" into: a white square at 10..21
-        // and, when the shader works, the keyline one block outside it.
+        // A 32x32 target the stub "renders" into. The page draws a square at
+        // 11..22; a working shader snaps it onto the global 2px grid (10..23)
+        // with the keyline one cell outside (8..25). `passthrough` returns
+        // the square untouched; `bounds` is the shimmer bug -- a grid anchored
+        // at the odd bounds origin, so the square lands on 11..24 with its
+        // keyline at 9..10 and column 10 is keyline, not white.
         function frame(works) {
           const px = new Uint8Array(32 * 32 * 4);
           const k = KEYLINE.color;
+          const [lo, hi, rlo, rhi] = scenario === "bounds" ? [11, 25, 9, 27]
+            : scenario === "passthrough" ? [11, 23, 11, 23] : [10, 24, 8, 26];
           for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
             const i = (y * 32 + x) * 4;
-            const inside = x >= 10 && x < 22 && y >= 10 && y < 22;
-            const ring = x >= 8 && x < 24 && y >= 8 && y < 24;
-            if ((works || scenario === "passthrough") && inside) px.set([255, 255, 255, 255], i);
-            else if (works && ring) px.set([(k >> 16) & 255, (k >> 8) & 255, k & 255, 255], i);
+            const inside = x >= lo && x < hi && y >= lo && y < hi;
+            const ring = x >= rlo && x < rhi && y >= rlo && y < rhi;
+            if ((works || scenario === "passthrough" || scenario === "bounds") && inside) px.set([255, 255, 255, 255], i);
+            else if ((works || scenario === "bounds") && ring) px.set([(k >> 16) & 255, (k >> 8) & 255, k & 255, 255], i);
           }
           return px;
         }
@@ -8704,7 +8711,7 @@ def _keyline_driver(source: str, scenario: str) -> str:
 
 
 @needs_node
-@pytest.mark.parametrize("scenario", ["webgpu", "throws", "blank", "passthrough"])
+@pytest.mark.parametrize("scenario", ["webgpu", "throws", "blank", "passthrough", "bounds"])
 def test_a_keyline_that_cannot_be_proven_is_not_worn(scenario):
     """No WebGL, a throw, or a shader that draws nothing: the trader goes on
     air unoutlined -- never invisible. The failure path, written first.
@@ -8714,6 +8721,8 @@ def test_a_keyline_that_cannot_be_proven_is_not_worn(scenario):
     precision bug above presented. Only reading the pixels back catches it.
     `passthrough` keeps the square and draws no ring -- a probe that checked
     only the inside would wear a filter that pixelates and never outlines.
+    `bounds` outlines correctly but on a grid anchored to the filter's own
+    bounds, which shimmers as the figure breathes (measured, increment 15).
     """
     out = _run_node(_keyline_driver(_world_source(), scenario))
     assert not out["attached"], f"the keyline was attached in the {scenario!r} case"
@@ -8748,25 +8757,25 @@ def test_only_the_seated_rig_wears_the_keyline_and_never_its_labels():
 
 
 def test_the_hair_is_matte_whichever_way_the_head_faces():
-    """The volume painted in `HUMAN.hair` carries `matte`, the skin does not.
+    """Every head volume painted in `HUMAN.hair` carries `matte`; skin never.
 
     The lamp's band on a circle is a concentric disc; on the crown of a head
     seen from behind, a tan disc inside dark hair read as a bald spot
-    (increment 15). The two head volumes swap order with `away`, so the
-    option has to follow the colour, not the call.
+    (increment 15). The head volumes swap order and colour with `away`, so
+    the option has to follow the COLOUR, not the call: both branches of each
+    ternary are resolved and graded.
     """
     body = _without_comments(_js_block(_world_source(), "function character("))
     calls = re.findall(
-        r"paint\(skull, litCircle\([^;]*?(away \? HUMAN\.(\w+) : HUMAN\.(\w+))"
-        r"[^;]*?matte: (!?away) \}\);",
+        r"paint\(skull, [^;]*?(away \? HUMAN\.(\w+) : HUMAN\.(\w+))[^;]*?matte: (!?away) \}\);",
         body,
     )
     assert len(calls) == 2, f"expected the two human head volumes, found {len(calls)}"
     for _, if_away, if_facing, matte in calls:
-        matte_when_away = matte == "away"
-        hair_when_away = if_away == "hair"
-        assert matte_when_away == hair_when_away, (
-            f"the head volume painting {if_away} (away) / {if_facing} (facing) "
-            f"is matte when {'away' if matte_when_away else 'facing'}: the matte "
-            "follows the call, not the hair."
-        )
+        for facing_away, colour in ((True, if_away), (False, if_facing)):
+            is_matte = (matte == "away") == facing_away
+            assert is_matte == (colour == "hair"), (
+                f"the head volume painting {colour} when "
+                f"{'away' if facing_away else 'facing'} is "
+                f"{'matte' if is_matte else 'lit'}: hair must be matte, skin lit."
+            )

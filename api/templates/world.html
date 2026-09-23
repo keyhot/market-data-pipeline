@@ -2127,10 +2127,15 @@
     // `keepFill` volume, and `test_a_person_is_not_outlined` still holds.
     //
     // Two jobs in one pass, because they share the grid:
-    //   * every pixel takes the colour at the centre of its `block` cell,
+    //   * every pixel takes the colour of one texel inside its `block` cell,
     //     snapped in GLOBAL coordinates — so breathing and gestures move the
     //     figure across a fixed grid instead of dragging the grid with it,
-    //     which would shimmer;
+    //     which would shimmer. The texture's global origin is
+    //     `uOutputFrame.xy + uGlobalFrame.xy`: in Pixi 8.19 `uGlobalFrame.xy`
+    //     is the PARENT filter's offset (0 here) and `uOutputFrame.xy` is
+    //     this filter's bounds. Using `uGlobalFrame` alone anchored the grid
+    //     to the figure's bounds, and a 10-frame capture measured the cell
+    //     phase flipping on x and y as he breathed;
     //   * alpha is hard (the room has no soft edges), and an empty cell with
     //     a filled neighbour becomes the keyline.
     //
@@ -2144,18 +2149,21 @@ out vec4 finalColor;
 uniform sampler2D uTexture;
 uniform highp vec4 uInputSize;
 uniform highp vec4 uInputClamp;
+uniform highp vec4 uOutputFrame;
 uniform highp vec4 uGlobalFrame;
 uniform vec3 uKeyline;
 uniform float uBlock;
 
+highp vec2 origin() { return uOutputFrame.xy + uGlobalFrame.xy; }
+
 vec4 cell(highp vec2 g) {
-  highp vec2 c = (floor(g / uBlock) + 0.5) * uBlock;
-  highp vec2 uv = clamp((c - uGlobalFrame.xy) * uInputSize.zw, uInputClamp.xy, uInputClamp.zw);
+  highp vec2 c = floor(g / uBlock) * uBlock + floor(uBlock * 0.5) + 0.5;
+  highp vec2 uv = clamp((c - origin()) * uInputSize.zw, uInputClamp.xy, uInputClamp.zw);
   return texture(uTexture, uv);
 }
 
 void main() {
-  highp vec2 g = vTextureCoord * uInputSize.xy + uGlobalFrame.xy;
+  highp vec2 g = vTextureCoord * uInputSize.xy + origin();
   vec4 s = cell(g);
   if (s.a >= 0.5) { finalColor = vec4(s.rgb / s.a, 1.0); return; }
   float n = max(max(cell(g + vec2(uBlock, 0.0)).a, cell(g - vec2(uBlock, 0.0)).a),
@@ -2210,13 +2218,15 @@ void main() {
       return keylineCache;
     }
 
-    // The off-screen proof: a 12x12 white square at (10, 10) in a 32x32
-    // target. Inside it the filter must keep white; one block outside its
-    // left edge it must paint the keyline.
+    // The off-screen proof: a 12x12 white square at (11, 11) in a 32x32
+    // target: an ODD origin, so the filter's own bounds start off the global
+    // grid. A grid anchored to the screen puts pixels 10 and 11 in one cell,
+    // so column/row 10 must come out white and 9 must be the keyline; a grid
+    // anchored to the bounds (the shimmer bug) paints 10 as the keyline.
     function keylineProves(filter) {
       const probe = new PIXI.Container();
       const inner = new PIXI.Container();
-      const square = new PIXI.Graphics().rect(10, 10, 12, 12).fill(0xffffff);
+      const square = new PIXI.Graphics().rect(11, 11, 12, 12).fill(0xffffff);
       inner.addChild(square);
       inner.filters = [filter];
       probe.addChild(inner);
@@ -2225,12 +2235,13 @@ void main() {
         app.renderer.render({ container: probe, target, clear: true });
         const { pixels, width } = app.renderer.extract.pixels(target);
         const at = (x, y) => Array.from(pixels.slice((y * width + x) * 4, (y * width + x) * 4 + 4));
-        const [ir, ig, ib, ia] = at(16, 16);
-        const [or, og, ob, oa] = at(9, 16);
         const k = KEYLINE.color;
         const near = (a, b) => Math.abs(a - b) <= 8;
-        return ia > 200 && ir > 200 && ig > 200 && ib > 200
-          && oa > 200 && near(or, (k >> 16) & 255) && near(og, (k >> 8) & 255) && near(ob, k & 255);
+        const white = ([r, g, b, a]) => a > 200 && r > 200 && g > 200 && b > 200;
+        const keyed = ([r, g, b, a]) => a > 200
+          && near(r, (k >> 16) & 255) && near(g, (k >> 8) & 255) && near(b, k & 255);
+        return white(at(16, 16)) && white(at(10, 16)) && white(at(16, 10))
+          && keyed(at(9, 16)) && keyed(at(16, 9));
       } finally {
         inner.filters = null;
         probe.destroy({ children: true });
@@ -2316,7 +2327,13 @@ void main() {
         // asked for the turn knowing the face goes with it: "I do not care
         // about his mimics and that face is not visible".)
         const away = facesAway(anchor.facing);
-        paint(skull, litCircle(0, away ? 2 : -4, away ? 19 : 22),
+        // Seen from behind, the skin under the hair is a NAPE, and a nape is
+        // neck-wide. It used to be the face's own 19-radius disc, whose lower
+        // arc showed below the hair as a crescent the width of the skull —
+        // which reads as a CHIN, i.e. a face looking at the camera through a
+        // helmet of hair (increment 15). Same lowest point (4 + 17 = 21, the
+        // chin every neck measurement starts from), a third of the width.
+        paint(skull, away ? litRect(-8, 4, 16, 17, 6) : litCircle(0, -4, 22),
               away ? HUMAN.skin : HUMAN.hair, undefined,
               { keepFill: true, noRim: away, matte: !away });
         // Hair is matte (increment 15) for the reason the clothes are: the
