@@ -6999,7 +6999,9 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     actually draws, read out of the page source rather than re-typed.
     """
     source = _world_source()
-    rig = (
+    # Comments stripped: a volume QUOTED in a comment is not a volume drawn,
+    # and counting them let the floor below track prose (increment 16).
+    rig = _without_comments(
         _js_block(source, "const BODIES = {")
         + _js_block(source, "function seatedRig(")
         + _js_block(source, "function character(")
@@ -7039,9 +7041,9 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     for key in ("nape", "face", "fringe"):
         rects.append(tuple(v.strip() for v in profile[key].split(",")))
     circles.append(tuple(v.strip() for v in profile["skull"].split(",")))
-    assert (len(rects), len(circles)) == (25, 8), (
+    assert (len(rects), len(circles)) == (25, 5), (
         f"the extraction now reaches {len(rects)} rect and {len(circles)} "
-        "circle volumes, not 25 and 8. Either a volume was added (raise these "
+        "circle volumes, not 25 and 5. Either a volume was added (raise these "
         "numbers, having checked the new one is graded) or one stopped being "
         "readable - and an unreadable volume is an ungraded volume"
     )
@@ -9012,3 +9014,68 @@ def test_only_the_seated_rig_wears_the_keyline_and_never_its_labels():
     assert guard, "the keyline is no longer attached to the rig under the seated guard"
     assert "container.filters" not in body, "a filter on `container` outlines the labels"
     assert body.count("keylineFilter(") == 1
+
+
+def _relative_luminance(colour: int) -> float:
+    def lin(v: float) -> float:
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+    r, g, b = ((colour >> s) & 255 for s in (16, 8, 0))
+    return 0.2126 * lin(r / 255) + 0.7152 * lin(g / 255) + 0.0722 * lin(b / 255)
+
+
+@needs_node
+def test_both_shoes_are_darker_than_the_floor_they_stand_on():
+    """A shoe reads on SILHOUETTE against the floor, so it must be darker.
+
+    The shoes were authored at `#2a2e3c`, which renders at 1.5-1.8x the
+    painted floor's luminance under the trader's feet: a pale shape the
+    floor's own colour, which on the frame read as a puddle round the ankles
+    rather than as a pair of shoes (increment 16). Every drawn volume nearest
+    `HUMAN.shoes` in the palette is a shoe, near and far alike; each one's
+    base rung, rendered through the page's own `shade`, is compared with the
+    median floor pixel of the plate in the floor band `measure_floor_band`
+    measures, left of the chair where the feet land.
+    """
+    from PIL import Image
+    from scripts.measure_chair import PLATE_PNG, measure_floor_band
+
+    emitted = _seated_rig_run()
+    palette = emitted["HUMAN"]
+
+    def rgb(c: int) -> tuple:
+        return ((c >> 16) & 255, (c >> 8) & 255, c & 255)
+
+    def nearest(c: int) -> str:
+        return min(
+            ("sweater", "jeans", "skin", "shoes", "crease"),
+            key=lambda k: sum((a - b) ** 2 for a, b in zip(rgb(c), rgb(palette[k]))),
+        )
+
+    shoes = sorted({d["fill"] for d in emitted["drawn"] if nearest(d["fill"]) == "shoes"})
+    assert len(shoes) == 2, f"expected a near and a far shoe colour, found {shoes}"
+    source = _world_source()
+    rendered = _run_node(
+        "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "function mixHex(") + "\n"
+        + _js_block(source, "function shade(") + "\n"
+        + _js_block(source, "function rampLevel(") + "\n"
+        + f"console.log(JSON.stringify({json.dumps(shoes)}.map((c) => shade(c, rampLevel('base')))));"
+    )
+    far, near = measure_floor_band()
+    hips = _manifest()["cast"]["trader"]["sit_anchor"]
+    plate = Image.open(PLATE_PNG).convert("RGB")
+    floor = sorted(
+        _relative_luminance((p[0] << 16) | (p[1] << 8) | p[2])
+        for x in range(hips["x"] - 200, hips["x"] - 60)
+        for y in range(far, near)
+        for p in [plate.getpixel((x, y))]
+    )
+    floor = floor[len(floor) // 2]
+    for authored, shaded in zip(shoes, rendered):
+        ratio = _relative_luminance(shaded) / floor
+        assert ratio <= 0.8, (
+            f"a shoe authored {authored:#08x} renders {shaded:#08x}, "
+            f"{ratio:.2f}x the floor's luminance: it reads as floor, not as a shoe"
+        )

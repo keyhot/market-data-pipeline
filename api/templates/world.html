@@ -197,7 +197,13 @@
       skin:    0xc08f68,
       sweater: 0x3f5a70,
       jeans:   0x34495c,
-      shoes:   0x2a2e3c,
+      // Darker than the floor they stand on, which is the only way a shoe
+      // reads at this size (increment 16). `#2a2e3c` rendered at 1.5-1.8x the
+      // floor's luminance and read as a puddle round the ankles; that colour
+      // was chosen before `matte`, when a darker shoe only dragged the lamp's
+      // band to a skin hue. Graded against the plate's own floor by
+      // `test_both_shoes_are_darker_than_the_floor_they_stand_on`.
+      shoes:   0x181a22,
       // The shadow between two fingers — the only place on this figure where
       // one volume has to read as two. Sampled off the reference rather than
       // picked: its far hand measures `#262127` between the fingers against
@@ -3385,12 +3391,12 @@ void main() {
         left: {
           hipLat: 11,
           thigh: [57.5, [0.12, 0.985, -0.12]], shin: [62.5, [-0.18, 0.1, -0.98]],
-          foot: [24.5, [0.25, 0.97, 0]], width: [19.2, 14.8, 11.1],
+          foot: [24.5, [0.25, 0.97, 0]], width: [19.2, 14.8, 15],
         },
         right: {
           hipLat: -11,
           thigh: [57.6, [-0.12, 0.985, -0.12]], shin: [62.4, [0.18, 0.1, -0.98]],
-          foot: [29.8, [-0.25, 0.97, 0]], width: [20.7, 16.3, 11.8],
+          foot: [29.8, [-0.25, 0.97, 0]], width: [20.7, 16.3, 16],
         },
       };
       // Far side first so it renders behind the near one. The far leg is also
@@ -3414,8 +3420,10 @@ void main() {
         const toe = reach(ankle, L.foot[0], L.foot[1]);
         const jeans = isFar
           ? mixHex(HUMAN.jeans, LIGHT.ambient, 0.3) : HUMAN.jeans;
+        // The far shoe takes only a tenth of the ambient the far jeans take:
+        // mixed 0.3 it came back up to the floor's own value and vanished.
         const shoes = isFar
-          ? mixHex(HUMAN.shoes, LIGHT.ambient, 0.3) : HUMAN.shoes;
+          ? mixHex(HUMAN.shoes, LIGHT.ambient, 0.1) : HUMAN.shoes;
         // The shin is `inner`: it runs between a thigh and a shoe, so a cream
         // keyline on it cuts the leg into three outlined links of a chain —
         // the "die-cut sticker" read this redesign exists to remove. Only the
@@ -3426,9 +3434,9 @@ void main() {
       });
       // -100, and the 4 units it moved up are a NECK.
       //
-      // `character()` paints this head as skin `litCircle(0, 2, 19)` under
-      // hair `litCircle(0, -4, 22)`, so the chin — the lowest painted head
-      // pixel — is 21 below whatever this returns. At -96 the chin landed at
+      // The chin sat 21 below whatever this returns when `character()`
+      // painted the head as two circles; the profile head (increment 16)
+      // puts its chin 20 below, and `profileHead` reports it. At -96 the chin landed at
       // -75, one unit BELOW the shoulder line, and the collar then climbed to
       // -88 on top of that: the head was not sitting on the shoulders, it was
       // sunk into them. At -100 the chin is at -79 and the shoulder line is
