@@ -246,14 +246,24 @@ def measure_seat_axes() -> dict:
     }
 
 
-def measure_sit_anchor(back_fraction: float = 0.2) -> dict:
+def measure_sit_anchor(back_fraction: float = 0.35) -> dict:
     """Where the hips go, and the cushion's own width there.
 
     Both fall out of `measure_seat_axes`, and neither is a number anyone should
     type again. The seat's centre line runs from the middle of the front edge
-    to the middle of the back edge; a person sitting properly back has their
-    hips a fifth of the seat's depth in front of the backrest, not on the
-    cushion's centre and not on its front lip.
+    to the middle of the back edge, and the hips sit `back_fraction` of it in
+    front of the back edge.
+
+    The rule is that his BACK rests against the backrest, not inside it. The
+    back edge measured here is the cushion's, and the backrest stands forward
+    of it, so "a fifth of the depth" (the old default) put the hip joint so far
+    back that the painted backrest — drawn over him by the `foreground` mask —
+    hid 50 of the torso's 80 px: a stick of sweater standing on a full-width
+    seat (increment 21, "I don't like how the torso connects to the ass").
+    0.35 shows 45 of 80. 0.4 shows more but his back then overruns the cushion
+    chord at that row and his toe's bounding box reaches `desk-face-trader`;
+    0.35 clears that plate by 0.07 px, so any further forward needs the name
+    surface re-chosen.
 
     `seat_width` is the cushion's own horizontal chord AT that row, which is
     the budget the rig has to fit inside. The 79px this replaced was measured

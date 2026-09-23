@@ -494,9 +494,10 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     `positionCharacters` stopped using `x` for a seated pose when the plate
     started measuring the hips separately from the seat, so shifting `x` now
     moves nothing and mutating it would prove nothing. At the shipped scale
-    the fit is 17px of slack on the left and **2px on the right** - the band
-    is nearly exhausted, so a wider rig or a further-right anchor needs the
-    seat re-measured rather than nudged.
+    the fit was 17px of slack on the left and 2px on the right; increment 21
+    moved the hips forward and re-measured the seat at the new hip row, and
+    it is now ~18 and 13.5. Anchor and seat both come from
+    `measure_sit_anchor()`, never a nudge.
     """
     manifest = load_manifest()
     # Sprint 16: the rig is composited on `sit_anchor` - where the hips go -
@@ -1221,3 +1222,30 @@ def test_a_manifest_with_no_foreground_is_absence_not_an_exception(tmp_path):
     path = tmp_path / "plate.json"
     path.write_text(json.dumps(raw))
     assert load_manifest(path).foreground == ()
+
+
+def test_the_trader_sits_where_the_measurement_puts_him():
+    """`sit_anchor` and `seat` are the output of `measure_sit_anchor()` at its
+    default, not numbers typed into the manifest.
+
+    Increment 21 moved the hips from a fifth of the seat's depth in front of
+    the backrest to 0.35 of it, because at 0.2 his back sat INSIDE the painted
+    backrest: the foreground mask hid 50 of the torso's 80 px, leaving a stick
+    of sweater standing on a full-width seat below the backrest ("I don't like
+    how the torso connects to the ass"). The two numbers move together — the
+    seat chord is taken at the hip row — so both are pinned to the script,
+    and a hand edit to either, or a changed default without a re-measure,
+    fails here.
+    """
+    from scripts.measure_chair import measure_sit_anchor
+
+    measured = measure_sit_anchor()
+    trader = load_manifest().cast["trader"]
+    assert trader["sit_anchor"] == measured["sit_anchor"], (
+        f"the manifest seats him at {trader['sit_anchor']}, the measurement at "
+        f"{measured['sit_anchor']}: re-run measure_sit_anchor() and copy both"
+    )
+    assert trader["seat"] == measured["seat"], (
+        f"the seat budget {trader['seat']} was not re-measured at the hip row "
+        f"{measured['seat']}"
+    )

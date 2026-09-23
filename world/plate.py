@@ -24,9 +24,10 @@ fit inside, rather than a number carried only in a test's docstring.
 `seat` is the fit budget, `sit_anchor` is where the hips go. On a chair painted
 in three-quarter view those are different points, and using one for both is what
 put the figure beside the chair (KI-054). At the shipped `cast.scale` the rig
-composited on `sit_anchor` clears the seat by 17px on the left and **2px on the
-right** - the band is nearly exhausted, so a wider seated rig or a further-right
-anchor needs `seat` re-measured off the plate, not nudged.
+composited on `sit_anchor` clears the seat by ~18px on the left and 13.5px on
+the right (increment 21 moved the hips forward, re-measuring `seat` at the new
+hip row; it was 17/2). Either number comes from `measure_sit_anchor()` -
+`test_the_trader_sits_where_the_measurement_puts_him` - never from a nudge.
 
 Pure and DB-free by design: this is read during a page render, and a broken
 manifest must degrade to the procedural room rather than raise into it.
