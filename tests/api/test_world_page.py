@@ -9350,11 +9350,18 @@ def test_no_path_band_leaves_its_outline():
     """
     source = _world_source()
     P = _profile_head_run()["P"]
-    outlines = {name: P[name] for name in ("face", "fringe")}
-    assert outlines, "no path volumes to grade"
-    for name, pts in outlines.items():
-        for side in (-1, 1):
-            mirrored = [[side * x, y] for x, y in pts]
+    hand = json.loads(_js_const(source, "HAND_OUTLINE").split("=", 1)[1].strip().rstrip(";"))
+    across = max(x for x, _ in hand)
+    # Each outline with the two ways the page places it: the head mirrors
+    # about x = 0 by `side`, the hand about its own width by which side of
+    # the forearm faces the floor (`seatedRig`).
+    placements = {
+        "face": [[[s * x, y] for x, y in P["face"]] for s in (-1, 1)],
+        "fringe": [[[s * x, y] for x, y in P["fringe"]] for s in (-1, 1)],
+        "hand": [[[x, y] for x, y in hand], [[across - x, y] for x, y in hand]],
+    }
+    for name, both in placements.items():
+        for side, mirrored in zip((-1, 1), both):
             n = len(mirrored)
             turns = [
                 (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
