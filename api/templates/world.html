@@ -193,10 +193,10 @@
     // mood. A sweater is grey-blue when the model is elated and when it is
     // panicked; what changes is the light on its edge.
     const HUMAN = {
-      hair:    0x4a3528,
+      hair:    0x33261f,
       skin:    0xc08f68,
-      sweater: 0x8a97a8,
-      jeans:   0x5a6478,
+      sweater: 0x3f5a70,
+      jeans:   0x34495c,
       shoes:   0x2a2e3c,
       // The shadow between two fingers — the only place on this figure where
       // one volume has to read as two. Sampled off the reference rather than
@@ -2113,6 +2113,131 @@
       return accents.filter((a) => (a.depth === "near") === (which === "near"));
     }
 
+    // THE KEYLINE (increment 15): one dark contour round the whole person,
+    // at the plate's own pixel pitch — the thing that makes every object in
+    // this painted room read as pixel art, and the one thing the trader never
+    // had. The reference trader carries it; the chair he sits in carries it.
+    //
+    // This is NOT the rim increment 8 took off the person, and the difference
+    // is the whole design. That rim was a stroke PER VOLUME, so an arm came
+    // out as two outlined sausages and a leg as three links of a chain. This
+    // is drawn on the ALPHA of the assembled figure, after every limb has
+    // composited, so it can only ever trace the silhouette: where two limbs
+    // overlap there is no edge to find. `paint` still strokes no rim for a
+    // `keepFill` volume, and `test_a_person_is_not_outlined` still holds.
+    //
+    // Two jobs in one pass, because they share the grid:
+    //   * every pixel takes the colour at the centre of its `block` cell,
+    //     snapped in GLOBAL coordinates — so breathing and gestures move the
+    //     figure across a fixed grid instead of dragging the grid with it,
+    //     which would shimmer;
+    //   * alpha is hard (the room has no soft edges), and an empty cell with
+    //     a filled neighbour becomes the keyline.
+    //
+    // `color` is sampled, not picked: the most common near-black on the
+    // chair's own contours in the plate is (20, 24, 36). `block` is the
+    // plate's keyline width in frame pixels.
+    const KEYLINE = { color: 0x121622, block: 2 };
+
+    const KEYLINE_FRAGMENT = `in vec2 vTextureCoord;
+out vec4 finalColor;
+uniform sampler2D uTexture;
+uniform highp vec4 uInputSize;
+uniform highp vec4 uInputClamp;
+uniform highp vec4 uGlobalFrame;
+uniform vec3 uKeyline;
+uniform float uBlock;
+
+vec4 cell(highp vec2 g) {
+  highp vec2 c = (floor(g / uBlock) + 0.5) * uBlock;
+  highp vec2 uv = clamp((c - uGlobalFrame.xy) * uInputSize.zw, uInputClamp.xy, uInputClamp.zw);
+  return texture(uTexture, uv);
+}
+
+void main() {
+  highp vec2 g = vTextureCoord * uInputSize.xy + uGlobalFrame.xy;
+  vec4 s = cell(g);
+  if (s.a >= 0.5) { finalColor = vec4(s.rgb / s.a, 1.0); return; }
+  float n = max(max(cell(g + vec2(uBlock, 0.0)).a, cell(g - vec2(uBlock, 0.0)).a),
+                max(cell(g + vec2(0.0, uBlock)).a, cell(g - vec2(0.0, uBlock)).a));
+  finalColor = n >= 0.5 ? vec4(uKeyline, 1.0) : vec4(0.0);
+}
+`;
+
+    // Built once and PROVEN once, then shared. A filter is the one thing on
+    // this page that can fail after it has been attached: a shader that does
+    // not compile is not an exception at construction, it is a program that
+    // draws nothing at the first frame — the blank-figure failure (KI-050's
+    // class) that no node test can see. So before any figure wears it, the
+    // filter draws a known square off-screen and the pixels are read back:
+    // it must leave the square's colour inside and put the keyline outside.
+    // Anything else — no WebGL, a throw, a wrong pixel — and every figure
+    // draws exactly as it did before this existed. The outcome is recorded
+    // on `window.__keyline` so a frame can be asked which one it got.
+    let keylineCache;
+    function keylineFilter() {
+      if (keylineCache !== undefined) return keylineCache;
+      keylineCache = null;
+      try {
+        if (!app || !app.renderer || app.renderer.type !== PIXI.RendererType.WEBGL) {
+          window.__keyline = "off: not webgl";
+          return null;
+        }
+        const k = KEYLINE.color;
+        const filter = new PIXI.Filter({
+          glProgram: PIXI.GlProgram.from({
+            vertex: PIXI.defaultFilterVert, fragment: KEYLINE_FRAGMENT, name: "keyline",
+          }),
+          resources: {
+            keylineUniforms: {
+              uKeyline: { value: new Float32Array([((k >> 16) & 255) / 255, ((k >> 8) & 255) / 255, (k & 255) / 255]), type: "vec3<f32>" },
+              uBlock: { value: KEYLINE.block, type: "f32" },
+            },
+          },
+          padding: KEYLINE.block * 2,
+          resolution: 1,
+          antialias: "off",
+        });
+        if (!keylineProves(filter)) {
+          window.__keyline = "off: probe failed";
+          return null;
+        }
+        window.__keyline = "on";
+        keylineCache = filter;
+      } catch (err) {
+        window.__keyline = "off: " + (err && err.message);
+      }
+      return keylineCache;
+    }
+
+    // The off-screen proof: a 12x12 white square at (10, 10) in a 32x32
+    // target. Inside it the filter must keep white; one block outside its
+    // left edge it must paint the keyline.
+    function keylineProves(filter) {
+      const probe = new PIXI.Container();
+      const inner = new PIXI.Container();
+      const square = new PIXI.Graphics().rect(10, 10, 12, 12).fill(0xffffff);
+      inner.addChild(square);
+      inner.filters = [filter];
+      probe.addChild(inner);
+      const target = PIXI.RenderTexture.create({ width: 32, height: 32, resolution: 1 });
+      try {
+        app.renderer.render({ container: probe, target, clear: true });
+        const { pixels, width } = app.renderer.extract.pixels(target);
+        const at = (x, y) => Array.from(pixels.slice((y * width + x) * 4, (y * width + x) * 4 + 4));
+        const [ir, ig, ib, ia] = at(16, 16);
+        const [or, og, ob, oa] = at(9, 16);
+        const k = KEYLINE.color;
+        const near = (a, b) => Math.abs(a - b) <= 8;
+        return ia > 200 && ir > 200 && ig > 200 && ib > 200
+          && oa > 200 && near(or, (k >> 16) & 255) && near(og, (k >> 8) & 255) && near(ob, k & 255);
+      } finally {
+        inner.filters = null;
+        probe.destroy({ children: true });
+        target.destroy(true);
+      }
+    }
+
     function character(name, style) {
       style = BODIES[style] ? style : styleFor(name);
       const container = new PIXI.Container();
@@ -2193,10 +2318,14 @@
         const away = facesAway(anchor.facing);
         paint(skull, litCircle(0, away ? 2 : -4, away ? 19 : 22),
               away ? HUMAN.skin : HUMAN.hair, undefined,
-              { keepFill: true, noRim: away });
+              { keepFill: true, noRim: away, matte: !away });
+        // Hair is matte (increment 15) for the reason the clothes are: the
+        // lamp's band on a circle is a concentric disc, and on the crown of
+        // a head seen from behind a tan disc inside dark hair reads as a
+        // bald spot, not as light. Skin keeps the warm band.
         paint(skull, litCircle(0, away ? -4 : 2, away ? 22 : 19),
               away ? HUMAN.hair : HUMAN.skin, undefined,
-              { keepFill: true, noRim: !away });
+              { keepFill: true, noRim: !away, matte: away });
         for (const part of [eyeL, eyeR, mouth, browL, browR]) part.visible = !away;
       } else {
         paint(skull, litCircle(0, 0, 28), BODY_FILL);
@@ -2229,6 +2358,11 @@
       const rig = new PIXI.Container();
       rig.scale.set(figureScale);
       rig.addChild(...depthOrder(accents, "far"), body, head, ...depthOrder(accents, "near"));
+      // The person wears the keyline; the labels beside him do not, and
+      // neither does his shadow (it lives on `layers.shadows`). Only the
+      // seated figure: the machine keeps its rim, a glyph's own edge.
+      const keyline = container.pose === "seated" ? keylineFilter() : null;
+      if (keyline) rig.filters = [keyline];
       container.addChild(rig, nameTag, stat, moodTag);
       layers.chars.addChild(container);
 
@@ -2661,15 +2795,26 @@
       // sit BELOW them: the reference's trader has its legs out in front of
       // the chair, and a seated figure that stops at the hips is most of why
       // the old rig read as a stack of blobs rather than a person.
-      const legs = { keepFill: true };
       const inner = { keepFill: true, noRim: true };
+      // CLOTHES ARE MATTE (increment 15). Increment 9 scoped `matte` to the
+      // shoe and let the sweater and jeans keep the lamp's band on the
+      // argument that "a warm sheen at roughly their own brightness reads".
+      // At 1:1 on the frame it did not: the lit rung mixes 0.45 toward
+      // `#f0a848`, which turns grey-blue cloth tan, and the band lands as a
+      // skin-coloured ellipse on the sleeve, the thigh and the shin — knee
+      // pads and holes, not light. The reference lights every garment within
+      // its own hue and keeps the warm band for skin and hair, and so does
+      // this now. Still scoped to the PERSON: `shade` itself is untouched.
+      const cloth = { keepFill: true, matte: true };
+      const clothInner = { keepFill: true, noRim: true, matte: true };
       // The shoe is the one volume of the trader that takes no lamp band.
       //
       // `shade` mixes toward `LIGHT.warmth` by an ABSOLUTE 0.3 on the lit
       // rung, which lands EVERY cool volume's lit band within 5° of the
       // lamp's own hue (34°) — the sweater drifts 180°, the jeans 169°, the
-      // shoes 164°. For the sweater and the jeans that is a warm sheen at
-      // roughly their own brightness and it reads. For the shoes, authored
+      // shoes 164°. (Increment 9 judged the sweater and jeans' warm sheen to
+      // read; increment 15 refused it off the frame — see `cloth` above.)
+      // For the shoes, authored
       // near-black at hue 227°, it is a lift to hue 31° — four degrees off
       // skin's OWN authored 27° — so the darkest thing on the figure comes
       // out a dark flesh tone and the trader appears to be in slippers. The
@@ -2794,7 +2939,7 @@
       // be 76, and the 6 units it gives back are what let the head rise into
       // a neck below without the crown outgrowing the chair.
       const HALF_W = snap(Math.hypot(24 * COS_Y, 13 * SIN_Y));
-      paint(body, litRect(-HALF_W, -72, HALF_W * 2, 68, 12), HUMAN.sweater, undefined, { keepFill: true });
+      paint(body, litRect(-HALF_W, -72, HALF_W * 2, 68, 12), HUMAN.sweater, undefined, cloth);
       // THE NECK. Drawn between the torso and the collar so the collar laps
       // over its base and the head covers its top, which is what makes a
       // cylinder read as a neck rather than as a peg.
@@ -2821,7 +2966,7 @@
       // Anything that raises this above the torso top re-buries the jaw, so
       // the neck test grades it from here and fails from both ends.
       const HALF_C = snap(HALF_W * 11 / 24);
-      paint(body, litRect(-HALF_C, -72, HALF_C * 2, 10, 5), HUMAN.sweater, undefined, inner);
+      paint(body, litRect(-HALF_C, -72, HALF_C * 2, 10, 5), HUMAN.sweater, undefined, clothInner);
       // THE ARMS BEND AT AN ELBOW, and the comment that used to stand here
       // said they could not.
       //
@@ -2914,8 +3059,7 @@
                             [side * ARM.upper[1][0], ARM.upper[1][1], ARM.upper[1][2]]);
         const wrist = reach(elbow, ARM.fore[0],
                             [side * ARM.fore[1][0], ARM.fore[1][1], ARM.fore[1][2]]);
-        const arm = boneGfx(root, elbow, ARM.width[0], HUMAN.sweater,
-                            { keepFill: true });
+        const arm = boneGfx(root, elbow, ARM.width[0], HUMAN.sweater, cloth);
         // `inner`, for the reason the shin is: the forearm is the MIDDLE
         // bone of its chain. An upper arm, a forearm and a hand is the same
         // three links a thigh, a shin and a shoe are, and only the ends make
@@ -2924,7 +3068,7 @@
         // "die-cut sticker" read the redesign exists to remove. It shipped
         // rimmed because increment 6 built the arms after the legs and
         // restated the option rather than the rule.
-        const fore = boneGfx(elbow, wrist, ARM.width[1], HUMAN.sweater, inner);
+        const fore = boneGfx(elbow, wrist, ARM.width[1], HUMAN.sweater, clothInner);
         // The lengths BEFORE the turn foreshortened them, so the suite can
         // hold them against the trace rather than against a projection that
         // legitimately changes whenever the chair is re-measured.
@@ -3129,8 +3273,8 @@
         // keyline on it cuts the leg into three outlined links of a chain —
         // the "die-cut sticker" read this redesign exists to remove. Only the
         // parts that make the silhouette keep their edge.
-        bone(hip, knee, L.width[0], jeans, legs);
-        bone(knee, ankle, L.width[1], jeans, inner);
+        bone(hip, knee, L.width[0], jeans, cloth);
+        bone(knee, ankle, L.width[1], jeans, clothInner);
         bone(ankle, toe, L.width[2], shoes, shod);
       });
       // -100, and the 4 units it moved up are a NECK.

@@ -3223,42 +3223,44 @@ def test_a_matte_volume_takes_no_lamp_band_even_after_a_mood_change():
 
 
 @needs_node
-def test_the_shoes_are_the_matte_volume_and_the_rest_of_the_leg_is_not():
-    """The rule reaches the shoe, and stops there.
+def test_everything_the_trader_wears_is_matte_and_only_his_skin_takes_the_lamp():
+    """Every volume of the seated rig is matte except skin.
 
-    Graded at the rig rather than at the call site, for the reason increment 6
-    taught: the arms restated `noRim` beside themselves instead of carrying the
-    rule, and the forearm shipped outlined for a whole increment. A leg draws
-    thigh, shin and shoe in that order, so the third bone of each is the one
-    that must be matte and the first two are the ones that must not.
+    Increment 9 scoped `matte` to the shoe and let the sweater and jeans keep
+    the lamp's band, judging "a warm sheen at roughly their own brightness"
+    to read. Increment 15 refused it off the 1:1 frame: the lit rung mixes
+    0.45 toward `#f0a848`, which turns grey-blue cloth tan, and the band came
+    out as a skin-coloured ellipse on the sleeve, the thigh and the shin --
+    knee pads and holes, not light. The reference
+    (`Docs/char-redesign-reference/ref-trader.png`) lights every garment within
+    its own hue and keeps the warm band for skin.
 
-    The reference (`Docs/char-redesign-reference/ref-trader.png`) is the spec
-    here: it lights within each material's own hue and gives the shoes no warm
-    band AT ALL -- they are flat dark blue-grey near the floor's value and read
-    as shoes on silhouette alone.
+    Graded as a rule over EVERY volume rather than bone by bone, for the
+    reason increment 6 taught: a rule restated per limb is a rule the next
+    limb gets wrong. So a new garment that forgets `matte` fails here, and so
+    does a hand or a neck that takes it.
     """
     emitted = _run_node(_rig_bone_driver(_world_source()))
-    bones, drawn = emitted["bones"], emitted["drawn"]
+    drawn, human = emitted["drawn"], emitted["HUMAN"]
 
-    assert len(bones) == 6, (
-        f"expected two legs of three bones, got {len(bones)}. This test reads "
-        "the shoe as the third bone of each leg."
+    skin = [v for v in drawn if v["fill"] == human["skin"]]
+    worn = [v for v in drawn if v["fill"] != human["skin"]]
+    assert skin and len(worn) >= 8, (
+        f"found {len(skin)} skin and {len(worn)} other volumes; expected a "
+        "neck and a hand of skin and at least torso, collar, two arms, two "
+        "thighs, two shins and two shoes of cloth. The driver lost the rig."
     )
-    for leg, start in (("far", 0), ("near", 3)):
-        thigh, shin, shoe = (
-            _bone_capsule(drawn, bones[start + i]["gid"]) for i in range(3)
+    for v in worn:
+        assert v["opts"].get("matte") and v["opts"].get("keepFill"), (
+            f"a {v['shape']} at {v['at']} in {v['fill']:#08x} takes the lamp's "
+            "band: a grey-blue garment's lit rung lands tan and reads as a "
+            "patch of skin. Paint it `cloth`/`clothInner`."
         )
-        assert shoe["opts"].get("matte"), (
-            f"the {leg} shoe is not matte, so its lit band is still mixed 30% "
-            "toward the lamp and the foot renders in a dark flesh tone "
-            "(#655340, hue 31, against skin's authored 27)."
+    for v in skin:
+        assert not v["opts"].get("matte"), (
+            f"the skin at {v['at']} went matte. Skin is the one material the "
+            "warm band is right for -- a matte hand is a grey glove."
         )
-        for name, capsule in (("thigh", thigh), ("shin", shin)):
-            assert not capsule["opts"].get("matte"), (
-                f"the {leg} {name} went matte too. The jeans drift 169 degrees "
-                "and still read as jeans; only the shoes land on skin's hue, "
-                "and re-lighting the whole figure is a different increment."
-            )
 
 
 @needs_node
@@ -8610,3 +8612,161 @@ def test_the_template_states_no_colour_of_its_own():
     assert "0x787b86" not in source, (
         "world.html hand-copies PALETTE['neutral'] again — inject it"
     )
+
+
+# --- The keyline (increment 15) -------------------------------------------
+
+
+def _keyline_fragment(source: str) -> str:
+    match = re.search(r"const KEYLINE_FRAGMENT = `(.*?)`;", source, re.S)
+    assert match, "the page no longer declares KEYLINE_FRAGMENT as a template literal"
+    return match.group(1)
+
+
+def test_the_keyline_shader_declares_shared_uniforms_at_the_vertex_precision():
+    """The bug the keyline's probe caught on its first frame, pinned.
+
+    PixiJS's default filter vertex declares `uInputSize` (and its siblings)
+    with no qualifier, so they are `highp`; a fragment shader defaults to
+    `mediump`. GLSL refuses to LINK a program whose shared uniform differs in
+    precision between stages -- "Precisions of uniform 'uInputSize' differ" --
+    and Pixi reports that as a console error and draws nothing. The probe
+    turned that into an unoutlined trader instead of an invisible one, but
+    the keyline was silently off. Every uniform the vendored vertex declares
+    must be `highp` if the fragment declares it too.
+    """
+    pixi = (Path(__file__).resolve().parents[2] / "api" / "static" / "pixi-8.19.0.min.js").read_text()
+    vertex_at = pixi.index("in vec2 aPosition;")
+    vertex = pixi[vertex_at : pixi.index("`", vertex_at)]
+    shared = set(re.findall(r"uniform\s+vec\d\s+(\w+);", vertex))
+    assert "uInputSize" in shared, "could not read the vendored filter vertex"
+
+    fragment = _keyline_fragment(_world_source())
+    declared = re.findall(r"uniform\s+(highp\s+|mediump\s+|lowp\s+)?\w+\s+(\w+);", fragment)
+    checked = [name for _, name in declared if name in shared]
+    assert checked, "the fragment reads no uniform the vertex shares; this test graded nothing"
+    for qualifier, name in declared:
+        if name in shared:
+            assert qualifier.strip() == "highp", (
+                f"`{name}` is declared {qualifier.strip() or 'without a precision'} "
+                "in the keyline fragment and highp in Pixi's filter vertex: the "
+                "program will not link and the trader loses his outline."
+            )
+
+
+def _keyline_driver(source: str, scenario: str) -> str:
+    """`keylineFilter` against a stub renderer, one scenario per process
+    (the page caches the outcome in a module-level `let`)."""
+    return (
+        _js_block(source, "const KEYLINE = {") + ";\n"
+        + "const KEYLINE_FRAGMENT = '';\n"
+        + "let keylineCache;\n"
+        + _js_block(source, "function keylineFilter(") + "\n"
+        + _js_block(source, "function keylineProves(") + "\n"
+        + """
+        const window = {};
+        const scenario = %s;
+        // A 32x32 target the stub "renders" into: a white square at 10..21
+        // and, when the shader works, the keyline one block outside it.
+        function frame(works) {
+          const px = new Uint8Array(32 * 32 * 4);
+          const k = KEYLINE.color;
+          for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+            const i = (y * 32 + x) * 4;
+            const inside = x >= 10 && x < 22 && y >= 10 && y < 22;
+            const ring = x >= 8 && x < 24 && y >= 8 && y < 24;
+            if ((works || scenario === "passthrough") && inside) px.set([255, 255, 255, 255], i);
+            else if (works && ring) px.set([(k >> 16) & 255, (k >> 8) & 255, k & 255, 255], i);
+          }
+          return px;
+        }
+        class Filter { constructor(o) {
+          if (scenario === "throws") throw new Error("no program");
+          this.opts = o; } }
+        const PIXI = {
+          RendererType: { WEBGL: 1, WEBGPU: 2 },
+          Filter, defaultFilterVert: "",
+          GlProgram: { from: (o) => o },
+          Container: class { addChild() {} destroy() {} },
+          Graphics: class { rect() { return this; } fill() { return this; } },
+          RenderTexture: { create: () => ({ destroy() {} }) },
+        };
+        const app = { renderer: {
+          type: scenario === "webgpu" ? 2 : 1,
+          render() {},
+          extract: { pixels: () => ({ pixels: frame(scenario === "works"), width: 32 }) },
+        } };
+        const got = keylineFilter();
+        console.log(JSON.stringify({ attached: !!got, state: window.__keyline,
+                                     cachedTwice: keylineFilter() === got }));
+        """ % json.dumps(scenario)
+    )
+
+
+@needs_node
+@pytest.mark.parametrize("scenario", ["webgpu", "throws", "blank", "passthrough"])
+def test_a_keyline_that_cannot_be_proven_is_not_worn(scenario):
+    """No WebGL, a throw, or a shader that draws nothing: the trader goes on
+    air unoutlined -- never invisible. The failure path, written first.
+
+    `blank` is the one that matters: a shader that fails to compile does NOT
+    throw in PixiJS, it logs and draws transparent pixels, which is how the
+    precision bug above presented. Only reading the pixels back catches it.
+    `passthrough` keeps the square and draws no ring -- a probe that checked
+    only the inside would wear a filter that pixelates and never outlines.
+    """
+    out = _run_node(_keyline_driver(_world_source(), scenario))
+    assert not out["attached"], f"the keyline was attached in the {scenario!r} case"
+    assert out["state"].startswith("off"), out["state"]
+    assert out["cachedTwice"], "the outcome is not cached; every figure would re-probe"
+
+
+@needs_node
+def test_a_keyline_that_draws_the_proof_is_worn():
+    """The same probe passes a shader that does its job, so the three refusals
+    above are the probe discriminating, not the probe always saying no."""
+    out = _run_node(_keyline_driver(_world_source(), "works"))
+    assert out["attached"] and out["state"] == "on", out
+
+
+def test_only_the_seated_rig_wears_the_keyline_and_never_its_labels():
+    """On `rig`, inside the seated branch; never on `container`.
+
+    `container` also holds the name tag, the stat line and the mood tag, and
+    a keyline round type is a sticker. The machine keeps its own rim -- it is
+    a glyph -- so the filter is the person's alone.
+    """
+    body = _without_comments(_js_block(_world_source(), "function character("))
+    guard = re.search(
+        r'const keyline = container\.pose === "seated" \? keylineFilter\(\) : null;'
+        r"\s*if \(keyline\) rig\.filters = \[keyline\];",
+        body,
+    )
+    assert guard, "the keyline is no longer attached to the rig under the seated guard"
+    assert "container.filters" not in body, "a filter on `container` outlines the labels"
+    assert body.count("keylineFilter(") == 1
+
+
+def test_the_hair_is_matte_whichever_way_the_head_faces():
+    """The volume painted in `HUMAN.hair` carries `matte`, the skin does not.
+
+    The lamp's band on a circle is a concentric disc; on the crown of a head
+    seen from behind, a tan disc inside dark hair read as a bald spot
+    (increment 15). The two head volumes swap order with `away`, so the
+    option has to follow the colour, not the call.
+    """
+    body = _without_comments(_js_block(_world_source(), "function character("))
+    calls = re.findall(
+        r"paint\(skull, litCircle\([^;]*?(away \? HUMAN\.(\w+) : HUMAN\.(\w+))"
+        r"[^;]*?matte: (!?away) \}\);",
+        body,
+    )
+    assert len(calls) == 2, f"expected the two human head volumes, found {len(calls)}"
+    for _, if_away, if_facing, matte in calls:
+        matte_when_away = matte == "away"
+        hair_when_away = if_away == "hair"
+        assert matte_when_away == hair_when_away, (
+            f"the head volume painting {if_away} (away) / {if_facing} (facing) "
+            f"is matte when {'away' if matte_when_away else 'facing'}: the matte "
+            "follows the call, not the hair."
+        )
