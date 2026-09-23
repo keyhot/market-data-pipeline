@@ -3699,10 +3699,22 @@ void main() {
       // made of them — the sweater's r12 corners cut away the bottom of the
       // back, and the far thigh's cap filled the notch as a ball bulging out
       // under the chair back (the user's "fix his butt"). A seated pelvis is
-      // as wide as the waist over it and FLAT underneath, because it is
-      // sitting on something: small corners, bottom `SEAT_DEPTH` below the
-      // hips — enough to swallow the rear hip cap; 12 swallows both and was
-      // shot as a box sticking out behind the chair.
+      // FLAT underneath, because it is sitting on something; bottom
+      // `SEAT_DEPTH` below the hips, enough to swallow the rear hip cap (12
+      // swallows both and was shot as a box sticking out behind the chair).
+      //
+      // And it is a BUTTOCK, not a box (increment 21). As a r4 rect it came
+      // out from under the backrest as a plank with a square rear corner and
+      // the torso a stick planted on it — "I don't like how the torso
+      // connects to the ass". Only rig y -7…+8 is on screen below the
+      // backrest, so the shaping lives there: the back swells out past the
+      // sweater's tucked-in waist (-0.72 at the hem), is fullest well above
+      // the cushion, and rounds under onto a flat underside that stops short
+      // of the rear. The front leans in off the waist so its edge stays
+      // inside the lap instead of drawing a seam down the near thigh. Same
+      // `u` convention and HALF_W fractions as `TORSO`; |u| ≤ 1 keeps it in
+      // the rect's old footprint, so every seat-fit check holds as it did.
+      // `test_the_seated_figure_sits_on_a_seat_not_on_the_ball_of_a_thigh`.
       //
       // Its own still accent, NOT a volume on `body`: `breathe` moves
       // `body.y` a whole CELL, and a seat that breathes lifts off the thighs
@@ -3710,8 +3722,12 @@ void main() {
       // legs, so it covers their hip ends; no `depth`, so `depthOrder` puts
       // it behind the torso and the sweater's hem laps over it.
       const SEAT_DEPTH = 8;
+      const SEAT = [[0.82, -16], [-0.92, -16], [-1, -6], [-0.99, -2], [-0.92, 2.5],
+                    [-0.775, 5.6], [-0.58, 7.4], [-0.35, SEAT_DEPTH], [0.6, SEAT_DEPTH],
+                    [0.78, -4]];
       const seat = new PIXI.Graphics();
-      paint(seat, litRect(-HALF_W, -16, HALF_W * 2, 16 + SEAT_DEPTH, 4), HUMAN.jeans, undefined, cloth);
+      paint(seat, litPath(SEAT.map(([u, y]) => [front * u * HALF_W, y])),
+            HUMAN.jeans, undefined, cloth);
       seat.gestureMode = "still";
       // Tagged so nothing counts it as a third arm: an untagged accent IS an
       // arm to every reader of `accents`.

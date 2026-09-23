@@ -3229,27 +3229,60 @@ def _inside_round_rect(px, py, rect, r, slack=0.5) -> bool:
     return math.hypot(dx, dy) <= r + slack
 
 
+def _seat_outline(seat) -> list[tuple[float, float]]:
+    """A seat volume as the outline it draws, whatever primitive drew it.
+
+    A `litPath` hands over its points. A rounded rect is sampled round its
+    four corner arcs, so the rules below grade a SHAPE rather than which
+    helper made it — and the rect the seat used to be can be put back and
+    watched fail them.
+    """
+    if seat["pts"]:
+        return [tuple(p) for p in seat["pts"]]
+    x, y, w, h = seat["rect"]
+    r = seat["radius"]
+    corners = [(x + w - r, y + h - r, 0), (x + r, y + h - r, 90),
+               (x + r, y + r, 180), (x + w - r, y + r, 270)]
+    return [
+        (cx + r * math.cos(math.radians(a0 + k * 15)),
+         cy + r * math.sin(math.radians(a0 + k * 15)))
+        for cx, cy, a0 in corners for k in range(7)
+    ]
+
+
 @needs_node
 def test_the_seated_figure_sits_on_a_seat_not_on_the_ball_of_a_thigh():
-    """His hips are a jeans SEAT under the sweater, and the rear thigh's round
-    hip end stays inside it.
+    """His hips are a jeans SEAT under the sweater, the rear thigh's round
+    hip end stays inside it, and the seat is a BUTTOCK — flat where it sits,
+    round where it leaves the chair back — not a box.
 
     With no seat, the hips were whatever the thighs' capsule ends made of
     them: the sweater's rounded bottom corners cut the back away, and the far
     thigh's hip cap — a disc half the thigh's width round the hip joint —
     filled the notch as a ball bulging out under the chair back. The user's
-    word for it was "fix his butt".
+    word for it was "fix his butt". Increment 17 fixed it with a r4 rect,
+    and the user's next word was "I don't like how the torso connects to the
+    ass": below the backrest the rect showed as a plank with a square rear
+    corner, a stick of a torso planted on it.
 
-    So this grades the rule rather than the one pose: every thigh whose hip
-    sits BEHIND the body's centre (the deeper one, drawn first) has its whole
-    hip cap inside a jeans seat volume, and that volume is flat
-    underneath — corners no rounder than a CELL — because it is sitting on
-    something. The near thigh is exempt: its cap is the top of the lap, in
-    front of the seat, and the lap is supposed to show. And the seat stays
-    with the hips when the torso breathes.
+    So this grades rules rather than the one pose, on the seat's OUTLINE
+    (`_seat_outline`, so a rect and a path answer the same questions):
+
+    * every thigh whose hip sits BEHIND the body's centre (the deeper one,
+      drawn first) has its whole hip cap inside the seat. The near thigh is
+      exempt: its cap is the top of the lap, and the lap is supposed to show;
+    * the seat is flat underneath across at least 40% of its width, because
+      it is sitting on something;
+    * the corner at the BACK and the bottom is rounded by at least two
+      CELLs on both axes: the rear reaches its furthest point well above the
+      cushion, and the bottom's last point stands well in from it. A CELL is
+      what `litRect` rounds a slab by; a buttock is rounder than a slab.
+      Which side is the back is read off the legs — the knees go forward.
+    * and the seat stays with the hips when the torso breathes.
     """
     emitted = _seated_rig_run()
     jeans = emitted["HUMAN"]["jeans"]
+    cell = emitted["CELL"]
     seats = [
         d for d in emitted["drawn"]
         if d["fill"] == jeans and d["host"] not in ("leg", "child")
@@ -3262,11 +3295,11 @@ def test_the_seated_figure_sits_on_a_seat_not_on_the_ball_of_a_thigh():
             f"the seat is painted on {seat['host']!r}, which moves while the "
             "thighs under it stay put"
         )
-    for seat in seats:
-        assert seat["radius"] <= emitted["CELL"], (
-            f"the seat is rounded to {seat['radius']}: a pelvis sitting on a "
-            "cushion is flat underneath, not a ball"
-        )
+    assert len(seats) == 1, f"expected one seat volume, found {len(seats)}"
+    outline = _seat_outline(seats[0])
+    xs = [x for x, _ in outline]
+    ys = [y for _, y in outline]
+    width = max(xs) - min(xs)
 
     ends = [tuple(bone["end"]) for bone in emitted["legs"]]
     thighs = [
@@ -3285,13 +3318,36 @@ def test_the_seated_figure_sits_on_a_seat_not_on_the_ball_of_a_thigh():
         ]
         outside = [
             (round(px, 1), round(py, 1)) for px, py in rim
-            if not any(_inside_round_rect(px, py, s["rect"], s["radius"]) for s in seats)
+            if not _inside_convex(outline, px, py)
         ]
         assert not outside, (
             f"the rear thigh's hip cap (centre {hx:.1f},{hy:.1f}, r {r:.1f}) "
-            f"pokes out of the seat {[s['rect'] for s in seats]} at "
-            f"{outside[:4]}: that is the ball under the chair back"
+            f"pokes out of the seat at {outside[:4]}: that is the ball under "
+            "the chair back"
         )
+
+    bottom = max(ys)
+    flat = [x for x, y in outline if abs(y - bottom) < 0.01]
+    assert max(flat) - min(flat) >= 0.4 * width, (
+        f"the seat is flat for {max(flat) - min(flat):.1f} of {width:.1f}: a "
+        "pelvis sitting on a cushion is flat underneath, not a ball"
+    )
+
+    # The back is the side the knees are NOT on.
+    forward = sum(t["end"][0] - t["start"][0] for t in thighs)
+    back = -1 if forward > 0 else 1
+    rear_x = max(back * x for x in xs)
+    rear_ys = [y for x, y in outline if abs(back * x - rear_x) < 0.01]
+    assert bottom - max(rear_ys) >= 2 * cell, (
+        f"the seat's rear runs straight down to {max(rear_ys):.1f}, "
+        f"{bottom - max(rear_ys):.1f} above the cushion: a box's back, not a "
+        "buttock's"
+    )
+    assert rear_x - max(back * x for x in flat) >= 2 * cell, (
+        f"the seat's flat underside runs to within "
+        f"{rear_x - max(back * x for x in flat):.1f} of its rear: a square "
+        "corner sitting on the cushion"
+    )
 
 
 def _rig_bone_driver(source: str) -> str:
