@@ -66,25 +66,17 @@ def test_the_banner_survives():
 # 8px line) before a human had to notice it by eye.
 
 
-def test_the_shipped_room_labels_have_room_for_their_own_text():
-    # The real, shipped content at the real, shipped size — not a synthetic
-    # string. "TRADER"/"MODEL" are literal (the page draws them verbatim);
-    # a two-symbol watchlist is this project's only shipped watchlist, so
-    # both real symbols stand in for "prices"/"banner"-style short content.
-    placements = {p["id"]: p for p in load_manifest().text}
-    for label_id, text in [("name-trader", "TRADER"), ("name-model", "MODEL")]:
-        p = placements[label_id]
-        assert not glyph_overflow(text, p["size"], p), (
-            f"{label_id}: {text!r} at size {p['size']} does not fit its own "
-            f"{p['w']}x{p['h']} box"
-        )
+# The shipped labels' own fit is graded with their real content by
+# `tests/api/test_world_page.py::test_no_room_label_the_page_actually_draws_overflows_its_own_box`;
+# the fixed MODEL/TRADER nameplates this file used to check came off the room
+# on 2026-09-24.
 
 
 def test_a_string_too_long_for_its_box_is_caught():
-    # Mutation check for the estimate itself: the real name-trader box, with
+    # Mutation check for the estimate itself: the real `history` box, with
     # a string no reasonable margin would ever fit, must overflow.
-    p = next(p for p in load_manifest().text if p["id"] == "name-trader")
-    assert glyph_overflow("THIS LABEL IS WAY TOO LONG FOR THE DESK", p["size"], p)
+    p = next(p for p in load_manifest().text if p["id"] == "history")
+    assert glyph_overflow("THIS LINE IS WAY TOO LONG FOR THE BAND " * 4, p["size"], p)
 
 
 def test_a_box_too_short_for_its_own_font_size_is_caught():

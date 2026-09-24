@@ -41,9 +41,11 @@ measured paint a re-anchored trader or a repaint could use later - but
 anyone reaching for it for a NEW placement should re-check it against the
 rig first (`tests/api/test_world_page.py::
 test_the_name_trader_surface_does_not_intersect_the_seated_rig` is the
-check that caught this the first time). `name-trader` itself now sits on
+check that caught this the first time). `name-trader` later sat on
 `desk-plate-trader`'s sibling `desk-face-trader` - the same desk unit's
-front panel, well clear of the rig.
+front panel, well clear of the rig - until the MODEL/TRADER nameplates came
+off the room entirely (2026-09-24); both surfaces remain as unreferenced
+paint.
 """
 
 from __future__ import annotations

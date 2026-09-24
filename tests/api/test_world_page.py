@@ -463,7 +463,8 @@ def test_a_shadow_is_a_sibling_of_its_body_not_a_child_of_it():
     # the container, so the claim this test actually makes — the body and its
     # accents hang off the character, and the shadow does NOT — is checked on
     # the parts that survived both rather than on the old literal.
-    assert 'rig.addChild(...depthOrder(accents, "far"), body, head' in made
+    # The MODEL's badge (2026-09-24) rides between the body and the head.
+    assert 'rig.addChild(...depthOrder(accents, "far"), body, ...(badge ? [badge] : []), head' in made
     assert "container.addChild(rig," in made
     assert "container.addChild(shadow" not in made, "the shadow is parented to the body"
     assert "rig.addChild(shadow" not in made, "the shadow scales with the figure"
@@ -2039,10 +2040,16 @@ def test_the_near_limbs_composite_in_front_of_the_torso_and_under_the_labels():
         + outer_line.group(0).strip()
         + "\nconsole.log(JSON.stringify({ order, outer }));\n"
     )
-    assert _run_node(driver) == {
-        "order": ["legFar", "legNear", "body", "head", "armL", "armR"],
-        "outer": ["rig", "nameTag", "stat", "moodTag"],
-    }
+    # Once with no badge (the trader), once with the MODEL's, which rides on
+    # the body — so under the head and the near arms.
+    for badge, order in (
+        ("null", ["legFar", "legNear", "body", "head", "armL", "armR"]),
+        ('{ id: "badge" }', ["legFar", "legNear", "body", "badge", "head", "armL", "armR"]),
+    ):
+        assert _run_node(f"const badge = {badge};\n" + driver) == {
+            "order": order,
+            "outer": ["rig", "nameTag", "stat", "moodTag"],
+        }
 
 
 @needs_node
@@ -5340,6 +5347,91 @@ def test_the_machines_head_is_no_wider_than_its_chassis():
         f"the MODEL's head is {head_w} units across on a {chassis_w}-unit "
         "chassis"
     )
+
+
+def _badge_box(badge: dict) -> list:
+    """The rect a `MACHINE.badge` covers, in rig units: centred on its
+    `x`/`y`, one `size` tall, and as wide as a monospace line at 0.62 of a
+    glyph's size per character — the page draws it in `monospace`, which
+    every stack in use advances at 0.60-0.62 em."""
+    w = len(badge["text"]) * badge["size"] * 0.62
+    return [badge["x"] - w / 2, badge["y"] - badge["size"] / 2, w, badge["size"]]
+
+
+@needs_node
+def test_the_model_wears_its_version_on_a_clean_plate():
+    """"model v0.1" is stencilled on the MODEL, on ONE plate, crossing no seam.
+
+    The user's call (2026-09-24), made with the floating MODEL/TRADER names
+    coming off the room. Graded against the plates `BODIES.bars` actually
+    draws, not a remembered pelvis rect: the lettering must sit wholly inside
+    one body-coloured plate and touch no seam, so a chassis re-cut that runs
+    a seam through it fails here rather than on the stream.
+    """
+    emitted = _run_node(_machine_body_driver(_world_source()))
+    badge = emitted["MACHINE"]["badge"]
+    assert badge["text"] == "model v0.1"
+    box = _badge_box(badge)
+    plates = [d["snapped"] for d in emitted["drawn"]
+              if d["gid"] == emitted["trunkGid"] and d["fill"] == emitted["BODY_FILL"]]
+    seams = [d["snapped"] for d in emitted["drawn"]
+             if d["fill"] == emitted["MACHINE"]["seam"]]
+    assert any(_inside(box, p) for p in plates), (
+        f"the badge {box} overhangs every plate {plates}"
+    )
+    as_rect = lambda r: dict(zip("xywh", r))  # noqa: E731
+    crossed = [s for s in seams if _rects_intersect(as_rect(box), as_rect(s))]
+    assert not crossed, f"a seam {crossed} runs through the badge {box}"
+
+
+@needs_node
+def test_the_badge_moves_with_the_body_it_is_painted_on():
+    """The badge is a sibling of `body`, not a child (a Pixi 8 Graphics is a
+    leaf), so it must COPY the body's transform every frame. Several writers
+    move `body` (breathe, lean, shift, slump); a badge parked at rest would
+    slide off its plate on the first breath."""
+    source = _world_source()
+    emitted = _run_node(
+        _js_block(source, "const MACHINE = {") + ";\n"
+        + """
+        class Node {
+          constructor() { this.x = 0; this.y = 0; this.rotation = 0;
+                          this.children = []; this.anchor = { set() {} }; }
+          addChild(...c) { this.children.push(...c); return c[0]; }
+        }
+        const PIXI = { Container: Node, Text: class extends Node {
+          constructor(o) { super(); this.text = o.text; this.style = o.style; } } };
+        """
+        + _js_block(source, "function modelBadge(") + "\n"
+        + """
+        const body = new Node();
+        const badge = modelBadge(body);
+        body.x = 4; body.y = -4; body.rotation = 0.16;
+        badge.onRender();
+        const text = badge.children[0];
+        console.log(JSON.stringify({ x: badge.x, y: badge.y, r: badge.rotation,
+                                     text: text.text, tx: text.x, ty: text.y }));
+        """
+    )
+    assert (emitted["x"], emitted["y"], emitted["r"]) == (4, -4, 0.16)
+    assert emitted["text"] == "model v0.1"
+    body = _without_comments(_js_block(source, "function character("))
+    assert re.search(r'style === "bars" \? modelBadge\(body\)', body), (
+        "`character()` never stencils the MODEL's badge"
+    )
+    assert re.search(r"rig\.addChild\([^;]*\bbadge\b", body), (
+        "the badge is built but never added to the rig"
+    )
+
+
+def test_the_room_names_nobody_in_the_air():
+    """The MODEL/TRADER nameplates are gone (user, 2026-09-24): the trader's
+    sat ~190px from him on the desk front, and the MODEL now wears its own
+    name. Neither the manifest nor the page may bring one back."""
+    ids = [t["id"] for t in _manifest()["text"]]
+    assert not [i for i in ids if i.startswith("name-")], ids
+    boot = _without_comments(_js_block(_world_source(), "async function boot("))
+    assert "name-trader" not in boot and "name-model" not in boot
 
 
 @needs_node
@@ -8722,8 +8814,8 @@ def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
 # `#nowband`), not single-line canvas text - `banner`'s position is checked
 # below (bound via inline style), but none of the three get the glyph-fit
 # check, because CSS wraps them and the single-line glyph estimate does not
-# apply to wrapped text. `history`, `name-trader` and `name-model` are the
-# room's only canvas-drawn labels left after this ticket, and get both
+# apply to wrapped text. `history` is the room's only canvas-drawn label
+# left (the `name-*` nameplates came off on 2026-09-24), and gets both
 # checks in full.
 
 
@@ -8974,8 +9066,8 @@ def test_placedLabel_trusts_its_placement_so_the_manifest_check_is_the_real_guar
     regression in `floating_text` (the manifest-level guard) could break
     with nothing on the page able to show it. Corrupts a real placement
     exactly the way `test_a_label_nudged_off_its_surface_is_caught`
-    (`tests/unit/test_text_layout.py`) does - `name-trader` nudged off
-    `desk-plate-trader` - resolves it exactly as `as_json` would, and
+    (`tests/unit/test_text_layout.py`) does - a label nudged off its
+    surface (here `history`, the room's last canvas label) - resolves it exactly as `as_json` would, and
     confirms the page's own function reproduces the escaped position
     verbatim. That is the proof this ticket's brief was missing: not that
     the page mentions `TEXT_PLACEMENTS`, but that a bad value in it reaches
@@ -8990,18 +9082,18 @@ def test_placedLabel_trusts_its_placement_so_the_manifest_check_is_the_real_guar
 
     manifest = load_manifest()
     placements = [dict(p) for p in manifest.text]
-    idx = next(i for i, p in enumerate(placements) if p["id"] == "name-trader")
+    idx = next(i for i, p in enumerate(placements) if p["id"] == "history")
     placements[idx] = dict(placements[idx], y=placements[idx]["y"] - 400)
     poisoned = dataclasses.replace(manifest, text=tuple(placements))
 
     # Sanity: the manifest-level guard does catch it (established already by
     # test_text_layout.py; re-asserted here only to anchor the claim below).
-    assert floating_text(poisoned) == ["name-trader"]
+    assert floating_text(poisoned) == ["history"]
 
-    resolved = json.loads(as_json(poisoned))["name-trader"]
+    resolved = json.loads(as_json(poisoned))["history"]
     body = client.get("/world").text
     driver = _text_driver(body) + f"""
-    const drawn = placedLabel({json.dumps(resolved)}, "TRADER", 0);
+    const drawn = placedLabel({json.dumps(resolved)}, "HISTORY", 0);
     console.log(JSON.stringify({{ x: drawn.x, y: drawn.y }}));
     """
     emitted = _run_node(driver)
@@ -9040,8 +9132,6 @@ def test_no_room_label_the_page_actually_draws_overflows_its_own_box():
 
     drawn = {
         "history": emitted["history"],
-        "name-model": "MODEL",
-        "name-trader": "TRADER",
     }
     for label_id, text in drawn.items():
         p = placements[label_id]
@@ -9057,8 +9147,8 @@ def test_a_label_whose_text_would_overflow_its_box_is_caught():
     from world.text_layout import glyph_overflow
 
     placements = _text_placements()
-    p = placements["name-trader"]
-    assert glyph_overflow("A NAME NO REASONABLE DESK PLATE COULD HOLD", p["size"], p)
+    p = placements["history"]
+    assert glyph_overflow("A LINE NO REASONABLE BAND COULD HOLD " * 4, p["size"], p)
 
 
 @needs_node
