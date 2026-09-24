@@ -201,13 +201,23 @@
       // own (increment 21). `test_the_sweater_ends_in_a_hem`.
       hem:     0x2b3d4e,
       jeans:   0x34495c,
-      // Darker than the floor they stand on, which is the only way a shoe
-      // reads at this size (increment 16). `#2a2e3c` rendered at 1.5-1.8x the
-      // floor's luminance and read as a puddle round the ankles; that colour
-      // was chosen before `matte`, when a darker shoe only dragged the lamp's
-      // band to a skin hue. Graded against the plate's own floor by
-      // `test_both_shoes_are_darker_than_the_floor_they_stand_on`.
-      shoes:   0x181a22,
+      // Floor < shoe < jeans (2026-09-24, reversing increment 16's "darker
+      // than the floor"). The dark `#181a22` sat on the figure's own soft
+      // shadow at ratio ~1.0 and the shins simply stopped. The reference
+      // lights its shoe ~2.25x its floor and BLUER than it (`#233444`);
+      // increment 16's refused `#2a2e3c` was a grey in the floor's own hue,
+      // which is what read as a puddle. And not too light: the shoe has to
+      // part from the SHIN as well as the floor — `#233246` did the floor
+      // and merged into the jeans as a flared trouser leg; the darker, bluer
+      // one won the A/B (`inc24-shoe-ab-3x.png`). Graded against the plate's
+      // floor and the jeans by
+      // `test_both_shoes_sit_between_the_floor_and_the_jeans`.
+      shoes:   0x1f2a42,
+      // The shadow the forearm casts on the thigh it lies on (2026-09-24):
+      // the arm and the leg read as one mass with no edge between them.
+      // Darker than the jeans it falls on, in their hue.
+      // `test_the_forearm_casts_a_contact_shadow_on_the_thigh`.
+      contact: 0x22303f,
       // The shadow between two fingers — the only place on this figure where
       // one volume has to read as two. Sampled off the reference rather than
       // picked: its far hand measures `#262127` between the fingers against
@@ -619,15 +629,21 @@
       // matte-only volume would keep the rung and take the MOOD as its fill on
       // the next repaint. Nothing draws one; this is the note for whoever adds
       // the next option, not a live defect.
+      // A `shadowed` volume sits out of the lamp: every rung drops one shade
+      // step, so it keeps its colour and its warmth but loses its brightness.
+      // The hand in the lap (2026-09-24) — skin's shade rung IS the
+      // reference's hand, and a matte hand is a grey glove.
+      const shadowed = !!(opts && opts.shadowed);
+      const down = shadowed ? rampLevel("shade") : 0;
       (g.volumes || (g.volumes = [])).push(
-        keepFill || noRim || matte
-          ? { volume, fill: keepFill ? fill : undefined, noRim, matte }
+        keepFill || noRim || matte || shadowed
+          ? { volume, fill: keepFill ? fill : undefined, noRim, matte, shadowed }
           : volume,
       );
-      volume.band(g, BAND_INSET.shade);  g.fill(shade(fill, rampLevel("shade")));
-      volume.band(g, BAND_INSET.base);   g.fill(shade(fill, rampLevel("base")));
+      volume.band(g, BAND_INSET.shade);  g.fill(shade(fill, rampLevel("shade") + down));
+      volume.band(g, BAND_INSET.base);   g.fill(shade(fill, rampLevel("base") + down));
       volume.band(g, BAND_INSET.lit);
-      g.fill(matte ? shade(fill, rampLevel("base")) : shade(fill, rampLevel("lit")));
+      g.fill(shade(fill, (matte ? rampLevel("base") : rampLevel("lit")) + down));
       if (!noRim && !keepFill) volume.rim(g, rimStyle(rim));
     }
 
@@ -681,6 +697,7 @@
           const authored = entry.fill !== undefined;
           paint(g, entry.volume, authored ? entry.fill : fill, rim, {
             keepFill: authored, noRim: entry.noRim, matte: entry.matte,
+            shadowed: entry.shadowed,
           });
         } else {
           paint(g, entry, fill, rim);
@@ -3606,8 +3623,19 @@ void main() {
         // does, so the whole-CELL separations below still register.
         const handOutline = HAND_OUTLINE.map(([x, y]) =>
           [floorOnPlusX ? x : H.across - x, y]);
+        // THE CONTACT SHADOW (2026-09-24): the arm's own silhouette — sleeve
+        // and hand — shifted toward the floor side and painted FIRST, so the
+        // hand and sleeve cover all of it but the sliver on the thigh below
+        // them. That sliver is the edge between arm and leg the 1:1 frame
+        // lacked. Points are shifted rather than the origin, because
+        // `litPath` snaps its origin to the CELL and 3 units would round away.
+        const drop = (floorOnPlusX ? 1 : -1) * 3;
+        const cast = (pts) => pts.map(([x, y]) => [x + drop, y]);
+        paint(fore, litPath(cast(fore.outline)), HUMAN.contact, undefined, clothInner);
+        paint(fore, litPath(cast(handOutline), handX, handY), HUMAN.contact, undefined, clothInner);
+        // The hand is `shadowed`: out of the lamp in the lap, one rung down.
         paint(fore, litPath(handOutline, handX, handY),
-              HUMAN.skin, undefined, { keepFill: true });
+              HUMAN.skin, undefined, { keepFill: true, shadowed: true });
         // The sleeve, now that the hand is under it (see `ARM.cuff`).
         paint(fore, litPath(fore.outline), HUMAN.sweater, undefined, clothInner);
         // Four fingers, cut as three dark lines rather than painted as four

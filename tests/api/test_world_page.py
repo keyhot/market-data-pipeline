@@ -3534,7 +3534,7 @@ def _bone_capsule(drawn: list, gid: int, palette: dict) -> dict | None:
     """
     return next(
         (d for d in drawn if d["gid"] == gid
-         and d["fill"] not in (palette["skin"], palette["crease"])),
+         and d["fill"] not in (palette["skin"], palette["crease"], palette.get("contact"))),
         None,
     )
 
@@ -3853,6 +3853,104 @@ def test_everything_the_trader_wears_is_matte_and_only_his_skin_takes_the_lamp()
             f"the skin at {v['at']} went matte. Skin is the one material the "
             "warm band is right for -- a matte hand is a grey glove."
         )
+
+
+@needs_node
+def test_the_forearm_casts_a_contact_shadow_on_the_thigh():
+    """Where the forearm lies on the lap, a band of shadow separates them.
+
+    The 1:1 evaluation (2026-09-24): sweater, forearm and thigh read as ONE
+    blue-grey mass, and it is not a value problem -- our sweater/jeans gap
+    already exceeds the reference's (`#435e71`/`#3b5562`). What the reference
+    has is an EDGE where the arm crosses the leg. So the forearm paints its
+    own silhouette, shifted toward the FLOOR side, in `HUMAN.contact` BEFORE
+    the hand and the sleeve: they cover all of it but a sliver on the thigh
+    below them, which is exactly a contact shadow, and it moves with the arm
+    because it is the arm's own Graphics.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+    drawn, human = emitted["drawn"], emitted["HUMAN"]
+    contact = human["contact"]
+    assert _relative_luminance(contact) < _relative_luminance(human["jeans"]) * 0.8, (
+        f"the contact shadow {contact:#08x} is not darker than the jeans it falls on"
+    )
+    for arm in emitted["arms"]:
+        on_fore = [(i, d) for i, d in enumerate(drawn) if d["gid"] == arm["foreGid"]]
+        shadows = [(i, d) for i, d in on_fore if d["fill"] == contact]
+        assert shadows, "the forearm casts no contact shadow"
+        first_cover = min(i for i, d in on_fore
+                          if d["fill"] in (human["skin"], human["sweater"]))
+        assert max(i for i, _ in shadows) < first_cover, (
+            "the contact shadow is painted over the hand or the sleeve"
+        )
+        floor = 1 if math.sin(arm["foreWorldRotation"]) > 0 else -1
+        outline = arm["foreOutline"]
+        sleeve_shadow = [d for _, d in shadows if len(d["points"]) == len(outline)]
+        assert sleeve_shadow, "no shadow carries the sleeve's own outline"
+        shifts = {(round(q[0] - o[0], 6), round(q[1] - o[1], 6))
+                  for q, o in zip(sleeve_shadow[0]["points"], outline)}
+        assert len(shifts) == 1, f"the shadow is not the sleeve translated: {shifts}"
+        (dx, dy), = shifts
+        assert dy == 0 and 2 <= dx * floor <= 6, (
+            f"the shadow is shifted ({dx}, {dy}); it must fall 2-6 units toward "
+            f"the floor side ({floor:+d} local x), onto the thigh"
+        )
+
+
+@needs_node
+def test_the_hand_in_the_lap_sits_in_shadow_but_stays_skin():
+    """The hand is `shadowed`: every rung one shade step down, never matte.
+
+    The reference's hand in the lap measures `#8b6d6b`; ours was lit to the
+    lamp's rung and was the loudest thing on the body -- the eye went to the
+    lap before the face. Skin's own shade rung renders `#886955`, which is
+    the reference, so the hand drops a rung rather than changing colour: it
+    keeps `HUMAN.skin` (every hand test finds it by that fill) and keeps its
+    warmth (`matte` would be the grey glove). `repaint` is a whitelist, so
+    the option must survive a mood change too.
+    """
+    source = _world_source()
+    emitted = _run_node(_rig_bone_driver(source))
+    drawn, human = emitted["drawn"], emitted["HUMAN"]
+    fores = {a["foreGid"] for a in emitted["arms"]}
+    hands = [d for d in drawn if d["gid"] in fores and d["fill"] == human["skin"]]
+    assert hands and all(d["opts"].get("shadowed") for d in hands), hands
+    necks = [d for d in drawn if d["gid"] not in fores and d["fill"] == human["skin"]]
+    assert necks and not any(d["opts"].get("shadowed") for d in necks), (
+        "the neck went into shadow too: only the hand in the lap is out of the lamp"
+    )
+    out = _run_node(
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0x8899aa;\n"
+        + "const BODY_RIM = { width: 1.5, color: 0xffffff, alignment: 1 };\n"
+        + _js_const(source, "LIGHT") + _js_const(source, "CELL")
+        + _js_block(source, "function snap(") + "\n"
+        + _shading_prelude(source)
+        + _js_block(source, "function repaint(") + "\n"
+        + """
+        let fills = [];
+        class FakeGraphics {
+          constructor() { this.children = []; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
+          stroke() { return this; } clear() { return this; }
+          fill(c) { fills.push(c && c.color !== undefined ? c.color : c); return this; }
+        }
+        const g = new FakeGraphics();
+        paint(g, litRect(0, 0, 20, 40, 10), HUMAN.skin, 0x223344,
+              { keepFill: true, shadowed: true });
+        const painted = fills.slice();
+        fills = [];
+        repaint(g, 0x8899aa, 0x223344);
+        const s = rampLevel("shade");
+        console.log(JSON.stringify({ painted, repainted: fills.slice(),
+          want: [shade(HUMAN.skin, 2 * s), shade(HUMAN.skin, s),
+                 shade(HUMAN.skin, rampLevel("lit") + s)] }));
+        """
+    )
+    assert out["painted"] == out["want"], out
+    assert out["repainted"] == out["want"], (
+        "`shadowed` was dropped by `repaint` -- add it to the whitelist"
+    )
 
 
 @needs_node
@@ -9685,17 +9783,23 @@ def _relative_luminance(colour: int) -> float:
 
 
 @needs_node
-def test_both_shoes_are_darker_than_the_floor_they_stand_on():
-    """A shoe reads on SILHOUETTE against the floor, so it must be darker.
+def test_both_shoes_sit_between_the_floor_and_the_jeans():
+    """Floor < shoe < jeans: a shoe LIGHTER than the floor, darker than the leg.
 
-    The shoes were authored at `#2a2e3c`, which renders at 1.5-1.8x the
-    painted floor's luminance under the trader's feet: a pale shape the
-    floor's own colour, which on the frame read as a puddle round the ankles
-    rather than as a pair of shoes (increment 16). Every drawn volume nearest
-    `HUMAN.shoes` in the palette is a shoe, near and far alike; each one's
-    base rung, rendered through the page's own `shade`, is compared with the
-    median floor pixel of the plate in the floor band `measure_floor_band`
-    measures, left of the chair where the feet land.
+    Reverses increment 16's "darker than the floor" (user, 2026-09-24,
+    "try to lighten up shoes"). Darker did not read either: the plate floor
+    under the feet is `#1e222e`, the figure's own soft shadow takes it to
+    ~`#191c27` round the shoes, and a `#181a22` shoe on that is ratio ~1.0 --
+    the shins simply stopped. The reference lights its shoe at ~2.25x its
+    floor (`#233444` on `#1a202c`) and keeps it bluer than the floor, so it
+    reads as a shoe rather than a patch of the same floor; increment 16's
+    refused `#2a2e3c` was a GREY the floor's own hue, which is what read as a
+    puddle. And the shoe stays the darkest thing on the leg, below the jeans.
+
+    Every drawn volume nearest `HUMAN.shoes` in the palette is a shoe, near
+    and far alike; each one's base rung, rendered through the page's own
+    `shade`, is held against the median plate floor in the band
+    `measure_floor_band` measures where the feet land, and against the jeans.
     """
     from PIL import Image
     from scripts.measure_chair import PLATE_PNG, measure_floor_band
@@ -9708,7 +9812,8 @@ def test_both_shoes_are_darker_than_the_floor_they_stand_on():
 
     def nearest(c: int) -> str:
         return min(
-            ("sweater", "jeans", "skin", "shoes", "crease"),
+            # `hem` and `contact` are near the new, lighter shoe in value.
+            ("sweater", "jeans", "skin", "shoes", "crease", "hem", "contact"),
             key=lambda k: sum((a - b) ** 2 for a, b in zip(rgb(c), rgb(palette[k]))),
         )
 
@@ -9733,11 +9838,33 @@ def test_both_shoes_are_darker_than_the_floor_they_stand_on():
         for p in [plate.getpixel((x, y))]
     )
     floor = floor[len(floor) // 2]
+    # How blue the floor is, as the median of blue-minus-red over the same
+    # pixels: the shoe has to be bluer than THAT, not than grey.
+    blues = sorted(
+        p[2] - p[0]
+        for x in range(hips["x"] - 200, hips["x"] - 60)
+        for y in range(far, near)
+        for p in [plate.getpixel((x, y))]
+    )
+    floor_blue = blues[len(blues) // 2]
+    jeans = _relative_luminance(palette["jeans"])
     for authored, shaded in zip(shoes, rendered):
         ratio = _relative_luminance(shaded) / floor
-        assert ratio <= 0.8, (
+        # 1.3, not the reference's 2.25: the shoe must part from the shin
+        # too, and `#233246` (1.9x) merged into the jeans on the frame.
+        assert ratio >= 1.3, (
             f"a shoe authored {authored:#08x} renders {shaded:#08x}, "
-            f"{ratio:.2f}x the floor's luminance: it reads as floor, not as a shoe"
+            f"{ratio:.2f}x the floor's luminance: dark on dark, the shin just stops"
+        )
+        assert _relative_luminance(shaded) < jeans, (
+            f"a shoe renders {shaded:#08x}, no darker than the jeans: the foot "
+            "reads as more trouser leg"
+        )
+        r, g, b = rgb(shaded)
+        assert b - r >= floor_blue + 8, (
+            f"a shoe renders {shaded:#08x} (blue-red {b - r}) against a floor "
+            f"at {floor_blue}: a shoe in the floor's own hue is the puddle "
+            "increment 16 refused (`#2a2e3c`, 18); the reference's is 33"
         )
 
 
