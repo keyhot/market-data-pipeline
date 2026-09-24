@@ -2010,6 +2010,10 @@
         // lollipop over a picket fence and no amount of shading could join it.
         paint(body, litRect(-24, -48, 16, 48, 3), BODY_FILL);    // leg, near
         paint(body, litRect(8, -48, 16, 48, 3), BODY_FILL);      // leg, far
+        // Feet, over the legs' ends: a leg that stops as a bare stick stands
+        // the machine on stilts rather than on the floor (2026-09-24).
+        paint(body, litRect(-28, -8, 24, 8, 3), BODY_FILL);      // foot, near
+        paint(body, litRect(4, -8, 24, 8, 3), BODY_FILL);        // foot, far
         paint(body, litRect(-28, -72, 56, 28, 4), BODY_FILL);    // pelvis
         paint(body, litRect(-32, -132, 64, 60, 6), BODY_FILL);   // the chassis
         // Shoulders, which exist so the arms have somewhere to hang FROM: an
@@ -2121,9 +2125,16 @@
       const { x, y, w, h, depth, radius } = MACHINE.head;
       const cut = 2;
       const seamed = { keepFill: true, matte: true };
-      // The far faces first, as ONE plate offset by the depth; the front
-      // covers all of it but the top and the near side.
-      paint(skull, litRect(x - depth, y - depth, w, h, radius), BODY_FILL);
+      // The far faces first, each a slanted face that recedes from the front
+      // face's own corners. Increment 13 drew them as ONE rounded plate
+      // offset by the depth, and that ends square a whole depth short of the
+      // face's top-right and bottom-left corners — two cards laid askew, not
+      // a box (2026-09-24). The side is the one turned away from the lamp,
+      // so it sits a shade step down: three faces, three values, one solid.
+      const top = [[x - depth, y - depth], [x + w - depth, y - depth], [x + w, y], [x, y]];
+      const near = [[x - depth, y - depth], [x, y], [x, y + h], [x - depth, y + h - depth]];
+      paint(skull, litPath(top), BODY_FILL);
+      paint(skull, litPath(near), BODY_FILL, undefined, { shadowed: true });
       paint(skull, litRect(x, y, w, h, radius), BODY_FILL);
       // Both plates are `BODY_FILL` and `paint` bands both toward the one
       // lamp, so without a cut the side comes out the value of the front and
@@ -2910,12 +2921,15 @@ void main() {
       machineEyes(char, arousal);
       char.browL.clear();
       char.browR.clear();
-      const w = 10 + arousal * 3;
-      const step = valence * 6;
+      // Small (user, 2026-09-24: "make his mouth smaller") — a readout under
+      // the eyes, never wider than half the visor. The corners are not
+      // snapped: at half-width 6 the CELL grid has only 4 and 8 to offer.
+      const w = 6 + arousal * 2;
+      const step = valence * 4;
       char.mouth.clear()
-        .moveTo(snap(-w), snap(12)).lineTo(snap(-w / 3), snap(12 + step))
-        .lineTo(snap(w / 3), snap(12 + step)).lineTo(snap(w), snap(12))
-        .stroke({ width: 2.5, color: 0xd1d4dc });
+        .moveTo(-w, snap(12)).lineTo(-w / 3, snap(12) + step)
+        .lineTo(w / 3, snap(12) + step).lineTo(w, snap(12))
+        .stroke({ width: 2, color: 0xd1d4dc });
     }
 
     // Eyes are drawn on their own so a blink can close them without disturbing

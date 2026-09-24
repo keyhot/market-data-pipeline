@@ -4897,6 +4897,7 @@ def _machine_body_driver(source: str, run: bool = True) -> str:
           drawn.push({
             gid: g.gid, shape: volume.shape, at: volume.at,
             snapped: volume.snapped, fill, opts: opts || {},
+            points: volume.points || null,
           });
         }
         """
@@ -5269,7 +5270,7 @@ def test_the_machines_head_is_a_box_not_the_shared_ball():
     plates, _ = _head_parts(emitted)
     assert plates, "the box head paints nothing onto the skull"
     shapes = {d["shape"] for d in plates}
-    assert shapes == {"rect"}, (
+    assert "circle" not in shapes, (
         f"the MODEL's head is built from {sorted(shapes)} — a machine head is "
         "plates, and a circle among them is the shared ball back again"
     )
@@ -5318,9 +5319,12 @@ def test_the_head_shows_one_depth_on_its_top_and_one_side():
     head = emitted["MACHINE"]["head"]
     front = _snapped_rect([head["x"], head["y"], head["w"], head["h"]])
     plates, _ = _head_parts(emitted)
-    # The box is the plates the size of its face: the far faces are one
-    # plate the face's size, offset by the depth. The antenna is not the box.
-    rects = [d["snapped"] for d in plates if d["snapped"][2:] == front[2:]]
+    # The box is every plate but the antenna, which stands wholly above the
+    # top face's back edge.
+    rects = [
+        d["snapped"] for d in plates
+        if d["snapped"][1] + d["snapped"][3] > front[1] - head["depth"]
+    ]
     assert len(rects) >= 2, (
         "the head paints no plate behind its face, so it has no depth at all"
     )
@@ -5342,6 +5346,78 @@ def test_the_head_shows_one_depth_on_its_top_and_one_side():
         f"the head also overhangs its face on the right ({right}) / bottom "
         f"({bottom}): a plate centred behind the face is a picture frame"
     )
+
+
+@needs_node
+def test_the_heads_depth_meets_its_face_at_the_corners():
+    """The top and the side recede FROM the face's corners, on a diagonal.
+
+    Increment 13 drew the depth as one rounded plate the face's size, offset
+    up-left. That shows a top strip ending square a whole depth short of the
+    face's top-right corner, and a side strip ending short of its bottom-left:
+    two cards laid askew, not one box (the 2026-09-24 presentability pass).
+    An oblique box's receding edges run from the face's own corners, so the
+    top face must reach the face's top-RIGHT corner and the side face its
+    bottom-LEFT one — which only a slanted face can do.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    head = emitted["MACHINE"]["head"]
+    fx, fy, fw, fh = _snapped_rect([head["x"], head["y"], head["w"], head["h"]])
+    d = head["depth"]
+    plates, _ = _head_parts(emitted)
+    faces = [p for p in plates if p["shape"] == "path" and p["points"]]
+    corners = {tuple(pt) for p in faces for pt in p["points"]}
+    for name, corner in {
+        "top-right": (fx + fw, fy),
+        "bottom-left": (fx, fy + fh),
+        "top-right, receded": (fx + fw - d, fy - d),
+        "bottom-left, receded": (fx - d, fy + fh - d),
+    }.items():
+        assert corner in corners, (
+            f"no depth face has a vertex at the face's {name} corner {corner}: "
+            "the extrusion steps instead of receding on a diagonal"
+        )
+
+
+@needs_node
+def test_the_machines_mouth_is_small_on_its_visor():
+    """The mouth is a small readout under the eyes, not a grin across the
+    visor (user, 2026-09-24: "make his mouth smaller"). At its widest — full
+    arousal, stroke counted — it spans at most half the visor, at every mood.
+    """
+    emitted = _run_node(_machine_head_driver(_world_source()))
+    visor = [f["box"] for f in emitted["features"] if f["part"] == "visor"][0]
+    mouth = [f["box"] for f in emitted["features"] if f["part"] == "mouth"]
+    assert mouth, "the machine face draws no mouth"
+    span = max(b[0] + b[2] for b in mouth) - min(b[0] for b in mouth)
+    assert span <= visor[2] / 2, (
+        f"the mouth spans {span} units on a {visor[2]}-unit visor"
+    )
+
+
+@needs_node
+def test_the_machine_stands_on_feet():
+    """Each leg ends in a foot wider than the leg, flat on the floor.
+
+    A leg that ends as a bare stick reads as a figure on stilts, not as a
+    machine standing in the room. A foot is a trunk plate whose bottom is
+    the floor (y 0), which overlaps a leg and is wider than it.
+    """
+    emitted = _run_node(_machine_body_driver(_world_source()))
+    trunk = [
+        d["snapped"] for d in emitted["drawn"]
+        if d["gid"] == emitted["trunkGid"] and d["fill"] == emitted["BODY_FILL"]
+    ]
+    on_floor = [r for r in trunk if abs(r[1] + r[3]) < 1e-9]
+    legs = [r for r in on_floor if r[3] > r[2]]
+    assert len(legs) == 2, f"expected two legs on the floor, found {legs}"
+    for leg in legs:
+        feet = [
+            r for r in on_floor
+            if r[2] > leg[2] and r[3] < r[2] and _touching(r, leg)
+            and r[0] < leg[0] + leg[2] and leg[0] < r[0] + r[2]
+        ]
+        assert feet, f"the leg at {leg} ends on the floor with no foot"
 
 
 @needs_node
@@ -7800,9 +7876,9 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     for key in ("nape",):
         rects.append(tuple(v.strip() for v in profile[key].split(",")))
     circles.append(tuple(v.strip() for v in profile["skull"].split(",")))
-    assert (len(rects), len(circles)) == (23, 5), (
+    assert (len(rects), len(circles)) == (25, 5), (
         f"the extraction now reaches {len(rects)} rect and {len(circles)} "
-        "circle volumes, not 23 and 5. Either a volume was added (raise these "
+        "circle volumes, not 25 and 5. Either a volume was added (raise these "
         "numbers, having checked the new one is graded) or one stopped being "
         "readable - and an unreadable volume is an ungraded volume"
     )
