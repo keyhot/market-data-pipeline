@@ -3273,6 +3273,68 @@ def test_the_seated_figure_has_a_neck():
     )
 
 
+def _inside_polygon(px, py, pts) -> bool:
+    """Even-odd point-in-polygon; a point on an edge counts as inside."""
+    inside = False
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        if min(ay, by) <= py <= max(ay, by) and ay != by:
+            x = ax + (py - ay) * (bx - ax) / (by - ay)
+            if abs(x - px) < 1e-9:
+                return True
+            if x > px and py != max(ay, by):
+                inside = not inside
+    return inside
+
+
+def test_the_neck_joins_the_head_across_its_whole_underside():
+    """No row between the jaw and the collar shows the room beside the neck.
+
+    The neck used to be a 12-wide pill with radius 6. It bridged jaw and
+    collar, so the test above passed, but directly under the jaw a pill is a
+    dome: the room showed on both sides of it, and the silhouette keyline
+    wrapped the head's whole underside. On air the head read as a lollipop
+    balanced on a knob (the user's catch, 2026-09-25).
+
+    So this grades rows, not a bridge. At every height from the chin line
+    down to the sweater, skin must cover the nape's BACK edge (where the back
+    of the neck continues the back of the head) and the nod PIVOT under the
+    jaw (the head rotates about it, so the throat stays joined at any gaze).
+    """
+    emitted = _seated_rig_run()
+    drawn = emitted["drawn"]
+    palette = emitted["HUMAN"]
+    head = _profile_head_run()["head"]
+    sweater_top = min(d["rect"][1] for d in drawn if d["fill"] == palette["sweater"])
+    chin = emitted["headY"] + head["chin"]
+    skin = [d for d in drawn if d["fill"] == palette["skin"] and d["host"] == "body"]
+
+    def covered(x, y):
+        for d in skin:
+            if d["pts"]:
+                if _inside_polygon(x, y, [tuple(p) for p in d["pts"]]):
+                    return True
+            elif _inside_round_rect(x, y, d["rect"], d["radius"], slack=0):
+                return True
+        return False
+
+    # The source's own numbers: the nape rect's back edge and the pivot's
+    # distance in front of the head's origin. The seated trader faces -x.
+    nape_x, _, nape_w, _, _ = _run_node(
+        _js_block(_world_source(), "const PROFILE_HEAD = {")
+        + ";\nconsole.log(JSON.stringify(PROFILE_HEAD.nape));"
+    )
+    back = nape_x + nape_w - 0.5
+    pivot = -abs(head["pivot"][0])
+    y = chin
+    while y <= sweater_top:
+        for x, what in ((back, "back of the neck"), (pivot, "throat under the pivot")):
+            assert covered(x, y), (
+                f"at y={y} the {what} (x={x}) is bare: the room shows between "
+                f"the jaw ({chin}) and the collar ({sweater_top})"
+            )
+        y += 0.5
+
+
 def _inside_round_rect(px, py, rect, r, slack=0.5) -> bool:
     """Is (px, py) inside `rect` [x, y, w, h] with corners rounded to `r`?"""
     x, y, w, h = rect
@@ -7876,9 +7938,11 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     for key in ("nape",):
         rects.append(tuple(v.strip() for v in profile[key].split(",")))
     circles.append(tuple(v.strip() for v in profile["skull"].split(",")))
-    assert (len(rects), len(circles)) == (25, 5), (
+    # 24, not 25: the neck left this extraction on 2026-09-25 when it became
+    # a column path; `test_no_path_band_leaves_its_outline` grades it now.
+    assert (len(rects), len(circles)) == (24, 5), (
         f"the extraction now reaches {len(rects)} rect and {len(circles)} "
-        "circle volumes, not 25 and 5. Either a volume was added (raise these "
+        "circle volumes, not 24 and 5. Either a volume was added (raise these "
         "numbers, having checked the new one is graded) or one stopped being "
         "readable - and an unreadable volume is an ungraded volume"
     )
@@ -9970,6 +10034,9 @@ def test_no_path_band_leaves_its_outline():
         "hand": [[[x, y] for x, y in hand], [[across - x, y] for x, y in hand]],
         # The torso (increment 19) mirrors with the chair's facing.
         "torso": [[[s * x, y] for x, y in _torso_outline()] for s in (-1, 1)],
+        # The neck (2026-09-25) is a path now, not a rounded rect, and it
+        # mirrors with the torso.
+        "neck": [[[s * x, y] for x, y in _neck_outline()] for s in (-1, 1)],
     }
     # The limbs (increment 20) are built at runtime from the pose, so they
     # come off the rig itself: one outline per side, both chains.
@@ -10102,6 +10169,17 @@ def test_only_a_sideburn_of_hair_shows_in_front_of_the_ear():
         assert sw <= 2, f"the sideburn is {sw} wide; a taper leaves a line, not a column"
         assert sy + sh <= ey + eh / 2, "the sideburn runs past mid-ear toward the jaw"
         assert abs(sx + sw - front) <= 4, "the sideburn is not in front of the ear"
+
+
+def _neck_outline() -> list[list[float]]:
+    """The skin column `seatedRig` paints between jaw and collar, rig-local."""
+    run = _seated_rig_run()
+    neck = [
+        d for d in run["drawn"]
+        if d["host"] == "body" and d["fill"] == run["HUMAN"]["skin"] and d["pts"]
+    ]
+    assert len(neck) == 1, f"expected the neck as ONE skin path on the body, found {len(neck)}"
+    return neck[0]["pts"]
 
 
 def _torso_outline() -> list[list[float]]:

@@ -3455,7 +3455,22 @@ void main() {
       // Width 12 is the trace's own neck bone (16 reference px / 59.5 px per
       // head x 44), and it has to stay narrower than the collar or the collar
       // stops reading as clothing over it.
-      paint(body, litRect(-6, -82, 12, 14, 6), HUMAN.skin, undefined, inner);
+      //
+      // A COLUMN, not a pill (2026-09-25, the user's catch). It was
+      // `litRect(-6, -82, 12, 14, 6)`: radius 6 on width 12 is a dome, so
+      // right under the jaw the room showed on both sides of a round knob,
+      // the silhouette keyline ran along the head's whole underside, and the
+      // head read as a lollipop. Now its top starts INSIDE the head, under
+      // the nape (headY + 8), so there is no top edge to see; its back edge
+      // continues the nape's back edge, so the back of the head runs down
+      // into the back of the neck; its front edge sits just in front of the
+      // nod pivot, so the throat stays joined at any gaze. It stops 2 units
+      // into the collar, and its back edge holds at 8, the collar's own
+      // half-width: any wider and a sliver of skin lands on the sweater
+      // beside the collar.
+      // `test_the_neck_joins_the_head_across_its_whole_underside`.
+      const NECK = [[5, -92], [-8, -92], [-8, -70], [4, -70]];
+      paint(body, litPath(NECK.map(([u, y]) => [front * u, y])), HUMAN.skin, undefined, inner);
       // A collar, inside the shoulders, sitting AT the shoulder line rather
       // than above it. `inner`: it is shading on the torso, not a separate
       // object. It narrows with the shoulders — 22 wide inside a turned
