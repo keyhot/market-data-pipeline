@@ -150,7 +150,7 @@ legible rather than impressive.
 | **round trip** | The total cost of opening *and* closing one position: 0.1% Binance taker fee + 1 bp slippage, both sides = **22 bps**. Paid whether the call was right or wrong. |
 | **position** | One entry and one exit. *Not* one bar: a signal that stays on for 20 consecutive minutes is one position, not twenty. Charging the round trip per bar instead was a real bug here (KI-040), and merging holds that overlap into the single position one unit of capital actually held was its sibling (KI-001). |
 | **horizon** | How far ahead the model is asked to predict — currently 15 bars, i.e. 15 minutes. The label is "is the close 15 bars from now higher than the close now?" |
-| **hit rate** | Share of positions where the direction was right. **49.9%** here. On its own it says almost nothing — see the next row. |
+| **hit rate** | Share of positions where price rose over the hold the position actually had, before costs. **56.5%** here — and it still lost 63%, so on its own it says almost nothing (see the next row). It is also flattered by the market: an 82%-exposed long in a rising month is on the right side of most holds without any skill. The skill number is **signal precision**, the share of in-market bars whose 15-bar label was up: **49.3%**, a coin flip. (The 49.9% this row used to quote graded every position on the 15 bars after its *entry*, while it exits 15 bars after its *last* bar — KI-042.) |
 | **edge** | Average profit per position *after* costs: **−19.2 bps**. This is the number that matters. A hit rate can sit at 50% while the edge is deeply negative, because being right by 6 bps and wrong by 6 bps both pay the same 22 bps toll. |
 | **walk-forward / fold** | Train on a window, predict the window immediately after it, slide forward, repeat — 253 times here. It's the honest alternative to training and testing on the same period, because the model only ever sees the past. |
 | **purge gap** | Rows skipped between a train window and its test window. Without it the last training labels — which look 15 bars ahead — would peek into the test set. |
@@ -238,9 +238,10 @@ Being candid:
 - **There is no clip pipeline.** The world produces small moments worth cutting — a streak
   resolving, a volatility spike decaying — and nothing turns them into shorts.
 - **The model doesn't win yet.** The walk-forward backtest (253 folds, 2026-07-18 →
-  2026-08-22) took **519 positions**, called direction correctly on **49.9%** of them, and
-  returned **−63.3%** against +18.4% buy-and-hold. ETHUSDT replicates: 46.8% over 485
-  positions, −56.6% against +28.6%. The average position earns **−19.2 bps** against a
+  2026-08-22) took **519 positions**, **56.5%** of which saw price rise over their hold, and
+  returned **−63.3%** against +18.4% buy-and-hold. ETHUSDT replicates: 57.5% over 485
+  positions, −56.6% against +28.6%. At the bar level its entries are a coin flip (signal
+  precision 49.3% / 51.0%). The average position earns **−19.2 bps** against a
   22 bps round trip.
   A separate, wider sweep — `scripts/confidence_report.py`, 251 folds and **50,200
   out-of-sample predictions per symbol** — says there is nothing to select from either:
