@@ -2473,12 +2473,7 @@ def test_seated_animations_actually_move_real_parts():
         """
     )
     emitted = _run_node(driver)
-    cell, cast_scale = emitted["cell"], emitted["castScale"]
-    rendered_cell = cell * cast_scale
-
-    def on_grid(v: float) -> bool:
-        r = v % rendered_cell
-        return r < 1e-6 or rendered_cell - r < 1e-6
+    cast_scale = emitted["castScale"]
 
     # Every animation must move at least one property - a phase/amplitude
     # change that leaves the whole rig bit-for-bit where it started is an
@@ -2496,9 +2491,14 @@ def test_seated_animations_actually_move_real_parts():
         for p in moved:
             if p in position_props:
                 screen_delta = (after[p] - before[p]) * cast_scale
-                assert on_grid(after[p] * cast_scale), (
-                    f"{name}.{p}: {after[p]} * CAST_SCALE {cast_scale} is not "
-                    f"on the {rendered_cell}px rendered cell"
+                # The seated rig is only built from a painted plate, and
+                # always under the keyline filter, whose grid is one unit —
+                # so a seated offset is on the grid when it is a whole unit
+                # (2026-09-25: the breath dropped from a CELL to one unit).
+                # The standing table keeps the CELL grid, graded elsewhere.
+                assert float(after[p]).is_integer(), (
+                    f"{name}.{p}: {after[p]} is not a whole unit, off the "
+                    "keyline grid the seated rig is drawn to"
                 )
                 assert abs(screen_delta) > 1e-6, f"{name}.{p} moved by ~0 screen px"
     asleep = emitted["results"]["asleep"]
@@ -2561,6 +2561,97 @@ def test_the_neck_holds_its_length_through_a_breath():
         assert not stretched, (
             f"the head does not ride {name}, so the neck changes length: {stretched[:3]}"
         )
+
+
+@needs_node
+def test_a_seated_breath_is_one_pixel_and_only_up():
+    """The breath that carried the head (above) still moved the whole bust a
+    CELL — 8 screen px — up, back, and DOWN into the cushion: a block on a
+    spring (2026-09-25, the user's "still feels unnatural"). A chest lifts on
+    the inhale and settles to rest, never below it. Graded over the whole
+    cycle: the body visits rest and one unit up, and nothing else."""
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_block(source, "const EASE = {")
+        + ";\n"
+        + _js_const(source, "HEAD_TRAVEL")
+        + "\nfunction setBlink() {}\n"
+        + _js_range(
+            source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.turn"
+        )
+        + """
+        const c = {
+          style: "figure", headBaseY: -100,
+          body: { rotation: 0, x: 0, y: 0 },
+          head: { rotation: 0, x: 0, y: -100 },
+        };
+        const ys = [];
+        for (let i = 0; i < 64; i++) {
+          SEATED_ANIMATIONS.breathe(c, i / 64, 1);
+          ys.push(c.body.y + 0);
+        }
+        console.log(JSON.stringify({ ys }));
+        """
+    )
+    ys = set(_run_node(driver)["ys"])
+    assert ys == {0, -1}, (
+        f"a seated breath visits body.y {sorted(ys)}; it should rest at 0 and "
+        "rise one unit (-1), never sink below rest or jump a CELL"
+    )
+
+
+@needs_node
+def test_a_profile_head_stays_on_its_neck_while_it_looks():
+    """The neck is painted on `body`, the head is a sibling, and `head`'s
+    origin is mid-skull. So for the profile trader: the idle `shift` must
+    carry the head with the torso, and a glance or a deliberate look must
+    neither slide the head (`head.x`) nor spin it about the skull
+    (`head.rotation`) — it nods about the neck, on `aim`, on top of the
+    resting look at the charts. Graded as the rule: at every phase, head.x
+    equals body.x and head.rotation is 0."""
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\n"
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\nfunction setBlink() {}\n"
+        + _js_block(source, "function setGaze(")
+        + "\n"
+        + _js_block(source, "const IDLE_ACTIONS = {")
+        + """;
+        const c = {
+          container: { pose: "seated", x: 0 },
+          profile: { side: -1 }, aimRest: 0.25,
+          body: { x: 0, y: 0 }, head: { x: 0, y: -100, rotation: 0 },
+          aim: { rotation: 0.25 }, eyeL: { x: 0 }, eyeR: { x: 0 },
+        };
+        const out = [];
+        for (let i = 0; i <= 16; i++) {
+          const u = Math.sin((i / 16) * Math.PI);
+          for (const dir of [-1, 1]) {
+            // Each graded on its own too: idleTick only runs the ACTIVE
+            // actions, so a shift must not lean on a glance to re-seat the head.
+            IDLE_ACTIONS.shift.run(c, u, dir);
+            out.push({ what: "shift", bx: c.body.x, hx: c.head.x, hr: c.head.rotation, ar: c.aim.rotation });
+            IDLE_ACTIONS.glance.run(c, u, dir);
+            out.push({ what: "glance", bx: c.body.x, hx: c.head.x, hr: c.head.rotation, ar: c.aim.rotation });
+            setGaze(c, dir * 4 * u, dir * 0.12 * u, dir * 3 * u);   // watchTick's look
+            out.push({ what: "look", bx: c.body.x, hx: c.head.x, hr: c.head.rotation, ar: c.aim.rotation });
+          }
+        }
+        console.log(JSON.stringify({ out }));
+        """
+    )
+    out = _run_node(driver)["out"]
+    assert any(o["bx"] != 0 for o in out), "the idle shift no longer moves the torso"
+    assert any(abs(o["ar"] - 0.25) > 1e-6 for o in out), "a profile's look no longer nods"
+    for o in out:
+        assert o["hx"] == o["bx"], f"the head slid off the neck: {o}"
+        assert o["hr"] == 0, f"the head spun about its skull, not its neck: {o}"
 
 
 def test_the_head_rest_is_recorded_once():
@@ -7807,8 +7898,11 @@ PROTECTED_BLOCKS = {
     # Re-baselined 2026-09-25, deliberately: the user asked for the seated
     # breathe (and cheer) to carry the head with the body (the neck stretched a CELL
     # every breath). `test_the_neck_holds_its_length_through_a_breath`.
+    # And again the same day: the breath is one unit and only up, since a CELL
+    # bob of the whole bust still read as unnatural.
+    # `test_a_seated_breath_is_one_pixel_and_only_up`.
     "const SEATED_ANIMATIONS = {": (
-        "b23441218c430e362f92f8f8397369aaafd5bf613b59037347d8e145c8753b41", 3208
+        "f2165a26dc58cb4f9b3553779f7cc8891d956ebdef4cdd26e3a5a54d1ad5a755", 3876
     ),
     "function advanceCharacters(": (
         "a4f17050f3d1ca7fbc7790bd192fbeb089353d7d73f556bb73acafb9ec4b5e9e", 2275

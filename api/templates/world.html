@@ -2232,8 +2232,13 @@
       // nose base to chin 20 — `test_the_profile_face_is_in_thirds`.
       //
       // The nose is a small rounded wedge, [x, y] points: it used to start at
-      // eye level and hang 14 units, a third of the head.
-      nose: [[20, -2], [22, 1], [24, 4], [23, 5], [20, 6]],
+      // eye level and hang 14 units, a third of the head. Then it was a
+      // triangle whose tip pointed straight out (24, 4), and under the keyline
+      // that read as a beak ("his nose is weird", 2026-09-25). A nose points
+      // DOWN: a sloped bridge to a rounded tip at 5, with a flat underside
+      // back to the face. A longer bridge from the brow was tried and was a
+      // bigger beak.
+      nose: [[20, -2], [21, 0], [22, 3], [23, 5], [22, 7], [20, 7]],
       // The eye is a white with a pupil in it, and WHERE the pupil sits is
       // the other half of the look: the head nods only `GAZE_HEAD_SHARE` of
       // the way, and the pupil rides the front-upper corner for the rest.
@@ -2252,7 +2257,10 @@
       // The short sideburn a taper leaves in front of the ear: from the
       // temple hair down to mid-ear, no further.
       sideburn: [-2, -12, 2, 8],
-      mouth: [16, 11, 4, 2],
+      // A one-unit line in the crease colour: at the skin's shade it vanished
+      // into the face's own shade band, and the face below the nose was a
+      // blank wall.
+      mouth: [17, 12, 3, 1],
       // The joint the head nods about: the top of the neck, under the jaw.
       pivot: [4, 20],
     };
@@ -2303,7 +2311,7 @@
       oval(P.eyeBag, mixHex(skinBase, skinShade, 0.5));
       oval(P.eye, 0xd8c6b0);
       flat(P.pupil, 0x1b1716);
-      flat(P.mouth, skinShade);
+      flat(P.mouth, HUMAN.crease);
       const eye = mirrorRect(P.eye, side);
       return {
         crown: Math.min(cy - r, ...P.fringe.map((p) => p[1])),
@@ -3948,9 +3956,19 @@ void main() {
       // breathed alone carried the collar a CELL down away from a head that
       // stayed put: the neck grew and shrank by a CELL every breath.
       // `test_the_neck_holds_its_length_through_a_breath`.
-      breathe: (c, p) => { const dy = snap(Math.sin(p * Math.PI * 2) * CELL);
+      //
+      // One art pixel, and only UP (the user's second catch, same day): a
+      // whole CELL is 4 units, 8 screen px, and a sine carried the bust a
+      // step up, back, and a step DOWN into the cushion — a block bobbing on
+      // a spring. A chest lifts on the inhale and settles back to rest; it
+      // never sinks below it. The seated rig is always under the keyline
+      // filter, whose grid is one unit (`KEYLINE.block` px), so a single
+      // unit is on the grid this rig is actually drawn to.
+      // `test_a_seated_breath_is_one_pixel_and_only_up`.
+      breathe: (c, p) => { const dy = -Math.round((1 - Math.cos(p * Math.PI * 2)) / 2);
                            c.body.y = dy;
-                           if (c.headBaseY != null) c.head.y = snap(c.headBaseY + dy); },
+                           // Not `snap`: that rounds to the CELL, and ate the unit.
+                           if (c.headBaseY != null) c.head.y = c.headBaseY + dy; },
       // Head drops, eyes close via the same closed-lid draw the idle blink
       // uses (`setBlink`) — not `visible = false`, which reads as empty
       // sockets rather than a person asleep.
@@ -4062,8 +4080,9 @@ void main() {
           // the weight-shift this idle action stages moves the torso
           // instead — same amplitude, same "under one CELL" reasoning C1
           // used to leave it unsnapped, applied to the write this ticket's
-          // whole table exists to keep off the hips.
-          if (c.container.pose === "seated") { c.body.x = dir * 3 * u; return; }
+          // whole table exists to keep off the hips. The head goes with it
+          // (the neck is on `body`).
+          if (c.container.pose === "seated") { c.body.x = c.head.x = dir * 3 * u; return; }
           c.container.x = c.baseX + dir * 3 * u;
         },
       },
@@ -4084,6 +4103,18 @@ void main() {
     // them having to remember to.
     function setGaze(char, dx, rot, headShift) {
       char.eyeL.x = char.eyeR.x = snap(dx);
+      // A profile has no eyeL/eyeR to slide (they are hidden), and `head`'s
+      // origin is mid-skull, so `head.rotation` swung the chin across the
+      // collar and `head.x` slid the head off the neck. It looks by NODDING
+      // about the top of the neck instead — `aim`, which carries that pivot —
+      // on top of its resting look at the charts, and the head stays on the
+      // torso wherever the torso has shifted to.
+      if (char.profile) {
+        char.head.rotation = 0;
+        char.head.x = char.body.x;
+        char.aim.rotation = (char.aimRest ?? 0) + rot;
+        return;
+      }
       char.head.rotation = rot;
       char.head.x = snap(headShift);
     }
@@ -4227,7 +4258,8 @@ void main() {
       const [ex, ey] = char.profile.eye;
       const eye = { x: anchor.x + ex * k, y: anchor.baseY + (char.headBaseY + ey) * k };
       const pitch = gazePitch(eye, chartTarget(PLATE && PLATE.screens), char.profile.side);
-      char.aim.rotation = -char.profile.side * pitch * GAZE_HEAD_SHARE;
+      char.aimRest = -char.profile.side * pitch * GAZE_HEAD_SHARE;
+      char.aim.rotation = char.aimRest;
     }
 
     function positionCharacters() {
