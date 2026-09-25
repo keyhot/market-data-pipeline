@@ -77,11 +77,20 @@ def fetch_yt_state(client, state: BroadcastState, config: BroadcastConfig) -> di
             "cannot bind or go live until it matches.",
             config.stream_title,
         )
+    # Pass the id we know: an exact lookup can't be crowded out by the
+    # channel's completed-broadcast history the way a scan can.
+    broadcasts = client.list_broadcasts(broadcast_id=state.current_broadcast_id)
+    if state.current_broadcast_id is not None and any(
+        b.get("lifecycle") in ("ready", "testing") for b in broadcasts
+    ):
+        # KI-086: while ours waits, the exact lookup can never see a duplicate
+        # already live on our key — the one thing that keeps ours waiting
+        # forever. Scan too. Waiting is normally a tick or two, so the quota
+        # cost is bounded; the steady (live) state stays a single lookup.
+        broadcasts = broadcasts + client.list_broadcasts()
     return {
-        # Pass the id we know: an exact lookup can't be crowded out by the
-        # channel's completed-broadcast history the way a scan can.
         "broadcast": select_broadcast(
-            client.list_broadcasts(broadcast_id=state.current_broadcast_id),
+            broadcasts,
             state.current_broadcast_id,
             stream_id=stream["id"] if stream else None,
         ),
@@ -104,8 +113,7 @@ def apply(actions, state: BroadcastState, client, record_event, config, now) -> 
             if action[0] == "create_and_bind":
                 _create_and_bind(client, state, config)
             elif action[0] == "transition_live":
-                logger.info("Transitioning broadcast live", extra={"id": action[1]})
-                client.transition(action[1], "live")
+                _transition_live(client, state, action[1])
             elif action[0] == "record":
                 events.append(build_from_action(action[1], action[2], occurred_at=now))
         except Exception as exc:
@@ -120,6 +128,43 @@ def apply(actions, state: BroadcastState, client, record_event, config, now) -> 
     # backlog every tick (flush-on-tick, same as the director).
     if record_event is not None:
         record_event(events)
+
+
+# ~15 minutes of refusals at the 30 s cadence. YouTube refuses a few while a
+# fresh broadcast settles (51 on 2026-09-15 before auto-start took it live), so
+# escalating on the first would cry wolf.
+REFUSED_TRANSITION_ALERT_AT = 30
+
+
+def _transition_live(client, state: BroadcastState, broadcast_id: str) -> None:
+    """Ask YouTube to go live, logging a refusal streak once, not per tick
+    (KI-086: ~16k identical tracebacks buried the one fact that mattered)."""
+    try:
+        client.transition(broadcast_id, "live")
+    except Exception as exc:
+        state.refused_transitions += 1
+        n = state.refused_transitions
+        if n == 1:
+            logger.warning(
+                "broadcast_action_failed",
+                extra={"action": "transition_live", "error": str(exc)},
+                exc_info=True,
+            )
+        elif n == REFUSED_TRANSITION_ALERT_AT:
+            logger.error(
+                "YouTube has refused %d consecutive transitions of broadcast %s "
+                "to live — the public stream is probably not ours or not up. "
+                "Is another broadcast live on our stream key? (KI-086)",
+                n,
+                broadcast_id,
+            )
+        return
+    if state.refused_transitions:
+        logger.info(
+            "Transition accepted after %d refusals", state.refused_transitions
+        )
+    state.refused_transitions = 0
+    logger.info("Transitioned broadcast live", extra={"id": broadcast_id})
 
 
 def _create_and_bind(client, state: BroadcastState, config: BroadcastConfig) -> None:

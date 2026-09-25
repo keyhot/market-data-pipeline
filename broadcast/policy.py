@@ -32,6 +32,8 @@ from datetime import datetime, timedelta
 # "complete"       = ended; the persistent broadcast can be replaced.
 # Anything else    = not currently usable; treated as "needs (re)creation".
 _HEALTHY_LIFECYCLES = frozenset({"ready", "testing", "live"})
+# Bound and waiting to go live — the lifecycles a live duplicate can strand.
+_WAITING_LIFECYCLES = frozenset({"ready", "testing"})
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,10 @@ class BroadcastState:
     current_lifecycle: str | None
     last_create_at: datetime | None
     stream_active_since: datetime | None
+    # Runner-owned (KI-086): consecutive refused `transition_live` calls, so a
+    # streak logs once and escalates once instead of once per tick. `tick`
+    # never reads it and its copy never carries it.
+    refused_transitions: int = 0
 
 
 def _backoff_ok(state: BroadcastState, config: BroadcastConfig, now: datetime) -> bool:
@@ -99,13 +105,35 @@ def select_broadcast(
     3. A leftover `complete` broadcast is never adopted: `tick` would read it
        as unhealthy and create a replacement every backoff window, burning the
        daily quota the backoff exists to protect.
+    4. **A broadcast already `live` on our stream beats one that is waiting**
+       (KI-086) — both when ours is `ready`/`testing` and on a cold start. One
+       ingest key feeds one live broadcast, so ours could never leave `ready`:
+       YouTube refused ~16k transitions over six days while the public stream
+       ran under a duplicate the manager could not see. Only a *waiting* one
+       yields; ours `complete` is still returned, per rule 1. Binding is
+       required — with no known stream we cannot tell whose it is.
 
     Returns None when nothing is usable — `tick` then creates one.
     """
+    live_on_our_stream = next(
+        (
+            b
+            for b in broadcasts
+            if stream_id is not None
+            and b.get("lifecycle") == "live"
+            and b.get("bound_stream_id") == stream_id
+        ),
+        None,
+    )
     if current_id is not None:
         for broadcast in broadcasts:
             if broadcast.get("id") == current_id:
+                waiting = broadcast.get("lifecycle") in _WAITING_LIFECYCLES
+                if waiting and live_on_our_stream is not None:
+                    return live_on_our_stream
                 return broadcast
+    if live_on_our_stream is not None:
+        return live_on_our_stream
     for broadcast in broadcasts:
         if broadcast.get("lifecycle") not in _HEALTHY_LIFECYCLES:
             continue

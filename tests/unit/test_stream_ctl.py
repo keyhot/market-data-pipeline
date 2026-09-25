@@ -255,7 +255,8 @@ def _keyint(client):
         (c[1], c[2]): c[3] for c in client.calls if c[0] == "set_profile_parameter"
     }
     opts = dict(
-        kv.split("=", 1) for kv in params.get(("SimpleOutput", "x264Settings"), "").split()
+        kv.split("=", 1)
+        for kv in params.get(("SimpleOutput", "x264Settings"), "").split()
     )
     return int(opts["keyint"]), params.get(("SimpleOutput", "UseAdvanced"))
 
@@ -276,7 +277,8 @@ def test_configure_output_keyframes_within_youtubes_limit(monkeypatch, num, den)
     # Simple mode ignores x264Settings unless UseAdvanced is on.
     assert use_advanced == "true"
     # ...and then reads Preset too: it must stay the one Simple mode used.
-    assert ("set_profile_parameter", "SimpleOutput", "Preset", "veryfast") in client.calls
+    preset = ("set_profile_parameter", "SimpleOutput", "Preset", "veryfast")
+    assert preset in client.calls
 
 
 def test_cli_exit_code_when_obs_unreachable(monkeypatch):

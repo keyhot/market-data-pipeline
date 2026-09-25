@@ -97,6 +97,71 @@ def test_fetch_state_only_adopts_a_broadcast_bound_to_our_stream():
     assert service.fetch_yt_state(client, _state(), CFG)["broadcast"] is None
 
 
+def test_fetch_state_scans_for_a_live_duplicate_while_ours_waits():
+    """KI-086: the exact id lookup can never see a second broadcast, so while
+    ours sits in ready/testing the fetch must also scan — otherwise the
+    adoption rule in select_broadcast is unreachable in production."""
+    ours = {"id": "b1", "lifecycle": "ready", "bound_stream_id": "s1"}
+    dup = {"id": "dup", "lifecycle": "live", "bound_stream_id": "s1"}
+    client = FakeYouTubeClient(broadcasts=[ours, dup])
+    state = BroadcastState("b1", "ready", None, None)
+    assert service.fetch_yt_state(client, state, CFG)["broadcast"] == dup
+
+
+def test_fetch_state_does_not_scan_while_ours_is_live():
+    """Steady state stays one exact lookup — the quota guard."""
+    ours = {"id": "b1", "lifecycle": "live", "bound_stream_id": "s1"}
+    client = FakeYouTubeClient(broadcasts=[ours])
+    state = BroadcastState("b1", "live", None, None)
+    service.fetch_yt_state(client, state, CFG)
+    assert ("list_broadcasts", None) not in client.calls
+
+
+class Refusing(FakeYouTubeClient):
+    def transition(self, broadcast_id, status):
+        raise RuntimeError("invalidTransition")
+
+
+def test_repeated_refused_transitions_log_one_traceback_then_one_error(caplog):
+    """KI-086: 16k identical tracebacks buried the one fact that mattered. The
+    first refusal keeps its traceback, repeats are counted quietly, and the
+    streak escalates exactly once, at ERROR, naming the count."""
+    state = _state()
+    client = Refusing(broadcasts=[{"id": "b1", "lifecycle": "ready"}])
+    with caplog.at_level("INFO", logger="broadcast.service"):
+        for _ in range(service.REFUSED_TRANSITION_ALERT_AT + 5):
+            service.apply(
+                [("transition_live", "b1")], state, client, lambda e: None, CFG, BASE
+            )
+    ours = [r for r in caplog.records if r.name == "broadcast.service"]
+    with_traceback = [r for r in ours if r.exc_info]
+    errors = [r for r in ours if r.levelname == "ERROR"]
+    assert len(with_traceback) == 1
+    assert len(errors) == 1
+    assert str(service.REFUSED_TRANSITION_ALERT_AT) in errors[0].getMessage()
+
+
+def test_a_successful_transition_resets_the_refusal_streak(caplog):
+    state = _state()
+
+    def go_live(client):
+        service.apply(
+            [("transition_live", "b1")], state, client, lambda e: None, CFG, BASE
+        )
+
+    with caplog.at_level("INFO", logger="broadcast.service"):
+        for _ in range(3):
+            go_live(Refusing())
+        go_live(FakeYouTubeClient())
+        assert state.refused_transitions == 0
+        go_live(Refusing())
+    # A new streak is a new fact: it gets its traceback again.
+    tracebacks = [
+        r for r in caplog.records if r.name == "broadcast.service" and r.exc_info
+    ]
+    assert len(tracebacks) == 2
+
+
 def test_apply_creates_binds_and_adopts_the_new_broadcast_id():
     client = FakeYouTubeClient(broadcasts=[])
     state = _state()

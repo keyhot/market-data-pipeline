@@ -171,6 +171,43 @@ def test_select_requires_our_stream_binding_when_one_is_known():
     assert select_broadcast([theirs], None, stream_id="s1") is None
 
 
+def test_select_adopts_a_live_broadcast_on_our_key_over_our_waiting_one():
+    """KI-086: one ingest key feeds one live broadcast. When some other
+    broadcast is already live on OUR stream, ours can never leave `ready` —
+    YouTube refused ~16k transitions over six days while the public stream ran
+    under a broadcast the manager could not see. Adopt the live one."""
+    ours = {"id": "b1", "lifecycle": "ready", "bound_stream_id": "s1"}
+    live = {"id": "dup", "lifecycle": "live", "bound_stream_id": "s1"}
+    assert select_broadcast([ours, live], "b1", stream_id="s1") == live
+    ours["lifecycle"] = "testing"
+    assert select_broadcast([ours, live], "b1", stream_id="s1") == live
+
+
+def test_select_never_adopts_a_live_broadcast_on_someone_elses_key():
+    ours = {"id": "b1", "lifecycle": "ready", "bound_stream_id": "s1"}
+    theirs = {"id": "x", "lifecycle": "live", "bound_stream_id": "other"}
+    assert select_broadcast([ours, theirs], "b1", stream_id="s1") == ours
+    # Without a known stream there is no way to tell whose it is: keep ours.
+    assert select_broadcast([ours, theirs], "b1") == ours
+
+
+def test_select_keeps_our_completed_broadcast_even_when_another_is_live():
+    """The adoption is for a broadcast that is WAITING. Ours ending must still
+    be seen, or broadcast_ended is never recorded."""
+    ended = {"id": "b1", "lifecycle": "complete", "bound_stream_id": "s1"}
+    live = {"id": "dup", "lifecycle": "live", "bound_stream_id": "s1"}
+    assert select_broadcast([ended, live], "b1", stream_id="s1") == ended
+
+
+def test_select_cold_start_prefers_the_live_broadcast_on_our_key():
+    """The API guarantees no ordering, so with a duplicate present a restart
+    must not pick the waiting one just because it was listed first."""
+    waiting = {"id": "b1", "lifecycle": "ready", "bound_stream_id": "s1"}
+    live = {"id": "dup", "lifecycle": "live", "bound_stream_id": "s1"}
+    assert select_broadcast([waiting, live], None, stream_id="s1") == live
+    assert select_broadcast([live, waiting], None, stream_id="s1") == live
+
+
 def test_tick_is_pure_no_side_effects():
     """Same inputs → same actions; caller's state unchanged after the call."""
     yt = {"broadcast": None, "stream": STREAM_ACTIVE}
