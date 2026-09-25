@@ -8440,21 +8440,24 @@ def _shadow_driver(source: str, body: str, *, light: dict | None = None,
         + _js_const(source, "CONTACT")
         + _js_const(source, "SHADOW_ASPECT")
         + _js_const(source, "SHADOW_THROW")
+        + _js_block(source, "function throwAxis(") + "\n"
         + (tick if tick is not None else _js_block(source, "function shadowTick("))
         + "\n"
         + """
         // A body's whole contact with this function: where it stands, how far
         // off the floor it is, and how wide its own patch is. Nothing else in
-        // `character()` is involved, so nothing else is stubbed.
-        function fakeChar(lift) {
+        // `character()` is involved, so nothing else is stubbed. It stands on
+        // the model's painted mark by default — below and left of the lamp —
+        // because since KI-061 WHERE a figure stands decides its throw.
+        function fakeChar(lift, x, baseY) {
           return {
-            baseY: 400, shadowW: 34,
-            container: { x: 200, y: 400 - lift },
+            baseY, shadowW: 34,
+            container: { x, y: baseY - lift },
             shadow: { x: 0, y: 0, width: 0, height: 0, alpha: 0 },
           };
         }
-        function run(lift) {
-          const c = fakeChar(lift || 0);
+        function run(lift, x = 360, baseY = 830) {
+          const c = fakeChar(lift || 0, x, baseY);
           shadowTick(c);
           return {
             dx: c.shadow.x - c.container.x,
@@ -8483,48 +8486,75 @@ def test_the_contact_shadow_is_thrown_away_from_the_lamp():
     """A shadow centred under a figure the room lights hard from one side is a
     puddle, and a puddle is the loudest "pasted on" cue in the before-frame.
 
-    `-KEY_AXIS` is where the lamp is — it is the direction every lit band
-    slides in (`litCircle`'s `slide * -KEY_AXIS[i]`), and
-    `test_every_band_is_drawn_on_the_lamp_side_of_its_volume` pins that it
-    points up and to the right. So a shadow goes the OTHER way, `+KEY_AXIS`.
-    The plan's own snippet had this backwards (it subtracted
-    `LIGHT.direction`, which throws the shadow back under the lamp), which is
-    why this is asserted on the real displacement rather than on the presence
-    of the string `LIGHT.direction`.
+    KI-061: the lamp is painted as a POINT (`LIGHT.key`), so "away from the
+    lamp" is a different direction for each figure — from the key, through
+    the foot. Graded at both painted cast marks, read from the manifest: the
+    model, far to the lamp's left, throws left; the trader, under it, throws
+    straight down with no sideways component. The single room-wide
+    `KEY_AXIS` this used to throw along put the trader's shadow down-and-left
+    as if the lamp stood beside him — kept below as the mutation.
     """
     source = _world_source()
-    emitted = _run_node(_shadow_driver(
-        source, "console.log(JSON.stringify({ rest: run(0), axis: KEY_AXIS }));"
-    ))
-    ux, uy = -emitted["axis"][0], -emitted["axis"][1]
-    assert ux > 0 and uy < 0, (
-        f"the key axis no longer points up and to the right: ({ux}, {uy}) - "
-        "this test's premise is the painted lamp's measured position"
-    )
-    rest = emitted["rest"]
-    dx, dy = rest["dx"], rest["dy"]
-    assert (dx * dx + dy * dy) ** 0.5 > 1.0, (
-        f"the shadow is displaced ({dx:+.3f}, {dy:+.3f}) - it still sits on "
-        "the figure's own centre, which is the puddle this ticket is about"
-    )
-    assert dx * ux < 0 and dy * uy < 0, (
-        f"the shadow is displaced ({dx:+.2f}, {dy:+.2f}), which moves it "
-        f"TOWARD the lamp at ({ux:+.2f}, {uy:+.2f}) on at least one axis - "
-        "the sign is inverted and every figure is lit from behind its own "
-        "shadow"
+    light = _page_light(source)
+    kx, ky = light["key"]
+    cast = _manifest()["cast"]
+    marks = {name: (cast[name]["x"], cast[name]["base_y"])
+             for name in ("model", "trader")}
+    probe = "console.log(JSON.stringify({%s}));" % ", ".join(
+        f"{name}: run(0, {x}, {y})" for name, (x, y) in marks.items()
     )
 
-    # Mutation: throw it toward the lamp instead. If these assertions still
-    # pass, they are not reading the sign.
-    block = _js_block(source, "function shadowTick(")
-    mutated = block.replace("KEY_AXIS[0] *", "-KEY_AXIS[0] *").replace(
-        "KEY_AXIS[1] *", "-KEY_AXIS[1] *"
+    def away_from_key(rest, x, y):
+        """The throw, undone of the floor's foreshortening, is parallel to
+        foot - key: positive dot product, zero cross product."""
+        dx, dy = rest["dx"], rest["dy"] / (0.46 / 2)
+        fx, fy = x - kx, y - ky
+        return dx * fx + dy * fy, dx * fy - dy * fx
+
+    emitted = _run_node(_shadow_driver(source, probe))
+    for name, (x, y) in marks.items():
+        rest = emitted[name]
+        assert (rest["dx"] ** 2 + rest["dy"] ** 2) ** 0.5 > 1.0, (
+            f"the {name}'s shadow is not displaced - the puddle is back"
+        )
+        dot, cross = away_from_key(rest, x, y)
+        assert dot > 0, (
+            f"the {name}'s shadow moved ({rest['dx']:+.2f}, {rest['dy']:+.2f}), "
+            f"TOWARD the lamp at {light['key']} - an inverted sign"
+        )
+        assert abs(cross) < 1e-6, (
+            f"the {name}'s shadow is not on the line from the lamp through its "
+            f"foot (cross {cross:+.4f}) - it is thrown along a room-wide axis"
+        )
+    assert marks["trader"][0] == kx, (
+        "the trader no longer stands at the lamp's x - re-read KI-061 before "
+        "trusting the next assertion"
     )
-    assert mutated != block, "the mutation did not change the source"
-    broken = _run_node(_shadow_driver(
-        source, "console.log(JSON.stringify({ rest: run(0) }));", tick=mutated
-    ))["rest"]
-    assert not (broken["dx"] * ux < 0 and broken["dy"] * uy < 0), (
+    assert abs(emitted["trader"]["dx"]) < 1e-9 < emitted["trader"]["dy"], (
+        f"the trader sits under the lamp and his shadow moved "
+        f"{emitted['trader']['dx']:+.2f} sideways - the KI-061 frame"
+    )
+
+    # Mutation 1: the pre-KI-061 room-wide axis. The trader's cross product
+    # must see it.
+    block = _js_block(source, "function shadowTick(")
+    global_axis = block.replace(
+        "const axis = throwAxis(char.container.x, char.baseY);",
+        "const axis = KEY_AXIS;",
+    )
+    assert global_axis != block, "the global-axis mutation did not apply"
+    broken = _run_node(_shadow_driver(source, probe, tick=global_axis))
+    assert abs(away_from_key(broken["trader"], *marks["trader"])[1]) > 1e-3, (
+        "a shadow thrown along the room-wide axis still passed - the "
+        "per-figure assertion cannot see KI-061"
+    )
+
+    # Mutation 2: throw it toward the lamp instead.
+    toward = block.replace("const throwX = axis[0] *", "const throwX = -axis[0] *"
+                           ).replace("axis[1] * CONTACT", "-axis[1] * CONTACT")
+    assert toward != block, "the toward-the-lamp mutation did not apply"
+    broken = _run_node(_shadow_driver(source, probe, tick=toward))
+    assert away_from_key(broken["model"], *marks["model"])[0] < 0, (
         "throwing the shadow toward the lamp still satisfied the away-from-"
         "the-lamp assertion - it would not catch an inverted sign"
     )
