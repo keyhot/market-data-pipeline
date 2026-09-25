@@ -187,8 +187,9 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
     folds: list[FoldResult] = []
     fold_spans: list[tuple[int, int]] = []
     episodes: list[tuple[int, int]] = []
-    entry_label: dict[int, int] = {}
     fold_of_entry: dict[int, int] = {}
+    signal_bars = 0
+    signal_bars_up = 0
     start = 0
     while start + fold_span <= n:
         train_end = start + config.train_rows
@@ -211,12 +212,13 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         # same position continuing, not a second one to compound (KI-001).
         in_market = prob > config.entry_threshold
         close = _closes_for(bars, X.index[test_start:test_end])
+        signal_bars += int(in_market.sum())
+        signal_bars_up += int(y_test[in_market].sum())
 
         for local_start, local_end in find_episodes(in_market):
             entry = int(row_of[test_start + local_start])
             exit_bar = int(row_of[test_start + local_end])
             episodes.append((entry, exit_bar))
-            entry_label[entry] = int(y_test[local_start])
             fold_of_entry[entry] = len(folds)
 
         fold_spans.append(
@@ -251,13 +253,20 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
 
     returns = position_returns(held, close_values, config)
     all_returns = returns.tolist()
-    for (entry, _), net in zip(held, returns):
+    cost = 2 * (config.fee_per_side + config.slippage)
+    for (entry, last), net in zip(held, returns):
         fold = folds[fold_of_entry[entry]]
         fold.positions += 1
         fold.strategy_return = (1 + fold.strategy_return) * (1 + net) - 1
-        fold.wins += entry_label[entry]
+        # A win is price rising over the hold the position actually had —
+        # the same entry and exit `position_returns` priced, gross of costs
+        # (fees are already in the return). KI-042: this used to read the
+        # label captured at entry, close[entry + h] > close[entry], which
+        # stops matching the position as soon as it lasts more than one bar.
+        fold.wins += int(
+            close_values[last + config.horizon_bars] > close_values[entry]
+        )
     coverage = held_coverage(held, config.horizon_bars, len(close_values))
-    cost = 2 * (config.fee_per_side + config.slippage)
     for fold, (lo, hi) in zip(folds, fold_spans):
         fold.hit_rate = fold.wins / fold.positions if fold.positions else None
         fold.exposure = float(coverage[lo : hi + 1].mean())
@@ -296,9 +305,19 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         # over 253 folds, a fold holding one position must not weigh as much
         # as a fold holding forty. Renamed from `overall_hit_rate`, which was
         # that unweighted mean over in-market bars.
+        # KI-042: a win is price rising over the position's own hold. Same key
+        # because the name always meant that; the value used to be the label
+        # at entry, which is `signal_precision` below under its right name.
         "hit_rate_per_position": (
             float(sum(f.wins for f in folds) / sum(f.positions for f in folds))
             if any(f.positions for f in folds) else None
+        ),
+        # A classifier number, not an accounting one: of the bars the model
+        # was in the market, the share whose label (close[t+h] > close[t])
+        # was up. It is the quantity a lookahead leak inflates directly —
+        # position hit rate is diluted by holds that outlast the label.
+        "signal_precision": (
+            signal_bars_up / signal_bars if signal_bars else None
         ),
         "strategy_total_return": float(equity - 1),
         "buy_hold_total_return": float(

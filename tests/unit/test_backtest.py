@@ -59,8 +59,15 @@ def test_fold_accounting():
 def test_leak_detector_oracle_feature_is_visible():
     """Inject the future answer into a feature-visible column (High encodes
     whether the next 15 bars go up). The harness MUST detect this as a huge
-    hit-rate jump — proving that if the honest pipeline leaked, we'd see it,
-    and that the honest run doesn't look like the leaked one."""
+    precision jump — proving that if the honest pipeline leaked, we'd see it,
+    and that the honest run doesn't look like the leaked one.
+
+    Read off `signal_precision`, the label accuracy of in-market bars, and
+    NOT the position hit rate. Once KI-042 made a win mean the position's own
+    hold, the hit rate stopped seeing the oracle: 0.74 leaky against 0.76
+    honest on this fixture. The oracle knows 15 bars ahead; a position held
+    longer exits past anything it knows. The old ">0.9 hit rate" was this
+    precision under the wrong name — which is KI-042 itself."""
     bars = _bars(n=2600, seed=5)
     honest = run_backtest(bars, _FAST)
 
@@ -72,10 +79,11 @@ def test_leak_detector_oracle_feature_is_visible():
 
     leaky = run_backtest(leaky_bars, _FAST)
 
-    assert leaky["hit_rate_per_position"] is not None
-    assert honest["hit_rate_per_position"] is not None
-    assert leaky["hit_rate_per_position"] > 0.9
-    assert leaky["hit_rate_per_position"] > honest["hit_rate_per_position"] + 0.2
+    # Measured over seeds 3/5/7/11: honest 0.48-0.55, leaky 0.99+.
+    assert leaky["signal_precision"] is not None
+    assert honest["signal_precision"] is not None
+    assert leaky["signal_precision"] > 0.9
+    assert leaky["signal_precision"] > honest["signal_precision"] + 0.3
 
 
 def test_the_harness_charges_one_fee_per_position_not_per_bar():

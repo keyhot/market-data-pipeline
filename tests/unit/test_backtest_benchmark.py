@@ -267,12 +267,64 @@ def test_the_published_equity_path_is_unchanged_by_the_benchmark_work(monkeypatc
 
     assert results["n_folds"] == 21
     assert results["total_positions"] == 35
-    assert results["hit_rate_per_position"] == pytest.approx(0.6)
+    # KI-042 re-baselined this from 0.6 (the entry labels) to 20/35 (the
+    # holds). Nothing below it moved: the fix touches the hit rate only.
+    assert results["hit_rate_per_position"] == pytest.approx(20 / 35)
     assert results["strategy_total_return"] == pytest.approx(-0.038313640153833206)
     assert results["buy_hold_total_return"] == pytest.approx(0.041448730766337816)
     assert results["avg_position_return"] == pytest.approx(-0.0011041656090941608)
     assert results["time_in_market"] == pytest.approx(0.2423076923076923)
     assert results["null_total_return"] == pytest.approx(-0.061065792259007434)
+
+
+class _OneRunBooster:
+    """On for exactly the bars in `on`, flat everywhere else."""
+
+    def __init__(self, on):
+        self.on = on
+
+    def predict(self, X):
+        return np.where(X.index.isin(self.on), 0.9, 0.1)
+
+
+def test_a_position_is_credited_by_its_own_hold_not_by_its_entry_label(monkeypatch):
+    """KI-042. A win must be scored over the hold the position actually had:
+    entered at its first bar, exited `horizon_bars` after its last. The label
+    captured at entry answers a different question — did price rise in the
+    `horizon_bars` after ENTRY — and a position longer than one bar exits
+    later than that. Here price is up at entry+h and down at the real exit,
+    so crediting the entry label books a loser as a win.
+
+    One run of twenty in-market bars, no merging needed: a single multi-bar
+    episode already diverges from its label."""
+    bars = _bars(n=1200)
+    config = BacktestConfig(train_rows=400, test_rows=100)
+    h = config.horizon_bars
+    # Well inside the first test window, clear of the warm-up rows that
+    # build_features drops, so every index below is a row of X.
+    run = bars.index[700:720]
+    close = bars["Close"].to_numpy().copy()
+    close[700] = 100.0
+    close[700 + h] = 101.0          # the entry label: up
+    close[719 + h] = 99.0           # the position's exit: down
+    for column in ("Open", "Close"):
+        bars[column] = close
+    bars["High"], bars["Low"] = close * 1.001, close * 0.999
+
+    monkeypatch.setattr(
+        backtest, "lgb",
+        types.SimpleNamespace(
+            train=lambda *args, **kwargs: _OneRunBooster(run),
+            Dataset=lambda *args, **kwargs: None,
+        ),
+    )
+    results = run_backtest(bars, config)
+
+    assert results["total_positions"] == 1
+    held = [f for f in results["folds"] if f["positions"]]
+    assert len(held) == 1
+    assert results["avg_position_return"] < 0
+    assert results["hit_rate_per_position"] == 0.0
 
 
 # --- E2: an error bar on the average position ---------------------------
