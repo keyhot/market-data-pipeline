@@ -10611,3 +10611,127 @@ def test_the_eval_rule_hides_content_and_refuses_an_unclassified_layer():
     assert "brandNew" in (run(False, extra=True)["error"] or ""), (
         "an unclassified layer reached the eval surface without complaint"
     )
+
+
+# --- KI-073: an accent is mood-coloured only if it paints ---------------
+
+
+def _mood_blind_driver(source: str, bodies_block: str) -> str:
+    """Every body builder the page has — `BODIES.*` and `seatedRig` — run
+    against Graphics that remember what they drew, then graded by the page's
+    own `moodBlindParts`.
+
+    `paint` here does what the real one does to its target that matters for
+    the rule: it records the volume on `g.volumes` AND draws. A direct
+    `.fill()` only draws. So an accent built the pre-Sprint-16 way shows up
+    as drawn-but-unrecorded, which is exactly what `repaint` skips.
+    """
+    return (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
+        + _js_const(source, "LIGHT")
+        + _js_block(source, "const HUMAN = {") + ";\n"
+        + _js_block(source, "const MACHINE = {") + ";\n"
+        + _js_block(source, "function mixHex(") + "\n"
+        + """
+        class FakeGraphics {
+          constructor() {
+            this.pivot = { x: 0, y: 0, set() {} };
+            this.rotation = 0; this.x = 0; this.y = 0;
+            this.scale = { x: 1, y: 1, set() {} };
+            this.context = { instructions: [] };
+          }
+          addChild(...cs) { (this.children || (this.children = [])).push(...cs); return cs[0]; }
+          roundRect() { return this; } circle() { return this; } poly() { return this; }
+          rect() { return this; } ellipse() { return this; }
+          moveTo() { return this; } lineTo() { return this; } closePath() { return this; }
+          fill() { this.context.instructions.push("fill"); return this; }
+          stroke() { this.context.instructions.push("stroke"); return this; }
+        }
+        const PIXI = { Graphics: FakeGraphics };
+        const volume = (shape) => ({ shape, band: (g) => g, rim: (g) => g });
+        const litRect = () => volume("rect");
+        const litCircle = () => volume("circle");
+        const litPath = () => volume("path");
+        function paint(g, v, fill, rim, opts) {
+          (g.volumes || (g.volumes = [])).push(v);
+          g.context.instructions.push("fill");
+        }
+        """
+        + _js_block(source, "function snap(") + "\n"
+        + _js_const(source, "CELL") + "\n"
+        + _js_const(source, "CAST_SCALE") + "\n"
+        + bodies_block + ";\n"
+        + _seated_rig_block(source) + "\n"
+        + _js_block(source, "function moodBlindParts(") + "\n"
+        + """
+        const out = {};
+        for (const style of Object.keys(BODIES)) {
+          const accents = [];
+          BODIES[style](new FakeGraphics(), accents);
+          out[style] = { accents: accents.length, blind: moodBlindParts(accents) };
+        }
+        const accents = [];
+        seatedRig(new FakeGraphics(), accents, -1);
+        out.seated = { accents: accents.length, blind: moodBlindParts(accents) };
+        console.log(JSON.stringify(out));
+        """
+    )
+
+
+@needs_node
+def test_every_accent_the_page_builds_is_painted_and_so_takes_a_mood():
+    """KI-073. `repaint` returns early from a Graphics with no recorded
+    volumes — deliberately, for faces — so an accent drawn with a bare
+    `.fill()` animates like every other limb and stays `BODY_FILL` grey
+    through every mood, with nothing throwing. The container tint that used
+    to colour it is gone. Every builder is run here, so the next accent
+    written the old way fails the suite instead of reaching a frame."""
+    source = _world_source()
+    emitted = _run_node(
+        _mood_blind_driver(source, _js_block(source, "const BODIES = {"))
+    )
+
+    assert set(emitted) >= {"candle", "bars", "monolith", "figure", "seated"}
+    # Load-bearing: a builder that pushed nothing would pass vacuously.
+    assert sum(b["accents"] for b in emitted.values()) >= 6, emitted
+    for style, built in emitted.items():
+        assert built["blind"] == [], (
+            f"{style} draws {built['blind']} without paint() — "
+            "repaint() skips it, so it never takes a mood"
+        )
+
+
+@needs_node
+def test_an_accent_drawn_the_old_way_is_caught():
+    """The mutation, kept: add one accent to `BODIES.candle` exactly as the
+    pre-Sprint-16 code drew them, and the check above must name it."""
+    source = _world_source()
+    bodies = _js_block(source, "const BODIES = {")
+    anchor = "accents.push(wickTop, wickLow);"
+    assert anchor in bodies, "the candle's accent push moved; re-aim the mutation"
+    mutated = bodies.replace(
+        anchor,
+        anchor + "\n        accents.push("
+        "new PIXI.Graphics().roundRect(0, 0, 4, 4, 0).fill(BODY_FILL));",
+    )
+    emitted = _run_node(_mood_blind_driver(source, mutated))
+    assert emitted["candle"]["blind"] == ["accents[2]"], emitted["candle"]
+
+
+@needs_node
+def test_a_mood_blind_part_is_found_below_its_accent():
+    """`repaint` descends an accent's children (the seated forearm is a child
+    of its upper arm), so the check must too — and must pass over a
+    Graphics that drew nothing, which is a joint, not a part."""
+    source = _world_source()
+    driver = _js_block(source, "function moodBlindParts(") + """
+        const g = (drew, volumes, children) => ({
+          context: { instructions: drew ? ["fill"] : [] },
+          volumes, children,
+        });
+        const arm = g(true, [{}], [g(true, undefined, []), g(false, undefined, [])]);
+        const joint = g(false, undefined, [g(true, [{}], [])]);
+        console.log(JSON.stringify(moodBlindParts([arm, joint])));
+    """
+    assert _run_node(driver) == ["accents[0].children[0]"]

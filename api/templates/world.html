@@ -707,6 +707,26 @@
       }
     }
 
+    // KI-073 — the rule `repaint`'s early return implies, stated where it can
+    // be checked: a Graphics in an accent's tree that has DRAWN something is
+    // mood-coloured only if it drew through `paint()`. One drawn the old way
+    // (`new PIXI.Graphics().roundRect(...).fill(BODY_FILL)`) is animated like
+    // any accent and stays `BODY_FILL` grey through every mood, silently —
+    // the container tint used to colour it, `repaint` never will. Returns the
+    // offenders as paths (`"accents[2].children[0]"`) so the message names
+    // which part to fix. Faces are not accents, so they never reach here.
+    function moodBlindParts(accents) {
+      const blind = [];
+      const walk = (g, where) => {
+        const drew = g.context && g.context.instructions
+          && g.context.instructions.length > 0;
+        if (drew && !(g.volumes && g.volumes.length)) blind.push(where);
+        (g.children || []).forEach((c, i) => walk(c, `${where}.children[${i}]`));
+      };
+      accents.forEach((g, i) => walk(g, `accents[${i}]`));
+      return blind;
+    }
+
     // How much of a volume's own extent a band keeps on one axis. `band` is
     // the fraction from `BAND_INSET`; how many UNITS that costs is a property
     // of this volume and this axis, so it is computed where the size is known
@@ -2822,6 +2842,14 @@ void main() {
       char.breath = 3.2 * (0.85 + char.rand() * 0.3);
       setExpression(char, "neutral");
       restAccents(char);   // arms hang from their resting angle, not from zero
+      // Loud, not fatal: a grey limb is a wrong pixel, a throw here is a
+      // missing character on air. The suite runs every builder through the
+      // same check and fails there instead.
+      const blind = moodBlindParts(accents);
+      if (blind.length) {
+        console.error(`KI-073: ${style} draws ${blind.join(", ")} outside paint(); `
+          + "it will never take a mood");
+      }
       return char;
     }
 
