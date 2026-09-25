@@ -2491,7 +2491,11 @@
       // its own. Unsquashed, the measured direction (steeply downward) walks
       // the shadow clear of the feet and the figure floats again, having
       // gained a direction and lost its floor.
-      const axis = throwAxis(char.container.x, char.baseY);
+      // The cast lives in `layers.chars`, scaled by CAST_SCALE; the key is in
+      // plate pixels. Compared unscaled, the trader's foot (1373/1.25) reads
+      // as 240px LEFT of a lamp he sits beside and the throw goes back to
+      // down-and-left — the first cut of this fix did exactly that.
+      const axis = throwAxis(char.container.x * CAST_SCALE, char.baseY * CAST_SCALE);
       const throwX = axis[0] * CONTACT.throwScale * SHADOW_THROW;
       const throwY =
         axis[1] * CONTACT.throwScale * SHADOW_THROW * (SHADOW_ASPECT / 2);

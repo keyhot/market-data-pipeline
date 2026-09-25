@@ -8440,6 +8440,8 @@ def _shadow_driver(source: str, body: str, *, light: dict | None = None,
         + _js_const(source, "CONTACT")
         + _js_const(source, "SHADOW_ASPECT")
         + _js_const(source, "SHADOW_THROW")
+        + f"const PAINTED_CAST = {json.dumps(_painted_cast(_manifest()))};\n"
+        + _js_const(source, "CAST_SCALE")
         + _js_block(source, "function throwAxis(") + "\n"
         + (tick if tick is not None else _js_block(source, "function shadowTick("))
         + "\n"
@@ -8449,7 +8451,10 @@ def _shadow_driver(source: str, body: str, *, light: dict | None = None,
         // `character()` is involved, so nothing else is stubbed. It stands on
         // the model's painted mark by default — below and left of the lamp —
         // because since KI-061 WHERE a figure stands decides its throw.
-        function fakeChar(lift, x, baseY) {
+        // `x`/`baseY` are PLATE pixels; the figure is placed as
+        // `positionCharacters` places it, divided into the scaled cast layer.
+        function fakeChar(lift, px, py) {
+          const x = px / CAST_SCALE, baseY = py / CAST_SCALE;
           return {
             baseY, shadowW: 34,
             container: { x, y: baseY - lift },
@@ -8497,9 +8502,14 @@ def test_the_contact_shadow_is_thrown_away_from_the_lamp():
     source = _world_source()
     light = _page_light(source)
     kx, ky = light["key"]
+    aspect = float(re.search(r"const SHADOW_ASPECT = ([\d.]+);", source).group(1))
     cast = _manifest()["cast"]
-    marks = {name: (cast[name]["x"], cast[name]["base_y"])
-             for name in ("model", "trader")}
+    # Where `positionCharacters` actually puts each figure: a seated one at
+    # its `sit_anchor` (the hips), not at its cast x.
+    def mark(name):
+        sit = cast[name].get("sit_anchor")
+        return (sit["x"], sit["y"]) if sit else (cast[name]["x"], cast[name]["base_y"])
+    marks = {name: mark(name) for name in ("model", "trader")}
     probe = "console.log(JSON.stringify({%s}));" % ", ".join(
         f"{name}: run(0, {x}, {y})" for name, (x, y) in marks.items()
     )
@@ -8507,7 +8517,7 @@ def test_the_contact_shadow_is_thrown_away_from_the_lamp():
     def away_from_key(rest, x, y):
         """The throw, undone of the floor's foreshortening, is parallel to
         foot - key: positive dot product, zero cross product."""
-        dx, dy = rest["dx"], rest["dy"] / (0.46 / 2)
+        dx, dy = rest["dx"], rest["dy"] / (aspect / 2)
         fx, fy = x - kx, y - ky
         return dx * fx + dy * fy, dx * fy - dy * fx
 
@@ -8526,20 +8536,34 @@ def test_the_contact_shadow_is_thrown_away_from_the_lamp():
             f"the {name}'s shadow is not on the line from the lamp through its "
             f"foot (cross {cross:+.4f}) - it is thrown along a room-wide axis"
         )
-    assert marks["trader"][0] == kx, (
-        "the trader no longer stands at the lamp's x - re-read KI-061 before "
-        "trusting the next assertion"
+    assert marks["trader"][0] > kx, (
+        "the trader's hips no longer sit right of the lamp - re-read KI-061 "
+        "before trusting the next assertion"
     )
-    assert abs(emitted["trader"]["dx"]) < 1e-9 < emitted["trader"]["dy"], (
-        f"the trader sits under the lamp and his shadow moved "
-        f"{emitted['trader']['dx']:+.2f} sideways - the KI-061 frame"
+    assert emitted["trader"]["dx"] > 0 and emitted["trader"]["dy"] > 0, (
+        f"the trader sits just right of the lamp and his shadow moved "
+        f"({emitted['trader']['dx']:+.2f}, {emitted['trader']['dy']:+.2f}) - "
+        "down-and-LEFT is the KI-061 frame"
+    )
+
+    # Mutation 0: compare the scaled cast layer with plate pixels, which the
+    # first cut of this fix shipped. The trader's throw goes back left.
+    block = _js_block(source, "function shadowTick(")
+    unscaled = block.replace(
+        "throwAxis(char.container.x * CAST_SCALE, char.baseY * CAST_SCALE)",
+        "throwAxis(char.container.x, char.baseY)",
+    )
+    assert unscaled != block, "the unscaled mutation did not apply"
+    broken = _run_node(_shadow_driver(source, probe, tick=unscaled))
+    assert broken["trader"]["dx"] < 0, (
+        "mixing cast-layer and plate coordinates still threw the trader's "
+        "shadow right - the scale assertion cannot see it"
     )
 
     # Mutation 1: the pre-KI-061 room-wide axis. The trader's cross product
     # must see it.
-    block = _js_block(source, "function shadowTick(")
     global_axis = block.replace(
-        "const axis = throwAxis(char.container.x, char.baseY);",
+        "const axis = throwAxis(char.container.x * CAST_SCALE, char.baseY * CAST_SCALE);",
         "const axis = KEY_AXIS;",
     )
     assert global_axis != block, "the global-axis mutation did not apply"
