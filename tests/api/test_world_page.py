@@ -2509,6 +2509,78 @@ def test_seated_animations_actually_move_real_parts():
 
 
 @needs_node
+def test_the_neck_holds_its_length_through_a_breath():
+    """The neck is painted on `body`; the head is a sibling node. So the
+    visible neck — head underside to collar — is fixed only while
+    `head.y - body.y` is. The seated breathe used to move `body.y` a whole
+    CELL and leave the head where it was, so the neck grew and shrank by a
+    CELL every breath (2026-09-25, the user's catch). `cheer` lifts `body.y`
+    the same way and is held to the same rule.
+
+    Graded as the rule, not an instance: at every phase of the cycle the
+    head-to-body offset is exactly `headBaseY`, AND the body actually moved
+    somewhere in the cycle (a breathe that stopped breathing would pass the
+    first half on its own).
+    """
+    source = _world_source()
+    driver = (
+        "const PLATE = null;\nconst PAINTED_CAST = null;\n"
+        + _js_const(source, "CELL")
+        + _js_block(source, "function snap(")
+        + "\n"
+        + _js_const(source, "CAST_SCALE")
+        + _js_block(source, "const EASE = {")
+        + ";\n"
+        + _js_const(source, "HEAD_TRAVEL")
+        + "\nfunction setBlink() {}\n"
+        + _js_range(
+            source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.turn"
+        )
+        + """
+        const c = {
+          style: "figure", headBaseY: -108,
+          body: { rotation: 0, x: 0, y: 0 },
+          head: { rotation: 0, x: 0, y: -108 },
+        };
+        c.armFar = { rotation: 0, restRotation: 0 };
+        c.armNear = { rotation: 0, restRotation: 0 };
+        const samples = {};
+        for (const name of ["breathe", "cheer"]) {
+          samples[name] = [];
+          for (let i = 0; i < 64; i++) {
+            SEATED_ANIMATIONS[name](c, i / 64, 1);
+            samples[name].push({ bodyY: c.body.y, headY: c.head.y });
+          }
+        }
+        console.log(JSON.stringify({ samples }));
+        """
+    )
+    for name, samples in _run_node(driver)["samples"].items():
+        assert len({s["bodyY"] for s in samples}) > 1, f"{name} no longer moves the body"
+        stretched = [s for s in samples if s["headY"] - s["bodyY"] != -108]
+        assert not stretched, (
+            f"the head does not ride {name}, so the neck changes length: {stretched[:3]}"
+        )
+
+
+def test_the_head_rest_is_recorded_once():
+    """`positionCharacters` runs on every `draw(state)`, i.e. on every SSE
+    update, and by then an animation has usually moved `head.y`. Recording
+    `headBaseY = head.y` there banks that frame's offset as the rest pose, so
+    the head random-walks off the neck. It must be recorded only when unset.
+    Comments stripped first: the prose explains the very assignment.
+    """
+    block = _js_block(_world_source(), "function positionCharacters(")
+    code = "\n".join(line.split("//")[0] for line in block.splitlines())
+    assigns = re.findall(r"^.*headBaseY\s*=(?!=).*$", code, re.M)
+    assert assigns, "positionCharacters no longer records the head's rest"
+    for line in assigns:
+        assert re.search(r"if\s*\(\s*char\.headBaseY\s*==\s*null\s*\)", line), (
+            f"headBaseY is re-recorded unconditionally on every draw: {line.strip()}"
+        )
+
+
+@needs_node
 def test_seated_rest_does_not_touch_the_chair():
     """`restCharacter`'s standing branch resets `container.y/x/rotation/
     scale` - for a seated character those ARE the chair `positionCharacters`
@@ -7732,8 +7804,11 @@ PROTECTED_BLOCKS = {
     "const ANIM = {": (
         "716d3fb9df6668032c3ee2da1f9eccd2cf5d2580968bc12b09e545b35687d58d", 3783
     ),
+    # Re-baselined 2026-09-25, deliberately: the user asked for the seated
+    # breathe (and cheer) to carry the head with the body (the neck stretched a CELL
+    # every breath). `test_the_neck_holds_its_length_through_a_breath`.
     "const SEATED_ANIMATIONS = {": (
-        "1977ba1c188c5a701d71422678d66eec929defcab43736d25da76986e5c26673", 2540
+        "b23441218c430e362f92f8f8397369aaafd5bf613b59037347d8e145c8753b41", 3208
     ),
     "function advanceCharacters(": (
         "a4f17050f3d1ca7fbc7790bd192fbeb089353d7d73f556bb73acafb9ec4b5e9e", 2275
