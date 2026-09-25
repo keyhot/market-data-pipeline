@@ -1447,6 +1447,21 @@ def test_the_painted_band_is_what_the_banner_is_actually_set_to():
     assert 'banner.style.minHeight = bandHeight + "px"' in block
 
 
+def test_the_banner_bar_is_no_taller_than_its_strip():
+    """KI-071: `min-height` is set to the painted quiet strip (60px), but with
+    the default `content-box` sizing it bounds the CONTENT, and the padding
+    (14px top from the placement, 8.8px bottom from the CSS) is added on top —
+    an ~83px translucent bar hanging ~23px onto the painted room, the "text
+    over painted detail" failure the band exists to prevent. The bar's BORDER
+    box has to be the strip. Comments stripped: the prose names the rule."""
+    css = re.search(r"#banner\s*\{([^}]*)\}", _world_source()).group(1)
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    assert re.search(r"box-sizing\s*:\s*border-box", css), (
+        "#banner's min-height bounds its content box, so the padding pushes "
+        "the bar past the quiet strip it was measured to fill"
+    )
+
+
 @needs_node
 def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
     """Review round 4: `plateReady = true` used to sit ABOVE both builders, so

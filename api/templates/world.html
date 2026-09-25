@@ -12,8 +12,10 @@
     #fallback { position: absolute; top: 3rem; left: 1rem; color: var(--neutral);
                 font-size: 0.85rem; }
     /* Newcomer legibility: an always-present line naming what this is. */
+    /* border-box: drawPlate sets min-height to the painted quiet strip, and
+       under content-box the padding added ~23px of bar onto the room (KI-071). */
     #banner { position: absolute; top: 0; left: 0; right: 0; z-index: 2;
-              padding: 0.55rem 1rem; background: rgba(19, 23, 34, 0.72);
+              box-sizing: border-box; padding: 0.55rem 1rem; background: rgba(19, 23, 34, 0.72);
               color: var(--fg); font-size: 0.9rem; letter-spacing: 0.01em;
               pointer-events: none; }
     #banner-syms { color: var(--accent); font-weight: 600; }
