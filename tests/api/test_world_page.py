@@ -1092,6 +1092,12 @@ def test_the_heartbeat_is_installed_only_after_the_plate_settles():
     assert boot.index("await drawPlate()") < boot.index("/world/heartbeat")
 
 
+def _eval_roles() -> dict:
+    """`EVAL_LAYER_ROLES` as data — the one rule both eval gates apply (KI-064)."""
+    literal = _js_const(_world_source(), "EVAL_LAYER_ROLES").split("=", 1)[1]
+    return json.loads(re.sub(r"(\w+):", r'"\1":', literal.strip().rstrip(";")))
+
+
 def test_preview_modes_keep_the_room_and_plate_in_lockstep():
     """`?gallery=1` (drawGallery) and the cast sheet (drawAnimationSheet) both
     toggle layers.room and layers.plate together, on the same VOID_MODE flag —
@@ -1109,18 +1115,16 @@ def test_preview_modes_keep_the_room_and_plate_in_lockstep():
     """
     body = _world_source()
 
+    # KI-064: both gates now apply ONE classification (`applyEvalLayers`,
+    # graded by `test_both_eval_gates_classify_through_the_one_rule`), so
+    # lockstep is the room and the plate holding the same role in it.
     gallery = _js_block(body, "function drawGallery(")
     assert "STYLES.forEach" in gallery, "not actually the gallery body"
-    assert "layers.room.visible = VOID_MODE ? false : true;" in gallery
-    assert "layers.plate.visible = VOID_MODE ? false : true;" in gallery, (
-        "drawGallery must gate the plate on VOID_MODE alongside the room"
-    )
-
     sheet = _js_block(body, "function drawAnimationSheet(")
     assert "sample.loopAnim" in sheet, "not actually the animation-sheet body"
-    assert "layers.room.visible = VOID_MODE ? false : true;" in sheet
-    assert "layers.plate.visible = VOID_MODE ? false : true;" in sheet, (
-        "drawAnimationSheet must gate the plate on VOID_MODE alongside the room"
+    roles = _eval_roles()
+    assert roles["room"] == roles["plate"] == "scenery", (
+        "the room and the plate must share the VOID_MODE-gated scenery role"
     )
 
 
@@ -2361,6 +2365,10 @@ def test_the_sheet_can_actually_reach_seatedrig():
         const model = {}, trader = {};
         const VOID_MODE = false;
         """
+        + _js_const(source, "EVAL_LAYER_ROLES")
+        + "\n"
+        + _js_block(source, "function applyEvalLayers(")
+        + "\n"
         + _js_block(source, "function drawAnimationSheet(")
         + "\n"
         + """
@@ -7611,13 +7619,13 @@ def test_the_gallery_keeps_the_room_it_is_judged_against():
     # The specimens must stand in the room by default. This is KI-051's root
     # cause: the tool used to judge the cast deleted the picture.
     assert "layers.plate.visible = false" not in body
-    assert "VOID_MODE" in body
+    assert "applyEvalLayers()" in body and _eval_roles()["plate"] == "scenery"
 
 
 def test_the_gallery_hides_the_live_monitors():
     # Observed 2026-09-01: live candles drew straight over the specimens.
     body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
-    assert "layers.monitors.visible = false" in body
+    assert "applyEvalLayers()" in body and _eval_roles()["monitors"] == "content"
 
 
 def test_the_gallery_hides_the_rooms_own_nameplates():
@@ -7627,7 +7635,7 @@ def test_the_gallery_hides_the_rooms_own_nameplates():
     # "TRADER" drew straight over whichever grid cell happened to land on
     # that spot. Same failure shape, same fix, as the monitors sibling above.
     body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
-    assert "layers.nameplates.visible = false" in body
+    assert "applyEvalLayers()" in body and _eval_roles()["nameplates"] == "content"
 
 
 def test_the_animation_sheet_keeps_the_room_too():
@@ -7635,7 +7643,7 @@ def test_the_animation_sheet_keeps_the_room_too():
         client.get("/world?anims=1").text, "function drawAnimationSheet("
     )
     assert "layers.plate.visible = false" not in body
-    assert "VOID_MODE" in body
+    assert "applyEvalLayers()" in body and _eval_roles()["plate"] == "scenery"
 
 
 def test_the_animation_sheet_hides_the_rooms_own_nameplates():
@@ -7644,7 +7652,7 @@ def test_the_animation_sheet_hides_the_rooms_own_nameplates():
     body = _js_block(
         client.get("/world?anims=1").text, "function drawAnimationSheet("
     )
-    assert "layers.nameplates.visible = false" in body
+    assert "applyEvalLayers()" in body and _eval_roles()["nameplates"] == "content"
 
 
 def test_the_page_reports_that_it_has_drawn():
@@ -10535,3 +10543,71 @@ def test_the_profile_eye_is_tired():
             "the under-eye shadow must sit between the mouth's shade and the "
             "skin — at the mouth's value it is a bruise"
         )
+
+
+# --- KI-064: every stage layer is classified for the eval gates -------------
+
+
+def _code(text: str) -> str:
+    return "\n".join(line.split("//")[0] for line in text.splitlines())
+
+
+def test_every_stage_layer_has_an_eval_role():
+    """KI-064: the eval gates (`?gallery=1`, `?anims=1`) hid content layers
+    one at a time by name, so each new layer leaked onto the specimen sheets
+    until someone noticed (monitors, then nameplates — three times in one
+    sprint). Every layer the page builds must now be classified, and every
+    classification must name a real layer; an unclassified one fails here."""
+    source = _world_source()
+    built = set(re.findall(r"layers\.(\w+)\s*=\s*new PIXI\.Container\(", _code(source)))
+    roles = json.loads(
+        re.sub(r"(\w+):", r'"\1":', _js_const(source, "EVAL_LAYER_ROLES")
+               .split("=", 1)[1].strip().rstrip(";"))
+    )
+    assert built, "no stage layers found — the scan is broken"
+    assert built - roles.keys() == set(), f"unclassified layers: {built - roles.keys()}"
+    assert roles.keys() - built == set(), f"roles for layers that don't exist: {roles.keys() - built}"
+    assert set(roles.values()) <= {"scenery", "content", "stage"}
+
+
+def test_both_eval_gates_classify_through_the_one_rule():
+    source = _world_source()
+    for gate in ("function drawGallery(", "function drawAnimationSheet("):
+        body = _code(_js_block(source, gate))
+        assert "applyEvalLayers()" in body, f"{gate} does not apply the layer roles"
+        assert not re.search(r"layers\.\w+\.visible\s*=", body), (
+            f"{gate} still sets a layer's visibility by hand, beside the rule"
+        )
+
+
+@needs_node
+def test_the_eval_rule_hides_content_and_refuses_an_unclassified_layer():
+    source = _world_source()
+
+    def run(void: bool, extra: bool):
+        driver = (
+            f"const VOID_MODE = {str(void).lower()};\n"
+            + _js_const(source, "EVAL_LAYER_ROLES")
+            + "\nconst layers = {};\n"
+            + "for (const k of Object.keys(EVAL_LAYER_ROLES)) layers[k] = { visible: true };\n"
+            + ("layers.brandNew = { visible: true };\n" if extra else "")
+            + _js_block(source, "function applyEvalLayers(")
+            + """
+            let error = null;
+            try { applyEvalLayers(); } catch (e) { error = String(e); }
+            const visible = {};
+            for (const [k, v] of Object.entries(layers)) visible[k] = v.visible;
+            console.log(JSON.stringify({ error, visible, roles: EVAL_LAYER_ROLES }));
+            """
+        )
+        return _run_node(driver)
+
+    for void in (False, True):
+        out = run(void, extra=False)
+        assert out["error"] is None
+        for name, role in out["roles"].items():
+            expected = {"scenery": not void, "content": False, "stage": True}[role]
+            assert out["visible"][name] is expected, f"void={void}: {name} ({role})"
+    assert "brandNew" in (run(False, extra=True)["error"] or ""), (
+        "an unclassified layer reached the eval surface without complaint"
+    )

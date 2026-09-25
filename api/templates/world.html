@@ -1235,22 +1235,33 @@
       setInterval(refresh, 60000);   // projection stays authoritative server-side
     }
 
+    // KI-064: every stage layer, classified for the eval gates (`?gallery=1`,
+    // `?anims=1`). They used to hide content one layer at a time by name, and
+    // each new layer leaked onto the specimen sheets until a screenshot caught
+    // it (monitors, then nameplates). Now a layer is one of:
+    //   scenery — the painted room; shown, unless `?void=1` strips it
+    //             (`foreground` is the plate's own pixels, so it goes too);
+    //   content — live or room-specific drawing that would sit over the
+    //             specimens (candles, pillars, name labels); hidden;
+    //   stage   — what the eval surface itself draws into; left alone.
+    // A layer missing here throws on the eval path and fails
+    // `test_every_stage_layer_has_an_eval_role` in CI.
+    const EVAL_LAYER_ROLES = { plate: "scenery", room: "scenery", glow: "scenery", foreground: "scenery", monitors: "content", props: "content", nameplates: "content", chars: "stage", shadows: "stage" };
+
+    function applyEvalLayers() {
+      for (const [name, layer] of Object.entries(layers)) {
+        const role = EVAL_LAYER_ROLES[name];
+        if (role === "scenery") layer.visible = !VOID_MODE;
+        else if (role === "content") layer.visible = false;
+        else if (role !== "stage") throw new Error(`stage layer ${name} has no eval role (KI-064)`);
+      }
+    }
+
     function drawGallery() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
-      layers.room.visible = VOID_MODE ? false : true;
-      layers.plate.visible = VOID_MODE ? false : true;
-      // Live candles drew straight over the specimens (observed 2026-09-01).
-      // The monitors are the room's content, not its scenery, so they go in
-      // both modes.
-      layers.monitors.visible = false;
-      // Sprint 16 Task 10: `layers.nameplates` is independent of the room
-      // characters `setCharacterVisible` above hides — it is built once at
-      // fixed canvas coordinates, so left visible it draws "MODEL"/"TRADER"
-      // over whichever grid cell happens to land on that spot (observed
-      // 2026-09-07, this ticket's own screenshot). Same "eval surface hides
-      // the room's content" rule the monitors line above already follows.
-      layers.nameplates.visible = false;
+      // Scenery stays (unless ?void=1), content goes — `EVAL_LAYER_ROLES`.
+      applyEvalLayers();
       layers.chars.scale.set(1);     // the gallery does its own fitting
       // A representative spread rather than all 23 moods: every style compared
       // across the emotional range they actually have to carry.
@@ -1298,15 +1309,8 @@
     function drawAnimationSheet() {
       setCharacterVisible(model, false);
       setCharacterVisible(trader, false);
-      layers.room.visible = VOID_MODE ? false : true;
-      layers.plate.visible = VOID_MODE ? false : true;
-      // Live candles drew straight over the specimens (observed 2026-09-01).
-      // The monitors are the room's content, not its scenery, so they go in
-      // both modes.
-      layers.monitors.visible = false;
-      // See drawGallery's own comment: `layers.nameplates` is fixed-position
-      // and independent of the room characters this sheet already hides.
-      layers.nameplates.visible = false;
+      // Scenery stays (unless ?void=1), content goes — `EVAL_LAYER_ROLES`.
+      applyEvalLayers();
       // Deliberately not the gallery's scale-1: `slump` moves a head 13.5px,
       // and whether that reads as dejected or as a head in a torso is a
       // question about broadcast size. Tier-3 amplitude, for the same reason.
