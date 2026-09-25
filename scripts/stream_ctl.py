@@ -275,6 +275,16 @@ def configure_output(client) -> None:
     # Simple mode); best-effort here rather than probing the mode.
     bitrate = os.environ.get("OBS_STREAM_BITRATE", "2200")
     client.set_profile_parameter("SimpleOutput", "VBitrate", str(bitrate))
+    # Pin the keyframe interval (KI-087). rtmp_custom recommends no GOP, so x264
+    # kept its default keyint=250 — 8.3 s at 30 fps, and YouTube flags > 4 s as
+    # an error. Derived from the host's real fps so it stays 2 s at any rate.
+    # Simple mode only reads x264Settings (and Preset) when UseAdvanced is on, so
+    # the preset is pinned to the one Simple mode already used.
+    video = client.get_video_settings()
+    keyint = max(1, int(2 * video.fps_numerator / video.fps_denominator))
+    client.set_profile_parameter("SimpleOutput", "UseAdvanced", "true")
+    client.set_profile_parameter("SimpleOutput", "Preset", "veryfast")
+    client.set_profile_parameter("SimpleOutput", "x264Settings", f"keyint={keyint}")
     server = os.environ.get("OBS_STREAM_SERVER", "rtmp://a.rtmp.youtube.com/live2")
     client.set_stream_service_settings("rtmp_custom", {"server": server, "key": key})
 

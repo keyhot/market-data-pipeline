@@ -127,6 +127,14 @@ class FakeClient:
     def set_profile_parameter(self, category, name, value):
         self._log("set_profile_parameter", category, name, value)
 
+    def get_video_settings(self):
+        return FakeResp(
+            base_width=1920, base_height=1080, output_width=1280, output_height=720,
+            fps_numerator=self.fps_numerator, fps_denominator=self.fps_denominator,
+        )
+
+    fps_numerator, fps_denominator = 30, 1
+
 
 def _creates(client):
     return [c for c in client.calls if c[0] in ("create_scene", "create_input")]
@@ -238,6 +246,37 @@ def test_configure_output_bitrate_from_env(monkeypatch):
     client = FakeClient()
     stream_ctl.configure_output(client)
     assert ("set_profile_parameter", "SimpleOutput", "VBitrate", "3500") in client.calls
+
+
+def _keyint(client):
+    """The x264 keyframe interval configure_output pinned, in frames, and
+    whether Simple mode will actually apply custom encoder settings."""
+    params = {
+        (c[1], c[2]): c[3] for c in client.calls if c[0] == "set_profile_parameter"
+    }
+    opts = dict(
+        kv.split("=", 1) for kv in params.get(("SimpleOutput", "x264Settings"), "").split()
+    )
+    return int(opts["keyint"]), params.get(("SimpleOutput", "UseAdvanced"))
+
+
+@pytest.mark.parametrize("num,den", [(30, 1), (60, 1), (30000, 1001), (24, 1)])
+def test_configure_output_keyframes_within_youtubes_limit(monkeypatch, num, den):
+    # KI-087: on rtmp_custom nothing recommends a GOP, so x264 kept its default
+    # keyint=250 — 8.3 s at 30 fps, and YouTube flags > 4 s as an error
+    # (gopSizeLong). Graded in SECONDS at the host's real frame rate, so it
+    # holds for any fps rather than for today's 30.
+    monkeypatch.setenv("OBS_STREAM_KEY", "sekrit")
+    client = FakeClient()
+    client.fps_numerator, client.fps_denominator = num, den
+    stream_ctl.configure_output(client)
+    keyint, use_advanced = _keyint(client)
+    seconds = keyint * den / num
+    assert 1.0 <= seconds <= 2.05
+    # Simple mode ignores x264Settings unless UseAdvanced is on.
+    assert use_advanced == "true"
+    # ...and then reads Preset too: it must stay the one Simple mode used.
+    assert ("set_profile_parameter", "SimpleOutput", "Preset", "veryfast") in client.calls
 
 
 def test_cli_exit_code_when_obs_unreachable(monkeypatch):
