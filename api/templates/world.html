@@ -4562,8 +4562,11 @@ void main() {
           && light.w > 0 && light.h > 0
         ))
         .map((light, i) => {
+          // Snap the position, draw the MEASURED size (KI-075, the rule
+          // `drawPillars` states): a snapped 6 drew 8 and bled lamp colour
+          // off the sign, and a snapped 1 or 2 drew nothing at all.
           const graphics = new PIXI.Graphics()
-            .rect(snap(light.x), snap(light.y), snap(light.w), snap(light.h))
+            .rect(snap(light.x), snap(light.y), light.w, light.h)
             .fill({ color: parseInt(light.colour.slice(1), 16), alpha: 1 });
           graphics.blendMode = "add";
           layers.plate.addChild(graphics);

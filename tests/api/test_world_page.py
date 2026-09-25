@@ -9683,6 +9683,33 @@ def test_ambient_lights_use_additive_blend_so_the_paint_survives():
 
 
 @needs_node
+def test_ambient_lights_snap_position_but_draw_the_measured_size():
+    """KI-075: `snap()` on the SIZE turned the manifest's measured 6x5 into
+    8x4 (+33% / -20%), bleeding additive lamp colour off a 6px sign onto the
+    wall — and a measured 1 or 2 snapped to 0, an invisible light that still
+    passed the builder's `w > 0` filter. The rule `drawPillars` states: snap
+    the POSITION, never the size. Graded on every manifest light plus two
+    small ones the manifest may one day hold."""
+    lights = _manifest()["ambient_lights"] + [
+        {"x": 101, "y": 203, "w": 1, "h": 2, "colour": "#ff0000", "period": 3},
+        {"x": 7, "y": 9, "w": 6, "h": 5, "colour": "#00ff00", "period": 3},
+    ]
+    driver = _ambient_lights_driver(plate_ready=True, lights=lights) + (
+        "buildAmbientLights();\n"
+        "console.log(JSON.stringify("
+        "ambientLightSprites.map((l) => l.graphics.rects[0])));\n"
+    )
+    drawn = _run_node(driver)
+    assert len(drawn) == len(lights)
+    for light, (x, y, w, h) in zip(lights, drawn):
+        assert (w, h) == (light["w"], light["h"]), (
+            f"the {light['w']}x{light['h']} light at ({light['x']}, "
+            f"{light['y']}) was drawn {w}x{h}"
+        )
+        assert x % 4 == 0 and y % 4 == 0, f"the light's position ({x}, {y}) is off the CELL grid"
+
+
+@needs_node
 def test_the_window_lights_blink_on_independent_cycles():
     """A shared phase makes the whole skyline pulse in unison, which reads
     as a fault rather than as a city - the same "vary AND offset" rule
