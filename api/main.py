@@ -56,7 +56,7 @@ from storage.writes import (
 )
 from world import light, monitors, reactions, text_layout, visuals
 from world.liveness import world_liveness
-from world.plate import load_manifest, watchlist_disagreements
+from world.plate import glow_chart_overlaps, load_manifest, watchlist_disagreements
 from world.reactions import attach_reactions
 from world.renderer_health import record_beat, renderer_status
 from world.salience import KNOWN_EVENT_TYPES
@@ -869,6 +869,47 @@ def standby_page(state: str = _STANDBY_DEFAULT):
     )
 
 
+def _banner_copy(symbols: list[str]) -> str:
+    """The line `#banner` draws: the page's own symbol prefix (`banner-syms`,
+    filled in world.html) before the template's own premise sentence — read
+    from the template, never restated here where it could drift."""
+    html = (_TEMPLATES_DIR / "world.html").read_text()
+    match = re.search(r'<div id="banner">.*?<span class="tag">(.*?)</span>', html, re.S)
+    premise = " ".join(match.group(1).split()) if match else ""
+    prefix = " · ".join(s.removesuffix("USDT") for s in symbols)
+    return f"{prefix} — {premise}"
+
+
+def _plate_warnings(manifest, symbols: list[str]) -> list[str]:
+    """Every problem the manifest validators find, for `/world` to log (KI-074).
+
+    CI runs these over the shipped manifest; this runs them over the one
+    being served, because editing that file in a deployment is the intended
+    workflow and a bad edit mis-renders on air with no other log line.
+    """
+    problems = [
+        f"plate manifest disagrees with watchlist: {p}"
+        for p in watchlist_disagreements(manifest, symbols)
+    ]
+    problems += [
+        f"plate glow {g} overlaps a live chart screen; the candles turn olive at high tier (KI-056)"
+        for g in glow_chart_overlaps(manifest)
+    ]
+    problems += [
+        f"text placement {t} escapes its surface (or names none) and will not be drawn"
+        for t in text_layout.floating_text(manifest)
+    ]
+    for placement in (getattr(manifest, "text", ()) or ()):
+        if placement.get("id") == "banner" and "w" in placement and "h" in placement:
+            copy = _banner_copy(symbols)
+            if text_layout.glyph_overflow(copy, placement.get("size", 14), placement):
+                problems.append(
+                    f"text placement banner: {copy!r} does not fit its "
+                    f"{placement['w']}x{placement['h']} box"
+                )
+    return problems
+
+
 @app.get("/world", response_class=HTMLResponse)
 def world_page():
     """The Living World room — a Browser Source for the world-focus scene."""
@@ -884,8 +925,9 @@ def world_page():
     # with no painted base has nowhere to stand and would simply not be drawn.
     # Absence of the manifest itself is NOT a disagreement — it is the
     # procedural room, which is a supported way to run (Docs/world-room-plate).
-    for problem in watchlist_disagreements(manifest, deduped):
-        logger.warning("plate manifest disagrees with watchlist: %s", problem)
+    # KI-074: the other manifest validators run here too, for the same reason.
+    for problem in _plate_warnings(manifest, deduped):
+        logger.warning("%s", problem)
     return HTMLResponse(
         _render_template(
             "world.html",
