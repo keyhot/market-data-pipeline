@@ -162,6 +162,47 @@ def test_a_successful_transition_resets_the_refusal_streak(caplog):
     assert len(tracebacks) == 2
 
 
+def test_a_go_live_by_auto_start_ends_the_refusal_streak(caplog):
+    """Our own transition is almost always the refused one — auto-start takes
+    the broadcast live. So the streak must end when a tick stops asking for a
+    transition, or the count sticks after every healthy go-live and the next
+    streak neither logs its traceback nor escalates on time."""
+    state = _state()
+    refusing = Refusing(broadcasts=[{"id": "b1", "lifecycle": "ready"}])
+
+    def apply_with(client):
+        return lambda actions, st, now: service.apply(
+            actions, st, client, lambda e: None, CFG, now
+        )
+
+    waiting = {"broadcast": {"id": "b1", "lifecycle": "ready"}, "stream": {
+        "id": "s1", "status": "active"}}
+    live = {"broadcast": {"id": "b1", "lifecycle": "live"}, "stream": {
+        "id": "s1", "status": "active"}}
+    with caplog.at_level("INFO", logger="broadcast.service"):
+        now = BASE
+        service.tick_once(waiting, True, state, CFG, now, apply_with(refusing))
+        for _ in range(5):
+            now += timedelta(seconds=31)
+            service.tick_once(waiting, True, state, CFG, now, apply_with(refusing))
+        assert state.refused_transitions == 5
+        service.tick_once(live, True, state, CFG, now, apply_with(refusing))
+        assert state.refused_transitions == 0
+        for _ in range(service.REFUSED_TRANSITION_ALERT_AT):
+            service.apply(
+                [("transition_live", "b2")], state, refusing, lambda e: None, CFG, now
+            )
+    ours = [r for r in caplog.records if r.name == "broadcast.service"]
+    assert len([r for r in ours if r.exc_info]) == 2
+    # Counted from the new streak's start: exactly one ERROR, at the threshold.
+    assert len([r for r in ours if r.levelname == "ERROR"]) == 1
+
+
+def test_the_alert_threshold_clears_the_observed_benign_settle():
+    """51 refusals preceded healthy go-lives on 2026-08-18 and 2026-09-15."""
+    assert service.REFUSED_TRANSITION_ALERT_AT > 51
+
+
 def test_apply_creates_binds_and_adopts_the_new_broadcast_id():
     client = FakeYouTubeClient(broadcasts=[])
     state = _state()

@@ -130,10 +130,11 @@ def apply(actions, state: BroadcastState, client, record_event, config, now) -> 
         record_event(events)
 
 
-# ~15 minutes of refusals at the 30 s cadence. YouTube refuses a few while a
-# fresh broadcast settles (51 on 2026-09-15 before auto-start took it live), so
-# escalating on the first would cry wolf.
-REFUSED_TRANSITION_ALERT_AT = 30
+# ~30 minutes of refusals at the 30 s cadence. YouTube refuses every
+# transition while a fresh broadcast settles, and auto-start — not our call —
+# is what normally takes it live: 51 refusals on 2026-08-18 and on 2026-09-15
+# were both healthy go-lives. The threshold sits above that benign ceiling.
+REFUSED_TRANSITION_ALERT_AT = 60
 
 
 def _transition_live(client, state: BroadcastState, broadcast_id: str) -> None:
@@ -190,6 +191,12 @@ def tick_once(yt_state, obs_streaming, state, config, now, apply_actions) -> Non
     """One decision + application, sharing the state the runner owns."""
     new_state, actions = tick(yt_state, obs_streaming, state, config, now)
     _adopt(state, new_state)
+    # A tick that asks for no transition ends the streak — the broadcast went
+    # live (usually by auto-start, since our own call is almost always the one
+    # refused), or there is nothing to transition. Resetting only on our call
+    # succeeding would leave the count stuck after every healthy go-live.
+    if not any(action[0] == "transition_live" for action in actions):
+        state.refused_transitions = 0
     # Unconditionally, even with no actions: a healthy live broadcast is quiet
     # on essentially every tick, and `apply` is what drains the event spool. A
     # `if actions:` guard here would strand a spooled broadcast_live until the
