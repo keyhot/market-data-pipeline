@@ -1492,7 +1492,9 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         + _js_const(source, "GLOW_COLOR")
         + _js_block(source, "function snap(")
         + "\n"
+        + _js_const(source, "GLOW_SPREAD")
         + "let glows = [];\n"
+        + "let glowTexture = null;\n"
         + "const monitorGraphics = {};\n"
         + "let floorLine, wall, floorPlane, vignette;\n"
         + """
@@ -1511,10 +1513,12 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         class FakeSprite {
           constructor(texture) {
             this.texture = texture; this.width = 0; this.height = 0;
+            this.anchor = { set() {} }; this.position = { set() {} };
           }
         }
         const fakeCtx = {
           createRadialGradient() { return { addColorStop() {} }; },
+          createLinearGradient() { return { addColorStop() {} }; },
           fillRect() {},
         };
         const fakeCanvas = { getContext() { return fakeCtx; } };
@@ -1545,6 +1549,10 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         + _js_block(source, "function layoutRoom(")
         + "\n"
         + _js_block(source, "function drawProceduralRoom(")
+        + "\n"
+        + _js_block(source, "function glowShapes(")
+        + "\n"
+        + _js_block(source, "function glowLightTexture(")
         + "\n"
         + _js_block(source, "function buildGlows(")
         + "\n"
@@ -6856,7 +6864,11 @@ def test_the_glow_builds_its_graphics_once_not_inside_the_ticker():
     assert "buildGlows(" not in ticker, (
         "buildGlows must not be called from inside the ticker"
     )
+    assert "new PIXI.Sprite(" not in ticker, (
+        "a glow Sprite allocated inside the per-frame ticker"
+    )
     apply_glow = _js_block(body, "function applyGlow(")
+    assert "new PIXI.Sprite(" not in apply_glow
     assert "new PIXI.Graphics()" not in apply_glow, (
         "applyGlow must only mutate .alpha on the pre-built glows"
     )
@@ -6975,19 +6987,32 @@ def _glow_driver(*, plate_ready: bool) -> str:
     than asserting on source text.
     """
     source = _world_source()
-    glow = _manifest()["glow"]
+    manifest = _manifest()
+    plate = {k: manifest.get(k, []) for k in ("glow", "tubes", "spare_tubes")}
     return (
-        f"const PLATE = {json.dumps({'glow': glow})};\n"
+        f"const PLATE = {json.dumps(plate)};\n"
         f"const plateReady = {str(plate_ready).lower()};\n"
-        "class FakeGraphics {\n"
-        "  addChild(c) { (this.children || (this.children = [])).push(c); return c; }\n"
-        "  constructor() {\n"
-        "    this.rects = []; this.fills = []; this.blendMode = null; this.alpha = 1;\n"
+        # KI-089: the glow is a Sprite over a canvas-drawn falloff texture.
+        # The fake canvas records every gradient's colour stops, so the
+        # texture's edges can be read as numbers rather than trusted.
+        "const gradients = [];\n"
+        "const document = { createElement() { return { width: 0, height: 0,\n"
+        "  getContext() { return { fillRect() {}, globalCompositeOperation: '',\n"
+        "    createLinearGradient(x0, y0, x1, y1) {\n"
+        "      const g = { axis: [x1 - x0, y1 - y0], stops: [],\n"
+        "        addColorStop(o, c) { this.stops.push([o, c]); } };\n"
+        "      gradients.push(g); return g; } }; } }; } };\n"
+        "let textures = 0;\n"
+        "class FakeSprite {\n"
+        "  constructor(texture) {\n"
+        "    this.texture = texture; this.blendMode = null; this.alpha = 1;\n"
+        "    this.width = 0; this.height = 0; this.x = 0; this.y = 0;\n"
+        "    this.anchor = { set: (a) => { this.anchorAt = a; } };\n"
+        "    this.position = { set: (x, y) => { this.x = x; this.y = y; } };\n"
         "  }\n"
-        "  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }\n"
-        "  fill(opts) { this.fills.push(opts); return this; }\n"
         "}\n"
-        "const PIXI = { Graphics: FakeGraphics };\n"
+        "const PIXI = { Sprite: FakeSprite,\n"
+        "  Texture: { from: (canvas) => ({ id: ++textures, canvas }) } };\n"
         "const layers = { glow: { children: [],\n"
         "  removeChildren() { this.children = []; },\n"
         "  addChild(c) { this.children.push(c); } } };\n"
@@ -6999,6 +7024,13 @@ def _glow_driver(*, plate_ready: bool) -> str:
         + _js_const(source, "GLOW_COLOR")
         + "\n"
         + _js_const(source, "GLOW_LIFT_TO_ALPHA")
+        + "\n"
+        + _js_const(source, "GLOW_SPREAD")
+        + "\n"
+        + "let glowTexture = null;\n"
+        + _js_block(source, "function glowLightTexture(")
+        + "\n"
+        + _js_block(source, "function glowShapes(")
         + "\n"
         + _js_block(source, "function buildGlows(")
         + "\n"
@@ -7030,7 +7062,7 @@ def test_the_glow_brightens_monotonically_across_all_four_tiers():
         "for (const lift of lifts) {\n"
         "  applyGlow(lift);\n"
         "  out.push(layers.glow.children.map((c) => ({\n"
-        "    alpha: c.alpha, fill: c.fills[c.fills.length - 1], blend: c.blendMode,\n"
+        "    alpha: c.alpha, texture: c.texture.id, blend: c.blendMode,\n"
         "  })));\n"
         "}\n"
         "console.log(JSON.stringify(out));\n"
@@ -7038,9 +7070,7 @@ def test_the_glow_brightens_monotonically_across_all_four_tiers():
     emitted = _run_node(driver)
     assert len(emitted) == 4
     for per_tier in emitted:
-        assert len(per_tier) == len(glow), (
-            "buildGlows must build exactly one glow per manifest glow rect"
-        )
+        assert per_tier, "buildGlows built nothing to light"
         for rect in per_tier:
             assert rect["blend"] == "add"
 
@@ -7049,16 +7079,18 @@ def test_the_glow_brightens_monotonically_across_all_four_tiers():
     # monotonicity (test_visuals_ramp_is_shared.py) is necessary but not
     # sufficient; this is the proof that applyGlow actually passes it
     # through.
-    for i in range(len(glow)):
+    for i in range(len(emitted[0])):
         alphas = [emitted[tier][i]["alpha"] for tier in range(4)]
         assert alphas == sorted(alphas), (i, alphas)
         assert len(set(alphas)) > 1, f"glow rect {i} never brightens at all"
 
     # Colour must not drift with tier: brightening has to come from alpha,
     # not hue, or the "desk lamp stays amber at every tier" claim is false.
-    for i in range(len(glow)):
-        colors = {emitted[tier][i]["fill"]["color"] for tier in range(4)}
-        assert len(colors) == 1, f"glow rect {i} changes colour across tiers: {colors}"
+    # The colour is baked into ONE texture (KI-089), so "never changes
+    # colour" is "never changes texture".
+    for i in range(len(emitted[0])):
+        textures = {emitted[tier][i]["texture"] for tier in range(4)}
+        assert len(textures) == 1, f"glow {i} changes texture across tiers: {textures}"
 
 
 @needs_node
@@ -7068,17 +7100,76 @@ def test_build_glows_is_idempotent():
     call, whether from a future retry path or from a throw that unwinds and
     gets attempted again, must REPLACE the glows in `layers.glow`, not stack
     a second set behind the first at double the intended brightness."""
-    glow = _manifest()["glow"]
     driver = _glow_driver(plate_ready=True) + (
         "buildGlows();\n"
+        "const once = layers.glow.children.length;\n"
         "buildGlows();\n"
-        "console.log(JSON.stringify(layers.glow.children.length));\n"
+        "console.log(JSON.stringify([once, layers.glow.children.length]));\n"
     )
-    emitted = _run_node(driver)
-    assert emitted == len(glow), (
+    once, twice = _run_node(driver)
+    assert once > 0
+    assert twice == once, (
         "a second buildGlows() call left the first call's glows behind "
         "instead of clearing layers.glow first"
     )
+
+
+@needs_node
+def test_each_painted_tube_glows_on_its_own_bore():
+    """KI-089: one flat amber rect per tube PAIR read as a UI highlight box
+    on air. Light off a glass tube lives on the tube. Every painted tube —
+    assigned or spare — gets its own glow centred on its measured bore, and
+    no glow leaves the manifest rect the chart-overlap validator
+    (`glow_chart_overlaps`) cleared it for."""
+    manifest = _manifest()
+    tubes = manifest["tubes"] + manifest["spare_tubes"]
+    driver = _glow_driver(plate_ready=True) + (
+        "buildGlows();\n"
+        "console.log(JSON.stringify(layers.glow.children.map((c) => (\n"
+        "  { x: c.x, y: c.y, w: c.width, h: c.height, a: c.anchorAt }))));\n"
+    )
+    glows = _run_node(driver)
+    assert sorted(g["x"] for g in glows) == sorted(t["x"] for t in tubes)
+    slack = 0.5
+    for g in glows:
+        assert g["a"] == 0.5
+        left, right = g["x"] - g["w"] / 2, g["x"] + g["w"] / 2
+        top, bottom = g["y"] - g["h"] / 2, g["y"] + g["h"] / 2
+        assert any(
+            left >= r["x"] - slack and right <= r["x"] + r["w"] + slack
+            and top >= r["y"] - slack and bottom <= r["y"] + r["h"] + slack
+            for r in manifest["glow"]
+        ), g
+        tube = next(t for t in tubes if t["x"] == g["x"])
+        # Fitted to the tube, not the pair: narrower than the rect, wider
+        # than the glass, and spanning the tube's own height.
+        assert tube["width"] < g["w"] < 2.5 * tube["width"], (g, tube)
+        assert top <= tube["base_y"] - tube["height"] + slack
+        assert bottom >= tube["base_y"] - slack
+
+
+@needs_node
+def test_the_glow_has_no_straight_edges():
+    """KI-089, the rule rather than the instance: whatever the glow's size,
+    its light falls to NOTHING at every edge of what it draws, on both axes.
+    A texture that stays lit at its border is a rectangle again, just a
+    smaller one."""
+    driver = _glow_driver(plate_ready=True) + (
+        "buildGlows();\n"
+        "console.log(JSON.stringify(gradients));\n"
+    )
+    gradients = _run_node(driver)
+    axes = {("x" if g["axis"][1] == 0 else "y") for g in gradients}
+    assert axes == {"x", "y"}, gradients
+
+    def alpha(css):
+        return float(css.rsplit(",", 1)[1].rstrip(")"))
+
+    for g in gradients:
+        stops = sorted(g["stops"])
+        assert stops[0][0] == 0 and stops[-1][0] == 1, g
+        assert alpha(stops[0][1]) == 0 and alpha(stops[-1][1]) == 0, g
+        assert max(alpha(c) for _, c in stops) == 1, g
 
 
 @needs_node

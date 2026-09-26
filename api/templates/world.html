@@ -4563,23 +4563,83 @@ void main() {
     // shape for this ticker — build once, mutate a property per tick — so
     // the glow's own Graphics follow the same rule.
     let glows = [];
+    let glowTexture = null;
+
+    // KI-089: the glow was one flat rect per tube PAIR, and at a raised tier
+    // it read as a UI highlight box — light off glass has no straight edges.
+    // Each painted tube (assigned or spare) now gets its own glow, centred on
+    // its measured bore and a little wider than the glass, clamped inside
+    // the manifest rect the chart-overlap validator cleared. A rect with no
+    // tube in it (none today) keeps one soft glow of its own size.
+    // How much wider than the glass its glow spreads.
+    const GLOW_SPREAD = 1.8;
+
+    function glowShapes(rect, tubes) {
+      const inside = tubes.filter((t) => t.x >= rect.x && t.x <= rect.x + rect.w);
+      if (!inside.length) {
+        return [{ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, w: rect.w, h: rect.h }];
+      }
+      return inside.map((t) => {
+        const half = Math.min(t.width * GLOW_SPREAD / 2, t.x - rect.x, rect.x + rect.w - t.x);
+        const top = Math.max(rect.y, t.base_y - t.height - t.width / 2);
+        const bottom = Math.min(rect.y + rect.h, t.base_y + t.width / 2);
+        return { x: t.x, y: (top + bottom) / 2, w: 2 * half, h: bottom - top };
+      });
+    }
+
+    // Built once, like softShadow's. The colour is baked into the texture, so
+    // brightness is only ever the sprite's alpha (never a tint of the plate).
+    // Across the tube the light peaks on the glass and falls to nothing at
+    // both sides; along it, it fades to nothing past both ends.
+    function glowLightTexture() {
+      if (!glowTexture) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 64;
+        canvas.height = 256;
+        const ctx = canvas.getContext("2d");
+        const rgb = [GLOW_COLOR >> 16, (GLOW_COLOR >> 8) & 255, GLOW_COLOR & 255].join(",");
+        const across = ctx.createLinearGradient(0, 0, canvas.width, 0);
+        across.addColorStop(0, `rgba(${rgb},0)`);
+        across.addColorStop(0.3, `rgba(${rgb},0.55)`);
+        across.addColorStop(0.5, `rgba(${rgb},1)`);
+        across.addColorStop(0.7, `rgba(${rgb},0.55)`);
+        across.addColorStop(1, `rgba(${rgb},0)`);
+        ctx.fillStyle = across;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.globalCompositeOperation = "destination-in";
+        const along = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        along.addColorStop(0, "rgba(0,0,0,0)");
+        along.addColorStop(0.15, "rgba(0,0,0,1)");
+        along.addColorStop(0.85, "rgba(0,0,0,1)");
+        along.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = along;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        glowTexture = PIXI.Texture.from(canvas);
+      }
+      return glowTexture;
+    }
 
     function buildGlows() {
       // Defensive, not load-bearing today: the only caller is drawPlate's
       // try block, once. But a half-thrown call (this map throws partway
       // through, e.g. a bad rect) or a future retry path calling it twice
-      // would otherwise leave orphaned Graphics stacked in layers.glow —
+      // would otherwise leave orphaned sprites stacked in layers.glow —
       // this makes a second call start clean instead of accumulating.
       layers.glow.removeChildren();
-      glows = PLATE.glow.map((rect) => {
-        const glow = new PIXI.Graphics()
-          .rect(snap(rect.x), snap(rect.y), snap(rect.w), snap(rect.h))
-          .fill({ color: GLOW_COLOR, alpha: 1 });
+      const tubes = [...(PLATE.tubes || []), ...(PLATE.spare_tubes || [])];
+      glows = PLATE.glow.flatMap((rect) => glowShapes(rect, tubes).map((shape) => {
+        const glow = new PIXI.Sprite(glowLightTexture());
+        glow.anchor.set(0.5);
+        // Not snapped: a falloff has no edge to hold to the pixel grid, and
+        // the bore it lights is measured to the pixel, not the CELL.
+        glow.position.set(shape.x, shape.y);
+        glow.width = shape.w;
+        glow.height = shape.h;
         glow.blendMode = "add";
         glow.alpha = 0;              // applyGlow sets the real value per tick
         layers.glow.addChild(glow);
         return glow;
-      });
+      }));
     }
 
     // `lift` must be the EASED `ambient.light.lift`, never `ROOM_LIGHT[tier]
