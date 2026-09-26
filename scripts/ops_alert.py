@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from alerts import mailer  # noqa: E402
-from alerts.rules import check_backup, check_broadcast, check_world, decide, render  # noqa: E402
+from alerts.rules import Check, check_backup, check_broadcast, check_world, decide, render  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +60,22 @@ def _fetch_health() -> tuple[dict | None, str | None]:
         return None, f"{type(exc).__name__}: {exc}"
 
 
+def _guarded(name: str, check) -> Check:
+    """A check that raises (a malformed status file, say) reports as failing
+    rather than killing the run — one bad file must not silence the others,
+    run after run, which is the very failure this alerter exists to end."""
+    try:
+        return check()
+    except Exception as exc:
+        return Check(name, True, f"the {name} check crashed: {type(exc).__name__}: {exc}")
+
+
 def observe_system(now: datetime):
     health, error = _fetch_health()
     return [
-        check_backup(read_json(ROOT / "backups" / "last_status.json"), now),
-        check_world(health, error),
-        check_broadcast(read_json(broadcast_status_path()), now),
+        _guarded("backup", lambda: check_backup(read_json(ROOT / "backups" / "last_status.json"), now)),
+        _guarded("world", lambda: check_world(health, error)),
+        _guarded("broadcast", lambda: check_broadcast(read_json(broadcast_status_path()), now)),
     ]
 
 

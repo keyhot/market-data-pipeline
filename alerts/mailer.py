@@ -30,7 +30,9 @@ class MailConfig:
 
 def config_from_env() -> MailConfig:
     user = os.environ.get("ALERT_SMTP_USER", "").strip()
-    password = os.environ.get("ALERT_SMTP_PASSWORD", "").strip()
+    # Google shows an app password as four space-separated groups; it never
+    # contains whitespace itself, so a pasted-as-shown value still works.
+    password = "".join(os.environ.get("ALERT_SMTP_PASSWORD", "").split())
     if not user or not password:
         raise AlertsNotConfigured(
             "set ALERT_SMTP_USER and ALERT_SMTP_PASSWORD (a Gmail app password) in .env"

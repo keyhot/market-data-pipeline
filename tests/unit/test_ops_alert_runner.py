@@ -127,3 +127,23 @@ def test_a_long_delivery_outage_is_not_mistaken_for_a_gap():
         now=NOW + timedelta(minutes=60),
     )
     assert [a.kind for a in alerts] == ["firing"]
+
+
+def test_a_crashing_check_is_reported_not_fatal_to_the_others(monkeypatch, tmp_path):
+    # A malformed status file must not silence every check on every run —
+    # that is the no-path-to-a-human failure this alerter exists to end.
+    bad = tmp_path / "broadcast_status.json"
+    bad.write_text('{"updated_at": "2026-09-26T12:00:00+00:00", "refused_transitions": "lots"}')
+    monkeypatch.setenv("BROADCAST_STATUS_PATH", str(bad))
+    monkeypatch.setattr(ops_alert, "_fetch_health", lambda: (None, "down"))
+    checks = {c.name: c for c in ops_alert.observe_system(NOW)}
+    assert set(checks) == {"backup", "world", "broadcast"}
+    assert checks["broadcast"].failing is True
+    assert "crashed" in checks["broadcast"].summary
+
+
+def test_a_gmail_app_password_pasted_with_its_spaces_still_works(monkeypatch):
+    # Google displays app passwords as four space-separated groups.
+    monkeypatch.setenv("ALERT_SMTP_USER", "me@example.com")
+    monkeypatch.setenv("ALERT_SMTP_PASSWORD", "abcd efgh ijkl mnop")
+    assert mailer.config_from_env().password == "abcdefghijklmnop"
