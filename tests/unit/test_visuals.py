@@ -233,3 +233,47 @@ def test_the_floor_survives_the_room_brightening_under_load():
                     body = visuals._rendered(visuals._to_rgb(visuals.body_tint(mood)))
                     worst = min(worst, visuals.contrast_ratio(body, room))
     assert worst >= 3.0, f"the cast drops to {worst:.2f}:1 when the room lifts"
+
+
+# --- KI-058: interior bands are exempt; the OUTLINE carries the silhouette ---
+
+def test_the_models_rim_carries_its_silhouette_against_the_painted_room():
+    """The user's decision (2026-09-26, Sprint 17 #12): the light model's
+    interior bands may sit below 3:1 — shading is what the redesign was graded
+    on — because the silhouette floor now protects the OUTLINE. For the model
+    that outline is the rim: `BODY_RIM_FILL` multiplied by the mood's
+    `BODY_TINT`. So measure the rim against what is actually behind the model —
+    the plate's own pixels over its standing box, at the brightest the room
+    gets (`room_light` lift at tier 3) — not against `PALETTE["bg"]`, which is
+    the referent the first re-measure wrongly used.
+
+    WCAG 1.4.11's 3:1 for non-text graphics, against the room's p95, for every
+    mood. Measured at 4.66:1 worst on the calm plate."""
+    import json
+    from pathlib import Path
+
+    from PIL import Image
+
+    static = Path(__file__).resolve().parents[2] / "api" / "static"
+    manifest = json.loads((static / "world-plate-btc-eth.json").read_text())
+    cast = manifest["cast"]
+    model = cast["model"]
+    height = cast["rig_height"] * cast["scale"]
+    box = (model["x"] - 80, round(model["base_y"] - height),
+           model["x"] + 80, model["base_y"])
+    with Image.open(static / "world-plate-btc-eth.png") as plate:
+        room = list(plate.convert("RGB").crop(box).get_flattened_data())
+    lift = 1 + visuals.room_light(3)["lift"]
+    lums = sorted(
+        visuals.relative_luminance(tuple(min(255, round(c * lift)) for c in px))
+        for px in room
+    )
+    bright_room = lums[int(len(lums) * 0.95)]
+
+    rim_scale = [((visuals.BODY_RIM_FILL >> s) & 0xFF) / 255 for s in (16, 8, 0)]
+    for mood in visuals.MOOD_COLORS:
+        tint = visuals._to_rgb(visuals.body_tint(mood))
+        rim = tuple(round(c * k) for c, k in zip(tint, rim_scale))
+        lum = visuals.relative_luminance(rim)
+        ratio = (max(lum, bright_room) + 0.05) / (min(lum, bright_room) + 0.05)
+        assert ratio >= 3.0, f"{mood}: the model's rim is {ratio:.2f}:1 on its room"
