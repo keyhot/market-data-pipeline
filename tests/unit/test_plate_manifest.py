@@ -1009,9 +1009,10 @@ def test_every_tubes_bore_ry_matches_the_plates_own_cap_highlight():
 # with only `PIXI.Graphics` and `layers.props` faked. The fake records every
 # `rect()`/`ellipse()`/`fill()` call it is given, so what is asserted below is
 # what `drawPillars` actually drew on this run, not a paraphrase of its
-# source. `shade`/`rampLevel`/`color` are stubbed to trivial pass-throughs —
-# their own contracts (the ramp-accessor rule, WCAG contrast) are covered
-# elsewhere; this is about the ellipse geometry and fill shape.
+# source. `shade`/`rampLevel`/`moodFill`/`paint` are stubbed to trivial
+# pass-throughs — their own contracts (the ramp-accessor rule, WCAG contrast,
+# the pillars' light, KI-062) are covered elsewhere; this is about the ellipse
+# geometry and fill shape.
 
 
 def _pillar_ellipse_driver(source, manifest_dict, symbol):
@@ -1028,7 +1029,11 @@ def _pillar_ellipse_driver(source, manifest_dict, symbol):
         + _js_block(source, "function pillarGeometry(") + "\n"
         + "function shade(base, level) { return base; }\n"
         + "function rampLevel(rung) { return 0; }\n"
-        + "const color = () => 0x123456;\n"
+        + "const moodFill = () => 0x123456;\n"
+        + "function paint() {}\n"
+        + "const litColumn = () => ({});\n"
+        + "function pillarGlass() { return null; }\n"
+        + "const PILLAR_ALPHA = 0.85;\n"
         + _js_block(source, "function drawPillars(") + "\n"
         + f"""
         const SYMBOLS = ["{symbol}"];
@@ -1042,20 +1047,25 @@ def _pillar_ellipse_driver(source, manifest_dict, symbol):
           }}
           fill(f) {{ this.fills.push(f); return this; }}
         }}
-        const PIXI = {{ Graphics: FakeGraphics }};
-        const built = [];
+        class FakeContainer {{
+          constructor() {{ this.children = []; }}
+          addChild(...items) {{ this.children.push(...items); }}
+        }}
+        const PIXI = {{ Graphics: FakeGraphics, Container: FakeContainer }};
         const layers = {{ props: {{
           children: [],
           removeChildren() {{ this.children = []; }},
-          addChild(...items) {{ this.children.push(...items); built.push(...items); }},
+          addChild(...items) {{ this.children.push(...items); }},
         }} }};
         const state = {{
           symbols: {{ "{symbol}": {{ pressure: 99, mood: "bullish" }} }}
         }};
         drawPillars(state);
-        const [pillar, cap] = built;
+        const built = layers.props.children[0].children;
+        const cells = built.find((g) => g.rects.length);
+        const cap = built.find((g) => g.ellipses.length);
         console.log(JSON.stringify({{
-          stripe: pillar.rects[0],
+          stripe: cells.rects[0],
           ellipses: cap.ellipses,
           fills: cap.fills,
         }}));
@@ -1074,8 +1084,14 @@ def test_the_cap_and_base_ellipses_are_snapped_to_the_stripes_and_translucent():
     grade it - it compares two outputs of one execution.
 
     Mutation-checked: reverting `capX` to the old `geo.x + geo.width / 2`
-    fails the centring assertion for ETH (650 vs a stripe centre of 648.5);
-    dropping `alpha: 0.85` from either `.fill()` fails the alpha assertion.
+    fails the centring assertion for ETH (650 vs a stripe centre of 648.5).
+
+    KI-062 moved the translucency off the fills: the column is three opaque
+    lit bands now, so the 0.85 is one fade over the whole pillar group
+    (`test_the_pillar_translucency_is_one_fade_over_the_whole_group`). The
+    requirement here is unchanged — the caps are exactly as translucent as the
+    column — and a cap fill carrying its own alpha would now make it LESS
+    opaque than the column, so that is what fails.
     """
     source = WORLD_TEMPLATE.read_text()
     manifest = load_manifest()
@@ -1100,9 +1116,9 @@ def test_the_cap_and_base_ellipses_are_snapped_to_the_stripes_and_translucent():
             f"{tube['symbol']}: expected a fill call for the cap and the base"
         )
         for fill in emitted["fills"]:
-            assert fill.get("alpha") == 0.85, (
-                f"{tube['symbol']}: cap/base fill alpha={fill.get('alpha')}, "
-                "but the column it caps fills at 0.85"
+            assert not (isinstance(fill, dict) and "alpha" in fill), (
+                f"{tube['symbol']}: cap/base fill carries its own alpha "
+                f"{fill['alpha']} on top of the group fade the column gets"
             )
 
 

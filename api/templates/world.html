@@ -146,18 +146,16 @@
 
     // The mood -> colour map is injected from world/visuals.MOOD_COLORS (hex
     // strings) so this canvas and the DOM overlays share ONE palette; drift
-    // between them was the old failure. Unknown moods stay grey rather than
-    // throwing, so a new salience rule degrades quietly on screen.
+    // between them was the old failure. It is IDENTITY colour — chrome, the
+    // nowband's mood cell. Nothing drawn in the room reads it: bodies and the
+    // tube pillars take `moodFill` below (KI-062 retired the pillars' own
+    // raw lookup here).
     const MOOD_COLOR = __MOOD_COLORS_JSON__;
     const NEUTRAL = __NEUTRAL_COLOR__;
     // The same grey after `visuals.lift_to_silhouette_floor` — what an
     // un-mooded figure is PAINTED in. Identity colour and body colour are
     // different jobs and only one of them has a contrast floor (KI-060).
     const NEUTRAL_TINT = __NEUTRAL_TINT__;
-    const color = (mood) => {
-      const hex = MOOD_COLOR[mood];
-      return hex ? parseInt(hex.slice(1), 16) : NEUTRAL_TINT;
-    };
 
     // KI-028: the cast measured 1.19:1 (trader) and 1.00:1 against its own
     // background, versus WCAG's 3:1 floor — the bodies were the same luminance
@@ -873,6 +871,30 @@
           );
         },
         rim: (g, style) => rimStrokeCircle(g, cx, cy, radius, style),
+      };
+    };
+
+    // An upright CYLINDER — what fills the painted tubes (KI-062). `litRect`
+    // is right for a torso and wrong here, measured on the first frame: on a
+    // 54x340 column its lit band is a 30%-by-30% block slid toward the lamp,
+    // which put a flat grey slab over the upper third of each tube. A
+    // cylinder's surface turns only ACROSS its width, so its light varies only
+    // across its width: every band is full height, shrunk horizontally by the
+    // same `BAND_INSET` fraction and pushed to the lamp's side. The lamp's
+    // horizontal component picks the side and nothing else — the normal of a
+    // cylinder sweeps every horizontal direction, so how far the key leans
+    // does not narrow the lit strip. A lamp straight overhead lights it
+    // centred.
+    const litColumn = (x, y, w, h) => {
+      const side = Math.sign(-KEY_AXIS[0]);
+      return {
+        band: (g, band) => {
+          const x0 = snap(x), y0 = snap(y);
+          const bw = Math.max(MIN_BAND, quant(bandExtent(w, 1, band)));
+          const bx = quant(x0 + (w - bw) / 2 + side * (w - bw) / 2);
+          return g.rect(bx, y0, bw, h);
+        },
+        rim: (g, style) => rimStroke(g, x, y, w, h, 0, style),
       };
     };
 
@@ -1818,6 +1840,26 @@
       return { x, baseY, width, height, boreRy };
     }
 
+    // How much of the painted tube shows through what fills it. Once per
+    // column, not per band: the column is three stacked opaque bands now
+    // (KI-062), and PixiJS v8 applies a Graphics' or Container's alpha to
+    // each primitive separately — three bands at 0.85 composite to ~0.997
+    // where they overlap, an opaque column with a faint seam at every band
+    // edge. An AlphaFilter flattens the group first and fades the result.
+    const PILLAR_ALPHA = 0.85;
+    // ONE filter for the life of the page. `drawPillars` runs on every state
+    // update and `removeChildren()` destroys nothing, so a filter per draw
+    // would pile up for as long as the stream is up. A bundle without
+    // `AlphaFilter` gets null, and the caller falls back to plain alpha
+    // rather than throwing inside the per-poll draw.
+    let pillarGlassFilter = null;
+    function pillarGlass() {
+      if (!pillarGlassFilter && PIXI.AlphaFilter) {
+        pillarGlassFilter = new PIXI.AlphaFilter({ alpha: PILLAR_ALPHA });
+      }
+      return pillarGlassFilter;
+    }
+
     function drawPillars(state) {
       // M2: the monitor Graphics live in their OWN layer (layers.monitors),
       // never in layers.props — this removeChildren() only ever touches
@@ -1826,28 +1868,57 @@
       const symbols = Object.entries(state.symbols ?? {})
         .filter(([symbol]) => SYMBOLS.includes(symbol));
       if (!symbols.length) return;
+      // Pillars only — `layers.props` also carries the history label, which
+      // must not fade with the liquid.
+      const glass = new PIXI.Container();
+      const filter = pillarGlass();
+      if (filter) glass.filters = [filter];
+      else glass.alpha = PILLAR_ALPHA;
       symbols.forEach(([symbol, data], i) => {
         const geo = pillarGeometry(symbol, data.pressure, i);
+        // KI-062: the pillars are in the light model now. They filled with
+        // the raw identity colour as one flat tone, beside a cast that is
+        // lit in three bands and painted in the contrast-lifted body colour
+        // — the KI-051 belonging problem, one object over. The column is
+        // ONE `paint()` volume (`litColumn`, a cylinder) in `moodFill`, the
+        // cast's own body colour, so the whole column is lit as one form. Banding each cell
+        // instead gives every 4px cell its own ~1px lamp-coloured top:
+        // scanlines, not a lit object. No rim — the painted glass is the
+        // tube's edge, and a keyline would outline the liquid inside it.
         // The tube fill is a column of discrete cells, not a smooth
         // roundRect — decided 2026-08-25 from the reference image, which
         // draws it as stacked units. One cell of gap every two blocks so the
-        // column reads as filled units rather than a single bar.
-        const pillar = new PIXI.Graphics();
+        // column reads as filled units rather than a single bar. The cells
+        // are the MASK now: the light falls on the column, the gaps cut it.
+        const cells = new PIXI.Graphics();
         const blocks = Math.floor(geo.height / (CELL * 2));
         for (let b = 0; b < blocks; b++) {
-          pillar.rect(snap(geo.x), snap(geo.baseY - (b + 1) * CELL * 2), geo.width, CELL)
-                .fill({ color: color(data.mood), alpha: 0.85 });
+          cells.rect(snap(geo.x), snap(geo.baseY - (b + 1) * CELL * 2), geo.width, CELL);
         }
+        cells.fill(0xffffff);
+        // The lit volume spans exactly the cells it is masked to — both ends
+        // are already whole CELLs, so `litRect`'s own snap moves nothing and
+        // no cell can hang past the light.
+        const top = snap(geo.baseY - blocks * CELL * 2);
+        const bottom = snap(geo.baseY - CELL * 2) + CELL;
+        const base = moodFill(data.mood);
+        const pillar = new PIXI.Graphics();
+        if (blocks > 0) {
+          paint(pillar, litColumn(geo.x, top, geo.width, bottom - top), base,
+                undefined, { noRim: true });
+        }
+        pillar.mask = cells;
         // KI-055: the tubes are painted cylinders seen slightly from above,
         // so the surface of what fills them is an ellipse. A flat cap
         // contradicts the perspective of the art it sits inside — it reads
         // as a bar chart, which is the model's BODY, not the room's
         // furniture. The base gets the same treatment: it is the tube's own
         // floor, always visible under the fill, never a flat edge either.
+        // Shaded from the column's own base, so the surface and the floor
+        // agree with the liquid they bound about both colour and light.
         const cap = new PIXI.Graphics();
-        const fillColour = color(data.mood);
         // Review round 2, MINOR 6: every other draw in this function snaps
-        // its POSITION but not its size (`pillar.rect` above snaps `geo.x`,
+        // its POSITION but not its size (`cells.rect` above snaps `geo.x`,
         // never `geo.width`) — the cap's centre-x is the one coordinate that
         // skipped it, ~2px off the stripes it caps. `snap(geo.x)` is the
         // exact value the stripes themselves are drawn from, so adding half
@@ -1859,20 +1930,25 @@
         // in-frame; snapping cy would nudge it without anyone having asked
         // to move it.
         const capX = snap(geo.x) + geo.width / 2;
-        // Review round 2, finding (d): opaque caps over an alpha:0.85 fill
+        // Review round 2, finding (d): opaque caps over a translucent fill
         // read as a different, harder material sitting on top of the liquid
-        // rather than its own surface. Same alpha as the column it caps.
+        // rather than its own surface. Same translucency as the column it
+        // caps — the one `glass` fade over both, not a per-fill alpha.
         cap.ellipse(capX, geo.baseY - geo.height, geo.width / 2, geo.boreRy)
-           .fill({ color: shade(fillColour, rampLevel("lit")), alpha: 0.85 });
+           .fill(shade(base, rampLevel("lit")));
         cap.ellipse(capX, geo.baseY, geo.width / 2, geo.boreRy)
-           .fill({ color: shade(fillColour, rampLevel("shade")), alpha: 0.85 });
+           .fill(shade(base, rampLevel("shade")));
         // Sprint 16 Task 10: no per-tube symbol/mood label any more — both
         // floated at a fixed offset off the tube's own base, with no
         // declared surface (Task 9 deleted `symbol-BTCUSDT`/`symbol-ETHUSDT`
         // from `text` for exactly that reason), and #nowband already prints
         // every symbol's price and mood on every frame.
-        layers.props.addChild(pillar, cap);
+        // The mask joins the display list beside what it cuts, so the
+        // ambient sway of `layers.props` carries the cells and the light
+        // together.
+        glass.addChild(cells, pillar, cap);
       });
+      layers.props.addChild(glass);
     }
 
     // --- B1: procedural characters ----------------------------------------

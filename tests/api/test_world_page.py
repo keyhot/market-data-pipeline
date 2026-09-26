@@ -1766,6 +1766,196 @@ def test_the_stacked_cell_fill_survives():
     assert "CELL" in _js_block(_world_source(), "function drawPillars(")
 
 
+def _pillar_light_driver(
+    source: str, mood: str, direction: list | None = None
+) -> str:
+    """The page's real `drawPillars` over the page's real `paint`/`litRect`
+    and `moodFill`, on the shipped plate, with only PIXI faked. The fakes
+    record every fill and stroke, so what is graded is what the draw handed
+    the GPU — not a reading of its source."""
+    return (
+        _layout_driver("", plate=True)
+        + _js_const(source, "MOOD_COLOR")
+        + _js_const(source, "NEUTRAL_TINT")
+        + _js_const(source, "BODY_TINT")
+        + _js_const(source, "BODY_FILL")
+        + _js_const(source, "BODY_RIM")
+        + _js_const(source, "LIGHT")
+        + (f"LIGHT.direction = {json.dumps(direction)};\n" if direction else "")
+        + _js_block(source, "function snap(") + "\n"
+        + _js_const(source, "CELL")
+        + _shading_prelude(source)
+        + _js_block(source, "function mulHex(") + "\n"
+        + _js_block(source, "function moodTint(") + "\n"
+        + _js_block(source, "function moodFill(") + "\n"
+        + _js_block(source, "const litColumn = ") + "\n"
+        + _js_const(source, "PILLAR_ALPHA")
+        + "let pillarGlassFilter = null;\n"
+        + _js_block(source, "function pillarGlass(") + "\n"
+        + _js_block(source, "function drawPillars(") + "\n"
+        + f"""
+        const SYMBOLS = ["BTCUSDT", "ETHUSDT"];
+        class FakeGraphics {{
+          constructor() {{
+            this.fills = []; this.strokes = []; this.alpha = 1;
+            this.shapes = []; this.pending = [];
+          }}
+          rect(x, y, w, h) {{ this.pending.push([x, y, w, h]); return this; }}
+          roundRect(x, y, w, h) {{ this.pending.push([x, y, w, h]); return this; }}
+          circle() {{ return this; }}
+          poly() {{ return this; }}
+          ellipse() {{ return this; }}
+          fill(f) {{
+            this.fills.push(f);
+            this.shapes.push(this.pending); this.pending = [];
+            return this;
+          }}
+          stroke(s) {{ this.strokes.push(s); return this; }}
+        }}
+        class FakeContainer {{
+          constructor() {{ this.children = []; this.alpha = 1; this.filters = null; }}
+          addChild(...c) {{ this.children.push(...c); return c[0]; }}
+        }}
+        class FakeAlphaFilter {{ constructor(o) {{ this.alpha = o.alpha; }} }}
+        const PIXI = {{ Graphics: FakeGraphics, Container: FakeContainer,
+                        AlphaFilter: FakeAlphaFilter }};
+        const layers = {{ props: new FakeContainer() }};
+        layers.props.removeChildren = function () {{ this.children = []; }};
+        const state = {{ symbols: {{
+          BTCUSDT: {{ pressure: 0.6, mood: "{mood}" }},
+          ETHUSDT: {{ pressure: -0.4, mood: "{mood}" }},
+        }} }};
+        drawPillars(state);
+        const firstFilter = layers.props.children[0].filters;
+        drawPillars(state);
+        const glass = layers.props.children[0];
+        const graphics = glass.children.filter((c) => c instanceof FakeGraphics);
+        const colourOf = (f) => (typeof f === "number" ? f : f && f.color);
+        const masks = new Set(graphics.map((g) => g.mask).filter(Boolean));
+        const drawn = graphics.filter((g) => !masks.has(g));
+        const base = moodFill("{mood}");
+        const rungs = ["shade", "base", "lit"].map((r) => shade(base, rampLevel(r)));
+        console.log(JSON.stringify({{
+          propsChildren: layers.props.children.length,
+          glassAlpha: glass.alpha,
+          filters: (glass.filters || []).map((f) => f.alpha),
+          sameFilter: firstFilter && glass.filters
+            && firstFilter[0] === glass.filters[0],
+          masked: graphics.filter((g) => g.mask).length,
+          masksInTree: [...masks].every((m) => glass.children.includes(m)),
+          colours: drawn.map((g) => g.fills.map(colourOf)),
+          fillAlphas: drawn.flatMap((g) => g.fills)
+            .map((f) => (f && typeof f === "object" && "alpha" in f ? f.alpha : 1)),
+          strokes: drawn.reduce((n, g) => n + g.strokes.length, 0),
+          rungs,
+          raw: parseInt(MOOD_COLOR["{mood}"].slice(1), 16),
+          neutral: moodFill("__no_such_mood__"),
+          litSide: Math.sign(-KEY_AXIS[0]),
+          litShare: 1 - BAND_INSET.lit,
+          columns: graphics.filter((g) => g.mask).map((g) => ({{
+            bands: g.shapes.map((s) => s[0]),
+            cells: g.mask.shapes.flat(),
+          }})),
+        }}));
+        """
+    )
+
+
+@needs_node
+@pytest.mark.parametrize("mood", ["bullish", "bearish", "calm", "panicked"])
+def test_the_pillars_are_lit_like_the_cast(mood):
+    """KI-062: the pillars filled with `color(mood)` — the raw identity colour,
+    one flat tone at alpha 0.85 — beside a cast lit in three bands and painted
+    in the contrast-lifted body colour. Decided 2026-09-26: the furniture joins
+    the light model.
+
+    The rule, independent of where a tube stands or how full it is: every
+    colour a pillar draws is one of the three rungs `paint()` gives the cast's
+    own body colour (`moodFill`) for that mood, the column uses all three, and
+    nothing is outlined. The moods are the four `world.state._mood()` hands a
+    symbol, so a mood missing from `BODY_TINT` (which would quietly paint the
+    pillar the neutral grey) fails here by name.
+    """
+    emitted = _run_node(_pillar_light_driver(_world_source(), mood))
+    rungs = emitted["rungs"]
+    assert emitted["neutral"] not in rungs, (
+        f"{mood!r} has no BODY_TINT; the pillar would paint neutral grey"
+    )
+    assert emitted["colours"], "drawPillars drew nothing"
+    for colours in emitted["colours"]:
+        assert colours and set(colours) <= set(rungs), (
+            f"pillar colours {colours} are not the lit rungs {rungs} of "
+            f"moodFill({mood!r}) — raw identity colour is "
+            f"{emitted['raw']}"
+        )
+    columns = [c for c in emitted["colours"] if len(c) == 3]
+    assert len(columns) == 2, "each tube's column is one three-band volume"
+    for colours in columns:
+        assert len(set(colours)) == 3, "the column is flat, not lit"
+    assert emitted["strokes"] == 0, "the liquid is outlined inside its glass"
+
+
+@needs_node
+@pytest.mark.parametrize("direction", [None, [0.55, 0.84]])
+def test_a_pillar_is_lit_as_an_upright_cylinder(direction):
+    """A cylinder's surface turns only across its width, so its light does
+    too: every band spans the whole column top to bottom, stays inside it,
+    and the lit band hugs the lamp's side. `litRect` put a 30%-by-30% lit
+    block in the column's upper corner instead — a flat grey slab on the
+    first frame (KI-062), which every colour-only assertion passed.
+
+    Run twice, the second time with the lamp mirrored to the other side: the
+    lit band must follow it, so a side baked into the drawing fails here.
+    """
+    emitted = _run_node(
+        _pillar_light_driver(_world_source(), "bullish", direction)
+    )
+    side = emitted["litSide"]
+    assert side == (1 if direction is None else -1), "control did not flip"
+    assert len(emitted["columns"]) == 2
+    for column in emitted["columns"]:
+        cells = column["cells"]
+        left = min(c[0] for c in cells)
+        right = max(c[0] + c[2] for c in cells)
+        top = min(c[1] for c in cells)
+        bottom = max(c[1] + c[3] for c in cells)
+        shade_band, base_band, lit_band = column["bands"]
+        for x, y, w, h in column["bands"]:
+            assert (y, y + h) == (top, bottom), (
+                f"band y {y}..{y + h} does not span the column {top}..{bottom}"
+            )
+            assert left <= x and x + w <= right, "a band leaves its column"
+        assert shade_band[2] > base_band[2] > lit_band[2], "bands do not narrow"
+        # A cylinder's normal sweeps every horizontal direction, so the lit
+        # share is BAND_INSET's alone — the lamp's lean must not narrow it.
+        assert lit_band[2] == pytest.approx(
+            (right - left) * emitted["litShare"], abs=1 / 64
+        ), "the lit strip's width depends on how far the lamp leans"
+        lit_edge = lit_band[0] + lit_band[2] if side > 0 else lit_band[0]
+        column_edge = right if side > 0 else left
+        assert lit_edge == pytest.approx(column_edge), (
+            "the lit band is not on the lamp's side of the column"
+        )
+
+
+@needs_node
+def test_the_pillar_translucency_is_one_fade_over_the_whole_group():
+    """Three opaque bands at a per-fill 0.85 composite to ~0.997 where they
+    overlap: the lit column would go opaque with a seam at each band edge. The
+    0.85 is one AlphaFilter over a pillars-only container — the SAME filter
+    across draws, since `drawPillars` runs every state update — and the cells
+    that cut the column are masks inside that container, so they sway with
+    it."""
+    emitted = _run_node(_pillar_light_driver(_world_source(), "bullish"))
+    assert emitted["propsChildren"] == 1, "pillars go into one container"
+    assert emitted["filters"] == [0.85]
+    assert emitted["glassAlpha"] == 1, "alpha on the container is per-primitive"
+    assert emitted["sameFilter"] is True, "a new AlphaFilter per draw leaks"
+    assert set(emitted["fillAlphas"]) == {1}, "a fill carries its own alpha"
+    assert emitted["masked"] == 2, "each column is cut into cells by a mask"
+    assert emitted["masksInTree"] is True, "a mask outside the tree won't sway"
+
+
 @needs_node
 def test_animation_displacement_actually_quantises_to_the_grid():
     """`test_animation_displacement_is_snapped_too` only proves the text
@@ -7666,7 +7856,6 @@ def test_drawPillars_never_touches_the_monitors_layer():
         "    removeChildren() { monitorsWiped = true; this.children = []; },\n"
         "    addChild(...items) { this.children.push(...items); } },\n"
         "};\n"
-        "function color() { return 0; }\n"
         "function label() { return {}; }\n"
         "function pillarGeometry() {\n"
         "  return { x: 0, baseY: 0, width: 1, height: 1 };\n"
