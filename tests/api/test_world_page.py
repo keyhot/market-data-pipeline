@@ -4768,6 +4768,83 @@ def _bone_point(origin, rotation, width, local):
 
 
 @needs_node
+def test_the_seated_shrug_lifts_the_forearm_at_the_elbow():
+    """Sprint 17 #3 (the user's pick, 2026-09-26): `gesture` — dispatched as
+    `shrug` and `turn` — used to swing the whole near arm about the SHOULDER
+    by `-0.6u`, which carried the hand BACK along the lap (fingertips
+    (-54,-11) -> (-18,+4)) while the comment said "one forearm lifts".
+
+    Graded as the rule, not an instance, over the whole phase: the upper arm
+    never moves (no shoulder swing — the desk is in the way); at the peak the
+    fingertip is at least a CELL higher than at rest; at every phase it has
+    risen more than it has come back toward the body (the hand leaves the
+    lap, it does not slide along it); and `restAccents` returns the forearm
+    to its rest.
+    """
+    source = _world_source()
+    base = _rig_bone_driver(source)
+    driver = (
+        base[: base.index("const accents = [];")]
+        + _js_block(source, "const EASE = {")
+        + ";\n"
+        + _js_const(source, "HEAD_TRAVEL")
+        + "\nfunction setBlink() {}\n"
+        + _js_range(source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.turn")
+        + "\n"
+        + _js_block(source, "function restAccents(")
+        + """
+        const accents = [];
+        seatedRig(new FakeGraphics(), accents);
+        for (const g of accents) g.scale = { set() {} };
+        // The page's own aliasing (positionCharacters).
+        const c = { accents, armNear: accents[0], armFar: accents[1],
+                    body: { rotation: 0, x: 0, y: 0 }, head: { rotation: 0, x: 0, y: 0 } };
+        const arm = c.armFar, fore = arm.forearm;
+        // A point past the wrist on the forearm's axis — where the hand's
+        // fingertips are — mapped out through both transforms (PIXI:
+        // world = pos + R(rot) * (local - pivot)).
+        const map = (g, [x, y]) => {
+          const lx = x - g.pivot.x, ly = y - g.pivot.y;
+          const cs = Math.cos(g.rotation), sn = Math.sin(g.rotation);
+          return [g.x + lx * cs - ly * sn, g.y + lx * sn + ly * cs];
+        };
+        const tip = () => map(arm, map(fore, [fore.pivot.x, fore.pivot.y + fore.boneLength + 12]));
+        const rest = { tip: tip(), upper: arm.rotation };
+        const phases = [];
+        for (let i = 0; i <= 32; i++) {
+          SEATED_ANIMATIONS.shrug(c, i / 32, 1);
+          phases.push({ p: i / 32, tip: tip(), upper: arm.rotation });
+        }
+        // From the PEAK: the cycle ends back at rest on its own (sin(pi) is
+        // ~0), so a rest taken there would pass with no reset at all.
+        SEATED_ANIMATIONS.shrug(c, 0.5, 1);
+        restAccents(c);
+        console.log(JSON.stringify({
+          rest, phases, depth: arm.depth,
+          restored: fore.rotation === fore.restRotation,
+        }));
+        """
+    )
+    out = _run_node(driver)
+    assert out["depth"] == "near", "the shrugging arm must be the one the viewer sees"
+    rest_x, rest_y = out["rest"]["tip"]
+    moved_upper = [ph["p"] for ph in out["phases"] if ph["upper"] != out["rest"]["upper"]]
+    assert not moved_upper, f"the shrug swings the upper arm at p={moved_upper[:3]}"
+    peak = min(ph["tip"][1] for ph in out["phases"])
+    assert rest_y - peak >= 4, f"the fingertip rises only {rest_y - peak:.1f} units"
+    # An arc about the elbow carries the tip a little back near the top, off
+    # the lap; what the old swing did was slide it back ALONG the lap (x +36
+    # while y went DOWN 15). So at every phase the hand must have risen more
+    # than it has come back.
+    slid = [
+        ph for ph in out["phases"]
+        if ph["tip"][0] - rest_x > 0 and ph["tip"][0] - rest_x >= rest_y - ph["tip"][1]
+    ]
+    assert not slid, f"the hand slides back along the lap: {slid[:2]}"
+    assert out["restored"], "restAccents leaves the forearm lifted after a shrug"
+
+
+@needs_node
 def test_the_near_forearm_rests_on_the_lap():
     """The forearm lies ON the near thigh, and the hand lies there with it.
 
@@ -7924,8 +8001,11 @@ PROTECTED_BLOCKS = {
     # And again the same day: the breath is one unit and only up, since a CELL
     # bob of the whole bust still read as unnatural.
     # `test_a_seated_breath_is_one_pixel_and_only_up`.
+    # And 2026-09-26 (Sprint 17 #3, the user's pick): the shrug lifts the
+    # forearm at the elbow instead of swinging the arm back along the lap.
+    # `test_the_seated_shrug_lifts_the_forearm_at_the_elbow`.
     "const SEATED_ANIMATIONS = {": (
-        "f2165a26dc58cb4f9b3553779f7cc8891d956ebdef4cdd26e3a5a54d1ad5a755", 3876
+        "0c9aef488a35203c5f331e92a5063b36726e8dbf9b76d39cf0ee011ade775db9", 4460
     ),
     "function advanceCharacters(": (
         "a4f17050f3d1ca7fbc7790bd192fbeb089353d7d73f556bb73acafb9ec4b5e9e", 2275

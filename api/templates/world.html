@@ -2904,6 +2904,8 @@ void main() {
         // Rest is not necessarily zero: dead-straight symmetrical arms read as
         // a mannequin, so the figure's hang at a slight, uneven angle.
         accent.rotation = accent.restRotation ?? 0;
+        // The seated shrug lifts the forearm child on its own.
+        if (accent.forearm) accent.forearm.rotation = accent.forearm.restRotation ?? 0;
         accent.x = snap(accent.restX ?? accent.x);
         accent.scale.set(1, 1);
       }
@@ -3998,10 +4000,18 @@ void main() {
       lean:    (c, p, a) => { const u = Math.sin(p * Math.PI) * a;
                               c.body.x = snap(u * 4);
                               c.head.x = snap(u * 6); },
-      // No shoulder swing — the desk is in the way. One forearm lifts and
-      // turns instead: the gesture a seated person has room to make.
+      // No shoulder swing — the desk is in the way. One forearm lifts at the
+      // ELBOW instead: the gesture a seated person has room to make. It used
+      // to write `armFar.rotation`, which swung the whole near arm about the
+      // shoulder and dragged the hand BACK along the lap (Sprint 17 #3).
+      // Positive: the forearm points forward-and-down, so turning it that
+      // way raises the hand off the thigh. A rig with no forearm child (the
+      // model) keeps the old whole-arm lift.
+      // `test_the_seated_shrug_lifts_the_forearm_at_the_elbow`.
       gesture: (c, p, a) => { const u = Math.sin(p * Math.PI) * a;
-                              c.armFar.rotation = (c.armFar.restRotation ?? 0) - u * 0.6; },
+                              const fore = c.armFar.forearm;
+                              if (fore) fore.rotation = (fore.restRotation ?? 0) + u * 0.6;
+                              else c.armFar.rotation = (c.armFar.restRotation ?? 0) - u * 0.6; },
       // The seated ambient loop. Full CELL, not half: `body.y` rests at 0,
       // already on the grid, so a smaller delta snaps straight back to it.
       //
