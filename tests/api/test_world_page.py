@@ -541,7 +541,7 @@ def test_the_animation_sheet_loops_every_animation_through_the_real_player():
 def test_the_tier_scale_is_injected_rather_than_reinvented():
     """The canvas and the events rail each decide how big an event reads, and
     both did it on an absolute 2/5/8 scale while the server normalises PER RULE.
-    `signal_resolved` cuts at 0.6/1.2/1.8 — so the room's single most frequent
+    `signal_resolved` cut at 0.6/1.2/1.8 (bps of realized move since KI-041) — so the room's single most frequent
     event has always rendered at tier 0: minimum amplitude, no swell, no tier
     colour. Exactly the drift a restated reaction registry would cause, and the
     same fix — the scale comes from `world.state`."""
@@ -605,7 +605,7 @@ def test_the_tier_function_is_injected_not_written_out_per_page():
         tier_of_js(),
     )
     assert cuts, "the injected function stopped reading the injected cuts"
-    assert severity_tier("signal_resolved", 1.3) == 2, "the rule itself moved"
+    assert severity_tier("signal_resolved", 30.0) == 2, "the rule itself moved"
 
 
 def test_room_lighting_comes_from_the_shared_ramp():

@@ -45,8 +45,10 @@ def _event(event_id, event_type, severity, payload=None, symbol="BTCUSDT", minut
         ("volume_anomaly", 7.23, 2),
         ("streak", 7.0, 0),
         ("streak", 11.0, 1),
-        ("signal_resolved", 0.2, 0),
-        ("signal_resolved", 1.93, 3),
+        ("signal_resolved", 5.0, 0),     # bps of realized move (KI-041)
+        ("signal_resolved", 8.03, 1),
+        ("signal_resolved", 30.0, 2),
+        ("signal_resolved", 75.0, 3),
         ("model_losing_streak", 1.0, 0),
         ("stream_started", 1.0, 0),
         ("stream_stopped", 2.0, 1),
@@ -55,6 +57,16 @@ def _event(event_id, event_type, severity, payload=None, symbol="BTCUSDT", minut
 )
 def test_severity_tier_is_comparable_across_rules(event_type, severity, expected):
     assert severity_tier(event_type, severity) == expected
+
+
+@pytest.mark.parametrize("legacy", [0.0, 0.6, 1.2, 1.8, 2.0])
+def test_legacy_confidence_scale_resolutions_render_quiet(legacy):
+    # KI-041 is forward-only: rows written before it carry |p-0.5|x2 (0..2,
+    # doubled on a loss) and world_events is append-only. The new unit (bps)
+    # must put every one of them in tier 0 — history goes quiet, never loud. A
+    # switch to fractional units (0.0025 for 25 bps) would invert this and
+    # render every legacy row tier 3.
+    assert severity_tier("signal_resolved", legacy) == 0
 
 
 def test_severity_tier_unknown_type_uses_generic_scale():
@@ -197,7 +209,7 @@ def test_a_month_of_history_differs_materially_from_a_fresh_log():
     """The month-away property: a world that has lived is not a world that
     just booted, even when the recent window looks the same."""
     aged = [
-        _event(i, "signal_resolved", 1.5,
+        _event(i, "signal_resolved", 100.0,
                {"outcome": "loss", "realized_return": -0.01}, minute=i * 60)
         for i in range(1, 200)
     ]

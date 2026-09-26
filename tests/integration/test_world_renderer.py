@@ -15,7 +15,7 @@ client = TestClient(app)
 def _log():
     return [
         {"id": 3, "occurred_at": "2026-07-20T12:30:00+00:00",
-         "event_type": "signal_resolved", "symbol": "BTCUSDT", "severity": 1.9,
+         "event_type": "signal_resolved", "symbol": "BTCUSDT", "severity": 400.0,
          "payload": {"outcome": "loss", "realized_return": -0.04}},
         {"id": 2, "occurred_at": "2026-07-20T12:10:00+00:00",
          "event_type": "big_move", "symbol": "BTCUSDT", "severity": 8.0,

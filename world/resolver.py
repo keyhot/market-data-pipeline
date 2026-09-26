@@ -2,10 +2,17 @@
 gets publicly resolved against what the market actually did, and the
 resolution — win or loss — becomes a permanent world event.
 
-Severity design (pinned by tests): base = (probability − 0.5) × 2, doubled
-for losses — a confident wrong call is the most interesting content the
-model produces. Resolution uses bars as stored at resolution time; a
-missing realized bar leaves the signal pending for the next run.
+Severity (pinned by tests) is the realized move, |realized_return| in basis
+points — what the market actually did, whoever called it (KI-041). It used to
+be (probability − 0.5) × 2, doubled for a loss: "a confident wrong call is the
+most interesting content the model produces". Measured on air, that number was
+uncorrelated with the move (corr −0.0135 over 7,078 resolutions) and losses
+were no larger than wins, so the room was loud on a coin flip. Win or loss
+still drives *which* reaction plays (`world.reactions`); size drives how hard.
+Rows written before the change keep the old 0..2 scale — world_events is
+append-only — and render tier 0 under the bps cuts in `world.state`.
+Resolution uses bars as stored at resolution time; a missing realized bar
+leaves the signal pending for the next run.
 """
 
 import logging
@@ -21,7 +28,7 @@ from storage.postgres_store import (
 # Bar-interval durations the resolver understands.
 INTERVAL_DELTAS = {"1m": timedelta(minutes=1), "1d": timedelta(days=1)}
 
-LOSS_SEVERITY_MULTIPLIER = 2.0
+BPS = 10_000
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +77,7 @@ def resolve_pending(now: datetime | None = None) -> list[dict]:
         if updated == 0:
             continue  # resolved concurrently — do not emit a second event
 
-        confidence = (signal["probability"] - 0.5) * 2
-        severity = round(
-            confidence * (LOSS_SEVERITY_MULTIPLIER if outcome == "loss" else 1.0),
-            4,
-        )
+        severity = round(abs(realized_return) * BPS, 4)
         resolution = {
             "symbol": signal["symbol"],
             "signal_timestamp": signal["signal_timestamp"],

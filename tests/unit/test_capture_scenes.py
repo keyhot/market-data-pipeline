@@ -182,9 +182,9 @@ def test_swell_waits_for_a_real_event_at_or_above_the_tier(tmp_path):
     so the harness waits for a real one instead."""
     slept = []
     events = [
-        {"event_type": "signal_resolved", "severity": 0.2},   # tier 0, ignored
-        {"event_type": "signal_resolved", "severity": 1.3},   # tier 2, fires
-        {"event_type": "signal_resolved", "severity": 1.9},   # never reached
+        {"event_type": "signal_resolved", "severity": 5.0},   # tier 0, ignored
+        {"event_type": "signal_resolved", "severity": 30.0},  # tier 2, fires
+        {"event_type": "signal_resolved", "severity": 75.0},  # never reached
     ]
     written = capture_scenes.capture_swell(
         FakeClient(), events, tmp_path, min_tier=1, shots=3, sleeper=slept.append
@@ -211,9 +211,9 @@ def test_the_harness_reads_tier_from_the_one_scale(tmp_path):
     swell never happened and quietly photograph nothing."""
     from world.state import severity_tier
 
-    event = {"event_type": "signal_resolved", "severity": 0.7086}
+    event = {"event_type": "signal_resolved", "severity": 12.5}  # bps, KI-041
     assert capture_scenes.tier_of(event) == severity_tier(*event.values()) == 1
-    assert capture_scenes.tier_of({"event_type": "big_move", "severity": 0.7}) == 0
+    assert capture_scenes.tier_of({"event_type": "big_move", "severity": 12.5}) == 3
 
 
 def test_scene_names_come_from_the_scene_spec():

@@ -60,17 +60,31 @@ def test_all_direction_outcome_combos(direction, went_up, expected):
     assert event["payload"]["outcome"] == expected
 
 
-def test_confident_loss_more_severe_than_hesitant_loss_and_any_win():
-    _, _, confident_loss = _run(_signal("up", probability=0.9), 100.0, 90.0)
-    _, _, hesitant_loss = _run(_signal("up", probability=0.55), 100.0, 90.0)
-    _, _, confident_win = _run(_signal("up", probability=0.9), 100.0, 110.0)
+def _severity(signal, entry, realized):
+    _, _, mock_append = _run(signal, entry, realized)
+    return mock_append.call_args[0][0][0]["severity"]
 
-    sev_confident_loss = confident_loss.call_args[0][0][0]["severity"]
-    sev_hesitant_loss = hesitant_loss.call_args[0][0][0]["severity"]
-    sev_confident_win = confident_win.call_args[0][0][0]["severity"]
 
-    assert sev_confident_loss > sev_hesitant_loss
-    assert sev_confident_loss > sev_confident_win  # losses weighted double
+def test_severity_is_the_realized_move_in_bps():
+    # KI-041: |p-0.5| was measured to carry no information about being right
+    # (corr -0.0135 with the realized move over 7,078 on-air resolutions), so
+    # the room's loudness is keyed to what the market actually did.
+    assert _severity(_signal("up", 0.8), 100.0, 100.25) == pytest.approx(25.0)
+    assert _severity(_signal("up", 0.8), 100.0, 99.9) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("probability", [0.55, 0.95])
+@pytest.mark.parametrize("direction", ["up", "down"])
+@pytest.mark.parametrize("realized", [99.7, 100.3])
+def test_severity_ignores_confidence_and_outcome(probability, direction, realized):
+    # The same move is the same size whoever called it and however sure the
+    # model claimed to be; re-adding the probability term or the old x2 loss
+    # multiplier makes this red. Wins and losses measured the same size on air
+    # (13.3 vs 13.6 bps), so doubling losses doubled nothing real.
+    reference = _severity(_signal("up", 0.75), 100.0, 100.3)
+    assert _severity(_signal(direction, probability), 100.0, realized) == (
+        pytest.approx(reference)
+    )
 
 
 def test_horizon_not_reached_leaves_pending():

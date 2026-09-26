@@ -61,7 +61,13 @@ _TIER_CUTS: dict[str, tuple[float, float, float]] = {
     "gap_open": (1.5, 2.5, 4.0),             # multiples of the gap threshold
     "volume_anomaly": (5.0, 7.0, 10.0),      # volume z-score; fires at 4.0
     "streak": (9.0, 12.0, 15.0),             # consecutive bars; fires at 7
-    "signal_resolved": (0.6, 1.2, 1.8),      # confidence, doubled on a loss
+    # |realized move| in bps (KI-041). Cut at the cumulative shares the old
+    # confidence tiers had (42.4 / 80.4 / 97.6 %) over all 12,443 resolutions
+    # 2026-07-19 -> 09-26, so the show's pacing is unchanged and only WHICH
+    # events earn the volume moves. Measured, not rounded. Pooled BTC+ETH, so
+    # ETH (median 11.6 bps vs BTC 8.6) is louder on average. Legacy rows on the
+    # 0..2 confidence scale all fall under the first cut: history is quiet.
+    "signal_resolved": (8.03, 22.8, 60.16),
     "model_losing_streak": (1.34, 2.0, 3.0), # streak/3; tiers at 5, 6, 9 losses
     "stream_started": (2.0, 3.0, 4.0),
     "stream_stopped": (2.0, 3.0, 4.0),
