@@ -10261,7 +10261,12 @@ def _keyline_driver(source: str, scenario: str) -> str:
     """`keylineFilter` against a stub renderer, one scenario per process
     (the page caches the outcome in a module-level `let`)."""
     return (
-        _js_block(source, "const KEYLINE = {") + ";\n"
+        "const LIGHT = { warmth: '#f0a848', direction: [-0.55, 0.84] };\n"
+        + _js_block(source, "const KEYLINE = {") + ";\n"
+        + _js_block(source, "function rimFromLight(") + "\n"
+        + "const RIM = rimFromLight(LIGHT);\n"
+        + _js_block(source, "function rimAmount(") + "\n"
+        + "const PROBE_GREY = 0x40;\n"
         + "const KEYLINE_FRAGMENT = '';\n"
         + "let keylineCache;\n"
         + _js_block(source, "function keylineFilter(") + "\n"
@@ -10269,23 +10274,37 @@ def _keyline_driver(source: str, scenario: str) -> str:
         + """
         const window = {};
         const scenario = %s;
-        // A 32x32 target the stub "renders" into. The page draws a square at
-        // 11..22; a working shader snaps it onto the global 2px grid (10..23)
-        // with the keyline one cell outside (8..25). `passthrough` returns
-        // the square untouched; `bounds` is the shimmer bug -- a grid anchored
-        // at the odd bounds origin, so the square lands on 11..24 with its
-        // keyline at 9..10 and column 10 is keyline, not white.
+        // A 32x32 target the stub "renders" into. The page draws a grey
+        // square at 11..22; a working shader snaps it onto the global 2px grid
+        // (10..23), rims its outer cell (toward the lamp's warmth, more on the
+        // side facing the key) and puts the keyline one cell outside (8..25).
+        // `passthrough` returns the square untouched; `bounds` is the shimmer
+        // bug -- a grid anchored at the odd bounds origin, so the square lands
+        // on 11..24 with its keyline at 9..10 and column 10 is keyline, not
+        // rim. `norim` outlines on the right grid and draws no rim (KI-058's
+        // failure); `undirected` rims every edge by `floor` alone;
+        // `facingonly` rims only the edges that face the key.
         function frame(works) {
           const px = new Uint8Array(32 * 32 * 4);
           const k = KEYLINE.color;
+          const g = PROBE_GREY;
+          const rimmed = works || ["bounds", "undirected", "facingonly"].includes(scenario);
+          const outlined = rimmed || scenario === "norim";
           const [lo, hi, rlo, rhi] = scenario === "bounds" ? [11, 25, 9, 27]
             : scenario === "passthrough" ? [11, 23, 11, 23] : [10, 24, 8, 26];
           for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
             const i = (y * 32 + x) * 4;
             const inside = x >= lo && x < hi && y >= lo && y < hi;
             const ring = x >= rlo && x < rhi && y >= rlo && y < rhi;
-            if ((works || scenario === "passthrough" || scenario === "bounds") && inside) px.set([255, 255, 255, 255], i);
-            else if ((works || scenario === "bounds") && ring) px.set([(k >> 16) & 255, (k >> 8) & 255, k & 255, 255], i);
+            if (inside && (outlined || scenario === "passthrough")) {
+              const nx = (x >= hi - 2 ? 1 : 0) - (x < lo + 2 ? 1 : 0);
+              const ny = (y >= hi - 2 ? 1 : 0) - (y < lo + 2 ? 1 : 0);
+              const edge = rimmed && (nx || ny);
+              const facingOnly = scenario === "facingonly" && rimAmount(nx, ny) === RIM.floor;
+              const m = !edge || facingOnly ? 0
+                : scenario === "undirected" ? RIM.floor : rimAmount(nx, ny);
+              px.set([...RIM.color.map((c) => Math.round(g + (c * 255 - g) * m)), 255], i);
+            } else if (outlined && ring) px.set([(k >> 16) & 255, (k >> 8) & 255, k & 255, 255], i);
           }
           return px;
         }
@@ -10313,7 +10332,10 @@ def _keyline_driver(source: str, scenario: str) -> str:
 
 
 @needs_node
-@pytest.mark.parametrize("scenario", ["webgpu", "throws", "blank", "passthrough", "bounds"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["webgpu", "throws", "blank", "passthrough", "bounds", "norim", "undirected", "facingonly"],
+)
 def test_a_keyline_that_cannot_be_proven_is_not_worn(scenario):
     """No WebGL, a throw, or a shader that draws nothing: the trader goes on
     air unoutlined -- never invisible. The failure path, written first.
@@ -10325,6 +10347,11 @@ def test_a_keyline_that_cannot_be_proven_is_not_worn(scenario):
     only the inside would wear a filter that pixelates and never outlines.
     `bounds` outlines correctly but on a grid anchored to the filter's own
     bounds, which shimmers as the figure breathes (measured, increment 15).
+    `norim` outlines on the right grid but draws no light edge -- the KI-058
+    trader, whose dark keyline is 1.4:1 on the dark room -- and `undirected`
+    draws a rim that ignores where the lamp is. `facingonly` lights just the
+    edges that face the key: his shoes and shins face the floor, and those are
+    the edges below 3:1, so a rim that skips them fixes nothing.
     """
     out = _run_node(_keyline_driver(_world_source(), scenario))
     assert not out["attached"], f"the keyline was attached in the {scenario!r} case"
