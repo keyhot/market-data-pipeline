@@ -369,6 +369,31 @@ def get_model_accuracy(
     }
 
 
+def get_signal_record(interval: str = "1m") -> dict:
+    """The model's ALL-TIME record of resolved calls, for the public title
+    (`broadcast.metadata`). Not windowed: the on-air strips show the last 50,
+    this is every call ever scored. `since` is the first resolved call's date;
+    `horizon_bars` is the latest call's horizon."""
+    with get_pool().connection() as conn:
+        wins, losses, since = conn.execute(
+            "SELECT count(*) FILTER (WHERE outcome = 'win'),"
+            " count(*) FILTER (WHERE outcome = 'loss'), min(signal_timestamp)"
+            " FROM signals WHERE interval = %s AND resolved_at IS NOT NULL",
+            (interval,),
+        ).fetchone()
+        row = conn.execute(
+            "SELECT horizon_bars FROM signals WHERE interval = %s"
+            " ORDER BY signal_timestamp DESC LIMIT 1",
+            (interval,),
+        ).fetchone()
+    return {
+        "wins": wins,
+        "losses": losses,
+        "since": since.date() if since else None,
+        "horizon_bars": row[0] if row else None,
+    }
+
+
 def get_unresolved_signals(limit: int = 500) -> list[dict]:
     """Pending signals, oldest first — the resolver's work queue."""
     with get_pool().connection() as conn:

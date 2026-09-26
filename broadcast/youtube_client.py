@@ -179,6 +179,22 @@ class YouTubeLiveClient:
             "lifecycle": item["status"]["lifeCycleStatus"],
         }
 
+    def get_video_snippet(self, video_id: str) -> dict | None:
+        """A live broadcast's video shares its id. 1 quota unit."""
+        resp = self._yt.videos().list(part="snippet", id=video_id).execute()
+        items = resp.get("items", [])
+        return items[0]["snippet"] if items else None
+
+    def update_video_snippet(self, video_id: str, snippet: dict) -> None:
+        """`videos.update(part=snippet)` REPLACES the snippet and requires
+        `title` + `categoryId` — so the caller sends it whole (see
+        `broadcast.metadata.build_snippet`). One call carries title,
+        description, tags and category; tags don't exist on the broadcast
+        resource. 50 quota units."""
+        self._yt.videos().update(
+            part="snippet", body={"id": video_id, "snippet": snippet}
+        ).execute()
+
     def bind_broadcast(self, broadcast_id: str, stream_id: str) -> dict:
         item = (
             self._yt.liveBroadcasts()

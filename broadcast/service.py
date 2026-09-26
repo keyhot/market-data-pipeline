@@ -217,6 +217,59 @@ def _adopt(state: BroadcastState, new_state: BroadcastState) -> None:
         state.current_broadcast_id = new_state.current_broadcast_id
 
 
+def metadata_enabled() -> bool:
+    """Opt-IN, unlike the manager itself: this rewrites the public title and
+    description, so it changes nothing until a human sets
+    `BROADCAST_METADATA_ENABLED=1`."""
+    raw = os.environ.get("BROADCAST_METADATA_ENABLED", "")
+    return raw.strip().lower() in {"1", "true", "yes"}
+
+
+class MetadataRefresher:
+    """Keeps the live broadcast's title/description/tags true (Sprint 17 #27).
+
+    Writes on a new broadcast id at once, then at most every `interval_seconds`
+    and only when the text changed: `videos.update` costs 50 quota units from
+    the same 10k/day the go-live transitions need, and a quota-starved
+    transition is a stream that isn't public. Never raises; a failed write is
+    retried on the next tick.
+    """
+
+    def __init__(self, client, read_record, interval_seconds: float = 21600):
+        self._client = client
+        self._read_record = read_record
+        self._interval = interval_seconds
+        self._written_id = None
+        self._written_at = None
+        self._written = None
+
+    def maybe_refresh(self, broadcast_id, now) -> None:
+        if broadcast_id is None:
+            return
+        fresh = broadcast_id != self._written_id
+        if not fresh and (now - self._written_at).total_seconds() < self._interval:
+            return
+        try:
+            from broadcast.metadata import build_snippet
+
+            record = self._read_record()
+            current = self._client.get_video_snippet(broadcast_id)
+            if current is None:
+                return
+            snippet = build_snippet(record, current)
+            if not fresh and snippet == self._written:
+                self._written_at = now
+                return
+            self._client.update_video_snippet(broadcast_id, snippet)
+        except Exception as exc:
+            logger.warning(
+                "broadcast_metadata_failed", extra={"error": str(exc)}, exc_info=True
+            )
+            return
+        self._written_id, self._written_at, self._written = broadcast_id, now, snippet
+        logger.info("Broadcast metadata written", extra={"title": snippet["title"]})
+
+
 def write_status(**status) -> None:
     """Publish this tick's status for the ops alerter (KI-086's alert half:
     the ERROR log line is the channel that read green for six days). Written
@@ -308,8 +361,20 @@ def main() -> int:
             state_holder["obs"] = None  # force a reconnect next tick
             return False
 
+    refresher = None
+    if metadata_enabled():
+        from storage.postgres_store import get_signal_record
+
+        refresher = MetadataRefresher(
+            client,
+            get_signal_record,
+            float(os.environ.get("BROADCAST_METADATA_REFRESH_SECONDS", 21600)),
+        )
+
     def apply_actions(actions, state, now):
         apply(actions, state, client, record_broadcast_events, config, now)
+        if refresher is not None:
+            refresher.maybe_refresh(state.current_broadcast_id, now)
 
     run(
         fetch_yt_state=lambda state: fetch_yt_state(client, state, config),
