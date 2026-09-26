@@ -18,6 +18,7 @@ fail-closed on purpose (exit 2, systemd restarts, it comes up when the secret
 is there).
 """
 
+import json
 import logging
 import os
 import sys
@@ -216,6 +217,20 @@ def _adopt(state: BroadcastState, new_state: BroadcastState) -> None:
         state.current_broadcast_id = new_state.current_broadcast_id
 
 
+def write_status(**status) -> None:
+    """Publish this tick's status for the ops alerter (KI-086's alert half:
+    the ERROR log line is the channel that read green for six days). Written
+    atomically; never raises — nothing about alerting may stop the manager."""
+    path = Path(os.environ.get("BROADCAST_STATUS_PATH", "data/broadcast_status.json"))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(status))
+        tmp.replace(path)
+    except Exception as exc:
+        logger.warning("broadcast status not written", extra={"error": str(exc)})
+
+
 def run(
     fetch_yt_state,
     obs_probe,
@@ -223,6 +238,7 @@ def run(
     config=None,
     sleep_seconds=30.0,
     max_ticks=None,
+    on_status=write_status,
 ) -> None:
     """Poll YouTube + OBS, decide, apply. Loops forever unless `max_ticks` is
     given (tests). Every tick body is guarded — the loop is the thing that must
@@ -230,6 +246,7 @@ def run(
     config = config or BroadcastConfig()
     state = BroadcastState(None, None, None, None)
     ticks = 0
+    tick_failures = 0
     while max_ticks is None or ticks < max_ticks:
         ticks += 1
         now = datetime.now(timezone.utc)
@@ -239,10 +256,19 @@ def run(
             # decides which one `select_broadcast` returns.
             yt_state = fetch_yt_state(state)
             tick_once(yt_state, obs_streaming, state, config, now, apply_actions)
+            tick_failures = 0
         except Exception as exc:
+            tick_failures += 1
             logger.warning(
                 "broadcast_tick_failed", extra={"error": str(exc)}, exc_info=True
             )
+        on_status(
+            updated_at=now.isoformat(),
+            broadcast_id=state.current_broadcast_id,
+            lifecycle=state.current_lifecycle,
+            refused_transitions=state.refused_transitions,
+            consecutive_tick_failures=tick_failures,
+        )
         if sleep_seconds:
             time.sleep(sleep_seconds)
 

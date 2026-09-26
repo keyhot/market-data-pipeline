@@ -406,3 +406,78 @@ def test_grace_window_gates_the_explicit_transition(elapsed, expected):
         yt, True, state, CFG, now["t"], lambda actions, st, n: applied.extend(actions)
     )
     assert any(a[0] == "transition_live" for a in applied) is expected
+
+
+# --- KI-086 alert half: the status the ops alerter reads ---------------------
+
+
+def _read_status():
+    import json
+    import os
+
+    with open(os.environ["BROADCAST_STATUS_PATH"]) as f:
+        return json.load(f)
+
+
+def test_run_publishes_its_status_every_tick_for_the_alerter():
+    """An ERROR line is the channel that read green for six days; the alerter
+    (scripts/ops_alert.py) reads this file instead."""
+
+    def refuse(actions, state, now):
+        # `_transition_live` is what counts refusals in production; stand in
+        # for a streak it has already built.
+        state.refused_transitions = 61
+
+    service.run(
+        fetch_yt_state=lambda state: {"broadcast": None, "stream": None},
+        obs_probe=lambda: True,
+        apply_actions=refuse,
+        config=CFG,
+        sleep_seconds=0,
+        max_ticks=3,
+    )
+    status = _read_status()
+    assert status["refused_transitions"] == 61
+    assert status["consecutive_tick_failures"] == 0
+    assert datetime.fromisoformat(status["updated_at"]).tzinfo is not None
+
+
+def test_failing_ticks_are_counted_and_a_good_tick_resets_them():
+    ticks = {"n": 0}
+
+    def fetch(state):
+        ticks["n"] += 1
+        if ticks["n"] <= 2:
+            raise RuntimeError("youtube down")
+        return {"broadcast": None, "stream": None}
+
+    seen = []
+
+    def spy(**kwargs):
+        seen.append(kwargs["consecutive_tick_failures"])
+
+    service.run(
+        fetch_yt_state=fetch,
+        obs_probe=lambda: True,
+        apply_actions=lambda actions, state, now: None,
+        config=CFG,
+        sleep_seconds=0,
+        max_ticks=3,
+        on_status=spy,
+    )
+    assert seen == [1, 2, 0]
+
+
+def test_an_unwritable_status_never_stops_the_manager(monkeypatch, tmp_path):
+    # Cardinal rule: nothing about alerting can take the stream down.
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    monkeypatch.setenv("BROADCAST_STATUS_PATH", str(blocker / "status.json"))
+    service.run(
+        fetch_yt_state=lambda state: {"broadcast": None, "stream": None},
+        obs_probe=lambda: True,
+        apply_actions=lambda actions, state, now: None,
+        config=CFG,
+        sleep_seconds=0,
+        max_ticks=2,
+    )  # must not raise

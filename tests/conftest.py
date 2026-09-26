@@ -28,7 +28,18 @@ _SPOOLS = {
     "STREAM_EVENT_SPOOL": "stream_events.spool.jsonl",
     "DIRECTOR_EVENT_SPOOL": "director_events.spool.jsonl",
     "BROADCAST_EVENT_SPOOL": "broadcast_events.spool.jsonl",
+    # Not spools, but the same hazard: state files the production alerter and
+    # broadcast manager read from the checkout they run in.
+    "BROADCAST_STATUS_PATH": "broadcast_status.json",
+    "OPS_ALERT_STATE": "ops_alert_state.json",
 }
+
+
+def _refuse_mail(*args, **kwargs):
+    raise RuntimeError(
+        "the test suite sends no mail — the streaming box's .env carries real "
+        "alert credentials (the KI-083 class); inject a sender instead"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +61,11 @@ def no_database_outside_integration(request, monkeypatch, tmp_path):
 
     tests/integration is exempt: it is the suite that talks to Postgres, and
     it skips itself when there is none."""
+    import smtplib
+
+    # Before the integration exemption: no suite sends mail.
+    monkeypatch.setattr(smtplib, "SMTP", _refuse_mail)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _refuse_mail)
     if "integration" in request.node.path.parts:
         return
     import storage.db as db
