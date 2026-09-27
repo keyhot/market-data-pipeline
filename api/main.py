@@ -471,7 +471,9 @@ async def _fetch_and_store_ticker(ticker_symbol: str, time_range: TimeRange) -> 
     }
 
     if not was_cached:
-        write_price_bars(ticker_symbol, data)
+        # Off the event loop: a stalled database socket would otherwise
+        # freeze every request, /health included (KI-080).
+        await asyncio.to_thread(write_price_bars, ticker_symbol, data)
         if csv_write_enabled():
             path = raw_data_path(ticker_symbol, time_range)
             save_csv(path, data)

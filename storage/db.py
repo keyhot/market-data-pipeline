@@ -155,9 +155,9 @@ def ping(timeout_seconds: float = 2.0) -> bool:
             # over; without this a server too loaded to answer held
             # `SELECT 1` as long as it liked (KI-080). Transaction-local, so
             # it leaves with the rollback that returns the connection.
-            conn.execute(
-                f"SET LOCAL statement_timeout = {int(timeout_seconds * 1000)}"
-            )
+            # At least 1ms: `statement_timeout = 0` means no limit at all.
+            bound_ms = max(1, int(timeout_seconds * 1000))
+            conn.execute(f"SET LOCAL statement_timeout = {bound_ms}")
             conn.execute("SELECT 1")
         return True
     except Exception as e:

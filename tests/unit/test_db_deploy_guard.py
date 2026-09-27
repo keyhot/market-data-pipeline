@@ -220,3 +220,26 @@ class TestPingBoundsItsQuery:
         assert db.ping(timeout_seconds=1.5) is True
         assert executed[0] == "SET LOCAL statement_timeout = 1500"
         assert executed[-1] == "SELECT 1"
+
+    def test_a_tiny_timeout_never_becomes_unbounded(self, monkeypatch):
+        # statement_timeout = 0 means "no limit", so rounding must not reach it.
+        executed = []
+
+        class FakeConn:
+            def execute(self, sql, *args):
+                executed.append(sql)
+
+        class FakeCtx:
+            def __enter__(self):
+                return FakeConn()
+
+            def __exit__(self, *exc):
+                return False
+
+        class FakePool:
+            def connection(self, timeout):
+                return FakeCtx()
+
+        monkeypatch.setattr(db, "_pool", FakePool())
+        db.ping(timeout_seconds=0.0004)
+        assert executed[0] == "SET LOCAL statement_timeout = 1"
