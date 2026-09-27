@@ -30,49 +30,15 @@ BASE = datetime(2026, 9, 26, 22, 0, tzinfo=timezone.utc)
 # --- the strings -----------------------------------------------------------
 
 
-def test_the_title_leads_with_the_premise_not_the_brand():
+def test_the_title_is_the_users_line():
     title = build_title(RECORD)
+    assert title == "An AI calls Bitcoin & Ethereum live 24/7 | chill lofi beats"
     assert "Market World" not in title
-    assert title.startswith("An AI")
-
-
-def test_the_title_carries_the_all_time_record():
-    title = build_title(RECORD)
-    assert "6,357 right" in title and "6,170 wrong" in title
-
-
-def test_the_title_promises_the_music_bed():
-    # The bed (config/music_tracks.json) is chill/lofi; people search for it.
-    assert build_title(RECORD).endswith("| chill lofi beats")
-
-
-def test_a_long_record_sheds_the_tagline_before_the_music_or_the_numbers():
-    long = {**RECORD, "wins": 1_234_567, "losses": 1_234_567}
-    title = build_title(long)
     assert len(title) <= TITLE_MAX
-    assert "1,234,567 right" in title and "chill lofi beats" in title
 
 
-def test_the_description_and_tags_mention_the_music():
-    assert "chill lofi beats" in build_description(RECORD).lower()
-    assert "lofi" in TAGS
-
-
-def test_a_losing_record_is_titled_the_same_way_not_hidden():
-    # Truth over vanity: the losing case is not a different, kinder template.
-    title = build_title({**RECORD, "wins": 10, "losses": 90})
-    assert "10 right" in title and "90 wrong" in title
-
-
-def test_the_title_fits_youtubes_limit_at_any_size():
-    huge = {**RECORD, "wins": 10**12, "losses": 10**12}
-    assert len(build_title(huge)) <= TITLE_MAX
-
-
-def test_no_record_yet_does_not_invent_one():
-    title = build_title({**RECORD, "wins": 0, "losses": 0})
-    assert "0 right" not in title and "wrong" not in title
-    assert title.startswith("An AI")
+def test_the_title_carries_no_number_that_could_go_stale():
+    assert build_title(RECORD) == build_title({**RECORD, "wins": 1, "losses": 99})
 
 
 def test_the_description_states_the_record_rate_date_and_horizon():
@@ -105,7 +71,7 @@ def test_a_missing_key_raises_rather_than_defaults():
     # A confident wrong figure in a public title is worse than a skipped
     # refresh, which the runner retries.
     with pytest.raises(KeyError):
-        build_title({"wins": 1})
+        build_description({"wins": 1})
 
 
 def test_the_snippet_keeps_fields_it_does_not_own_and_drops_read_only_ones():
@@ -248,7 +214,7 @@ def test_the_record_is_rewritten_after_the_interval():
     r.maybe_refresh("b1", BASE)
     r.maybe_refresh("b1", BASE + timedelta(hours=6))
     assert len(client.updates) == 2
-    assert "6,358 right" in client.updates[-1][1]["title"]
+    assert "6,358 right" in client.updates[-1][1]["description"]
 
 
 def test_an_unchanged_snippet_is_not_rewritten():

@@ -2,14 +2,14 @@
 
 Every broadcast this stream ever created was titled "Market World — live": a
 brand nobody has heard of, in the space where the hook should be, never
-changing. The title now says what the stream is FOR and carries a number that
-is true right now — the model's all-time record of calls, losses included.
+changing. The title now says what the stream is FOR; the description carries
+what is true right now — the model's all-time record of calls, losses included.
 
 Pure: a record dict in, strings out. No client, no clock, no DB. The record
 comes from `storage.postgres_store.get_signal_record()` — the ALL-TIME
 `signals` table, never `/world/state`, whose record and `first_seen` are a
 500-event window. A missing key raises rather than defaults: a confident wrong
-figure on the public title is worse than a skipped refresh the runner retries.
+figure on the public page is worse than a skipped refresh the runner retries.
 """
 
 TITLE_MAX = 100          # YouTube's limit
@@ -25,10 +25,10 @@ TAGS = [
 # not own — kept from the current snippet, because part=snippet REPLACES it.
 _KEPT = ("defaultLanguage", "defaultAudioLanguage")
 
-_PREMISE = "An AI calls Bitcoin & Ethereum live"
-# The music bed (config/music_tracks.json) is chill/lofi, and it is what a lot
-# of 24/7 viewers search for. Shed last: after the tagline, before the numbers.
-_MUSIC = " | chill lofi beats"
+# The user's title (2026-09-27). Fixed text: nothing in it can go stale, so it
+# is written once per broadcast. The live record lives in the description. The
+# music bed (config/music_tracks.json) is chill/lofi, which viewers search for.
+TITLE = "An AI calls Bitcoin & Ethereum live 24/7 | chill lofi beats"
 
 
 def _n(value: int) -> str:
@@ -36,14 +36,7 @@ def _n(value: int) -> str:
 
 
 def build_title(record: dict) -> str:
-    wins, losses = record["wins"], record["losses"]
-    if wins + losses == 0:
-        return f"{_PREMISE}, every call scored in public{_MUSIC}"[:TITLE_MAX]
-    record = f"{_PREMISE} — {_n(wins)} right, {_n(losses)} wrong"
-    for title in (f"{record}, all public{_MUSIC}", f"{record}{_MUSIC}", record):
-        if len(title) <= TITLE_MAX:
-            return title
-    return record[:TITLE_MAX]
+    return TITLE
 
 
 def build_description(record: dict) -> str:
