@@ -18,6 +18,7 @@ CATEGORY_ID = "28"       # Science & Technology
 TAGS = [
     "algorithmic trading", "AI trading", "live market data", "crypto",
     "bitcoin", "ethereum", "machine learning", "24/7 stream",
+    "lofi", "chill beats",
 ]
 
 # Snippet fields YouTube lets a `videos.update` write that this module does
@@ -25,6 +26,9 @@ TAGS = [
 _KEPT = ("defaultLanguage", "defaultAudioLanguage")
 
 _PREMISE = "An AI calls Bitcoin & Ethereum live"
+# The music bed (config/music_tracks.json) is chill/lofi, and it is what a lot
+# of 24/7 viewers search for. Shed last: after the tagline, before the numbers.
+_MUSIC = " | chill lofi beats"
 
 
 def _n(value: int) -> str:
@@ -34,11 +38,12 @@ def _n(value: int) -> str:
 def build_title(record: dict) -> str:
     wins, losses = record["wins"], record["losses"]
     if wins + losses == 0:
-        return f"{_PREMISE}, and every call is scored in public"[:TITLE_MAX]
-    title = f"{_PREMISE} — {_n(wins)} right, {_n(losses)} wrong, all public"
-    if len(title) > TITLE_MAX:
-        title = f"{_PREMISE} — {_n(wins)} right, {_n(losses)} wrong"
-    return title[:TITLE_MAX]
+        return f"{_PREMISE}, every call scored in public{_MUSIC}"[:TITLE_MAX]
+    record = f"{_PREMISE} — {_n(wins)} right, {_n(losses)} wrong"
+    for title in (f"{record}, all public{_MUSIC}", f"{record}{_MUSIC}", record):
+        if len(title) <= TITLE_MAX:
+            return title
+    return record[:TITLE_MAX]
 
 
 def build_description(record: dict) -> str:
@@ -65,6 +70,8 @@ def build_description(record: dict) -> str:
         "",
         "A call is right when the price moved the way the model said. This is "
         "a record of calls, not of trading profit.",
+        "",
+        "Chill lofi beats underneath; every track is credited on screen.",
         "",
         "Live prices from Binance. Nothing here is financial advice.",
     ]

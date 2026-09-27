@@ -41,6 +41,23 @@ def test_the_title_carries_the_all_time_record():
     assert "6,357 right" in title and "6,170 wrong" in title
 
 
+def test_the_title_promises_the_music_bed():
+    # The bed (config/music_tracks.json) is chill/lofi; people search for it.
+    assert build_title(RECORD).endswith("| chill lofi beats")
+
+
+def test_a_long_record_sheds_the_tagline_before_the_music_or_the_numbers():
+    long = {**RECORD, "wins": 1_234_567, "losses": 1_234_567}
+    title = build_title(long)
+    assert len(title) <= TITLE_MAX
+    assert "1,234,567 right" in title and "chill lofi beats" in title
+
+
+def test_the_description_and_tags_mention_the_music():
+    assert "chill lofi beats" in build_description(RECORD).lower()
+    assert "lofi" in TAGS
+
+
 def test_a_losing_record_is_titled_the_same_way_not_hidden():
     # Truth over vanity: the losing case is not a different, kinder template.
     title = build_title({**RECORD, "wins": 10, "losses": 90})
