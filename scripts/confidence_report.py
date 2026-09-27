@@ -14,6 +14,10 @@ LightGBM fit per fold), so it is cached to CSV and reused until --refresh.
 Usage:
     python scripts/confidence_report.py --symbol BTCUSDT
     python scripts/confidence_report.py --symbol ETHUSDT --interval 1m --refresh
+
+    # Chronos-2 zero-shot on the SAME rows (forecasts from
+    # scripts/chronos_collect.py), plus both through the backtest's null:
+    python scripts/confidence_report.py --symbol BTCUSDT --model chronos --backtest
 """
 
 import argparse
@@ -26,9 +30,14 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from model.backtest import BacktestConfig, find_episodes  # noqa: E402
+from model.backtest import BacktestConfig, find_episodes, run_backtest  # noqa: E402
 from model.features import build_features  # noqa: E402
 from model.train import _NUM_ROUNDS, _PARAMS, TRAIN_BARS_LIMIT  # noqa: E402
+from model.zero_shot import (  # noqa: E402
+    cached_predictor,
+    p_up_frame,
+    with_forecaster_p,
+)
 from storage.postgres_store import get_price_bars  # noqa: E402
 
 # NOTE — this script shares `find_episodes` with the harness but deliberately
@@ -311,6 +320,20 @@ def _print_report(oos: pd.DataFrame, closes: pd.Series, config: BacktestConfig,
           f"P(|move| > {cost * BPS:.0f} bps cost) = {(absolute > cost).mean():.3f}")
 
 
+def _backtest_line(label: str, bars: pd.DataFrame, oos: pd.DataFrame,
+                   config: BacktestConfig) -> None:
+    """The stored predictions through `run_backtest`'s position accounting and
+    exposure-matched null — the bar a model has to clear, not buy-and-hold."""
+    r = run_backtest(bars, config, predict_fold=cached_predictor(
+        oos.set_index("ts")["p"]))
+    print(f"  {label:<9} positions {r['total_positions']:>6,}  "
+          f"in-market {r['time_in_market']:6.1%}  "
+          f"strategy {r['strategy_total_return']:+8.1%}  "
+          f"null {r['null_total_return']:+8.1%}  "
+          f"excess vs null {r['excess_vs_null']:+7.3f}  "
+          f"buy&hold {r['buy_hold_total_return']:+7.1%}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", required=True)
@@ -319,6 +342,13 @@ def main() -> None:
                         help="collected OOS predictions (default: model/artifacts/)")
     parser.add_argument("--refresh", action="store_true",
                         help="recollect even when the cache exists")
+    parser.add_argument("--model", choices=("lightgbm", "chronos"),
+                        default="lightgbm",
+                        help="chronos: swap p for the zero-shot forecasts on the "
+                             "same rows (scripts/chronos_collect.py)")
+    parser.add_argument("--backtest", action="store_true",
+                        help="also score LightGBM and the chosen model through "
+                             "run_backtest against the exposure-matched null")
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
@@ -339,10 +369,31 @@ def main() -> None:
         oos.to_csv(cache, index=False)
         print(f"cached {len(oos):,} predictions -> {cache}")
 
-    frame = bars.copy()
+    # Every bar the cached rows were collected over, not the newest
+    # TRAIN_BARS_LIMIT: the cache outlives the window that produced it, and
+    # the backtest's folds only line up when they start at the same bar.
+    all_bars = pd.DataFrame(get_price_bars(symbol, args.interval, 10_000_000))
+    stamps = pd.to_datetime(all_bars["timestamp"], utc=True)
+    last = oos.ts.max() + pd.Timedelta(minutes=config.horizon_bars)
+    covering = all_bars[stamps <= last].reset_index(drop=True)
+    frame = covering.copy()
     frame["ts"] = pd.to_datetime(frame["timestamp"], utc=True)
     closes = frame.set_index("ts")["close"].astype(float).sort_index()
-    _print_report(oos, closes, config, f"{symbol} {args.interval} — walk-forward OOS")
+
+    lightgbm = oos
+    if args.model == "chronos":
+        forecasts = pd.read_csv(CACHE_DIR / f"chronos_{symbol}_{args.interval}.csv",
+                                parse_dates=["ts"])
+        oos = with_forecaster_p(lightgbm, p_up_frame(forecasts))
+    _print_report(oos, closes, config,
+                  f"{symbol} {args.interval} — {args.model} — walk-forward OOS")
+
+    if args.backtest:
+        print(f"\n-- run_backtest on the same folds (entry p > "
+              f"{config.entry_threshold}) --")
+        _backtest_line("lightgbm", covering, lightgbm, config)
+        if args.model != "lightgbm":
+            _backtest_line(args.model, covering, oos, config)
 
 
 if __name__ == "__main__":

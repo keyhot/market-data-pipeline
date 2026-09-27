@@ -389,3 +389,34 @@ def test_the_two_nulls_agree_when_exposure_never_varies():
         1 + exposure_matched_return(0.5, b, 1, 0.0022) for b in bh
     ])
     assert matched == pytest.approx(constant)
+
+
+# --- a forecaster other than LightGBM (Chronos spike, step A) ------------
+
+
+def test_an_injected_predictor_sees_only_test_rows_and_drives_the_positions():
+    """`predict_fold` replaces the LightGBM fit per fold. It is handed the
+    purged test slice — never a train row — and its probabilities alone decide
+    the positions, so a zero-shot forecaster is scored by the same accounting."""
+    calls = []
+
+    def always_long(X, y, train, test):
+        calls.append((train, test))
+        return np.full(test.stop - test.start, 0.99)
+
+    results = run_backtest(_bars(), _FAST, predict_fold=always_long)
+
+    assert calls, "the injected predictor was never called"
+    for train, test in calls:
+        assert test.start == train.stop + _FAST.horizon_bars  # purge kept
+        assert test.stop - test.start == _FAST.test_rows
+    # Long on every test bar of adjacent folds is ONE held position (KI-001).
+    assert results["total_positions"] == 1
+
+
+def test_an_injected_predictor_that_never_signals_takes_no_positions():
+    results = run_backtest(
+        _bars(), _FAST,
+        predict_fold=lambda X, y, train, test: np.zeros(test.stop - test.start),
+    )
+    assert results["total_positions"] == 0

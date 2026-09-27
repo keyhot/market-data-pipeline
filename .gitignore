@@ -220,3 +220,6 @@ tools/charsheet/prelude.js
 # Runtime state written by host services (ops alerter, broadcast manager)
 data/ops_alert_state.json
 data/broadcast_status.json
+
+# Chronos spike: torch lives here, never in the poetry env
+.venv-forecast/

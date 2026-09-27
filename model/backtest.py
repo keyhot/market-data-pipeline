@@ -164,10 +164,30 @@ class FoldResult:
     null_return: float = 0.0
 
 
-def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> dict:
+def _lightgbm_fold(X: pd.DataFrame, y: pd.Series, train: slice, test: slice):
+    """The default fold predictor: fit on the train slice, score the test one."""
+    booster = lgb.train(
+        _PARAMS,
+        lgb.Dataset(X.iloc[train], label=y.iloc[train]),
+        num_boost_round=_NUM_ROUNDS,
+    )
+    return booster.predict(X.iloc[test])
+
+
+def run_backtest(
+    bars: pd.DataFrame,
+    config: BacktestConfig | None = None,
+    predict_fold=None,
+) -> dict:
     """Walk-forward over the bars; returns the summary dict (also what the
-    CLI writes to JSON). Deterministic for fixed data + config."""
+    CLI writes to JSON). Deterministic for fixed data + config.
+
+    `predict_fold(X, y, train, test) -> P(up) per test row` swaps the model
+    while keeping the folds, purge and position accounting — how a zero-shot
+    forecaster (`model/zero_shot.py`) is scored against the same null. It is
+    handed the train slice and may ignore it; it must not read past `test`."""
     config = config or BacktestConfig()
+    predict_fold = predict_fold or _lightgbm_fold
     features = build_features(bars, horizon_bars=config.horizon_bars)
     X, y = features.X, features.y
     n = len(X)
@@ -198,12 +218,9 @@ def run_backtest(bars: pd.DataFrame, config: BacktestConfig | None = None) -> di
         test_start = train_end + config.horizon_bars
         test_end = test_start + config.test_rows
 
-        booster = lgb.train(
-            _PARAMS,
-            lgb.Dataset(X.iloc[start:train_end], label=y.iloc[start:train_end]),
-            num_boost_round=_NUM_ROUNDS,
-        )
-        prob = booster.predict(X.iloc[test_start:test_end])
+        prob = np.asarray(predict_fold(
+            X, y, slice(start, train_end), slice(test_start, test_end)
+        ))
         y_test = y.iloc[test_start:test_end].to_numpy()
 
         # Long when confident, flat otherwise. A run of consecutive in-market
