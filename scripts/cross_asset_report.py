@@ -56,9 +56,10 @@ def collect(symbol: str) -> pd.DataFrame:
     return pd.concat(chunks)
 
 
-def delta_auc_ci(oos: pd.DataFrame) -> tuple[float, float, float]:
-    """Pooled ΔAUC and a paired day-block bootstrap 95% interval."""
-    y, base, cross = oos.y.to_numpy(), oos.base.to_numpy(), oos.cross.to_numpy()
+def delta_auc_ci(oos: pd.DataFrame, arm: str = "cross") -> tuple[float, float, float]:
+    """Pooled ΔAUC of `arm` over base and a paired day-block bootstrap 95%
+    interval. E8 (`order_flow_report.py`) reuses it with arm="flow"."""
+    y, base, cross = oos.y.to_numpy(), oos.base.to_numpy(), oos[arm].to_numpy()
     point = auc(y, cross) - auc(y, base)
     day = oos.index.floor("D")
     codes, _ = pd.factorize(day)
