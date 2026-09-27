@@ -135,3 +135,88 @@ class TestRoleProbeLatency:
         db._database_role("postgresql://u:p@127.0.0.1:1/d")
         expected_ms = int(db._ROLE_PROBE_TIMEOUT_SECONDS * 1000)
         assert f"-c statement_timeout={expected_ms}" in captured["options"]
+
+
+class TestClientSideBounds:
+    """KI-080: `statement_timeout` is a server-side cancel and
+    `connect_timeout` ends at the handshake, so a network path that drops
+    silently mid-query left the client waiting on its own TCP stack with no
+    limit. The bounds libpq enforces on the client go on every connection —
+    the pool's and the cold role probe's — and sit beside the read-only
+    guard's `options`, never in place of them."""
+
+    def _pool_kwargs(self, monkeypatch, *, database_role="dev"):
+        captured = {}
+
+        class FakePool:
+            def __init__(self, url, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(db, "ConnectionPool", FakePool)
+        monkeypatch.setattr(db, "_database_role", lambda url: database_role)
+        monkeypatch.setenv("DEPLOY_ROLE", "dev")
+        db.get_pool()
+        return captured["kwargs"]
+
+    def test_the_pool_bounds_connect_and_a_silent_socket(self, monkeypatch):
+        kwargs = self._pool_kwargs(monkeypatch)
+        assert kwargs["connect_timeout"] >= 2  # libpq's floor
+        assert kwargs["keepalives"] == 1
+        assert kwargs["tcp_user_timeout"] > 0
+
+    def test_keepalive_detection_matches_the_user_timeout(self, monkeypatch):
+        # On Linux `tcp_user_timeout` also ends keepalive probing, so a
+        # user timeout shorter than idle + interval * count would silently
+        # cut the probes short, and a longer one would be a bound that never
+        # fires first. They are one number, stated twice.
+        k = self._pool_kwargs(monkeypatch)
+        detect_s = k["keepalives_idle"] + k["keepalives_interval"] * k[
+            "keepalives_count"
+        ]
+        assert k["tcp_user_timeout"] == detect_s * 1000
+
+    def test_the_bounds_sit_beside_the_read_only_guard(self, monkeypatch):
+        kwargs = self._pool_kwargs(monkeypatch, database_role="prod")
+        assert kwargs["options"] == db._READ_ONLY_OPTIONS
+        assert kwargs["keepalives"] == 1
+
+    def test_the_role_probe_carries_the_same_socket_bounds(self, monkeypatch):
+        captured = {}
+
+        def fake_connect(url, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("no database here")
+
+        monkeypatch.setattr(db.psycopg, "connect", fake_connect)
+        db._database_role("postgresql://u:p@127.0.0.1:1/d")
+        for key, value in db._SOCKET_BOUNDS.items():
+            assert captured[key] == value, key
+        # ...without losing its own, shorter connect bound.
+        assert captured["connect_timeout"] == db._ROLE_PROBE_TIMEOUT_SECONDS
+
+
+class TestPingBoundsItsQuery:
+    def test_ping_sets_a_statement_bound_before_select(self, monkeypatch):
+        # A server too loaded to answer `SELECT 1` held ping for as long as
+        # it liked on a warm pool: the acquire timeout had already been met.
+        executed = []
+
+        class FakeConn:
+            def execute(self, sql, *args):
+                executed.append(sql)
+
+        class FakeCtx:
+            def __enter__(self):
+                return FakeConn()
+
+            def __exit__(self, *exc):
+                return False
+
+        class FakePool:
+            def connection(self, timeout):
+                return FakeCtx()
+
+        monkeypatch.setattr(db, "_pool", FakePool())
+        assert db.ping(timeout_seconds=1.5) is True
+        assert executed[0] == "SET LOCAL statement_timeout = 1500"
+        assert executed[-1] == "SELECT 1"

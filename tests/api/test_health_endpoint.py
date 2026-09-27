@@ -228,3 +228,129 @@ def test_metrics_includes_postgres_write_counters():
         "signals",
         "errors",
     }
+
+
+class TestStalledDatabase:
+    """KI-080: every bound under /health's database section is enforced by
+    the server or ends at the handshake. A socket that stops passing packets
+    after that — a proxy or SSH tunnel whose far side died, measured hanging
+    past 15s even with TCP keepalives and `tcp_user_timeout` set, because the
+    local end still ACKs — waited on the client's TCP stack forever, and each
+    /health call parked one more of FastAPI's threadpool workers on it. The
+    database section now runs on a worker the request waits for only until
+    its deadline, and at most one such worker is ever stuck."""
+
+    _BUDGET = 0.3
+
+    def _stall(self):
+        import threading
+
+        release = threading.Event()
+        calls = []
+
+        def stuck(*args, **kwargs):
+            calls.append(1)
+            release.wait(10)
+            return _CONNECTED
+
+        return release, calls, stuck
+
+    def test_a_stalled_gate_answers_within_the_budget(self):
+        from api import main
+
+        release, _, stuck = self._stall()
+        try:
+            with (
+                patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+                patch("api.main.postgres_status", side_effect=stuck),
+            ):
+                started = time.monotonic()
+                response = client.get("/health")
+                elapsed = time.monotonic() - started
+        finally:
+            release.set()
+            main._health_db_wait_idle()
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["postgres"]["connected"] is False
+        assert data["world"] is None
+        assert data["world_unavailable_reason"] == "not_connected"
+        assert elapsed < self._BUDGET + main._HEALTH_DB_GRACE_SECONDS + 0.5
+
+    def test_a_stalled_reader_keeps_what_the_gate_already_answered(self):
+        # The gate answered, then the world read stalled: the database WAS
+        # reachable, so this is the existing "reader_error", not an outage.
+        from api import main
+
+        release, _, stuck = self._stall()
+        try:
+            with (
+                patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+                patch("api.main.postgres_status", return_value=_CONNECTED),
+                patch("api.main.world_liveness_times", side_effect=stuck),
+            ):
+                started = time.monotonic()
+                response = client.get("/health")
+                elapsed = time.monotonic() - started
+        finally:
+            release.set()
+            main._health_db_wait_idle()
+
+        data = response.json()["data"]
+        assert data["postgres"] == _CONNECTED
+        assert data["world"] is None
+        assert data["world_unavailable_reason"] == "reader_error"
+        assert elapsed < self._BUDGET + main._HEALTH_DB_GRACE_SECONDS + 0.5
+
+    def test_a_stuck_probe_is_not_joined_by_another(self):
+        # Single flight: while one probe is still stuck, the next request
+        # answers at once instead of parking a second thread behind it.
+        from api import main
+
+        release, calls, stuck = self._stall()
+        try:
+            with (
+                patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+                patch("api.main.postgres_status", side_effect=stuck),
+            ):
+                client.get("/health")
+                started = time.monotonic()
+                second = client.get("/health")
+                elapsed = time.monotonic() - started
+        finally:
+            release.set()
+            main._health_db_wait_idle()
+
+        assert len(calls) == 1
+        assert second.json()["data"]["postgres"]["connected"] is False
+        assert elapsed < self._BUDGET
+
+    def test_a_recovered_probe_lets_the_next_request_through(self):
+        from api import main
+
+        release, calls, stuck = self._stall()
+        with (
+            patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+            patch("api.main.postgres_status", side_effect=stuck),
+        ):
+            client.get("/health")
+        release.set()
+        main._health_db_wait_idle()
+
+        response = client.get("/health")
+        assert response.json()["data"]["postgres"] == {
+            "enabled": False,
+            "connected": None,
+        }
+
+    def test_the_wait_fits_every_consumer(self):
+        # The grace past the deadline comes out of the second the handler
+        # keeps for everything else (see the headroom test above).
+        from api import main
+
+        for name, waits in _health_consumers().items():
+            assert (
+                main._HEALTH_DB_BUDGET_SECONDS + main._HEALTH_DB_GRACE_SECONDS
+                <= waits - 0.5
+            ), name

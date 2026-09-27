@@ -49,6 +49,7 @@ from storage.postgres_store import (
 from storage.writes import (
     postgres_readable,
     postgres_status,
+    postgres_write_enabled,
     write_events,
     write_metrics,
     write_news,
@@ -267,18 +268,12 @@ def world_heartbeat(beat: RendererBeat, request: Request):
     return ApiResponse(status=200, message="beat recorded", data={})
 
 
-@app.get("/health")
-def health():
-    with _RENDERER_BEATS_LOCK:
-        renderer = renderer_status(
-            _RENDERER_BEATS, now=time.monotonic(), started_at=_PROCESS_STARTED_AT
-        )
-    # KI-069: one deadline for every database wait in this request. The probe
-    # below and the world read each carried their own bound, and they summed
-    # past the watchdog's timeout — the endpoint that exists to prove the
-    # stack is alive could itself trip a content outage.
-    db_deadline = time.monotonic() + _HEALTH_DB_BUDGET_SECONDS
+def _health_db_section(db_deadline: float, result: dict) -> None:
+    """`/health`'s database section, run on `_health_db_probe`. It writes
+    each answer into `result` as soon as it has it, so a caller that stops
+    waiting still reports what was already known (see `health()`)."""
     postgres = postgres_status()
+    result["postgres"] = postgres
     # KI-057: a drawing page is not proof the world is running — the model
     # went silent for three days while ingestion and every container stayed
     # green. This must degrade to None rather than ever fail the request:
@@ -295,10 +290,8 @@ def health():
     # writes are on and Postgres is down. When Postgres is UP the reader does
     # run, and it gets only what `db_deadline` has left (KI-069): measured at
     # 4.01s with the reader's tables locked, where the independent bounds
-    # summed to ~8s. What this does NOT bound: ping's own `SELECT 1` on a
-    # server too loaded to answer it, and a stalled socket — every
-    # `statement_timeout` is enforced by the server, so a connection that
-    # stops passing packets waits on the client's TCP stack (KI-080).
+    # summed to ~8s. A stalled socket is bounded by the caller, not here:
+    # see `health()` (KI-080).
     # `signal_timestamp` / `occurred_at` are TIMESTAMPTZ — an aware `now`
     # avoids the naive/aware TypeError, but the broad except is what
     # actually keeps the 200-through-an-outage guarantee even if a future
@@ -316,7 +309,9 @@ def health():
     # bare `null` cannot tell them apart.
     world = None
     world_unavailable_reason = None
-    if postgres_readable(postgres):
+    readable = postgres_readable(postgres)
+    result["readable"] = readable
+    if readable:
         try:
             latest_signal_at, latest_event_at = world_liveness_times(
                 timeout_seconds=db_deadline - time.monotonic()
@@ -333,6 +328,88 @@ def health():
             world_unavailable_reason = "reader_error"
     else:
         world_unavailable_reason = "not_connected"
+    result["world"] = world
+    result["world_unavailable_reason"] = world_unavailable_reason
+    result["done"] = True
+
+
+# KI-080: everything under `_health_db_section` is bounded by the server or
+# ends at the handshake. A socket that stops passing packets behind something
+# that still ACKs locally — a userspace proxy, the near end of an SSH tunnel
+# — waits on the client's TCP stack forever: measured hanging past 15s with
+# 1s keepalives and `tcp_user_timeout` set. So the section runs on its own
+# thread, and the request waits for it only until the deadline, plus a grace
+# for the reader's own bound landing on it (measured 4.01s, KI-069). Single
+# flight: while one probe is stuck, requests answer at once rather than park
+# another thread (and, sync, another threadpool worker) behind it. A daemon
+# thread, not an executor, so a stuck probe cannot hold up interpreter exit.
+_HEALTH_DB_GRACE_SECONDS = 0.25
+_health_db_lock = threading.Lock()
+_health_db_probe: threading.Thread | None = None
+
+
+def _health_db(db_deadline: float) -> tuple[dict, dict | None, str | None]:
+    global _health_db_probe
+    result: dict = {}
+    with _health_db_lock:
+        stuck = _health_db_probe is not None and _health_db_probe.is_alive()
+        if not stuck:
+            _health_db_probe = threading.Thread(
+                target=_health_db_section,
+                args=(db_deadline, result),
+                name="health-db",
+                daemon=True,
+            )
+            _health_db_probe.start()
+            probe = _health_db_probe
+    if not stuck:
+        probe.join(max(0.0, db_deadline - time.monotonic()) + _HEALTH_DB_GRACE_SECONDS)
+    answered = dict(result)
+    if answered.get("done"):
+        return (
+            answered["postgres"],
+            answered["world"],
+            answered["world_unavailable_reason"],
+        )
+    logger.warning(
+        "/health's database section did not answer in time",
+        extra={
+            "previous_probe_still_stuck": stuck,
+            "gate_answered": "readable" in answered,
+        },
+    )
+    # The gate answered and only the reader stalled: the database was
+    # reachable, which is the existing "reader_error". Anything earlier is
+    # not_connected — for the watchdog, a database that cannot answer in the
+    # budget is an outage (KI-024).
+    postgres = answered.get("postgres") or {
+        "enabled": postgres_write_enabled(),
+        "connected": False,
+    }
+    if answered.get("readable"):
+        return postgres, None, "reader_error"
+    return {**postgres, "connected": False}, None, "not_connected"
+
+
+def _health_db_wait_idle(timeout: float = 5.0) -> None:
+    """Tests: let a released probe finish before the next one starts."""
+    probe = _health_db_probe
+    if probe is not None:
+        probe.join(timeout)
+
+
+@app.get("/health")
+def health():
+    with _RENDERER_BEATS_LOCK:
+        renderer = renderer_status(
+            _RENDERER_BEATS, now=time.monotonic(), started_at=_PROCESS_STARTED_AT
+        )
+    # KI-069: one deadline for every database wait in this request. The probe
+    # below and the world read each carried their own bound, and they summed
+    # past the watchdog's timeout — the endpoint that exists to prove the
+    # stack is alive could itself trip a content outage.
+    db_deadline = time.monotonic() + _HEALTH_DB_BUDGET_SECONDS
+    postgres, world, world_unavailable_reason = _health_db(db_deadline)
     return ApiResponse(
         status=200,
         message="API is healthy",

@@ -33,6 +33,34 @@ _ROLE_PROBE_OPTIONS = (
     f"-c statement_timeout={int(_ROLE_PROBE_TIMEOUT_SECONDS * 1000)}"
 )
 
+# KI-080: the bounds libpq enforces on the CLIENT, for a network path that
+# drops silently mid-query — every other bound here is a server-side cancel
+# or ends at the handshake. Keepalives find a dead peer on an idle socket
+# (waiting for a reply), `tcp_user_timeout` one with unacknowledged data;
+# on Linux the latter also ends keepalive probing, so it is set to exactly
+# the keepalive detection time (10 + 5 * 3 = 25s). What these cannot see is
+# a stall behind something that still ACKs locally — a userspace proxy, the
+# local end of an SSH tunnel (measured: still hanging at 15s with 1s
+# keepalives). That half is `/health`'s own deadline (api/main.py) and, for
+# the tunnel, ssh's ServerAliveInterval.
+_KEEPALIVE_IDLE_SECONDS = 10
+_KEEPALIVE_INTERVAL_SECONDS = 5
+_KEEPALIVE_COUNT = 3
+_SOCKET_BOUNDS: dict[str, int] = {
+    "keepalives": 1,
+    "keepalives_idle": _KEEPALIVE_IDLE_SECONDS,
+    "keepalives_interval": _KEEPALIVE_INTERVAL_SECONDS,
+    "keepalives_count": _KEEPALIVE_COUNT,
+    "tcp_user_timeout": (
+        _KEEPALIVE_IDLE_SECONDS + _KEEPALIVE_INTERVAL_SECONDS * _KEEPALIVE_COUNT
+    )
+    * 1000,
+}
+# The pool's own connects run on its background workers, where libpq's
+# default is to wait forever. Callers are bounded separately by the pool's
+# acquire timeout, so this only has to stop a worker hanging.
+_POOL_CONNECT_TIMEOUT_SECONDS = 5
+
 logger = logging.getLogger(__name__)
 
 _pool: ConnectionPool | None = None
@@ -61,6 +89,7 @@ def _database_role(url: str) -> str | None:
             url,
             connect_timeout=_ROLE_PROBE_TIMEOUT_SECONDS,
             options=_ROLE_PROBE_OPTIONS,
+            **_SOCKET_BOUNDS,
         ) as conn:
             row = conn.execute("SELECT role FROM deployment_identity").fetchone()
     except Exception as e:
@@ -97,7 +126,10 @@ def get_pool() -> ConnectionPool:
                 url = os.environ.get(DATABASE_URL_ENV, _DEFAULT_DATABASE_URL)
                 expected = deploy_role()
                 actual = _database_role(url)
-                kwargs: dict[str, object] = {}
+                kwargs: dict[str, object] = {
+                    "connect_timeout": _POOL_CONNECT_TIMEOUT_SECONDS,
+                    **_SOCKET_BOUNDS,
+                }
                 if read_only_required(expected, actual):
                     # Enforced by Postgres, not by call sites: every write in
                     # every code path fails, including the append-only
@@ -119,6 +151,13 @@ def get_pool() -> ConnectionPool:
 def ping(timeout_seconds: float = 2.0) -> bool:
     try:
         with get_pool().connection(timeout=timeout_seconds) as conn:
+            # The acquire timeout is spent once a warm connection is handed
+            # over; without this a server too loaded to answer held
+            # `SELECT 1` as long as it liked (KI-080). Transaction-local, so
+            # it leaves with the rollback that returns the connection.
+            conn.execute(
+                f"SET LOCAL statement_timeout = {int(timeout_seconds * 1000)}"
+            )
             conn.execute("SELECT 1")
         return True
     except Exception as e:
