@@ -63,6 +63,31 @@ def build_latest_features(bars: pd.DataFrame) -> pd.DataFrame | None:
     return last
 
 
+def roll_bars(bars: pd.DataFrame, minutes: int) -> pd.DataFrame:
+    """Aggregate 1m bars into `minutes`-wide bars whose newest one ends at the
+    newest minute — so a model trained on exchange 15m bars can be asked about
+    *now* every minute, not only on :00/:15/:30/:45. Each bar is stamped with
+    its last minute. A partial bin at the head is truncation and is dropped; a
+    partial bin elsewhere is a gap and is kept, since it is still the best
+    record of those minutes and dropping the newest one would date the signal."""
+    frame = _normalize(bars)
+    if frame.empty:
+        return frame
+    step = pd.Timedelta(minutes=1)
+    bins = frame.resample(
+        f"{minutes}min", origin=frame.index[-1] + step, closed="left",
+        label="right",
+    )
+    rolled = bins.agg({"open": "first", "high": "max", "low": "min",
+                       "close": "last", "volume": "sum"})
+    counts = bins["close"].count()
+    rolled = rolled[counts > 0]
+    if counts.loc[rolled.index[0]] < minutes:
+        rolled = rolled.iloc[1:]
+    rolled.index = rolled.index - step
+    return rolled
+
+
 def _compute_features(frame: pd.DataFrame) -> pd.DataFrame:
     close = frame["close"]
     features = pd.DataFrame(index=frame.index)

@@ -161,6 +161,13 @@ def run_inference_job(
         logger.info("Skipping inference, not enough bars", extra=result)
         return result
 
+    if "held" in signal:
+        # Most minutes: a coin flip, or the last call still open. Debug, not
+        # info — this is the normal case, once a minute per symbol.
+        result = {"symbol": symbol, "interval": interval, "held": signal["held"]}
+        logger.debug("Inference held", extra=result)
+        return result
+
     result = {
         "symbol": symbol,
         "interval": interval,

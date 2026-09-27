@@ -22,8 +22,15 @@ from model.features import DEFAULT_HORIZON_BARS, build_features
 from storage.postgres_store import get_price_bars
 
 ARTIFACTS_DIR = Path(__file__).parent / "artifacts"
-TRAIN_BARS_LIMIT = 100_000
+# Every 15m bar since 2020 (~240k); the 1m store never gets near it.
+TRAIN_BARS_LIMIT = 250_000
 HOLDOUT_FRACTION = 0.2
+# The live model publishes a call only when |p - 0.5| clears this quantile of
+# its own holdout confidence. Measured 2026-09-27 (scripts/live_gate_report.py):
+# over 2022-2025 the top fifth of 15m calls hit 56-57% against 50-52% for the
+# rest, every year, BTC and ETH alike — so the gate drops coin flips, not noise.
+GATE_QUANTILE = 0.8
+_REPORTED_QUANTILES = (0.5, 0.8, 0.9)
 RANDOM_SEED = 42
 
 _PARAMS = {
@@ -57,6 +64,15 @@ def model_version() -> str:
 
 def artifact_path(symbol: str, interval: str, version: str) -> Path:
     return ARTIFACTS_DIR / f"{symbol.upper()}_{interval}_{version}.txt"
+
+
+def latest_metrics(symbol: str, interval: str) -> dict | None:
+    """The metrics written beside the newest artifact; None when untrained."""
+    artifact = latest_artifact(symbol, interval)
+    if artifact is None:
+        return None
+    path = artifact.with_suffix(".metrics.json")
+    return json.loads(path.read_text()) if path.exists() else None
 
 
 def latest_artifact(symbol: str, interval: str) -> Path | None:
@@ -105,6 +121,10 @@ def train(
 
     prob = booster.predict(X_hold)
     pred = (prob > 0.5).astype(int)
+    confidence = np.abs(prob - 0.5)
+    quantiles = sorted({*_REPORTED_QUANTILES, GATE_QUANTILE})
+    cutoff = float(np.quantile(confidence, GATE_QUANTILE))
+    gated = confidence >= cutoff
     eps = 1e-9
     metrics = {
         "symbol": symbol.upper(),
@@ -118,6 +138,16 @@ def train(
             -np.mean(
                 y_hold * np.log(prob + eps) + (1 - y_hold) * np.log(1 - prob + eps)
             )
+        ),
+        # The gate, and what it bought on this model's own holdout.
+        "gate_quantile": GATE_QUANTILE,
+        "confidence_cutoff": cutoff,
+        "holdout_confidence_quantiles": {
+            str(q): float(np.quantile(confidence, q)) for q in quantiles
+        },
+        "holdout_accuracy_gated": float((pred == y_hold)[gated].mean()),
+        "holdout_accuracy_held": (
+            float((pred == y_hold)[~gated].mean()) if (~gated).any() else None
         ),
         "feature_importance": dict(
             zip(result.feature_names,

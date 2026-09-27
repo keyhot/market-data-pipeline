@@ -147,3 +147,11 @@ def test_inference_job_skips_on_short_history(mock_predict):
     result = run_inference_job("BTCUSDT", "1m", market="crypto")
 
     assert result["skipped"] == "no_data"
+
+
+@patch("model.predict.predict", return_value={"held": "low_confidence"})
+def test_inference_job_reports_a_held_call_as_held(mock_predict):
+    result = run_inference_job("BTCUSDT", "1m", market="crypto")
+
+    assert result["held"] == "low_confidence"
+    assert "direction" not in result
