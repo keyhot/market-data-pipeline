@@ -6057,7 +6057,7 @@ def _badge_box(badge: dict) -> list:
 
 @needs_node
 def test_the_model_wears_its_version_on_a_clean_plate():
-    """"model v0.1" is stencilled on the MODEL, on ONE plate, crossing no seam.
+    """"model v0.2" is stencilled on the MODEL, on ONE plate, crossing no seam.
 
     The user's call (2026-09-24), made with the floating MODEL/TRADER names
     coming off the room. Graded against the plates `BODIES.bars` actually
@@ -6067,7 +6067,7 @@ def test_the_model_wears_its_version_on_a_clean_plate():
     """
     emitted = _run_node(_machine_body_driver(_world_source()))
     badge = emitted["MACHINE"]["badge"]
-    assert badge["text"] == "model v0.1"
+    assert badge["text"] == "model v0.2"
     box = _badge_box(badge)
     plates = [d["snapped"] for d in emitted["drawn"]
               if d["gid"] == emitted["trunkGid"] and d["fill"] == emitted["BODY_FILL"]]
@@ -6111,7 +6111,7 @@ def test_the_badge_moves_with_the_body_it_is_painted_on():
         """
     )
     assert (emitted["x"], emitted["y"], emitted["r"]) == (4, -4, 0.16)
-    assert emitted["text"] == "model v0.1"
+    assert emitted["text"] == "model v0.2"
     body = _without_comments(_js_block(source, "function character("))
     assert re.search(r'style === "bars" \? modelBadge\(body\)', body), (
         "`character()` never stencils the MODEL's badge"
