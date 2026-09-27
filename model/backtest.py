@@ -228,7 +228,6 @@ def run_backtest(
         # — and a fresh signal arriving before that position realizes is the
         # same position continuing, not a second one to compound (KI-001).
         in_market = prob > config.entry_threshold
-        close = _closes_for(bars, X.index[test_start:test_end])
         signal_bars += int(in_market.sum())
         signal_bars_up += int(y_test[in_market].sum())
 
@@ -238,9 +237,8 @@ def run_backtest(
             episodes.append((entry, exit_bar))
             fold_of_entry[entry] = len(folds)
 
-        fold_spans.append(
-            (int(row_of[test_start]), int(row_of[test_end - 1]))
-        )
+        first_bar, last_bar = int(row_of[test_start]), int(row_of[test_end - 1])
+        fold_spans.append((first_bar, last_bar))
         folds.append(
             FoldResult(
                 fold=len(folds),
@@ -248,7 +246,12 @@ def run_backtest(
                 positions=0,
                 hit_rate=None,
                 strategy_return=0.0,
-                buy_hold_return=float(close.iloc[-1] / close.iloc[0] - 1),
+                # Read off the ladder built once above. Re-deriving it per
+                # fold copied the whole bar frame each time: ~0.8 s a fold on
+                # 232k 15m bars, 3-4x the cost of training the model.
+                buy_hold_return=float(
+                    close_values[last_bar] / close_values[first_bar] - 1
+                ),
             )
         )
         start += config.test_rows
@@ -364,16 +367,6 @@ def run_backtest(
         ),
         "null_constant_exposure": null_constant,
     }
-
-
-def _closes_for(bars: pd.DataFrame, index: pd.Index) -> pd.Series:
-    frame = bars.copy()
-    if "timestamp" in frame.columns:
-        frame = frame.set_index(pd.to_datetime(frame["timestamp"], utc=True))
-    frame.columns = [str(c).lower() for c in frame.columns]
-    return frame.loc[index, "close"].astype(float)
-
-
 
 
 def _close_series(bars: pd.DataFrame) -> pd.Series:
