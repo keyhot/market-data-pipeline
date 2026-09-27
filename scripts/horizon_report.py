@@ -35,6 +35,7 @@ from model.horizon import (  # noqa: E402
 )
 from model.train import _NUM_ROUNDS, _PARAMS  # noqa: E402
 
+CACHE_DIR = Path(__file__).resolve().parent.parent / "model" / "artifacts"
 PRIMARY = 16
 EXPLORATORY = (4, 32, 96)
 COST_BPS = 22.0
@@ -95,6 +96,16 @@ def summarize(label: str, r: dict) -> dict:
           f"[{lo:+.1f}, {hi:+.1f}]  vs round trip {COST_BPS:.0f}")
     print(f"  per-call proxy (drift removed) "
           f"{per_call_proxy_bps(oos, r['gated']):+.2f} bps")
+    # Hit rate and gross can disagree only if misses are bigger than hits.
+    top = oos[r["gated"]]
+    right = (top.p > top.centre).astype(int) == top.y
+    hit_abs, miss_abs = top.ret[right].abs().mean(), top.ret[~right].abs().mean()
+    print(f"  top-5th |ret| on hits {hit_abs * 1e4:.1f}  on misses "
+          f"{miss_abs * 1e4:.1f} bps (ratio {miss_abs / hit_abs:.3f}); "
+          f"test-year E|ret| {oos.ret.abs().mean() * 1e4:.1f} bps")
+    for sign, name in ((1, "long"), (-1, "short")):
+        leg = pos[pos.side == sign]
+        print(f"  {name}: {len(leg):,} positions, skill {leg.skill.mean() * 1e4:+.1f} bps")
     for year, s in by_year.items():
         g = oos[oos.year == year]
         print(f"    {year}: skill {s:+.1f} bps  AUC "
@@ -114,7 +125,9 @@ def main() -> None:
 
     control = summarize(f"CONTROL h={PRIMARY} (leaked forward return)",
                         run(bars, PRIMARY, leak=True))
-    primary = summarize(f"PRIMARY h={PRIMARY}", run(bars, PRIMARY))
+    result = run(bars, PRIMARY)
+    result["oos"].to_csv(CACHE_DIR / f"horizon_oos_{args.symbol}_h{PRIMARY}.csv")
+    primary = summarize(f"PRIMARY h={PRIMARY}", result)
 
     void = []
     if control["auc"] < CONTROL_MIN_AUC or control["skill"] < CONTROL_MIN_SKILL_BPS:
