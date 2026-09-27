@@ -66,7 +66,10 @@ def fold_verdict(folds: list[dict]) -> dict:
     lose = sum(f["null_return"] - f["strategy_return"] > TIE for f in folds)
     m = beat + lose
     z = (beat - m / 2) / (math.sqrt(m) / 2) if m else float("nan")
-    return {"beat": beat, "lose": lose, "tie": len(folds) - m, "z": z}
+    verdict = ("inconclusive" if m < MIN_NON_TIED
+               else "pass" if z > 2 else "fail")
+    return {"beat": beat, "lose": lose, "tie": len(folds) - m, "z": z,
+            "cell": verdict}
 
 
 def _row(arm: str, cooldown: int, r: dict) -> dict:
