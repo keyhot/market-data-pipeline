@@ -49,6 +49,26 @@ PANEL_FIELDS = ("close", "high", "low", "volume", "quote_volume")
 TOP_N, WARMUP, LIQ_WINDOW, MIN_QV = 50, 30, 30, 5e6   # pre-registered
 
 
+# ------------------------------------------------ Amendment A1 (frozen) --
+# Committed 2026-09-28 BEFORE any 2023-2025 return was read (vault note,
+# "Amendment A1"). The verdict is judged on PRIMARY only; every other row is
+# information and cannot flip it.
+A1 = {
+    "primary": "daily Abdi-Ranaldo, 30d trailing, half-spread, floor 1 bp (unchanged)",
+    "fee_per_side": 0.0005,                 # P1 perp_taker; = venue 10 bps taker RT
+    "sens_1h_ar": {"window_bars": 720, "min_bars": 360, "floor": 0.0001,
+                   "fallback": "primary (daily AR) where no hourly value"},
+    "sens_depth": {"sample": "every Wednesday from 2023-01-04, eligible names only",
+                   "order_usd": 100_000,    # per name per trade, fixed before reading
+                   "band": 0.01,            # linear book within +-1% of mid
+                   "half_spread": 0.0001,   # archive has no touch; 1 bp floor
+                   "asof": "backward only", "fallback": "primary (daily AR)"},
+    "venue_rows": {"taker_10bps_rt": 0.0005, "maker_4bps_rt": 0.0002},
+    "oi": "partial coverage -> neutral rank per section 2, never dropped",
+    "last_day": "2025-12-31 has no d+1 row (2026 never fetched): return 0 by rule",
+}
+
+
 def _list(prefix: str) -> tuple[list[str], list[str]]:
     """(sub-prefixes, keys) under an S3 prefix, following pagination."""
     dirs, keys, marker = [], [], ""
@@ -173,6 +193,88 @@ def _fetch_funding(days: pd.DatetimeIndex) -> None:
           f"{len(events):,} events", flush=True)
 
 
+OI_START = pd.Timestamp("2021-12-01", tz="UTC")   # metrics archive starts here
+DEPTH_START = pd.Timestamp("2023-01-01", tz="UTC")  # bookDepth archive starts here
+
+
+def _needed_oi_pairs(elig: pd.DataFrame) -> dict[str, list[pd.Timestamp]]:
+    """(symbol -> days) whose daily metrics file is needed: every eligible
+    day d >= OI_START and d - 7 (oi_change_7 reads both closes)."""
+    out = {}
+    e = elig.loc[OI_START:]
+    for sym in e.columns[e.any()]:
+        days = e.index[e[sym].to_numpy(dtype=bool)]
+        need = days.union(days - pd.Timedelta(days=7))
+        out[sym] = sorted(d for d in need if d >= OI_START)
+    return out
+
+
+def _fetch_oi() -> None:
+    """OI at each needed day's close (no returns are read). Zips cached."""
+    from model.archive import parse_metrics
+    from model.cross_section import oi_at_close
+    elig = _universe()
+    pairs = _needed_oi_pairs(elig)
+    jobs = [(s, d) for s, ds in pairs.items() for d in ds]
+    print(f"  oi: {len(pairs)} symbols, {len(jobs):,} daily metrics files", flush=True)
+
+    def one(job):
+        s, d = job
+        day = d.strftime("%Y-%m-%d")
+        return _get(f"data/futures/um/daily/metrics/{s}/{s}-metrics-{day}.zip")
+    with ThreadPoolExecutor(24) as pool:
+        locals_ = list(pool.map(one, jobs))
+    got = {}
+    for (s, d), l in zip(jobs, locals_):
+        if l in ("missing", "failed"):
+            continue
+        try:
+            got.setdefault(s, []).append(parse_metrics(_read(l))["oi"])
+        except Exception:   # a malformed file is a missing file
+            continue
+    panel = pd.DataFrame(np.nan, index=elig.index, columns=elig.columns)
+    for s, parts in got.items():
+        series = pd.concat(parts)
+        series = series[~series.index.duplicated(keep="last")]
+        days = pd.DatetimeIndex(pairs[s])
+        panel.loc[days, s] = oi_at_close(series, days).to_numpy()
+    panel.to_csv(PANELS / "oi_close.csv", index_label="day")
+    miss = sum(l in ("missing", "failed") for l in locals_)
+    print(f"  oi: {len(jobs) - miss:,} files read, {miss:,} missing/failed", flush=True)
+
+
+def _fetch_depth() -> None:
+    """A1 sensitivity (b): bookDepth on every Wednesday from 2023-01-04, for
+    the symbols eligible that day; kept is the daily median over snapshots
+    of mean(bid1, ask1) notional (USD within 1% of mid). Zips are NOT kept."""
+    from model.archive import parse_depth
+    elig = _universe()
+    weds = pd.date_range("2023-01-04", "2025-12-31", freq="7D", tz="UTC")
+    jobs = [(s, d) for d in weds for s in elig.columns[elig.loc[d].fillna(False).astype(bool)]]
+    print(f"  depth: {len(weds)} Wednesdays, {len(jobs):,} files", flush=True)
+
+    def one(job):
+        s, d = job
+        url = f"{VISION}data/futures/um/daily/bookDepth/{s}/{s}-bookDepth-{d:%Y-%m-%d}.zip"
+        for _ in range(3):
+            try:
+                r = requests.get(url, timeout=120)
+            except requests.RequestException:
+                continue
+            if r.status_code == 404:
+                return np.nan
+            if r.ok:
+                with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                    wide = parse_depth(z.read(z.namelist()[0]).decode())
+                return float(((wide["bid1"] + wide["ask1"]) / 2).median()) if len(wide) else np.nan
+        return np.nan
+    with ThreadPoolExecutor(16) as pool:
+        vals = list(pool.map(one, jobs))
+    rows = pd.DataFrame([(d, s, v) for (s, d), v in zip(jobs, vals)], columns=["day", "symbol", "d1"])
+    rows.pivot(index="day", columns="symbol", values="d1").to_csv(PANELS / "depth1.csv", index_label="day")
+    print(f"  depth: {rows['d1'].notna().sum():,} of {len(rows):,} read", flush=True)
+
+
 def counts() -> dict:
     """Universe size per year from VOLUME ONLY (no return is read)."""
     vol, qv = _load("volume"), _load("quote_volume")
@@ -238,7 +340,13 @@ def main() -> None:
     ap.add_argument("--funding", action="store_true", help="funding only (klines cached)")
     ap.add_argument("--counts", action="store_true")
     ap.add_argument("--control", action="store_true")
+    ap.add_argument("--oi", action="store_true", help="stage B: OI panel (metrics)")
+    ap.add_argument("--depth", action="store_true", help="A1 (b): weekly bookDepth sample")
     a = ap.parse_args()
+    if a.oi:
+        _fetch_oi()
+    if a.depth:
+        _fetch_depth()
     if a.fetch:
         fetch()
     if a.funding:
