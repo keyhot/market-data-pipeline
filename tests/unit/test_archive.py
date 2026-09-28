@@ -43,8 +43,8 @@ def _depth(n_rows=6000, seed=2, start="2025-01-01"):
     rng = np.random.default_rng(seed)
     index = pd.date_range(start, periods=n_rows, freq="37s", tz="UTC")
     base = rng.uniform(1e6, 2e6, (n_rows, 2))
-    return pd.DataFrame({"bid02": base[:, 0], "ask02": base[:, 1],
-                         "bid1": base[:, 0] * 5, "ask1": base[:, 1] * 5},
+    return pd.DataFrame({"bid1": base[:, 0], "ask1": base[:, 1],
+                         "bid2": base[:, 0] * 5, "ask2": base[:, 1] * 5},
                         index=index)
 
 
@@ -59,15 +59,15 @@ def test_parse_metrics_drops_the_duplicated_row_and_keeps_the_used_columns():
     assert frame["global_ratio"].iloc[0] == pytest.approx(1.35731217)
 
 
-def test_parse_depth_takes_the_02_and_1_percent_bands_with_bids_below_mid():
+def test_parse_depth_takes_the_1_and_2_percent_bands_with_bids_below_mid():
     rows = ["timestamp,percentage,depth,notional"]
-    for pct, notional in ((-5, 9), (-1, 5), (-0.2, 1), (0.2, 2), (1, 7), (5, 11)):
+    for pct, notional in ((-5, 9), (-2, 5), (-1, 1), (1, 2), (2, 7), (5, 11)):
         rows.append(f"2023-01-01 00:06:05,{pct},1.0,{notional}")
-    rows.append("2023-01-01 00:06:40,-0.2,1.0,3")  # a snapshot missing bands
+    rows.append("2023-01-01 00:06:40,-1,1.0,3")  # a snapshot missing bands
     frame = parse_depth("\n".join(rows))
     assert len(frame) == 1
     snap = frame.iloc[0]
-    assert (snap.bid02, snap.ask02, snap.bid1, snap.ask1) == (1, 2, 5, 7)
+    assert (snap.bid1, snap.ask1, snap.bid2, snap.ask2) == (1, 2, 5, 7)
 
 
 # --- the as-of rule: only rows available by the bar's CLOSE ------------------
@@ -146,28 +146,29 @@ def test_feature_columns_are_the_pre_registered_ones():
 
 
 def test_depth_imbalance_is_positive_when_bids_outweigh_asks():
-    depth = pd.DataFrame({"bid02": [3.0], "ask02": [1.0], "bid1": [1.0],
-                          "ask1": [3.0]},
+    depth = pd.DataFrame({"bid1": [3.0], "ask1": [1.0], "bid2": [1.0],
+                          "ask2": [3.0]},
                          index=pd.DatetimeIndex([pd.Timestamp("2025-01-01 00:14",
                                                               tz="UTC")]))
     got = depth_features(depth, _grid(1)).iloc[0]
-    assert got.depth_imb_02 == pytest.approx(0.5)
-    assert got.depth_imb_1 == pytest.approx(-0.5)
+    assert got.depth_imb_1 == pytest.approx(0.5)
+    assert got.depth_imb_2 == pytest.approx(-0.5)
 
 
 # --- the stamp-convention check: it can fail both ways -----------------------
 
-def _taker_driven_by_returns(stamp_ends_period: bool, n_bars=3000, seed=4):
+def _taker_driven_by_returns(stamp_ends_period: bool, n_bars=3000, seed=4,
+                             start="2025-01-01"):
     """5-min returns drive the taker ratio of the period they happen in;
     the row is stamped at the period's end or its start."""
     rng = np.random.default_rng(seed)
     r5 = rng.normal(0, 1e-3, n_bars * 3)
-    period_start = _grid(n_bars * 3, freq="5min")
+    period_start = _grid(n_bars * 3, start, "5min")
     stamps = period_start + (METRICS_STEP if stamp_ends_period else pd.Timedelta(0))
     metrics = pd.DataFrame({"oi": 1.0, "top_ratio": 1.0, "global_ratio": 1.0,
                             "taker_ratio": np.exp(r5 * 300)}, index=stamps)
     # bar T (open) closes at T+15: its close price after its three 5-min moves
-    close = pd.Series(100 * np.exp(np.cumsum(r5))[2::3], index=_grid(n_bars))
+    close = pd.Series(100 * np.exp(np.cumsum(r5))[2::3], index=_grid(n_bars, start))
     return metrics, close
 
 
@@ -203,3 +204,22 @@ def test_rows_without_a_complete_archive_row_are_dropped_not_filled():
     X2, y2 = with_archive_features(X, y, feats)
     assert list(X2.index) == [bars[0], bars[2]]
     assert list(y2) == [0, 0]
+
+
+def test_a_convention_that_flips_between_years_gets_the_5min_delay():
+    """Binance's stamps END their period through 2023 and START it from
+    2024: a pooled check would let one regime's leak through."""
+    m_old, c_old = _taker_driven_by_returns(True, start="2022-10-01", n_bars=43872)
+    m_new, c_new = _taker_driven_by_returns(False, start="2024-01-01", seed=5)
+    info = check_stamp_convention(pd.concat([m_old.iloc[:-1], m_new]),
+                                  pd.concat([c_old, c_new]))
+    assert all(info["by_year"][y][0] > info["by_year"][y][1] for y in (2022, 2023))
+    assert info["by_year"][2024][0] < info["by_year"][2024][1]
+    assert info["delay"] == METRICS_STEP
+
+
+def test_a_zero_open_interest_row_is_skipped_not_logged_to_minus_infinity():
+    metrics = _metrics()
+    metrics.iloc[480, metrics.columns.get_loc("oi")] = 0.0  # bar 159's close
+    feats = metrics_features(metrics, _grid(160), pd.Timedelta(0))
+    assert np.isfinite(feats.iloc[-1].to_numpy()).all()

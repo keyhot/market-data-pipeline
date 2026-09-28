@@ -54,7 +54,7 @@ WINDOWS = {  # 2026 is never fetched
     "bookDepth": pd.date_range("2023-01-01", "2025-12-31", freq="D"),
 }
 ARMS = {  # arm -> (features, the feature the control replaces, test years)
-    "metrics": (METRICS_FEATURES, "oi_change_16", (2022, 2023, 2024, 2025)),
+    "metrics": (METRICS_FEATURES, "oi_change_16", (2023, 2024, 2025)),  # ETH starts 2021-12
     "depth": (DEPTH_FEATURES, "depth_change_4", (2024, 2025)),
 }
 CONTROL_MIN_DELTA = 0.05
