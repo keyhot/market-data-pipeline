@@ -156,6 +156,38 @@ def slippage_per_side(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame
     return (np.sqrt(mean) / 2).clip(lower=floor)
 
 
+def slippage_hourly(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame,
+                    days: pd.DatetimeIndex, window: int = 720, min_bars: int = 360,
+                    floor: float = 0.0001) -> pd.DataFrame:
+    """Amendment A1 (a): the Abdi-Ranaldo half-spread on HOURLY bars, over
+    the trailing `window` bars that close by d's close (open < d + 1 day),
+    in the same order as the daily version: mean, clip >= 0, sqrt, halve,
+    floor. Indexed by `days`; NaN where fewer than `min_bars` terms exist."""
+    eta = (np.log(high) + np.log(low)) / 2
+    c = np.log(close)
+    term = 4 * (c.shift(1) - eta.shift(1)) * (c.shift(1) - eta)
+    mean = term.rolling(window, min_periods=min_bars).mean().clip(lower=0)
+    half = (np.sqrt(mean) / 2).clip(lower=floor)
+    # The last bar that closes by d's close opens at d + 23h: as-of it.
+    last_bar = days + DAY - pd.Timedelta(hours=1)
+    out = half.reindex(half.index.union(last_bar)).ffill().reindex(last_bar)
+    out.index = days
+    return out
+
+
+def slippage_depth(depth1: pd.DataFrame, days: pd.DatetimeIndex, columns,
+                   order_usd: float, band: float = 0.01,
+                   half_spread: float = 0.0001) -> pd.DataFrame:
+    """Amendment A1 (b): per-side cost of an `order_usd` trade on a linear
+    book holding `depth1` USD within `band` of mid: half_spread + 1/2 * band
+    * order / depth. Samples (one row per sampled day, known at that day's
+    close) join as-of BACKWARD; NaN before a name's first sample, so the
+    caller supplies the fallback."""
+    cost = half_spread + 0.5 * band * order_usd / depth1.where(depth1 > 0)
+    cost = cost.reindex(columns=list(columns)).sort_index()
+    return cost.reindex(cost.index.union(days)).ffill().reindex(days)
+
+
 # ---------------------------------------------------------------- model --
 
 def cs_rank(panel: pd.DataFrame, eligible: pd.DataFrame) -> pd.DataFrame:

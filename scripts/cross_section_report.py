@@ -32,7 +32,8 @@ from model.backtest import COST_PROFILES  # noqa: E402
 from model.cross_section import (  # noqa: E402
     block_bootstrap_ci, daily_features, decile_weights, eligibility,
     forward_funding, forward_returns, funding_by_day, is_candidate,
-    portfolio_pnl, random_null_weights, slippage_per_side, walk_forward_scores,
+    portfolio_pnl, random_null_weights, slippage_depth, slippage_hourly,
+    slippage_per_side, walk_forward_scores,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -275,6 +276,155 @@ def _fetch_depth() -> None:
     print(f"  depth: {rows['d1'].notna().sum():,} of {len(rows):,} read", flush=True)
 
 
+TEST_START = pd.Timestamp("2023-01-01", tz="UTC")
+TEST_END = pd.Timestamp("2025-12-31", tz="UTC")
+RESULTS = ROOT / "scripts/results/e13_stage_b.json"
+
+
+def _fetch_hourly() -> None:
+    """A1 sensitivity (a): 1h klines 2022-12..2025-12 for every name eligible
+    in the test years; only the per-day hourly-AR slippage panel is kept."""
+    elig = _universe()
+    days = elig.index[elig.index >= TEST_START]
+    names = list(elig.columns[elig.loc[TEST_START:].any()])
+    months = pd.period_range("2022-12", LAST_MONTH, freq="M")
+    jobs = [(s, str(m)) for s in names for m in months]
+    print(f"  1h: {len(names)} names, {len(jobs):,} monthly zips", flush=True)
+
+    def one(job):
+        s, m = job
+        return _get(f"data/futures/um/monthly/klines/{s}/1h/{s}-1h-{m}.zip")
+    with ThreadPoolExecutor(16) as pool:
+        locals_ = list(pool.map(one, jobs))
+    by_sym = {}
+    for (s, _), l in zip(jobs, locals_):
+        if l not in ("missing", "failed"):
+            by_sym.setdefault(s, []).append(_parse_klines(_read(l)))
+    out = pd.DataFrame(np.nan, index=days, columns=elig.columns)
+    for s, parts in by_sym.items():
+        f = pd.concat(parts).sort_index()
+        f = f[~f.index.duplicated(keep="last")]
+        one_ = slippage_hourly(f[["high"]].rename(columns={"high": s}),
+                               f[["low"]].rename(columns={"low": s}),
+                               f[["close"]].rename(columns={"close": s}), days)
+        out[s] = one_[s]
+    out.to_csv(PANELS / "slip_1h.csv", index_label="day")
+    print(f"  1h: {len(by_sym)} names with bars", flush=True)
+
+
+def _stats(pnl: pd.DataFrame) -> dict:
+    m, lo, hi = block_bootstrap_ci(pnl["net"])
+    sd = pnl["net"].std()
+    return {"net_bps": [round(m * 1e4, 1), round(lo * 1e4, 1), round(hi * 1e4, 1)],
+            "gross_bps": round(pnl["gross"].mean() * 1e4, 1),
+            "funding_bps": round(pnl["funding"].mean() * 1e4, 2),
+            "cost_bps": round(pnl["cost"].mean() * 1e4, 1),
+            "turnover": round(pnl["turnover"].mean(), 3),
+            "sharpe_ann": round(float(pnl["net"].mean() / sd * np.sqrt(365)) if sd > 0 else 0.0, 2)}
+
+
+def _null(w, elig, fwd, ffund, fee, slip, seeds) -> np.ndarray:
+    out = []
+    for seed in range(seeds):
+        nw = random_null_weights(w, elig, np.random.default_rng(seed))
+        p = portfolio_pnl(nw, fwd, ffund, fee, slip).loc[TEST_START:TEST_END]
+        out.append(float((p["gross"] + p["funding"]).mean()))
+    return np.array(out)
+
+
+def score(seeds: int = 1000) -> dict:
+    """Stage B: the pre-registered rank-ridge, walk-forward from 2021-01,
+    reported on 2023-01..2025-12 only. Verdict on the PRIMARY cost (A1)."""
+    close, high, low = _load("close"), _load("high"), _load("low")
+    elig = _universe()
+    fund = _load("funding_daily").reindex(index=close.index, columns=close.columns).fillna(0.0)
+    oi_path = PANELS / "oi_close.csv"
+    oi = (_load("oi_close").reindex(index=close.index, columns=close.columns)
+          if oi_path.exists() else None)
+    fwd, ffund = forward_returns(close), forward_funding(fund)
+    slip = slippage_per_side(high, low, close)
+    fee = A1["fee_per_side"]
+    feats = daily_features(close, fund, oi)
+    start = pd.Timestamp("2021-01-01", tz="UTC")
+    test = slice(TEST_START, TEST_END)
+    scores = walk_forward_scores(feats, fwd, elig, start, TEST_END)
+    w = decile_weights(scores)
+    et = elig.loc[test].fillna(False).astype(bool)
+    oi_cov = float(feats["oi_change_7"].where(et).loc[test].notna().sum().sum() / et.sum().sum())
+
+    rows = {}
+    rows["primary (daily AR)"] = portfolio_pnl(w, fwd, ffund, fee, slip).loc[test]
+    s1h = PANELS / "slip_1h.csv"
+    if s1h.exists():
+        h = _load("slip_1h").reindex(index=close.index, columns=close.columns)
+        rows["(a) 1h AR"] = portfolio_pnl(w, fwd, ffund, fee, h.combine_first(slip)).loc[test]
+    dpath = PANELS / "depth1.csv"
+    if dpath.exists():
+        d1 = _load("depth1")
+        dep = slippage_depth(d1, close.index, close.columns, A1["sens_depth"]["order_usd"],
+                             A1["sens_depth"]["band"], A1["sens_depth"]["half_spread"])
+        rows["(b) bookDepth $100k"] = portfolio_pnl(w, fwd, ffund, fee, dep.combine_first(slip)).loc[test]
+    rows["venue taker 10 bps RT (= primary fee)"] = rows["primary (daily AR)"]
+    rows["venue maker 4 bps RT"] = portfolio_pnl(w, fwd, ffund, A1["venue_rows"]["maker_4bps_rt"], slip).loc[test]
+    rows["flat 1 bp slippage"] = portfolio_pnl(w, fwd, ffund, fee, 0.0001).loc[test]
+    res = {"days": len(rows["primary (daily AR)"]), "oi_coverage_test": round(oi_cov, 3),
+           "median_book_per_side": float((w > 0).sum(axis=1).loc[test].median()),
+           "median_slippage_bps": {"primary": round(float(slip.where(elig).loc[test].stack().median() * 1e4), 1)},
+           "rows": {k: _stats(v) for k, v in rows.items()}}
+    if s1h.exists():
+        res["median_slippage_bps"]["1h"] = round(float(h.where(elig).loc[test].stack().median() * 1e4), 1)
+    if dpath.exists():
+        res["median_slippage_bps"]["depth"] = round(float(dep.where(elig).loc[test].stack().median() * 1e4), 1)
+
+    prim = rows["primary (daily AR)"]
+    gf = float((prim["gross"] + prim["funding"]).mean())
+    null = _null(w.loc[test], elig.loc[test], fwd, ffund, fee, slip, seeds)
+    res["null_gross_plus_funding_bps"] = {
+        "seeds": seeds, "mean": round(null.mean() * 1e4, 2),
+        "p2.5": round(np.quantile(null, 0.025) * 1e4, 2),
+        "p97.5": round(np.quantile(null, 0.975) * 1e4, 2)}
+    res["model_gross_plus_funding_bps"] = round(gf * 1e4, 2)
+    res["model_null_percentile"] = round(float((null < gf).mean() * 100), 1)
+    c1 = res["rows"]["primary (daily AR)"]["net_bps"][1] > 0
+    c2 = gf > np.quantile(null, 0.975)
+    res["pass_rule"] = {"1_net_ci_above_0": bool(c1), "2_beats_null_p97.5": bool(c2),
+                        "verdict": "PASS" if (c1 and c2) else "FALSIFIED"}
+    res["null_sanity_pass"] = bool(abs(res["null_gross_plus_funding_bps"]["mean"]) < 10)
+
+    res["per_year_net_bps"] = {str(y): _stats(g)["net_bps"] for y, g in prim.groupby(prim.index.year)}
+    for leg, wl in (("long", w.clip(lower=0)), ("short", w.clip(upper=0))):
+        p = portfolio_pnl(wl, fwd, ffund, fee, slip).loc[test]
+        res[f"{leg}_leg_bps"] = {"gross": round(p["gross"].mean() * 1e4, 1),
+                                 "funding": round(p["funding"].mean() * 1e4, 2),
+                                 "cost": round(p["cost"].mean() * 1e4, 1)}
+    sc, fr = scores.loc[test].where(et), fwd.loc[test].where(et)
+    ic = sc.rank(axis=1).corrwith(fr.rank(axis=1), axis=1).dropna()
+    m, lo, hi = block_bootstrap_ci(ic)
+    res["rank_ic"] = [round(m, 4), round(lo, 4), round(hi, 4)]
+    res["coefficients_last_fit"] = _last_beta(feats, fwd, elig)
+
+    diag = walk_forward_scores({"ret_1": feats["ret_1"]}, fwd, elig, start, TEST_END)
+    res["diag_ret_1_alone"] = _stats(portfolio_pnl(decile_weights(diag), fwd, ffund, fee, slip).loc[test])
+    leaked = walk_forward_scores(dict(feats, ret_30=fwd), fwd, elig, start, TEST_END)
+    res["leaked_control_test_years"] = _stats(portfolio_pnl(decile_weights(leaked), fwd, ffund, fee, slip).loc[test])
+    res["dev_control_2021_22"] = control()
+    RESULTS.parent.mkdir(parents=True, exist_ok=True)
+    RESULTS.write_text(json.dumps(res, indent=1) + "\n")
+    print(json.dumps(res, indent=1))
+    return res
+
+
+def _last_beta(feats, fwd, elig) -> dict:
+    """The rank-ridge fitted on everything before the last test month."""
+    from model.cross_section import cs_rank, fit_ridge
+    refit = pd.Timestamp("2025-12-01", tz="UTC")
+    ranked = {k: cs_rank(v, elig).loc[:refit - pd.Timedelta(days=1)].stack() for k, v in feats.items()}
+    X = pd.concat(ranked, axis=1)
+    y = cs_rank(fwd, elig).stack().reindex(X.index)
+    beta = fit_ridge(X.to_numpy(), y.to_numpy())
+    return {k: round(float(b), 4) for k, b in zip(X.columns, beta)}
+
+
 def counts() -> dict:
     """Universe size per year from VOLUME ONLY (no return is read)."""
     vol, qv = _load("volume"), _load("quote_volume")
@@ -340,6 +490,9 @@ def main() -> None:
     ap.add_argument("--funding", action="store_true", help="funding only (klines cached)")
     ap.add_argument("--counts", action="store_true")
     ap.add_argument("--control", action="store_true")
+    ap.add_argument("--hourly", action="store_true", help="A1 (a): 1h-AR slippage panel")
+    ap.add_argument("--score", action="store_true", help="stage B: test years 2023-2025")
+    ap.add_argument("--seeds", type=int, default=1000)
     ap.add_argument("--oi", action="store_true", help="stage B: OI panel (metrics)")
     ap.add_argument("--depth", action="store_true", help="A1 (b): weekly bookDepth sample")
     a = ap.parse_args()
@@ -347,6 +500,10 @@ def main() -> None:
         _fetch_oi()
     if a.depth:
         _fetch_depth()
+    if a.hourly:
+        _fetch_hourly()
+    if a.score:
+        score(a.seeds)
     if a.fetch:
         fetch()
     if a.funding:

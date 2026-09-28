@@ -20,6 +20,8 @@ from model.cross_section import (
     oi_at_close,
     portfolio_pnl,
     random_null_weights,
+    slippage_depth,
+    slippage_hourly,
     slippage_per_side,
     traded_run_length,
     training_days,
@@ -306,3 +308,71 @@ def test_leaked_feature_gives_a_large_spread_and_the_random_null_gives_none():
     hp = portfolio_pnl(decile_weights(honest), fwd, fund, 0.0, 0.0)
     _, hlo, hhi = block_bootstrap_ci(hp.loc[pnl.index, "gross"])
     assert hlo < 0 < hhi                              # a random walk has no edge
+
+
+# ------------------------------------------------ Amendment A1 costs -----
+
+def _hourly(n_days=40, n_sym=3, seed=1):
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2023-01-01", periods=n_days * 24, freq="h", tz="UTC")
+    cols = [f"S{i}USDT" for i in range(n_sym)]
+    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.005, (len(idx), n_sym)), 0)), idx, cols)
+    high = close * np.exp(np.abs(rng.normal(0, 0.003, close.shape)))
+    low = close * np.exp(-np.abs(rng.normal(0, 0.003, close.shape)))
+    return high, low, close
+
+
+def test_hourly_ar_recovers_a_pure_bid_ask_bounce():
+    """Mid fixed, closes alternate ask/bid, each bar spans the spread: AR on
+    the bars must return the half-spread exactly."""
+    idx = pd.date_range("2023-01-01", periods=40 * 24, freq="h", tz="UTC")
+    s = 0.002
+    sign = np.where(np.arange(len(idx)) % 2 == 0, 1, -1)
+    close = pd.DataFrame({"AUSDT": 100 * (1 + sign * s / 2)}, idx)
+    high = pd.DataFrame({"AUSDT": 100 * (1 + s / 2)}, idx)
+    low = pd.DataFrame({"AUSDT": 100 * (1 - s / 2)}, idx)
+    days = pd.date_range("2023-01-01", periods=40, freq="D", tz="UTC")
+    out = slippage_hourly(high, low, close, days)
+    assert out["AUSDT"].iloc[20:].sub(s / 2).abs().max() < 2e-5
+    assert out["AUSDT"].iloc[:14].isna().all()      # fewer than 360 bars
+
+
+def test_hourly_ar_is_point_in_time_for_every_day():
+    """RULE: rewriting every hourly bar that opens at or after d+1 00:00
+    leaves the estimate at d, and every day before it, unchanged."""
+    high, low, close = _hourly()
+    days = pd.date_range("2023-01-01", periods=40, freq="D", tz="UTC")
+    base = slippage_hourly(high, low, close, days)
+    assert (base.dropna() >= 0.0001).all().all()
+    for d in days[16::5]:
+        after = high.index >= d + pd.Timedelta(days=1)
+        h2 = high.copy()
+        h2.loc[after] *= 1.5
+        moved = slippage_hourly(h2, low, close, days)
+        pd.testing.assert_frame_equal(base.loc[:d], moved.loc[:d])
+        assert not base.loc[d + pd.Timedelta(days=1):].equals(moved.loc[d + pd.Timedelta(days=1):])
+
+
+def test_depth_slippage_is_the_linear_book_formula_as_of_backward():
+    days = pd.date_range("2023-01-01", periods=21, freq="D", tz="UTC")
+    wed = pd.DatetimeIndex(["2023-01-04", "2023-01-11", "2023-01-18"], tz="UTC")
+    d1 = pd.DataFrame({"AUSDT": [1e6, 2e6, 4e6]}, wed)
+    out = slippage_depth(d1, days, ["AUSDT", "BUSDT"], order_usd=1e5)
+    assert out["AUSDT"].loc[:"2023-01-03"].isna().all()     # before the first sample
+    assert out["BUSDT"].isna().all()                        # never sampled
+    assert out.loc["2023-01-04", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 1e6)
+    assert out.loc["2023-01-10", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 1e6)
+    assert out.loc["2023-01-11", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 2e6)
+    assert out.loc["2023-01-21", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 4e6)
+
+
+def test_depth_slippage_is_point_in_time_for_every_sample():
+    """RULE: a sample taken after d never reaches d."""
+    days = pd.date_range("2023-01-01", periods=60, freq="D", tz="UTC")
+    wed = pd.date_range("2023-01-04", periods=8, freq="7D", tz="UTC")
+    d1 = pd.DataFrame({"AUSDT": np.linspace(1e6, 8e6, 8)}, wed)
+    base = slippage_depth(d1, days, ["AUSDT"], order_usd=1e5)
+    for d in days[3:]:
+        d2 = d1.copy()
+        d2.loc[d2.index > d] *= 10
+        pd.testing.assert_frame_equal(base.loc[:d], slippage_depth(d2, days, ["AUSDT"], order_usd=1e5).loc[:d])
