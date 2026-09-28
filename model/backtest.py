@@ -10,7 +10,7 @@ never zero by default. Usage:
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import lightgbm as lgb
@@ -30,6 +30,41 @@ RESULTS_DIR = Path(__file__).parent / "artifacts"
 
 
 @dataclass(frozen=True)
+class CostProfile:
+    """What one round trip costs on a venue, and how its entries fill.
+
+    Data, not logic: swapping in the execution venue's fees is a one-line
+    edit to `COST_PROFILES` below. `fill_rule` is "market" (a taker order
+    always fills at the signal close) or "limit_through" (a resting buy limit
+    at the signal close fills only if the next bar trades strictly below it;
+    see `limit_buy_fills`).
+    """
+
+    fee_per_side: float
+    slippage: float
+    fill_rule: str
+    venue: str
+
+
+# Binance retail base-tier fees. **PLACEHOLDERS**: Binance is closed to the
+# operator's jurisdiction (vault `Docs/live-trading-path.md`), and the
+# execution venue — decision D0: Kraken Pro, OKX X-Perps or Bitstamp — is not
+# chosen. When it is, replace these numbers with that venue's; the names stay.
+COST_PROFILES: dict[str, CostProfile] = {
+    # 0.1% taker + 1 bp slippage per side = 22 bps a round trip. The harness
+    # default, and what every published figure before P1 was measured at.
+    "spot_taker": CostProfile(0.001, 0.0001, "market",
+                              "binance spot taker (PLACEHOLDER until D0)"),
+    # USDⓈ-M perps, 0.05% taker + 1 bp = 12 bps a round trip.
+    "perp_taker": CostProfile(0.0005, 0.0001, "market",
+                              "binance usdm taker (PLACEHOLDER until D0)"),
+    # 0.02% maker + 1 bp = 6 bps a round trip, and entries must trade through.
+    "perp_maker": CostProfile(0.0002, 0.0001, "limit_through",
+                              "binance usdm maker (PLACEHOLDER until D0)"),
+}
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     horizon_bars: int = DEFAULT_HORIZON_BARS
     train_rows: int = 800
@@ -42,6 +77,52 @@ class BacktestConfig:
     # makes exposure a decision the strategy takes rather than a by-product
     # of the horizon (model plan item 2).
     cooldown_bars: int = 0
+    # "market" fills every entry; "limit_through" is the maker fill rule.
+    fill_rule: str = "market"
+
+    @classmethod
+    def for_profile(cls, name: str, **fields) -> "BacktestConfig":
+        """A config priced by the named `COST_PROFILES` entry. The default
+        config IS `spot_taker`, so existing results do not move."""
+        profile = COST_PROFILES[name]
+        return replace(cls(**fields), fee_per_side=profile.fee_per_side,
+                       slippage=profile.slippage, fill_rule=profile.fill_rule)
+
+
+def limit_buy_fills(limit: float, next_low: float) -> bool:
+    """A resting buy limit fills only when price trades THROUGH it.
+
+    A touch is not a fill: at a touch the order may sit behind the queue, and
+    the orders that do fill there are disproportionately the ones price is
+    about to run through (adverse selection). Assuming every maker order
+    fills is how a backtest invents money."""
+    return next_low < limit
+
+
+def apply_fill_rule(
+    held: list[tuple[int, int]], closes, lows, fill_rule: str
+) -> tuple[list[tuple[int, int]], int]:
+    """Keep the positions whose entry order filled; return them and how many
+    were attempted.
+
+    Under "limit_through" the entry is a buy limit at the signal bar's close,
+    working from the NEXT bar on — the signal bar's own low happened before
+    the order existed. It fills at the limit price, so a filled position is
+    priced exactly as a market one. An unfilled position is skipped whole,
+    not chased. Exits are assumed to fill at the exit close: a known optimism
+    of this rule (vault `Docs/cost-profiles-p1.md`)."""
+    if fill_rule == "market":
+        return list(held), len(held)
+    if fill_rule != "limit_through":
+        raise ValueError(f"unknown fill rule: {fill_rule!r}")
+    closes = np.asarray(closes, dtype=float)
+    lows = np.asarray(lows, dtype=float)
+    filled = [
+        (start, end) for start, end in held
+        if start + 1 < len(lows) and limit_buy_fills(closes[start],
+                                                     lows[start + 1])
+    ]
+    return filled, len(held)
 
 
 def find_episodes(mask) -> list[tuple[int, int]]:
@@ -271,6 +352,10 @@ def run_backtest(
         if position[1] + config.horizon_bars < len(close_values)
     ]
 
+    held, attempted = apply_fill_rule(
+        held, close_values, _price_series(bars, "low").to_numpy(),
+        config.fill_rule)
+
     returns = position_returns(held, close_values, config)
     all_returns = returns.tolist()
     cost = 2 * (config.fee_per_side + config.slippage)
@@ -318,6 +403,10 @@ def run_backtest(
         # artifact and a new one are not comparable, so they do not share a key.
         "total_positions": int(sum(f.positions for f in folds)),
         "fee_charges": int(sum(f.positions for f in folds)),
+        # P1: under the maker fill rule, positions whose entry never filled
+        # are skipped. `total_positions` counts only the filled ones.
+        "positions_attempted": int(attempted),
+        "fill_rate": float(len(held) / attempted) if attempted else None,
         "accounting": "position-level",
         "position_policy": "merge-while-open",
         "max_concurrent_positions": _max_concurrent(held, config.horizon_bars),
@@ -372,11 +461,15 @@ def run_backtest(
 def _close_series(bars: pd.DataFrame) -> pd.Series:
     """The full close series in bar space, sorted — the price ladder every
     position is entered and exited against."""
+    return _price_series(bars, "close")
+
+
+def _price_series(bars: pd.DataFrame, column: str) -> pd.Series:
     frame = bars.copy()
     if "timestamp" in frame.columns:
         frame = frame.set_index(pd.to_datetime(frame["timestamp"], utc=True))
     frame.columns = [str(c).lower() for c in frame.columns]
-    return frame["close"].astype(float).sort_index()
+    return frame[column].astype(float).sort_index()
 
 
 def _max_concurrent(held: list[tuple[int, int]], horizon_bars: int) -> int:
