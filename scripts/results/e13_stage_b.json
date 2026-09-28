@@ -1,0 +1,184 @@
+{
+ "days": 1096,
+ "oi_coverage_test": 0.992,
+ "median_book_per_side": 5.0,
+ "median_slippage_bps": {
+  "primary": 1.0,
+  "1h": 1.0,
+  "depth": 5.1
+ },
+ "rows": {
+  "primary (daily AR)": {
+   "net_bps": [
+    -97.6,
+    -133.7,
+    -53.4
+   ],
+   "gross_bps": 15.4,
+   "funding_bps": -7.56,
+   "cost_bps": 105.4,
+   "turnover": 1.889,
+   "sharpe_ann": -3.03
+  },
+  "(a) 1h AR": {
+   "net_bps": [
+    -10.2,
+    -44.5,
+    34.2
+   ],
+   "gross_bps": 15.4,
+   "funding_bps": -7.56,
+   "cost_bps": 18.1,
+   "turnover": 1.889,
+   "sharpe_ann": -0.32
+  },
+  "(b) bookDepth $100k": {
+   "net_bps": [
+    -21.2,
+    -56.3,
+    23.5
+   ],
+   "gross_bps": 15.4,
+   "funding_bps": -7.56,
+   "cost_bps": 29.1,
+   "turnover": 1.889,
+   "sharpe_ann": -0.66
+  },
+  "venue taker 10 bps RT (= primary fee)": {
+   "net_bps": [
+    -97.6,
+    -133.7,
+    -53.4
+   ],
+   "gross_bps": 15.4,
+   "funding_bps": -7.56,
+   "cost_bps": 105.4,
+   "turnover": 1.889,
+   "sharpe_ann": -3.03
+  },
+  "venue maker 4 bps RT": {
+   "net_bps": [
+    -91.9,
+    -128.1,
+    -47.9
+   ],
+   "gross_bps": 15.4,
+   "funding_bps": -7.56,
+   "cost_bps": 99.8,
+   "turnover": 1.889,
+   "sharpe_ann": -2.85
+  },
+  "flat 1 bp slippage": {
+   "net_bps": [
+    -3.5,
+    -37.6,
+    41.1
+   ],
+   "gross_bps": 15.4,
+   "funding_bps": -7.56,
+   "cost_bps": 11.3,
+   "turnover": 1.889,
+   "sharpe_ann": -0.11
+  }
+ },
+ "null_gross_plus_funding_bps": {
+  "seeds": 1000,
+  "mean": -0.04,
+  "p2.5": -19.42,
+  "p97.5": 19.23
+ },
+ "model_gross_plus_funding_bps": 7.87,
+ "model_null_percentile": 79.4,
+ "pass_rule": {
+  "1_net_ci_above_0": false,
+  "2_beats_null_p97.5": false,
+  "verdict": "FALSIFIED"
+ },
+ "null_sanity_pass": true,
+ "per_year_net_bps": {
+  "2023": [
+   -109.3,
+   -154.0,
+   -64.5
+  ],
+  "2024": [
+   -72.7,
+   -121.9,
+   -31.3
+  ],
+  "2025": [
+   -110.8,
+   -212.6,
+   -14.4
+  ]
+ },
+ "long_leg_bps": {
+  "gross": 18.3,
+  "funding": -1.14,
+  "cost": 29.0
+ },
+ "short_leg_bps": {
+  "gross": -2.9,
+  "funding": -6.42,
+  "cost": 76.4
+ },
+ "rank_ic": [
+  0.1063,
+  0.0933,
+  0.1227
+ ],
+ "coefficients_last_fit": {
+  "ret_1": -0.0291,
+  "ret_7": -0.0349,
+  "ret_30": 0.0137,
+  "vol_30": -0.1008,
+  "funding_7": -0.0043,
+  "oi_change_7": -0.0145
+ },
+ "diag_ret_1_alone": {
+  "net_bps": [
+   -214.6,
+   -248.7,
+   -175.0
+  ],
+  "gross_bps": -11.0,
+  "funding_bps": -1.68,
+  "cost_bps": 201.9,
+  "turnover": 3.321,
+  "sharpe_ann": -6.61
+ },
+ "leaked_control_test_years": {
+  "net_bps": [
+   1258.6,
+   1183.5,
+   1334.1
+  ],
+  "gross_bps": 1451.4,
+  "funding_bps": 0.12,
+  "cost_bps": 192.9,
+  "turnover": 3.323,
+  "sharpe_ann": 34.03
+ },
+ "dev_control_2021_22": {
+  "days": 730,
+  "median_book_per_side": 5.0,
+  "median_slippage_bps": 26.13262257330668,
+  "mean_turnover": 3.3479452054794527,
+  "leaked_gross_bps": [
+   1587.9,
+   1461.9,
+   1710.8
+  ],
+  "leaked_net_bps": [
+   1347.5,
+   1213.0,
+   1478.0
+  ],
+  "null_gross_plus_funding_bps": {
+   "mean": -1.02,
+   "p2.5": -24.97,
+   "p97.5": 23.94
+  },
+  "control_pass": true
+ }
+}
