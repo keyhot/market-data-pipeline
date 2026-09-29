@@ -1,0 +1,94 @@
+{
+  "experiment": "e15_stage_a",
+  "git_hash": "4f8bb68",
+  "timestamp": "2026-09-29T17:11:31.092513+00:00",
+  "inputs": {
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "source": "price_bars 15m spot",
+    "first_bar": {
+      "BTCUSDT": "2020-01-01 00:00:00+00:00",
+      "ETHUSDT": "2020-01-01 00:00:00+00:00"
+    },
+    "last_bar": {
+      "BTCUSDT": "2025-12-31 23:30:00+00:00",
+      "ETHUSDT": "2025-12-31 23:30:00+00:00"
+    }
+  },
+  "parameters": {
+    "alpha_primary": 0.2,
+    "alpha_report": 0.05,
+    "hac_lag": 168,
+    "rv_floor": 1e-08,
+    "factor_window_h": 8736,
+    "roll_window_h": 168,
+    "min_valid": {
+      "24": 12,
+      "168": 84
+    },
+    "min_cell": 40,
+    "purge": "h",
+    "refit": "monthly"
+  },
+  "statistic": {
+    "a1_ci_lo_BTCUSDT_1h": 0.005025517576496765,
+    "a1_rel_improvement_BTCUSDT_1h": 0.2620273470923257,
+    "a2_violations_BTCUSDT_1h": 0,
+    "a3_mismatches_BTCUSDT_1h": 0,
+    "a4_ci_hi_BTCUSDT_1h": -0.0018372709184380346,
+    "a5_share_by_year_BTCUSDT_1h": {
+      "2021": 0.9993133440146487,
+      "2022": 1.0,
+      "2023": 0.9998857925993604,
+      "2024": 1.0,
+      "2025": 1.0
+    },
+    "a1_ci_lo_BTCUSDT_4h": 0.007772868826053024,
+    "a1_rel_improvement_BTCUSDT_4h": 0.19790409374255644,
+    "a2_violations_BTCUSDT_4h": 0,
+    "a3_mismatches_BTCUSDT_4h": 0,
+    "a4_ci_hi_BTCUSDT_4h": -0.002528448788966012,
+    "a5_share_by_year_BTCUSDT_4h": {
+      "2021": 0.9993119266055046,
+      "2022": 1.0,
+      "2023": 0.999885753455958,
+      "2024": 1.0,
+      "2025": 1.0
+    },
+    "a1_ci_lo_ETHUSDT_1h": 0.006600776072881886,
+    "a1_rel_improvement_ETHUSDT_1h": 0.26166811679451146,
+    "a2_violations_ETHUSDT_1h": 0,
+    "a3_mismatches_ETHUSDT_1h": 0,
+    "a4_ci_hi_ETHUSDT_1h": -0.0021733203156775105,
+    "a5_share_by_year_ETHUSDT_1h": {
+      "2021": 0.9993133440146487,
+      "2022": 1.0,
+      "2023": 0.9998857925993604,
+      "2024": 1.0,
+      "2025": 1.0
+    },
+    "a1_ci_lo_ETHUSDT_4h": 0.009914319244278188,
+    "a1_rel_improvement_ETHUSDT_4h": 0.19210519488322375,
+    "a2_violations_ETHUSDT_4h": 0,
+    "a3_mismatches_ETHUSDT_4h": 0,
+    "a4_ci_hi_ETHUSDT_4h": -0.0030799898272297114,
+    "a5_share_by_year_ETHUSDT_4h": {
+      "2021": 0.9993119266055046,
+      "2022": 1.0,
+      "2023": 0.999885753455958,
+      "2024": 1.0,
+      "2025": 1.0
+    },
+    "a6_pass_rate_uc_1h": 1.0,
+    "a6_pass_rate_cc_1h": 1.0,
+    "a6_pass_rate_dq_1h": 1.0,
+    "a6_pass_rate_all_1h": 1.0
+  },
+  "ci": {},
+  "verdict": "VALID",
+  "extra": {
+    "failing_checks": []
+  }
+}

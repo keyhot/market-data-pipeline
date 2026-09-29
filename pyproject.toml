@@ -46,3 +46,4 @@ select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = ["slow: end-to-end synthetic checks, several seconds each (E15 A6/DGP)"]
