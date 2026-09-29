@@ -22,6 +22,7 @@ from live_gate_report import HORIZON, TEST_YEARS, auc  # noqa: E402
 from model.cross_asset import with_cross_features  # noqa: E402
 from model.features import build_features  # noqa: E402
 from model.train import _NUM_ROUNDS, _PARAMS  # noqa: E402
+from report_results import write_result  # noqa: E402
 from storage.postgres_store import get_price_bars  # noqa: E402
 
 OTHER = {"BTCUSDT": "ETHUSDT", "ETHUSDT": "BTCUSDT"}
@@ -97,6 +98,14 @@ def report(symbol: str, oos: pd.DataFrame) -> str:
     verdict = "PASS" if low > 0 and positive_years >= 3 else "FAIL"
     print(f"  verdict: {verdict} (CI above 0: {low > 0}; "
           f"positive years {positive_years}/4)")
+    write_result(
+        f"cross_asset_{symbol}",
+        inputs={"symbol": symbol, "other_symbol": OTHER[symbol], "rows": len(oos)},
+        parameters={"bootstrap": BOOTSTRAP, "seed": SEED, "horizon": HORIZON},
+        statistic={"delta_auc": point, "positive_years": positive_years},
+        ci={"low": low, "high": high},
+        verdict=verdict,
+    )
     return verdict
 
 
