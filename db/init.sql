@@ -136,3 +136,40 @@ CREATE TABLE IF NOT EXISTS music_now_playing (
     started_at        timestamptz NOT NULL,
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
+
+-- C1 · the liquidations recorder. Append-only by convention: no venue serves
+-- free liquidation history, so a lost row is lost for good. Keep in sync with
+-- scripts/migrate_017.sql (which carries the full commentary).
+CREATE TABLE IF NOT EXISTS liquidations (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    venue       TEXT        NOT NULL,             -- 'binance' | 'okx'
+    symbol      TEXT        NOT NULL,             -- venue-native (BTCUSDT, BTC-USDT-SWAP)
+    event_ts    TIMESTAMPTZ NOT NULL,             -- exchange time of the fill
+    side        TEXT        NOT NULL CHECK (side IN ('long', 'short')),  -- position liquidated
+    price       NUMERIC     NOT NULL,
+    size        NUMERIC     NOT NULL,             -- venue-native units, see size_unit
+    size_unit   TEXT        NOT NULL,             -- 'base' | 'contracts'
+    qty_base    NUMERIC,                          -- NULL when the contract value was unknown
+    notional    NUMERIC,                          -- quote currency; NULL likewise
+    source      TEXT        NOT NULL,             -- 'ws' | 'rest'
+    raw         JSONB       NOT NULL,             -- the venue frame, to recompute anything
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Natural key: the WS push and the REST window describe the same OKX fill
+-- with the same (instId, ts, side, bkPx, sz), so the second copy is dropped.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_liquidations_natural
+    ON liquidations (venue, symbol, event_ts, side, price, size);
+CREATE INDEX IF NOT EXISTS idx_liquidations_symbol_time
+    ON liquidations (symbol, event_ts);
+
+-- One row per venue per whole minute during which liveness proofs arrived at
+-- most 30s apart (ingestion/liquidations.py CoverageTracker). An absent minute
+-- was not recorded; a present one with rows_received = 0 was quiet. Analysis
+-- uses covered minutes only, and the newest row's age is the liveness signal.
+CREATE TABLE IF NOT EXISTS liquidation_coverage (
+    venue         TEXT        NOT NULL,
+    minute        TIMESTAMPTZ NOT NULL,
+    rows_received INTEGER     NOT NULL,
+    PRIMARY KEY (venue, minute)
+);

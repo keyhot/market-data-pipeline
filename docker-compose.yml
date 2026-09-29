@@ -169,6 +169,26 @@ services:
       api:
         condition: service_healthy
 
+  liquidations:
+    build: .
+    container_name: market-data-liquidations
+    restart: unless-stopped
+    # C1 · the liquidations recorder. Opt-in, like the director:
+    # `docker compose --profile recorder up -d liquidations`. Outbound
+    # websockets only (Binance, OKX, Bybit) — no ports, no secrets. Its gaps
+    # are permanent, so once started it should stay up; coverage is recorded
+    # per minute in liquidation_coverage, and an absent minute is a gap.
+    profiles: ["recorder"]
+    command: python scripts/liquidation_recorder.py
+    environment:
+      LIQUIDATION_RECORDER_ENABLED: ${LIQUIDATION_RECORDER_ENABLED:-1}
+      DEPLOY_ROLE: ${DEPLOY_ROLE:-dev}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-market_data}@postgres:5432/${POSTGRES_DB:-market_data}
+      LIQ_BINANCE_WS_URL: ${LIQ_BINANCE_WS_URL:-wss://fstream.binance.com/market/ws/!forceOrder@arr}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   freqtrade:
     image: freqtradeorg/freqtrade:stable
     container_name: market-data-freqtrade
