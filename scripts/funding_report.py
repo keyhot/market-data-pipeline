@@ -37,6 +37,7 @@ from model.funding import (  # noqa: E402
     with_funding_features,
 )
 from model.train import _NUM_ROUNDS, _PARAMS  # noqa: E402
+from report_results import write_result  # noqa: E402
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "model" / "artifacts"
 START = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -178,6 +179,20 @@ def report(symbol: str, oos: pd.DataFrame, medians: dict, corr: float) -> str:
           f"positive years {positive_years}/4; control ok: "
           f"{control > CONTROL_MIN_DELTA}; rows ok: {rows_ok}; stage-2 trigger: "
           f"{verdict == 'PASS' and gross_arm >= STAGE2_MIN_BPS})")
+    write_result(
+        f"funding_{symbol}",
+        inputs={"symbol": symbol, "rows": len(oos), "e7_rows": E7_ROWS,
+               "corr_premium_1": corr, "grid_medians_bps": medians},
+        parameters={"control_min_delta": CONTROL_MIN_DELTA,
+                    "stage2_min_bps": STAGE2_MIN_BPS,
+                    "min_row_share": MIN_ROW_SHARE},
+        statistic={"delta_auc": point, "control_delta_auc": control,
+                  "positive_years": positive_years, "gross_base_bps": gross_base,
+                  "gross_funding_bps": gross_arm, "rows_ok": rows_ok},
+        ci={"low": low, "high": high},
+        verdict=verdict,
+        extra={"stage2_trigger": verdict == "PASS" and gross_arm >= STAGE2_MIN_BPS},
+    )
     return verdict
 
 

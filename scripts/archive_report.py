@@ -43,6 +43,7 @@ from model.archive import (  # noqa: E402
 )
 from model.features import _normalize, build_features  # noqa: E402
 from model.train import _NUM_ROUNDS, _PARAMS  # noqa: E402
+from report_results import write_result  # noqa: E402
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
 ARCHIVE_DIR = ROOT / "data" / "archive" / "binance_um"
@@ -198,6 +199,15 @@ def report(symbol: str, arm: str, oos: pd.DataFrame, info: dict) -> dict:
     print(f"  positive control ΔAUC {control:+.4f} "
           f"(must exceed +{CONTROL_MIN_DELTA})")
     if arm not in oos:
+        write_result(
+            f"archive_{symbol}_{arm}",
+            inputs={"symbol": symbol, "arm": arm, "rows": len(oos),
+                   "row_share": info["row_share"]},
+            parameters={"control_min_delta": CONTROL_MIN_DELTA},
+            statistic={"control_delta_auc": control},
+            ci=None,
+            verdict="CONTROL_ONLY",
+        )
         return out
     point, low, high = delta_auc_ci(oos, arm=arm)
     gross = top_quintile_gross_bps(oos, arm)
@@ -218,6 +228,18 @@ def report(symbol: str, arm: str, oos: pd.DataFrame, info: dict) -> dict:
     out.update(delta=point, low=low, high=high, gross=gross,
                verdict="VOID" if not valid else ("PASS" if passed else "FAIL"))
     print(f"  symbol verdict: {out['verdict']}")
+    write_result(
+        f"archive_{symbol}_{arm}",
+        inputs={"symbol": symbol, "arm": arm, "rows": len(oos),
+               "row_share": info["row_share"]},
+        parameters={"control_min_delta": CONTROL_MIN_DELTA,
+                    "min_gross_bps": MIN_GROSS_BPS,
+                    "min_row_share": MIN_ROW_SHARE},
+        statistic={"delta_auc": point, "control_delta_auc": control,
+                  "gross_bps": gross},
+        ci={"low": low, "high": high},
+        verdict=out["verdict"],
+    )
     return out
 
 

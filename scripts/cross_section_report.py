@@ -332,6 +332,18 @@ def _null(w, elig, fwd, ffund, fee, slip, seeds) -> np.ndarray:
     return np.array(out)
 
 
+def pass_rule(net_ci_low_bps: float, gf: float, null: np.ndarray) -> dict:
+    """E13 stage B's verdict (KI-100): net-of-cost CI must clear 0 on the
+    PRIMARY row, and gross+funding must beat the null's 97.5th percentile.
+    Extracted verbatim from `score()` so it has a test that can fail;
+    `net_ci_low_bps` is the already-rounded `net_bps[1]` from `_stats`, so
+    this reproduces `score()`'s behaviour exactly, rounding included."""
+    c1 = net_ci_low_bps > 0
+    c2 = gf > np.quantile(null, 0.975)
+    return {"1_net_ci_above_0": bool(c1), "2_beats_null_p97.5": bool(c2),
+           "verdict": "PASS" if (c1 and c2) else "FALSIFIED"}
+
+
 def score(seeds: int = 1000) -> dict:
     """Stage B: the pre-registered rank-ridge, walk-forward from 2021-01,
     reported on 2023-01..2025-12 only. Verdict on the PRIMARY cost (A1)."""
@@ -385,10 +397,7 @@ def score(seeds: int = 1000) -> dict:
         "p97.5": round(np.quantile(null, 0.975) * 1e4, 2)}
     res["model_gross_plus_funding_bps"] = round(gf * 1e4, 2)
     res["model_null_percentile"] = round(float((null < gf).mean() * 100), 1)
-    c1 = res["rows"]["primary (daily AR)"]["net_bps"][1] > 0
-    c2 = gf > np.quantile(null, 0.975)
-    res["pass_rule"] = {"1_net_ci_above_0": bool(c1), "2_beats_null_p97.5": bool(c2),
-                        "verdict": "PASS" if (c1 and c2) else "FALSIFIED"}
+    res["pass_rule"] = pass_rule(res["rows"]["primary (daily AR)"]["net_bps"][1], gf, null)
     res["null_sanity_pass"] = bool(abs(res["null_gross_plus_funding_bps"]["mean"]) < 10)
 
     res["per_year_net_bps"] = {str(y): _stats(g)["net_bps"] for y, g in prim.groupby(prim.index.year)}
