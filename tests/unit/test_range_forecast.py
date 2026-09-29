@@ -492,7 +492,14 @@ def test_cauchy_schwarz_bound_holds():
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("model", ["seasonal_har", "plain_har", "rolling"])
-def test_no_lookahead_truncation_invariance(model):
+@pytest.mark.parametrize("h", [1, 4])
+def test_no_lookahead_truncation_invariance(model, h):
+    """h=4 regression (found running real stage A, KI): a HAR forecast's
+    row-validity mask wrongly required the TARGET to be known too, so a
+    live forecast at the fold-start origin -- whose target needs h-1 hours
+    of data past it -- went NaN under truncation though the real deployment
+    has the same features available. Fixed by separating feature validity
+    (gates the forecast) from target validity (gates training rows only)."""
     bars = seasonal_dgp(seed=1, years=2.5)
     grid = hourly_grid(bars)
     rng = np.random.default_rng(7)
@@ -506,7 +513,6 @@ def test_no_lookahead_truncation_invariance(model):
                                & (grid.index >= one_year_in)]
     origins = list(origins) + list(month_starts[1:3])
 
-    h = 1
     for t in pd.DatetimeIndex(origins):
         T = pd.Timestamp(year=t.year, month=t.month, day=1, tz=UTC)
         factor_full = seasonal_factor(grid, T) if model == "seasonal_har" else None

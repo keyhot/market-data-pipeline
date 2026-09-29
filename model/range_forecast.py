@@ -237,8 +237,13 @@ def _fold_core(model: str, grid: pd.DataFrame, T: pd.Timestamp, h: int,
             np.ones(len(grid)), feats["x1"].to_numpy(),
             feats["x24"].to_numpy(), feats["x168"].to_numpy(),
         ])
-        row_ok = feats.notna().all(axis=1) & y.notna()
-        train_mask = (row_ok & (grid.index <= train_end)).to_numpy()
+        # A forecast for origin t needs only its FEATURES (backward-looking,
+        # available the moment t arrives); a TRAINING row additionally needs
+        # its TARGET (forward-looking h hours). Conflating the two made a
+        # live forecast at h>1 wrongly depend on data not yet known at t --
+        # caught by A3's truncation-invariance check (KI: the fix here).
+        feat_ok = feats.notna().all(axis=1)
+        train_mask = (feat_ok & y.notna() & (grid.index <= train_end)).to_numpy()
         if train_mask.sum() < 4:
             raise ValueError(
                 f"fold {T}: only {train_mask.sum()} training rows for OLS"
@@ -247,7 +252,8 @@ def _fold_core(model: str, grid: pd.DataFrame, T: pd.Timestamp, h: int,
         y_hat = X_all @ beta
         s_sum = _s_sum_series(grid.index, h, s_arr)
         V = s_sum * np.exp(y_hat)
-        V = V.where(row_ok)
+        V = V.where(feat_ok)
+        row_ok = feat_ok
     elif model == "rolling":
         count = grid["valid"].astype(int).rolling(ROLL_WINDOW_H, min_periods=1).sum()
         mean_rv = grid["rv"].where(grid["valid"]).rolling(ROLL_WINDOW_H, min_periods=1).mean()
