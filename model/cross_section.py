@@ -46,9 +46,50 @@ def is_candidate(symbol: str) -> bool:
 
 # ---------------------------------------------------------------- universe --
 
+def market_wide_gap_days(volume: pd.DataFrame, min_missing: int = 10) -> pd.Series:
+    """Days a source-truncated archive drops MANY symbols at once (KI-098:
+    Binance's monthly 1d zips are truncated for 48-49 of ~630 symbols on
+    2022-02-26..28 and 49 on 2022-04-01..02), as distinct from one symbol's
+    own halt, delisting, or not-yet-listed history. A cell counts only if it
+    is INTERIOR to that symbol's own row history (both an earlier and a
+    later non-null row exist in `volume`) — most days most symbols are
+    "missing" simply because they have not listed yet, and that is not a
+    gap. A day qualifies once at least `min_missing` symbols are
+    interior-missing on it."""
+    missing = volume.isna()
+    interior = missing & volume.ffill().notna() & volume.bfill().notna()
+    return interior.sum(axis=1) >= min_missing
+
+
+def bridge_market_wide_gaps(volume: pd.DataFrame, quote_volume: pd.DataFrame,
+                            gap_days: pd.Series | None = None,
+                            min_missing: int = 10
+                            ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Forward-fill `volume`/`quote_volume` on cells that fall on a detected
+    market-wide archive gap day (`market_wide_gap_days`, auto-detected when
+    `gap_days` is None), so the WARM-UP (`traded_run_length`) and the
+    LIQUIDITY RANK (its `quote_volume` rolling median) both see the name's
+    last known trading state through the source's own outage instead of a
+    blackout that masquerades as a per-symbol halt (KI-098). Mirrors the
+    scratch re-score in `scripts/e13_diagnostics.py` that the E13 review
+    already validated against 2022-2025 (gross + funding 8.07 vs the
+    branch's 7.87, null p97.5 18.06 vs 19.23 — verdict unaffected). A real,
+    symbol-only halt (not on a gap day) is untouched."""
+    gap = (gap_days if gap_days is not None
+          else market_wide_gap_days(volume, min_missing)).reindex(
+        volume.index, fill_value=False)
+    cells = volume.isna() & pd.DataFrame(
+        np.repeat(gap.to_numpy(dtype=bool)[:, None], volume.shape[1], axis=1),
+        volume.index, volume.columns)
+    return (volume.where(~cells, volume.ffill()),
+           quote_volume.where(~cells, quote_volume.ffill()))
+
+
 def traded_run_length(volume: pd.DataFrame) -> pd.DataFrame:
     """Consecutive traded days (volume > 0) ending at each day, inclusive.
-    A zero-volume or missing day resets the count to 0."""
+    A zero-volume or missing day resets the count to 0. Callers that must
+    not mistake a market-wide archive gap for a halt (KI-098) bridge with
+    `bridge_market_wide_gaps` first — `eligibility` does this."""
     traded = (volume.fillna(0).to_numpy(dtype=float) > 0)
     run = np.zeros(traded.shape, dtype=np.int64)
     current = np.zeros(traded.shape[1], dtype=np.int64)
@@ -62,9 +103,12 @@ def eligibility(volume: pd.DataFrame, quote_volume: pd.DataFrame,
                 warmup: int = 30, liquidity_window: int = 30,
                 top_n: int = 50, min_quote_volume: float = 0.0) -> pd.DataFrame:
     """Boolean panel: eligible on d iff traded on d with >= `warmup` traded
-    days before it (unbroken), and among the `top_n` by trailing
-    `liquidity_window`-day median quote volume ending at d (which must also
-    clear `min_quote_volume`). Reads nothing after d."""
+    days before it (unbroken — but a market-wide archive gap day bridges
+    rather than breaking it, `bridge_market_wide_gaps`/KI-098, applied to
+    both the warm-up and the liquidity rank below), and among the `top_n` by
+    trailing `liquidity_window`-day median quote volume ending at d (which
+    must also clear `min_quote_volume`). Reads nothing after d."""
+    volume, quote_volume = bridge_market_wide_gaps(volume, quote_volume)
     run = traded_run_length(volume)
     history = run >= warmup + 1
     liquidity = quote_volume.rolling(liquidity_window,

@@ -10,6 +10,7 @@ from model.archive import (
     check_stamp_convention,
     depth_features,
     leaked_control,
+    metrics_coverage,
     metrics_features,
     parse_depth,
     parse_metrics,
@@ -57,6 +58,47 @@ def test_parse_metrics_drops_the_duplicated_row_and_keeps_the_used_columns():
     assert frame.index[0] == pd.Timestamp("2020-09-01", tz="UTC")
     assert frame["top_ratio"].iloc[0] == pytest.approx(1.23012681)  # positions
     assert frame["global_ratio"].iloc[0] == pytest.approx(1.35731217)
+
+
+def test_parse_metrics_keeps_a_row_when_only_an_unrelated_column_is_empty():
+    """KI-093: 2022's rows are mostly missing sum_toptrader_long_short_ratio
+    and sum_taker_long_short_vol_ratio, but a caller reading only `oi`
+    (scripts/cross_section_report.py's _fetch_oi) must still see it."""
+    csv = ("create_time,symbol,sum_open_interest,sum_open_interest_value,"
+          "count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,"
+          "count_long_short_ratio,sum_taker_long_short_vol_ratio\n"
+          "2022-02-01 00:00:00,BTCUSDT,39080.0,456144339.0,1.1,,1.35,\n")
+    frame = parse_metrics(csv)
+    assert len(frame) == 1
+    assert frame["oi"].iloc[0] == pytest.approx(39080.0)
+    assert frame["global_ratio"].iloc[0] == pytest.approx(1.35)
+    assert np.isnan(frame["top_ratio"].iloc[0])
+    assert np.isnan(frame["taker_ratio"].iloc[0])
+
+
+def test_parse_metrics_drops_a_row_with_every_used_column_empty():
+    csv = ("create_time,symbol,sum_open_interest,sum_open_interest_value,"
+          "count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,"
+          "count_long_short_ratio,sum_taker_long_short_vol_ratio\n"
+          "2022-02-01 00:00:00,BTCUSDT,,456144339.0,1.1,,,\n")
+    assert len(parse_metrics(csv)) == 0
+
+
+def test_metrics_coverage_reports_rows_and_completeness_per_year():
+    idx = (pd.date_range("2022-01-01", periods=3, freq="5min", tz="UTC")
+          .append(pd.date_range("2023-01-01", periods=2, freq="5min", tz="UTC")))
+    frame = pd.DataFrame({
+        "oi": [1.0, 2.0, 3.0, 4.0, 5.0],
+        "top_ratio": [1.0, np.nan, np.nan, 1.0, 1.0],
+        "global_ratio": [1.0, 1.0, 1.0, 1.0, 1.0],
+        "taker_ratio": [1.0, 1.0, np.nan, 1.0, 1.0],
+    }, index=idx)
+    cov = metrics_coverage(frame)
+    assert cov.loc[2022, "rows"] == 3
+    assert cov.loc[2022, "complete"] == 1
+    assert cov.loc[2022, "missing_top_ratio"] == 2
+    assert cov.loc[2023, "rows"] == 2
+    assert cov.loc[2023, "complete"] == 2
 
 
 def test_parse_depth_takes_the_1_and_2_percent_bands_with_bids_below_mid():

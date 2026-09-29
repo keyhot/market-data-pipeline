@@ -51,13 +51,35 @@ _DEPTH_BANDS = {-1.0: "bid1", 1.0: "ask1", -2.0: "bid2", 2.0: "ask2"}
 
 def parse_metrics(text: str) -> pd.DataFrame:
     """One daily `metrics` CSV → the four used columns, indexed by
-    create_time (UTC), deduplicated and sorted."""
+    create_time (UTC), deduplicated and sorted. A column a particular 5-min
+    row failed to fill stays NaN rather than dropping the WHOLE row (KI-093):
+    most of 2022 is missing `sum_toptrader_long_short_ratio` and
+    `sum_taker_long_short_vol_ratio` on most rows, and a caller reading only
+    `oi` (`scripts/cross_section_report.py`'s `_fetch_oi`) must not lose it
+    because an unrelated column was empty that stamp. Only a row with EVERY
+    used column empty is dropped, since it carries nothing at all."""
     raw = pd.read_csv(io.StringIO(text))
     frame = raw[list(_METRICS_COLUMNS)].rename(columns=_METRICS_COLUMNS)
     frame = frame.apply(pd.to_numeric, errors="coerce")
     frame.index = pd.to_datetime(raw["create_time"], utc=True)
     frame = frame[~frame.index.duplicated(keep="last")].sort_index()
-    return frame.dropna()
+    return frame.dropna(how="all")
+
+
+def metrics_coverage(frame: pd.DataFrame) -> pd.DataFrame:
+    """Per calendar year: parsed rows, rows with every one of the four
+    metrics columns present, and how many rows are missing each column —
+    so a coverage loss (KI-093) is a number to check, not a silent drop.
+    `frame` is `parse_metrics` output, or a concatenation of many days'."""
+    columns = ["rows", "complete", *(f"missing_{c}" for c in frame.columns)]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    years = frame.index.year
+    out = pd.DataFrame({"rows": frame.groupby(years).size(),
+                        "complete": frame.notna().all(axis=1).groupby(years).sum()})
+    for col in frame.columns:
+        out[f"missing_{col}"] = frame[col].isna().groupby(years).sum()
+    return out[columns]
 
 
 def parse_depth(text: str) -> pd.DataFrame:

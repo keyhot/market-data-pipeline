@@ -9,6 +9,7 @@ import pytest
 
 from model.cross_section import (
     block_bootstrap_ci,
+    bridge_market_wide_gaps,
     cs_rank,
     daily_features,
     decile_weights,
@@ -17,6 +18,7 @@ from model.cross_section import (
     forward_returns,
     funding_by_day,
     is_candidate,
+    market_wide_gap_days,
     oi_at_close,
     portfolio_pnl,
     random_null_weights,
@@ -54,6 +56,77 @@ def test_candidate_filter():
 def test_run_length_resets_on_zero_volume_and_missing_days():
     vol = pd.DataFrame({"A": [1, 1, 0, 1, np.nan, 1, 1]}, index=_days(7))
     assert traded_run_length(vol)["A"].tolist() == [1, 2, 0, 1, 0, 1, 2]
+
+
+def _gapped_universe(n_days=5, n_sym=12, gap_day=2, n_missing=10):
+    """A universe that trades every day except a market-wide archive gap on
+    `gap_day`, where `n_missing` of `n_sym` symbols go missing at once
+    (KI-098: 48-49 of ~630 real symbols on 2022-02-26..28 / 04-01..02)."""
+    days = _days(n_days)
+    cols = [f"S{i:02d}USDT" for i in range(n_sym)]
+    vol = pd.DataFrame(1.0, index=days, columns=cols)
+    vol.iloc[gap_day, :n_missing] = np.nan
+    return vol
+
+
+def test_market_wide_gap_days_flags_a_source_truncated_day_not_a_thin_one():
+    vol = _gapped_universe()
+    got = market_wide_gap_days(vol, min_missing=10)
+    assert got.tolist() == [False, False, True, False, False]
+
+
+def test_market_wide_gap_days_ignores_not_yet_listed_symbols():
+    """A symbol with no history yet (leading NaN, no earlier row) is not
+    'missing' — most days most of a growing universe looks like this, and it
+    must never count toward the gap threshold."""
+    days = _days(5)
+    cols = [f"S{i:02d}USDT" for i in range(12)]
+    vol = pd.DataFrame(1.0, index=days, columns=cols)
+    vol.iloc[:3, :10] = np.nan  # ten symbols simply haven't listed yet
+    assert not market_wide_gap_days(vol, min_missing=10).any()
+
+
+def test_bridge_market_wide_gaps_forward_fills_only_the_gap_cells():
+    vol = _gapped_universe()
+    qv = vol * 1e7
+    bv, bqv = bridge_market_wide_gaps(vol, qv)
+    # Caught in the gap: filled with the prior day's value (still "traded").
+    assert bv["S00USDT"].tolist() == [1, 1, 1, 1, 1]
+    assert bqv["S00USDT"].tolist() == [1e7, 1e7, 1e7, 1e7, 1e7]
+    # Not part of the gap (one of the two still-trading names): unaffected.
+    assert bv["S11USDT"].tolist() == [1, 1, 1, 1, 1]
+
+
+def test_traded_run_length_on_bridged_volume_does_not_reset_at_a_gap():
+    vol = _gapped_universe()
+    bv, _ = bridge_market_wide_gaps(vol, vol.copy())
+    run = traded_run_length(bv)
+    assert run["S00USDT"].tolist() == [1, 2, 3, 4, 5]
+
+
+def test_eligibility_does_not_reset_warmup_or_blackout_liquidity_on_a_gap_day():
+    """KI-098, at the level that matters: a symbol mid-warmup, or already
+    ranked, must not lose eligibility because the ARCHIVE (not the symbol)
+    went missing for a day shared by >= min_missing other symbols. Before
+    the fix this reset the 30-day warm-up AND blanked the 30-day liquidity
+    median for about a month past the gap."""
+    days = _days(40)
+    cols = [f"S{i:02d}USDT" for i in range(12)]
+    vol = pd.DataFrame(1.0, index=days, columns=cols)
+    qv = pd.DataFrame(1e7, index=days, columns=cols)
+    gap_day = 35  # well past the 30-day warmup/liquidity window
+    vol.iloc[gap_day, :10] = np.nan
+    qv.iloc[gap_day, :10] = np.nan
+    elig = eligibility(vol, qv, warmup=30, liquidity_window=30, top_n=12,
+                       min_quote_volume=0.0)
+    assert elig.iloc[gap_day + 1]["S00USDT"]
+    assert elig.iloc[gap_day + 1]["S11USDT"]
+
+
+def test_traded_run_length_still_resets_on_an_individual_halt_not_a_gap():
+    vol = _gapped_universe(n_missing=1)  # one symbol missing: below threshold
+    run = traded_run_length(vol)
+    assert run["S00USDT"].tolist() == [1, 2, 0, 1, 2]
 
 
 def test_eligibility_is_point_in_time():
