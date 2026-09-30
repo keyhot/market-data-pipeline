@@ -227,7 +227,13 @@ def test_run_stage_b_uses_ci_lower_bound_not_upper(tmp_path, monkeypatch):
 
 def test_run_stage_b_scores_ii_as_plain_har(tmp_path, monkeypatch):
     """Mutant 6: control (i) swapped in for (ii) as the Winkler reference.
-    Pins that run_stage_b's (ii) comparison model is literally 'plain_har'."""
+    Pins that run_stage_b's (ii) comparison model is literally 'plain_har'.
+
+    Control (i) ('rolling') IS scored in stage B -- the frozen note lists
+    'calibration statistics for (i) and (ii)' and 'HAR beats rolling' among
+    the required report-only stats, and 'scored rows' is defined over all
+    the models actually in play for a stage. It must never become the (ii)
+    reference used by the verdict, which is what this test still pins."""
     _write_stage_a(tmp_path, verdict="VALID")
     monkeypatch.setattr(rfr, "SYMBOLS", ("BTCUSDT",))
     monkeypatch.setattr(rfr, "HORIZONS", (1,))
@@ -246,7 +252,74 @@ def test_run_stage_b_scores_ii_as_plain_har(tmp_path, monkeypatch):
     monkeypatch.setattr(rfr, "_score", spy)
     rfr.run_stage_b(results_dir=tmp_path)
     assert "plain_har" in models_used
-    assert "rolling" not in models_used
+    assert "rolling" in models_used
+    payload = json.loads((tmp_path / "e15_stage_b.json").read_text())
+    key = payload["statistic"]["BTCUSDT_1h"]
+    # the verdict-facing comparison is still candidate-vs-(ii): the CI sign
+    # test above already pins that; here just confirm (i)'s report-only
+    # mean Winkler is present and distinct from (ii)'s.
+    assert "mean_winkler_bps" in key
+    assert set(key["mean_winkler_bps"]) >= {"candidate", "i", "ii"}
+
+
+def test_run_stage_b_void_when_validity_below_threshold(tmp_path, monkeypatch):
+    """General validity rule (Scoring rows and validity): scored rows /
+    target origins must be >= 0.99 per symbol/horizon/year, else that
+    stage's run is VOID. Force (i)'s scored set to drop most of one month
+    so the three-way common set falls well under 0.99, and confirm the
+    whole stage's verdict is VOID rather than a silent PASS/FAIL."""
+    _write_stage_a(tmp_path, verdict="VALID")
+    monkeypatch.setattr(rfr, "SYMBOLS", ("BTCUSDT",))
+    monkeypatch.setattr(rfr, "HORIZONS", (1,))
+    monkeypatch.setattr(rfr, "load_bars",
+                         lambda symbol, stage: seasonal_dgp(seed=6, years=1.3, seasonal=True))
+    monkeypatch.setattr(rfr, "STAGE_B_START", pd.Timestamp("2021-01-01", tz="UTC"))
+    monkeypatch.setattr(rfr, "STAGE_B_END", pd.Timestamp("2021-06-01", tz="UTC"))
+
+    real_score = rfr._score
+
+    def dropping_score(grid, h, model, start, end):
+        wf = real_score(grid, h, model, start, end)
+        if model == "rolling":
+            # drop the first month's worth of rows -- pushes that
+            # symbol/horizon/year's scored share well under 0.99
+            cutoff = wf.index.min() + pd.Timedelta(days=31)
+            wf = wf[wf.index >= cutoff]
+        return wf
+
+    monkeypatch.setattr(rfr, "_score", dropping_score)
+    overall, statistic = rfr.run_stage_b(results_dir=tmp_path)
+    assert overall == "VOID"
+    payload = json.loads((tmp_path / "e15_stage_b.json").read_text())
+    assert payload["verdict"] == "VOID"
+
+
+def test_run_stage_b_void_check_is_load_bearing(tmp_path, monkeypatch):
+    """Mutant: disable the validity/VOID check entirely -- confirms the
+    prior test actually exercises it rather than passing for some other
+    reason. Hand-applied and reverted per the task's mutation-check rule."""
+    _write_stage_a(tmp_path, verdict="VALID")
+    monkeypatch.setattr(rfr, "SYMBOLS", ("BTCUSDT",))
+    monkeypatch.setattr(rfr, "HORIZONS", (1,))
+    monkeypatch.setattr(rfr, "load_bars",
+                         lambda symbol, stage: seasonal_dgp(seed=6, years=1.3, seasonal=True))
+    monkeypatch.setattr(rfr, "STAGE_B_START", pd.Timestamp("2021-01-01", tz="UTC"))
+    monkeypatch.setattr(rfr, "STAGE_B_END", pd.Timestamp("2021-06-01", tz="UTC"))
+
+    real_score = rfr._score
+
+    def dropping_score(grid, h, model, start, end):
+        wf = real_score(grid, h, model, start, end)
+        if model == "rolling":
+            cutoff = wf.index.min() + pd.Timedelta(days=31)
+            wf = wf[wf.index >= cutoff]
+        return wf
+
+    monkeypatch.setattr(rfr, "_score", dropping_score)
+    # mutant: force the validity threshold to 0 so nothing can ever VOID
+    monkeypatch.setattr(rfr, "STAGE_B_VALIDITY_MIN", 0.0)
+    overall, _ = rfr.run_stage_b(results_dir=tmp_path)
+    assert overall != "VOID"  # confirms the mutant defeats the real test above
 
 
 def test_stage_report_compares_candidate_against_ii_not_i(tmp_path, monkeypatch):
