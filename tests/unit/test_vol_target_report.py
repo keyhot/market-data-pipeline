@@ -259,6 +259,24 @@ def test_stage_a_checks_boundaries():
     }
 
 
+def test_a3_tolerance_1e_9_catches_a_1e_7_perturbation():
+    """Pins A3_TOL at 1e-9 (pre-reg: 'within 1e-9'): a ~1e-7 discrepancy in
+    one day's y must count as a violation at the declared tolerance, and
+    must NOT at a loosened 1e-6."""
+    idx = pd.date_range("2020-01-01", periods=32, freq="D", tz="UTC")
+    close = pd.Series(np.linspace(100.0, 101.0, len(idx)), index=idx)
+    e = pd.Series([0.7], index=pd.period_range("2020-02", periods=1, freq="M"))
+    vm = vtr.managed_daily(close, e, cost_side=0.0011, e_start=1.0)
+    assert vtr.A3_TOL == pytest.approx(1e-9)
+    assert vtr._a3_compounding(close, e, vm, tol=vtr.A3_TOL) == 0
+
+    perturbed = vm.copy()
+    feb_idx = perturbed.index[pd.PeriodIndex(perturbed.index, freq="M") == pd.Period("2020-02", freq="M")]
+    perturbed.loc[feb_idx[-1], "y"] += 1e-7
+    assert vtr._a3_compounding(close, e, perturbed, tol=1e-9) == 1
+    assert vtr._a3_compounding(close, e, perturbed, tol=1e-6) == 0
+
+
 def test_a6_ebar_boundary_0_90_passes_le_not_lt():
     """No existing model-level test sits exactly on ebar == 0.90 -- pins
     the '<=' (not '<') reading so a mutant there is killable via A6."""
