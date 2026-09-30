@@ -25,10 +25,14 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from model.spot_archive import load_spot_klines  # noqa: E402
 from model.vol_target import (  # noqa: E402
     A0_BOOT_REPS,
     A0_CORR,
@@ -45,15 +49,62 @@ from model.vol_target import (  # noqa: E402
     SIGMA_STAR,
     SIZE_GATE,
     choose_branch,
+    moves_exposure,
     power_sim,
+    target_exposures,
 )
-from model.vol_managed import COST_SIDE, L_MAX, SEED  # noqa: E402
+from model.vol_managed import (  # noqa: E402
+    BOOT_REPS,
+    COST_SIDE,
+    L_MAX,
+    MIN_SIGMA_DAYS,
+    SEED,
+    constant_exposure_book,
+    daily_returns,
+    delta_es,
+    managed_daily,
+    month_sigma,
+    paired_block_bootstrap,
+    stage_a_valid,
+)
 import report_results  # noqa: E402
 from report_results import write_result  # noqa: E402
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
 
 A0_ALLOWLIST = {"a0_power", "a0_size", "a0_mde", "branch"}
+
+# --------------------------------------------------------------------------
+# Stage A -- windows, months, tolerances (pre-reg "Windows" / "Stage A" /
+# "Implementation spec")
+# --------------------------------------------------------------------------
+
+STAGE_A_ALLOWLIST = {
+    "a0_power", "a0_size", "a0_mde", "a1_ci_lo", "a2_ok", "a3_violations",
+    "a4_mismatches", "a5_valid_months", "a6_ebar", "a6_months_below", "branch",
+}
+
+# A1's window is fixed regardless of which branch A0 chose ("validation-A
+# 2020-25, both symbols... stage A only").
+VALIDATION_A_FIRST = "2020-01"
+VALIDATION_A_LAST = "2025-12"
+
+CLEAN_B_FIRST = "2017-10"
+CLEAN_B_LAST = "2019-12"
+CONTAM_B_FIRST = "2020-01"
+CONTAM_B_LAST = "2025-12"
+
+# A4's fixed months, per branch (pre-reg's A4 row).
+A4_MONTHS_CLEAN = ("2017-10", "2018-01", "2018-06", "2018-11", "2019-04", "2019-12")
+A4_MONTHS_FALLBACK = (  # E15b's 10 months, reused verbatim (pre-reg: "or E15b's 10 months (fallback)")
+    "2020-01", "2020-04", "2021-01", "2021-06", "2022-06",
+    "2022-12", "2023-08", "2024-03", "2025-04", "2025-12",
+)
+
+# A3's practical tolerance, now declared in the pre-reg (E15b's operational value).
+A3_TOL = 1e-9
+
+CUTOFF_2026 = pd.Timestamp("2026-01-01", tz="UTC")
 
 
 # --------------------------------------------------------------------------
@@ -151,15 +202,248 @@ def run_stage_a0(seeds=None, reps: int = A0_BOOT_REPS, results_dir=None,
 # Stage A / B / C -- guards only; scoring bodies are a later worker's task
 # --------------------------------------------------------------------------
 
+def load_close(archive_root: Path, symbol: str) -> pd.Series:
+    """Daily spot close for stage A, indexed by open date D. No loader
+    before stage C may return a bar opening >= 2026-01-01 (pre-reg
+    Windows / Implementation spec loader-truncation rule); stage A
+    enforces that cutoff itself."""
+    raw = load_spot_klines(Path(archive_root) / "binance_spot" / "klines", symbol, "1d")
+    raw = raw[raw.index < CUTOFF_2026]
+    return raw["close"].astype(float).sort_index()
+
+
+# --------------------------------------------------------------------------
+# Stage A -- pure per-check helpers (kept separate from I/O so a validity
+# mutant is killable without touching the real archive)
+# --------------------------------------------------------------------------
+
+def _a1_oracle(close: pd.Series, r: pd.Series, first, last) -> float:
+    """A1: the oracle's exposure vs ITS OWN exposure-matched book (never
+    vs BH). Always the validation-A window, regardless of the chosen
+    branch."""
+    e_oracle = target_exposures(r, first, last, SIGMA_STAR, l_max=L_MAX, oracle=True)
+    oracle_book = managed_daily(close, e_oracle, cost_side=COST_SIDE, e_start=1.0)
+    ebar_o = float(e_oracle.mean())
+    ebar_o_book = constant_exposure_book(
+        close, ebar_o, first, last, cost_side=COST_SIDE, e_start=1.0,
+    )
+    _, lo, _ = paired_block_bootstrap(
+        ebar_o_book["y"].to_numpy(), oracle_book["y"].to_numpy(), delta_es,
+        block=BOOT_BLOCK, reps=BOOT_REPS, seed=SEED,
+    )
+    return lo
+
+
+def _a2_identity(close: pd.Series, r: pd.Series, first, last) -> bool:
+    """A2: sigma_star = +inf -> e === l_max (== 1) -> VT equals BH
+    bitwise, Delta ES == 0 exactly. Routed through `target_exposures`
+    itself (not a hand-built e==1 series) so an L_max default mutant is
+    caught here too."""
+    e_one = target_exposures(r, first, last, np.inf, l_max=L_MAX, oracle=False)
+    vt = managed_daily(close, e_one, cost_side=COST_SIDE, e_start=1.0)
+    bh = constant_exposure_book(close, 1.0, first, last, cost_side=COST_SIDE, e_start=1.0)
+    same = vt.equals(bh)
+    zero_delta = float(delta_es(bh["y"].to_numpy(), vt["y"].to_numpy())) == 0.0
+    return bool(same and zero_delta)
+
+
+def _a3_compounding(close: pd.Series, e: pd.Series, vm: pd.DataFrame, tol: float = A3_TOL) -> int:
+    """A3: for every scored month, Pi(1+y_D) == (1-kappa_t)(1+e_t*R_t)."""
+    idx = pd.PeriodIndex(pd.DatetimeIndex(vm.index), freq="M")
+    close_idx = pd.PeriodIndex(pd.DatetimeIndex(close.index), freq="M")
+    violations = 0
+    for t in e.index:
+        rows = vm.loc[idx == t]
+        if len(rows) == 0:
+            violations += 1
+            continue
+        prod = float((1.0 + rows["y"]).prod())
+        days = close.index[close_idx == t]
+        prior_days = close.index[close_idx == (t - 1)]
+        if len(days) == 0 or len(prior_days) == 0:
+            violations += 1
+            continue
+        p0 = float(close.loc[prior_days.max()])
+        R_t = float(close.loc[days.max()]) / p0 - 1.0
+        e_t = float(e.loc[t])
+        kappa_t = float(rows["kappa"].iloc[0])
+        expected = (1.0 - kappa_t) * (1.0 + e_t * R_t)
+        if abs(prod - expected) > tol:
+            violations += 1
+    return violations
+
+
+def _a4_truncation(close: pd.Series, months) -> int:
+    """A4: exposure at each fixed month, recomputed from data truncated to
+    close <= T_{t-1}, must be bitwise equal to the exposure computed from
+    the full series."""
+    idx = pd.PeriodIndex(pd.DatetimeIndex(close.index), freq="M")
+    r_full = daily_returns(close)
+    mismatches = 0
+    for m in months:
+        t = pd.Period(m, freq="M")
+        e_full = float(target_exposures(r_full, t, t, SIGMA_STAR, l_max=L_MAX, oracle=False).iloc[0])
+        cutoff_days = close.index[idx <= (t - 1)]
+        close_trunc = close.loc[cutoff_days]
+        r_trunc = daily_returns(close_trunc)
+        e_trunc = float(target_exposures(r_trunc, t, t, SIGMA_STAR, l_max=L_MAX, oracle=False).iloc[0])
+        if e_full != e_trunc:
+            mismatches += 1
+    return mismatches
+
+
+def _a5_validity(close: pd.Series, r: pd.Series, first, last) -> int:
+    """A5: of the scored months, how many have >=MIN_SIGMA_DAYS sigma
+    days (a real sigma_hat) AND every one of their calendar-day bars."""
+    sigma_series = month_sigma(r)
+    idx = pd.PeriodIndex(pd.DatetimeIndex(close.index), freq="M")
+    valid = 0
+    for t in pd.period_range(first, last, freq="M"):
+        sig = sigma_series.get(t, np.nan)
+        n_bars = int((idx == t).sum())
+        if not (isinstance(sig, float) and np.isnan(sig)) and n_bars == t.days_in_month:
+            valid += 1
+    return valid
+
+
+def _a6_moves(r: pd.Series, first, last) -> dict:
+    """A6: the lagged rule AND the oracle, on the window being scored --
+    both depend on sigma_hat only, never a book return."""
+    e_real = target_exposures(r, first, last, SIGMA_STAR, l_max=L_MAX, oracle=False)
+    e_oracle = target_exposures(r, first, last, SIGMA_STAR, l_max=L_MAX, oracle=True)
+    ebar_r, n_r, ok_r = moves_exposure(e_real)
+    ebar_o, n_o, ok_o = moves_exposure(e_oracle)
+    return {
+        "real": {"ebar": ebar_r, "n_below": n_r, "ok": ok_r},
+        "oracle": {"ebar": ebar_o, "n_below": n_o, "ok": ok_o},
+    }
+
+
+def stage_a_checks(a1_lo: float, a2_ok: dict, a3_violations: dict, a4_mismatches: int,
+                    a5_valid_months: int, expected_months: int, a6: dict) -> dict[str, bool]:
+    return {
+        "a1": bool(a1_lo > 0),
+        "a2_validation_a": bool(a2_ok["validation_a"]),
+        "a2_chosen_b": bool(a2_ok["chosen_b"]),
+        "a3_validation_a": a3_violations["validation_a"] == 0,
+        "a3_chosen_b": a3_violations["chosen_b"] == 0,
+        "a4": a4_mismatches == 0,
+        "a5": a5_valid_months == expected_months,
+        "a6": bool(a6["real"]["ok"] and a6["oracle"]["ok"]),
+    }
+
+
+def _branch_window(branch: str):
+    if branch == "clean":
+        return CLEAN_B_FIRST, CLEAN_B_LAST, A4_MONTHS_CLEAN
+    return CONTAM_B_FIRST, CONTAM_B_LAST, A4_MONTHS_FALLBACK
+
+
 def run_stage_a(archive_root: Path, symbols=SYMBOLS, results_dir=None):
     rd = Path(results_dir) if results_dir is not None else report_results.RESULTS_DIR
     a0_path = rd / "e15c_stage_a0.json"
     if not a0_path.exists():
         raise RuntimeError("stage A0 result missing; run --stage A0 first")
     a0_result = json.loads(a0_path.read_text())
-    if a0_result.get("verdict") not in ("clean", "contaminated"):
-        raise RuntimeError(f"stage A0 verdict is {a0_result.get('verdict')!r}; refusing")
-    raise NotImplementedError("stage A validity checks are not built yet -- A0 only, per the handoff")
+    branch = a0_result.get("verdict")
+    if branch not in ("clean", "contaminated"):
+        raise RuntimeError(f"stage A0 verdict is {branch!r}; refusing")
+    if a0_result.get("extra", {}).get("size_gate_ok_on_chosen_branch") is False:
+        raise RuntimeError("stage A0 size gate failed on the chosen branch; refusing")
+
+    b_first, b_last, a4_months = _branch_window(branch)
+    windows = {
+        "validation_a": (VALIDATION_A_FIRST, VALIDATION_A_LAST),
+        "chosen_b": (b_first, b_last),
+    }
+    expected_months = len(pd.period_range(b_first, b_last, freq="M"))
+
+    inputs: dict = {"symbols": list(symbols), "source": "binance spot 1d klines", "branch": branch}
+    checks: dict[str, bool] = {}
+    a1_by_symbol: dict[str, float] = {}
+    a2_by_symbol: dict[str, dict] = {}
+    a3_by_symbol: dict[str, dict] = {}
+    a4_by_symbol: dict[str, int] = {}
+    a5_by_symbol: dict[str, int] = {}
+    a6_by_symbol: dict[str, dict] = {}
+
+    for symbol in symbols:
+        close = load_close(archive_root, symbol)
+        inputs.setdefault("first_bar", {})[symbol] = str(close.index.min())
+        inputs.setdefault("last_bar", {})[symbol] = str(close.index.max())
+        r = daily_returns(close)
+
+        a1_lo = _a1_oracle(close, r, VALIDATION_A_FIRST, VALIDATION_A_LAST)
+
+        a2_ok: dict = {}
+        a3_viol: dict = {}
+        for wname, (wf, wl) in windows.items():
+            a2_ok[wname] = _a2_identity(close, r, wf, wl)
+            e_real_w = target_exposures(r, wf, wl, SIGMA_STAR, l_max=L_MAX, oracle=False)
+            vm_real_w = managed_daily(close, e_real_w, cost_side=COST_SIDE, e_start=1.0)
+            a3_viol[wname] = _a3_compounding(close, e_real_w, vm_real_w)
+
+        a4_mismatches = _a4_truncation(close, a4_months)
+        a5_valid = _a5_validity(close, r, b_first, b_last)
+        a6 = _a6_moves(r, b_first, b_last)
+
+        a1_by_symbol[symbol] = a1_lo
+        a2_by_symbol[symbol] = a2_ok
+        a3_by_symbol[symbol] = a3_viol
+        a4_by_symbol[symbol] = a4_mismatches
+        a5_by_symbol[symbol] = a5_valid
+        a6_by_symbol[symbol] = a6
+
+        sym_checks = stage_a_checks(a1_lo, a2_ok, a3_viol, a4_mismatches, a5_valid,
+                                     expected_months, a6)
+        for k, v in sym_checks.items():
+            checks[f"{k}_{symbol}"] = v
+
+    statistic = {
+        "a0_power": a0_result["statistic"]["a0_power"],
+        "a0_size": a0_result["statistic"]["a0_size"],
+        "a0_mde": a0_result["statistic"]["a0_mde"],
+        "a1_ci_lo": a1_by_symbol,
+        "a2_ok": a2_by_symbol,
+        "a3_violations": a3_by_symbol,
+        "a4_mismatches": a4_by_symbol,
+        "a5_valid_months": a5_by_symbol,
+        "a6_ebar": {s: {"real": v["real"]["ebar"], "oracle": v["oracle"]["ebar"]}
+                   for s, v in a6_by_symbol.items()},
+        "a6_months_below": {s: {"real": v["real"]["n_below"], "oracle": v["oracle"]["n_below"]}
+                            for s, v in a6_by_symbol.items()},
+        "branch": branch,
+    }
+    assert set(statistic.keys()) <= STAGE_A_ALLOWLIST, (
+        f"stage A statistic keys outside the allowlist: {set(statistic) - STAGE_A_ALLOWLIST}"
+    )
+
+    valid, failing = stage_a_valid(checks)
+    verdict = "VALID" if valid else "VOID"
+
+    path = write_result(
+        "e15c_stage_a",
+        inputs=inputs,
+        parameters={
+            "sigma_star": SIGMA_STAR, "l_max": L_MAX, "cost_side": COST_SIDE,
+            "boot_block": BOOT_BLOCK, "boot_reps": BOOT_REPS, "seed": SEED,
+            "min_sigma_days": MIN_SIGMA_DAYS,
+            "validation_a": [VALIDATION_A_FIRST, VALIDATION_A_LAST],
+            "chosen_b": [b_first, b_last],
+            "a4_months": list(a4_months), "a3_tolerance": A3_TOL,
+            "expected_months": expected_months,
+        },
+        statistic=statistic,
+        ci={},
+        verdict=verdict,
+        extra={
+            "failing_checks": failing,
+            "branch": branch,
+        },
+        results_dir=results_dir,
+    )
+    print(f"stage A: {verdict} (failing: {failing}) -> {path}")
+    return verdict, failing, statistic
 
 
 def run_stage_b(archive_root: Path, symbols=SYMBOLS, results_dir=None):
