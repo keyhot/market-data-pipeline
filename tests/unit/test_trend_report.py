@@ -84,6 +84,11 @@ def test_load_spot_stage_c_keeps_2026(archive):
     assert (bars.index >= pd.Timestamp("2026-01-01", tz="UTC")).any()
 
 
+def test_load_spot_stage_b_excludes_2026(archive):
+    bars = tr.load_spot(archive, "BTCUSDT", "B")
+    assert (bars.index <= pd.Timestamp("2026-01-01", tz="UTC")).all()
+
+
 def test_load_perp_stage_b_excludes_2026(archive):
     bars = tr.load_perp(archive, "BTCUSDT", "B")
     assert (bars.index <= pd.Timestamp("2026-01-01", tz="UTC")).all()

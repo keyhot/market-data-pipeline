@@ -262,6 +262,39 @@ def test_rebalance_exposures_truncation_invariance():
     assert full_c == trunc_c
 
 
+def test_rebalance_exposures_covariance_pinned_36_months_ddof1():
+    """Pins the covariance window to EXACTLY 36 months (not 35 or 37) with
+    ddof=1, by independently recomputing it here from already-tested
+    building blocks (month_end_closes/monthly_returns/mop_vol) and
+    comparing to rebalance_exposures' own result via hop_exposures."""
+    spot = _spot_daily_fixture(months=48, seed=13)
+    T = _ts("2017-01-01") + pd.DateOffset(months=40)
+    symbols = list(spot.columns)
+
+    month_closes = pd.DataFrame({s: trend.month_end_closes(spot[s]) for s in symbols})[symbols]
+    R = trend.monthly_returns(month_closes)
+    window = R.loc[(R.index >= T - pd.DateOffset(months=35)) & (R.index <= T), symbols].dropna()
+    assert len(window) == 36
+    cov = np.cov(window.to_numpy(), rowvar=False, ddof=1)
+    S = pd.Series(1.0, index=symbols)
+    sigma = pd.Series({s: trend.mop_vol(spot[s], T) for s in symbols}).reindex(symbols)
+    expected_e, expected_capped = trend.hop_exposures(S, sigma, cov)
+
+    got_e, got_capped = trend.rebalance_exposures(spot, T, signal="plus_one")
+    np.testing.assert_allclose(got_e.to_numpy(), expected_e.to_numpy(), rtol=1e-12)
+    assert got_capped == expected_capped
+
+    # a 35-month (ddof=1) or a ddof=0 covariance would NOT match -- sanity
+    # that the pin is discriminating, not vacuous.
+    window_35 = window.iloc[1:]
+    cov_35 = np.cov(window_35.to_numpy(), rowvar=False, ddof=1)
+    e_35, _ = trend.hop_exposures(S, sigma, cov_35)
+    assert not np.allclose(got_e.to_numpy(), e_35.to_numpy(), rtol=1e-9)
+    cov_ddof0 = np.cov(window.to_numpy(), rowvar=False, ddof=0)
+    e_ddof0, _ = trend.hop_exposures(S, sigma, cov_ddof0)
+    assert not np.allclose(got_e.to_numpy(), e_ddof0.to_numpy(), rtol=1e-9)
+
+
 def test_rebalance_exposures_override_s():
     spot = _spot_daily_fixture()
     T = _ts("2017-01-01") + pd.DateOffset(months=37)
@@ -411,6 +444,25 @@ def test_bootstrap_coverage_iid_normal():
             covered += 1
     rate = covered / trials
     assert 0.90 <= rate <= 0.98
+
+
+def test_bootstrap_circular_wrap_discriminates_from_clipping():
+    """A block starting near the tail must be able to wrap around and pick
+    up the HEAD's value -- a clipped (non-circular) implementation would
+    instead repeat the tail value, which measurably shifts the mean of a
+    series whose head and tail differ sharply."""
+    n = 11
+    x = np.zeros(n)
+    x[0] = 1000.0   # head
+    x[-1] = -1000.0  # tail
+    block = 6
+    point, lo, hi = trend.block_bootstrap_ci(x, block=block, reps=5000, seed=7)
+    # true circular wrap: a block starting at n-1 draws indices
+    # [10, 0, 1, 2, 3, 4] -- BOTH the head and tail appear in that one
+    # block, roughly cancelling. Clipped-to-n-1 would instead repeat the
+    # tail value 6x for any start in the last `block-1` positions, pulling
+    # the bootstrap mean distribution sharply negative.
+    assert lo > -500.0, f"lo={lo} suggests clipping (repeated-tail) rather than circular wrap"
 
 
 def test_bootstrap_wraps_circularly():
