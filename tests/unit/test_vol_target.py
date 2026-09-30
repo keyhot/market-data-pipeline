@@ -235,6 +235,62 @@ def test_score_pair_ebar_is_full_window_mean_not_first_half_mutant3():
     assert reported_ebar != pytest.approx(first_half_mean)
 
 
+def test_score_pair_return_books_default_false_omits_books():
+    close_a, close_b, first, last = _two_month_pair()
+    result = score_pair(close_a, close_b, first, last, sigma_star=0.02, boot_reps=10)
+    assert "books" not in result["symbols"]["a"]
+
+
+def test_score_pair_return_books_true_includes_frames_matching_reported_ebar():
+    """`books["e"].mean()` must equal the reported `ebar` -- the guard
+    against a stage-B report recomputing e (and its books) separately
+    from what score_pair actually scored (mutant-3 drift, generalized)."""
+    close_a, close_b, first, last = _two_month_pair()
+    result = score_pair(close_a, close_b, first, last, sigma_star=0.02, boot_reps=10,
+                         return_books=True)
+    books = result["symbols"]["a"]["books"]
+    assert set(books.keys()) == {"vt", "bh", "ebook", "e"}
+    assert float(books["e"].mean()) == pytest.approx(result["symbols"]["a"]["ebar"])
+
+
+def test_score_pair_ki094_reads_both_cis_not_just_one(monkeypatch):
+    """KI-094 lesson: the verdict must read BOTH the delta_ES_ebar CI-lo
+    AND the delta_ES_BH CI-lo. Feed the two legs distinct, controlled
+    (point, lo, hi) triples via a patched bootstrap and confirm the
+    conjunction actually uses both, not just one."""
+    import model.vol_target as vt_mod
+
+    close_a, close_b, first, last = _two_month_pair()
+    calls = {"n": 0, "seq": []}
+
+    def fake_boot(a, b, stat, block, reps, seed):
+        out = calls["seq"][calls["n"] % len(calls["seq"])]
+        calls["n"] += 1
+        return out
+
+    monkeypatch.setattr(vt_mod, "paired_block_bootstrap", fake_boot)
+
+    # BH leg negative, ebar leg positive -> must FAIL despite one positive leg
+    calls["n"] = 0
+    calls["seq"] = [(0.01, -0.001, 0.02), (0.01, 0.001, 0.02)]
+    result = score_pair(close_a, close_b, first, last, sigma_star=0.02, boot_reps=10)
+    assert result["symbols"]["a"]["pass"] is False
+    assert result["symbols"]["b"]["pass"] is False
+
+    # BH leg positive, ebar leg negative -> must also FAIL
+    calls["n"] = 0
+    calls["seq"] = [(0.01, 0.001, 0.02), (0.01, -0.001, 0.02)]
+    result = score_pair(close_a, close_b, first, last, sigma_star=0.02, boot_reps=10)
+    assert result["symbols"]["a"]["pass"] is False
+
+    # both legs positive -> PASS
+    calls["n"] = 0
+    calls["seq"] = [(0.01, 0.001, 0.02)]
+    result = score_pair(close_a, close_b, first, last, sigma_star=0.02, boot_reps=10)
+    assert result["symbols"]["a"]["pass"] is True
+    assert result["overall"] == "PASS"
+
+
 def test_score_pair_bootstrap_is_paired_not_independent_mutant4():
     """Sanity that the SAME index draw is applied to both legs of each CI
     (paired_block_bootstrap, reused unmodified): with sigma_star=inf the

@@ -51,20 +51,28 @@ from model.vol_target import (  # noqa: E402
     choose_branch,
     moves_exposure,
     power_sim,
+    score_pair,
     target_exposures,
 )
 from model.vol_managed import (  # noqa: E402
     BOOT_REPS,
     COST_SIDE,
+    ES_LEVEL,
+    ES_REPORT_DAILY,
+    ES_REPORT_MONTHLY,
+    LW_LAG,
     L_MAX,
     MIN_SIGMA_DAYS,
     SEED,
     constant_exposure_book,
     daily_returns,
     delta_es,
+    expected_shortfall,
+    lw_sharpe_diff,
     managed_daily,
     month_sigma,
     paired_block_bootstrap,
+    permuted_exposures,
     stage_a_valid,
 )
 import report_results  # noqa: E402
@@ -105,6 +113,20 @@ A4_MONTHS_FALLBACK = (  # E15b's 10 months, reused verbatim (pre-reg: "or E15b's
 A3_TOL = 1e-9
 
 CUTOFF_2026 = pd.Timestamp("2026-01-01", tz="UTC")
+CUTOFF_2020 = pd.Timestamp("2020-01-01", tz="UTC")
+
+STAGE_B_ALLOWLIST = {
+    "branch", "per_symbol",
+}
+
+# Report-only (pre-reg "Costs"): perp_taker = 0.05% + 1bp = 6bps/side. Never
+# gates a verdict. Funding coverage for BTCUSDT/ETHUSDT was confirmed at
+# build time (`binance_um/monthly/fundingRate/{BTCUSDT,ETHUSDT}` present
+# from 2020-01 on -- matches the contaminated branch exactly), but parsing
+# it into the 8h-settlement charge was NOT built here (logged as a declared
+# scope cut, report-only, cannot move the verdict): the sensitivity below
+# is cost-only, zero funding, on both branches.
+PERP_COST_SIDE = 0.0006
 
 
 # --------------------------------------------------------------------------
@@ -210,6 +232,17 @@ def load_close(archive_root: Path, symbol: str) -> pd.Series:
     raw = load_spot_klines(Path(archive_root) / "binance_spot" / "klines", symbol, "1d")
     raw = raw[raw.index < CUTOFF_2026]
     return raw["close"].astype(float).sort_index()
+
+
+def load_close_b(archive_root: Path, symbol: str, branch: str) -> pd.Series:
+    """Stage-B loader: branch-aware truncation (mutant 7). The clean
+    branch never returns a bar opening >= 2020-01-01 (the fallback window
+    starts there); the contaminated branch keeps 2020-25 and, like every
+    other loader, never returns a bar opening >= 2026-01-01."""
+    close = load_close(archive_root, symbol)
+    if branch == "clean":
+        close = close[close.index < CUTOFF_2020]
+    return close
 
 
 # --------------------------------------------------------------------------
@@ -446,15 +479,211 @@ def run_stage_a(archive_root: Path, symbols=SYMBOLS, results_dir=None):
     return verdict, failing, statistic
 
 
-def run_stage_b(archive_root: Path, symbols=SYMBOLS, results_dir=None):
+# --------------------------------------------------------------------------
+# Stage B report-only stats (private to this runner; never part of the
+# gating conjunction -- score_pair's own ci_bh/ci_ebar/pass are, unchanged)
+# --------------------------------------------------------------------------
+
+def _max_drawdown(y: pd.Series) -> float:
+    r = np.asarray(y, dtype=float)
+    if len(r) == 0:
+        return 0.0
+    curve = np.cumprod(1.0 + r)
+    peak = np.maximum.accumulate(curve)
+    return float((curve / peak - 1.0).min())
+
+
+def _monthly_returns(y: pd.Series) -> np.ndarray:
+    idx = pd.PeriodIndex(pd.DatetimeIndex(y.index), freq="M")
+    return (1.0 + y).groupby(idx).prod().to_numpy() - 1.0
+
+
+def _per_year_delta_es(vt_y: pd.Series, ebook_y: pd.Series) -> dict:
+    years = sorted(set(vt_y.index.year))
+    out = {}
+    for yr in years:
+        v = vt_y[vt_y.index.year == yr].to_numpy()
+        e = ebook_y[ebook_y.index.year == yr].to_numpy()
+        if len(v) == 0 or len(e) == 0:
+            continue
+        out[str(yr)] = float(expected_shortfall(e, ES_LEVEL) - expected_shortfall(v, ES_LEVEL))
+    return out
+
+
+def _report_only_for_symbol(close: pd.Series, books: dict, first, last,
+                            cost_side: float, boot_block: int, boot_reps: int,
+                            boot_seed: int) -> dict:
+    vt, bh, ebook, e = books["vt"], books["bh"], books["ebook"], books["e"]
+    vt_y, bh_y, ebook_y = vt["y"], bh["y"], ebook["y"]
+
+    ebar, n_below_095, _ = moves_exposure(e)
+    n_below_1 = int((e < 1.0).sum())
+
+    daily_es99 = {
+        "vt": expected_shortfall(vt_y.to_numpy(), ES_REPORT_DAILY),
+        "bh": expected_shortfall(bh_y.to_numpy(), ES_REPORT_DAILY),
+        "ebar_book": expected_shortfall(ebook_y.to_numpy(), ES_REPORT_DAILY),
+    }
+    monthly_es99 = {
+        "vt": expected_shortfall(_monthly_returns(vt_y), ES_REPORT_MONTHLY),
+        "bh": expected_shortfall(_monthly_returns(bh_y), ES_REPORT_MONTHLY),
+        "ebar_book": expected_shortfall(_monthly_returns(ebook_y), ES_REPORT_MONTHLY),
+    }
+    max_drawdown = {
+        "vt": _max_drawdown(vt_y), "bh": _max_drawdown(bh_y), "ebar_book": _max_drawdown(ebook_y),
+    }
+    lw_vt_bh = lw_sharpe_diff(vt_y.to_numpy(), bh_y.to_numpy(), lag=LW_LAG)
+    lw_vt_ebar = lw_sharpe_diff(vt_y.to_numpy(), ebook_y.to_numpy(), lag=LW_LAG)
+
+    total_cost_paid = float(vt["kappa"].sum())
+    turnover = total_cost_paid / cost_side if cost_side > 0 else 0.0
+
+    perm_e = permuted_exposures(e, seed=boot_seed)
+    perm_book = managed_daily(close, perm_e, cost_side=cost_side, e_start=1.0)
+    perm_y = perm_book["y"]
+    pt_pvt, lo_pvt, hi_pvt = paired_block_bootstrap(
+        perm_y.to_numpy(), vt_y.to_numpy(), delta_es, block=boot_block, reps=boot_reps, seed=boot_seed,
+    )
+    pt_pe, lo_pe, hi_pe = paired_block_bootstrap(
+        perm_y.to_numpy(), ebook_y.to_numpy(), delta_es, block=boot_block, reps=boot_reps, seed=boot_seed,
+    )
+
+    # perps sensitivity (report-only, cost-only, no funding -- see PERP_COST_SIDE docstring)
+    perp_vt = managed_daily(close, e, cost_side=PERP_COST_SIDE, e_start=1.0)
+    perp_bh = constant_exposure_book(close, 1.0, first, last, cost_side=PERP_COST_SIDE, e_start=1.0)
+    perp_ebook = constant_exposure_book(close, ebar, first, last, cost_side=PERP_COST_SIDE, e_start=1.0)
+    perp_sensitivity = {
+        "cost_side": PERP_COST_SIDE,
+        "funding_included": False,
+        "note": "funding omitted -- coverage confirmed, parsing deferred; report-only, cannot move the verdict",
+        "delta_es_bh_point": delta_es(perp_bh["y"].to_numpy(), perp_vt["y"].to_numpy()),
+        "delta_es_ebar_point": delta_es(perp_ebook["y"].to_numpy(), perp_vt["y"].to_numpy()),
+    }
+
+    es_ebar_book_975 = expected_shortfall(ebook_y.to_numpy(), ES_LEVEL)
+
+    return {
+        "ebar": ebar, "n_months": len(e),
+        "months_below_1": n_below_1, "months_below_0_95": n_below_095,
+        "daily_es99": daily_es99, "monthly_es99": monthly_es99, "max_drawdown": max_drawdown,
+        "lw_sharpe_diff_vt_minus_bh": {"delta": lw_vt_bh[0], "ci_lo": lw_vt_bh[1], "ci_hi": lw_vt_bh[2]},
+        "lw_sharpe_diff_vt_minus_ebar": {"delta": lw_vt_ebar[0], "ci_lo": lw_vt_ebar[1], "ci_hi": lw_vt_ebar[2]},
+        "total_cost_paid": total_cost_paid, "turnover": turnover,
+        "permuted_vs_vt": {"point": pt_pvt, "ci_lo": lo_pvt, "ci_hi": hi_pvt},
+        "permuted_vs_ebar_book": {"point": pt_pe, "ci_lo": lo_pe, "ci_hi": hi_pe},
+        "permutation_beats_ebar_book": bool(lo_pe > 0),
+        "relative_delta_es_ebar": (None if es_ebar_book_975 == 0
+                                    else float(books["_ci_ebar_point"] / es_ebar_book_975)),
+        "per_year_delta_es_ebar": _per_year_delta_es(vt_y, ebook_y),
+        "perp_taker_sensitivity": perp_sensitivity,
+    }
+
+
+def run_stage_b(archive_root: Path, symbols=SYMBOLS, results_dir=None,
+                boot_reps: int = BOOT_REPS):
     rd = Path(results_dir) if results_dir is not None else report_results.RESULTS_DIR
+    a0_path = rd / "e15c_stage_a0.json"
     a_path = rd / "e15c_stage_a.json"
+    if not a0_path.exists():
+        raise RuntimeError("stage A0 result missing; run --stage A0 first")
     if not a_path.exists():
         raise RuntimeError("stage A result missing; run --stage A first")
+    a0_result = json.loads(a0_path.read_text())
     a_result = json.loads(a_path.read_text())
+
+    branch = a0_result.get("verdict")
+    if branch not in ("clean", "contaminated"):
+        raise RuntimeError(f"stage A0 verdict is {branch!r}; refusing")
+    if a0_result.get("extra", {}).get("size_gate_ok_on_chosen_branch") is False:
+        raise RuntimeError("stage A0 size gate failed on the chosen branch; refusing")
     if a_result.get("verdict") != "VALID":
         raise RuntimeError(f"stage A verdict is {a_result.get('verdict')!r}, not VALID; refusing")
-    raise NotImplementedError("stage B scoring is not built yet -- A0 only, per the handoff")
+    a_branch = a_result.get("extra", {}).get("branch")
+    if a_branch != branch:
+        raise RuntimeError(
+            f"stage A branch {a_branch!r} does not match stage A0 branch {branch!r}; refusing"
+        )
+
+    b_first, b_last, _ = _branch_window(branch)
+    symbols = tuple(symbols)
+    assert len(symbols) == 2, "score_pair scores exactly one pair"
+    label_to_symbol = dict(zip(("a", "b"), symbols))
+
+    closes = {s: load_close_b(archive_root, s, branch) for s in symbols}
+    close_a, close_b = closes[symbols[0]], closes[symbols[1]]
+
+    result = score_pair(close_a, close_b, b_first, b_last, SIGMA_STAR,
+                        cost_side=COST_SIDE, l_max=L_MAX, boot_reps=boot_reps,
+                        boot_block=BOOT_BLOCK, boot_seed=SEED, return_books=True)
+
+    n_days = {label_to_symbol[lbl]: len(sym["books"]["vt"]) for lbl, sym in result["symbols"].items()}
+    if len(set(n_days.values())) != 1:
+        raise RuntimeError(f"symbol day-count mismatch in chosen-B window: {n_days} -- archive gap suspected")
+
+    per_symbol = {}
+    report_only = {}
+    for lbl, sym in result["symbols"].items():
+        symbol = label_to_symbol[lbl]
+        pt_bh, lo_bh, hi_bh = sym["ci_bh"]
+        pt_e, lo_e, hi_e = sym["ci_ebar"]
+        per_symbol[symbol] = {
+            "ebar": sym["ebar"], "months_below_1": sym["months_below_1"], "n_months": sym["n_months"],
+            "delta_es_bh": {"point": pt_bh, "ci_lo": lo_bh, "ci_hi": hi_bh},
+            "delta_es_ebar": {"point": pt_e, "ci_lo": lo_e, "ci_hi": hi_e},
+            "pass": sym["pass"],
+        }
+        books = dict(sym["books"])
+        books["_ci_ebar_point"] = pt_e
+        report_only[symbol] = _report_only_for_symbol(
+            closes[symbol], books, b_first, b_last, COST_SIDE, BOOT_BLOCK, boot_reps, SEED,
+        )
+
+    statistic = {"branch": branch, "per_symbol": per_symbol}
+    assert set(statistic.keys()) <= STAGE_B_ALLOWLIST, (
+        f"stage B statistic keys outside the allowlist: {set(statistic) - STAGE_B_ALLOWLIST}"
+    )
+
+    verdict = result["overall"]  # bare "PASS" | "SPLIT" | "FAIL" -- stage C's gate reads this
+
+    path = write_result(
+        "e15c_stage_b",
+        inputs={"symbols": list(symbols), "source": "binance spot 1d klines", "branch": branch,
+               "window": [b_first, b_last]},
+        parameters={
+            "sigma_star": SIGMA_STAR, "l_max": L_MAX, "cost_side": COST_SIDE,
+            "boot_block": BOOT_BLOCK, "boot_reps": boot_reps, "boot_seed": SEED,
+            "es_level": ES_LEVEL, "perp_cost_side": PERP_COST_SIDE,
+        },
+        statistic=statistic,
+        ci={},
+        verdict=verdict,
+        extra={
+            "window_label": "(contaminated window)" if branch == "contaminated" else "(clean window)",
+            "contamination_caveat": (
+                "This branch was run because A0 ruled the clean 2017-10..2019-12 window "
+                "UNDERPOWERED; E15c's rule design was shaped by a prior look at 2020-25 "
+                "(the E15b A1 audit). A PASS or SPLIT here licenses ONLY the 2026 stage-C "
+                "read; it is never quoted alone, on stream or in the plan (pre-reg 'What "
+                "this cannot tell us' / Windows table)."
+            ) if branch == "contaminated" else None,
+            "report_only": report_only,
+        },
+        results_dir=results_dir,
+    )
+    print(f"stage B: {verdict} ({branch}) -> {path}")
+    return verdict, statistic
+
+
+def stage_c_symbols(b_result: dict) -> list[str]:
+    """Pure gate stub for mutant 8 (C runs without a B pass): given a
+    stage-B result dict, returns the symbols allowed into stage C --
+    both on PASS, only the passing one on SPLIT -- and refuses anything
+    else. Stage C itself is NOT built (out of scope for this handoff)."""
+    verdict = b_result.get("verdict")
+    if verdict not in ("PASS", "SPLIT"):
+        raise RuntimeError(f"stage B verdict is {verdict!r}; refusing")
+    per_symbol = b_result["statistic"]["per_symbol"]
+    return [sym for sym, v in per_symbol.items() if v.get("pass")]
 
 
 def run_stage_c(archive_root: Path, symbols=SYMBOLS, results_dir=None):

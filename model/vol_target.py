@@ -111,12 +111,19 @@ def moves_exposure(e: pd.Series) -> tuple[float, int, bool]:
 def score_pair(close_a: pd.Series, close_b: pd.Series, first, last,
                sigma_star: float, cost_side: float = COST_SIDE, l_max: float = L_MAX,
                boot_reps: int = A0_BOOT_REPS, boot_block: int = BOOT_BLOCK,
-               boot_seed: int = SEED) -> dict:
+               boot_seed: int = SEED, return_books: bool = False) -> dict:
     """The pre-reg's stage-B conjunction (Amendment 1, inherited): per
     symbol, PASS iff CI-lo(ES(BH)-ES(VT)) > 0 AND CI-lo(ES(ebar.BH)-ES(VT))
     > 0, via the paired circular block bootstrap. Returns per-symbol ebar,
     both CIs, exposure diagnostics (months with e < 1, for A0's report),
-    and the overall PASS/FAIL/SPLIT verdict."""
+    and the overall PASS/FAIL/SPLIT verdict.
+
+    `return_books=True` (used only by the real stage-B report, never by
+    A0) additionally returns the VT/BH/ebar-book frames and the exposure
+    series under `["books"]`, so a caller's report-only statistics reuse
+    the SAME construction rather than recomputing it independently (which
+    would risk the ebar/books drifting apart from what was actually
+    scored -- mutant 3's failure mode, generalized)."""
     per_symbol = {}
     passes = {}
     for label, close in (("a", close_a), ("b", close_b)):
@@ -146,6 +153,8 @@ def score_pair(close_a: pd.Series, close_b: pd.Series, first, last,
             "ci_ebar": (pt_e, lo_e, hi_e),
             "pass": ok,
         }
+        if return_books:
+            per_symbol[label]["books"] = {"vt": vt, "bh": bh, "ebook": ebook, "e": e}
         passes[label] = ok
 
     return {"symbols": per_symbol, "overall": overall_verdict(passes)}

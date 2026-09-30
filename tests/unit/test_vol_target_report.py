@@ -287,12 +287,6 @@ def test_a6_ebar_boundary_0_90_passes_le_not_lt():
     assert ok is True
 
 
-def test_stage_b_refuses_without_valid_a(tmp_path):
-    (tmp_path / "e15c_stage_a.json").write_text(json.dumps({"verdict": "VOID"}))
-    with pytest.raises(RuntimeError, match="not VALID"):
-        vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
-
-
 def test_stage_c_refuses_without_b_pass_mutant8():
     """Mutant 8: C runs without a B pass. This guard is what kills it,
     once stage C is built; today it's exercised via the missing-file and
@@ -304,6 +298,205 @@ def test_stage_c_refuses_without_b_pass_mutant8():
         (Path(d) / "e15c_stage_b.json").write_text(json.dumps({"verdict": "FAIL"}))
         with pytest.raises(RuntimeError, match="refusing"):
             vtr.run_stage_c(Path("/nonexistent"), results_dir=Path(d))
+
+
+# --------------------------------------------------------------------------
+# Stage B -- gates
+# --------------------------------------------------------------------------
+
+def _fake_a0_b(branch: str, size_gate_ok: bool = True) -> dict:
+    return {
+        "verdict": branch,
+        "statistic": {"a0_power": 0.62, "a0_size": 0.0, "a0_mde": 0.0078, "branch": branch},
+        "extra": {"size_gate_ok_on_chosen_branch": size_gate_ok},
+    }
+
+
+def _fake_a(verdict: str, branch: str = "contaminated") -> dict:
+    return {"verdict": verdict, "extra": {"branch": branch}}
+
+
+def test_stage_b_refuses_without_a0(tmp_path):
+    (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID")))
+    with pytest.raises(RuntimeError, match="stage A0 result missing"):
+        vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
+
+
+def test_stage_b_refuses_without_valid_a(tmp_path):
+    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps(_fake_a0_b("contaminated")))
+    (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VOID")))
+    with pytest.raises(RuntimeError, match="not VALID"):
+        vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
+
+
+def test_stage_b_refuses_when_a0_void_underpowered(tmp_path):
+    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps({"verdict": "VOID_UNDERPOWERED"}))
+    (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID")))
+    with pytest.raises(RuntimeError, match="stage A0 verdict"):
+        vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
+
+
+def test_stage_b_refuses_when_a0_size_gate_failed(tmp_path):
+    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps(_fake_a0_b("contaminated", size_gate_ok=False)))
+    (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID")))
+    with pytest.raises(RuntimeError, match="size gate"):
+        vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
+
+
+def test_stage_b_refuses_when_a_branch_mismatches_a0_branch(tmp_path):
+    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps(_fake_a0_b("contaminated")))
+    (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID", branch="clean")))
+    with pytest.raises(RuntimeError, match="does not match"):
+        vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
+
+
+# --------------------------------------------------------------------------
+# Stage B -- branch-aware loader (mutant 7)
+# --------------------------------------------------------------------------
+
+def test_load_close_b_clean_branch_truncates_before_2020(monkeypatch):
+    idx = pd.date_range("2019-12-29", "2020-01-02", freq="D", tz="UTC")
+    close = pd.Series(np.linspace(100, 101, len(idx)), index=idx)
+
+    def fake_loader(root, symbol, interval):
+        return pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 0.0})
+
+    monkeypatch.setattr(vtr, "load_spot_klines", fake_loader)
+    result = vtr.load_close_b(Path("."), "BTCUSDT", "clean")
+    assert result.index.max() < vtr.CUTOFF_2020
+
+
+def test_load_close_b_contaminated_branch_keeps_2020_never_2026(monkeypatch):
+    idx = pd.date_range("2025-12-29", "2026-01-02", freq="D", tz="UTC")
+    close = pd.Series(np.linspace(100, 101, len(idx)), index=idx)
+
+    def fake_loader(root, symbol, interval):
+        return pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 0.0})
+
+    monkeypatch.setattr(vtr, "load_spot_klines", fake_loader)
+    result = vtr.load_close_b(Path("."), "BTCUSDT", "contaminated")
+    assert result.index.max() == pd.Timestamp("2025-12-31", tz="UTC")
+    assert result.index.max() < vtr.CUTOFF_2026
+
+
+# --------------------------------------------------------------------------
+# Stage B -- end to end on synthetic data
+# --------------------------------------------------------------------------
+
+@pytest.fixture()
+def small_stage_b(monkeypatch, tmp_path):
+    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps(_fake_a0_b("contaminated")))
+    (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID")))
+
+    monkeypatch.setattr(vtr, "CONTAM_B_FIRST", "2020-01")
+    monkeypatch.setattr(vtr, "CONTAM_B_LAST", "2020-06")
+
+    sigmas = [0.01, 0.06, 0.01, 0.06, 0.01, 0.06]
+    closes = {
+        "BTCUSDT": _synthetic_close(21, warmup_months=8, scored_months=6, sigmas=sigmas),
+        "ETHUSDT": _synthetic_close(22, warmup_months=8, scored_months=6, sigmas=sigmas),
+    }
+
+    def fake_load_spot_klines(root, symbol, interval):
+        close = closes[symbol]
+        return pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 0.0})
+
+    monkeypatch.setattr(vtr, "load_spot_klines", fake_load_spot_klines)
+    return tmp_path
+
+
+def test_stage_b_end_to_end_synthetic_writes_allowlisted_result(small_stage_b):
+    verdict, statistic = vtr.run_stage_b(Path("."), results_dir=small_stage_b, boot_reps=50)
+    assert verdict in ("PASS", "FAIL", "SPLIT")
+    written = json.loads((small_stage_b / "e15c_stage_b.json").read_text())
+    assert written["verdict"] == verdict
+    assert set(written["statistic"].keys()) <= vtr.STAGE_B_ALLOWLIST
+    assert set(written["statistic"]["per_symbol"].keys()) == set(vtr.SYMBOLS)
+    for sym in vtr.SYMBOLS:
+        row = written["statistic"]["per_symbol"][sym]
+        assert "delta_es_bh" in row and "delta_es_ebar" in row
+        assert set(row["delta_es_bh"].keys()) == {"point", "ci_lo", "ci_hi"}
+    assert written["extra"]["window_label"] == "(contaminated window)"
+    assert "prior look" in written["extra"]["contamination_caveat"] or "2026" in written["extra"]["contamination_caveat"]
+    for sym in vtr.SYMBOLS:
+        ro = written["extra"]["report_only"][sym]
+        assert "perp_taker_sensitivity" in ro and ro["perp_taker_sensitivity"]["funding_included"] is False
+
+
+def test_stage_b_perp_sensitivity_never_changes_verdict(small_stage_b):
+    """Report-only means report-only: the top-level verdict must be
+    derivable from `statistic.per_symbol[*].pass` alone, with no perps
+    figure anywhere near it."""
+    verdict, statistic = vtr.run_stage_b(Path("."), results_dir=small_stage_b, boot_reps=50)
+    passes = {s: v["pass"] for s, v in statistic["per_symbol"].items()}
+    n_pass = sum(passes.values())
+    expected = "PASS" if n_pass == 2 else ("FAIL" if n_pass == 0 else "SPLIT")
+    assert verdict == expected
+
+
+def test_stage_b_passes_boot_reps_through_to_score_pair(small_stage_b, monkeypatch):
+    calls = []
+    real_score_pair = vtr.score_pair
+
+    def spy(*a, **kw):
+        calls.append(kw.get("boot_reps"))
+        return real_score_pair(*a, **kw)
+
+    monkeypatch.setattr(vtr, "score_pair", spy)
+    vtr.run_stage_b(Path("."), results_dir=small_stage_b, boot_reps=77)
+    assert calls == [77]
+
+
+def test_stage_b_default_boot_reps_is_10000():
+    import inspect
+    sig = inspect.signature(vtr.run_stage_b)
+    assert sig.parameters["boot_reps"].default == vtr.BOOT_REPS == 10_000
+
+
+def test_stage_b_bootstrap_shares_one_seed_block_reps_across_symbols(small_stage_b, monkeypatch):
+    """Mutant 4 (call-site variant, e.g. seed=boot_seed+1 on one leg or one
+    symbol): every bootstrap call score_pair makes must share the SAME
+    (seed, block, reps) tuple -- the pre-reg's 'one index set per rep,
+    shared across both symbols'."""
+    import model.vol_target as vt_mod
+
+    real_boot = vt_mod.paired_block_bootstrap
+    seen = []
+
+    def spy(a, b, stat, block, reps, seed):
+        seen.append((seed, block, reps))
+        return real_boot(a, b, stat, block=block, reps=reps, seed=seed)
+
+    monkeypatch.setattr(vt_mod, "paired_block_bootstrap", spy)
+    vtr.run_stage_b(Path("."), results_dir=small_stage_b, boot_reps=20)
+    assert len(seen) >= 4  # 2 legs x 2 symbols (report-only calls add more, still uniform)
+    assert len(set(seen)) == 1
+
+
+# --------------------------------------------------------------------------
+# stage_c_symbols -- pure gate stub (mutant 8: C runs without a B pass)
+# --------------------------------------------------------------------------
+
+def test_stage_c_symbols_refuses_on_fail():
+    with pytest.raises(RuntimeError, match="refusing"):
+        vtr.stage_c_symbols({"verdict": "FAIL", "statistic": {"per_symbol": {}}})
+
+
+def test_stage_c_symbols_refuses_on_void():
+    with pytest.raises(RuntimeError, match="refusing"):
+        vtr.stage_c_symbols({"verdict": "VOID", "statistic": {"per_symbol": {}}})
+
+
+def test_stage_c_symbols_pass_returns_both():
+    b = {"verdict": "PASS", "statistic": {"per_symbol": {
+        "BTCUSDT": {"pass": True}, "ETHUSDT": {"pass": True}}}}
+    assert set(vtr.stage_c_symbols(b)) == {"BTCUSDT", "ETHUSDT"}
+
+
+def test_stage_c_symbols_split_returns_only_the_passing_one():
+    b = {"verdict": "SPLIT", "statistic": {"per_symbol": {
+        "BTCUSDT": {"pass": True}, "ETHUSDT": {"pass": False}}}}
+    assert vtr.stage_c_symbols(b) == ["BTCUSDT"]
 
 
 def test_choose_branch_gate_is_0_5_not_0_4_via_run_stage_a0(tmp_path, monkeypatch):
