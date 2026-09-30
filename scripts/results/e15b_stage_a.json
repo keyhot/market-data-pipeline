@@ -1,0 +1,77 @@
+{
+  "experiment": "e15b_stage_a",
+  "git_hash": "9a92de3",
+  "timestamp": "2026-09-30T03:01:25.388516+00:00",
+  "inputs": {
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "source": "binance spot 1d klines",
+    "first_bar": {
+      "BTCUSDT": "2017-08-17 00:00:00+00:00",
+      "ETHUSDT": "2017-08-17 00:00:00+00:00"
+    },
+    "last_bar": {
+      "BTCUSDT": "2025-12-31 00:00:00+00:00",
+      "ETHUSDT": "2025-12-31 00:00:00+00:00"
+    }
+  },
+  "parameters": {
+    "es_level": 0.975,
+    "q_high": 0.8,
+    "q_low": 0.2,
+    "l_max": 1.0,
+    "min_sigma_days": 15,
+    "cost_side": 0.0011,
+    "boot_block": 30,
+    "boot_reps": 10000,
+    "seed": 7,
+    "lw_lag": 30,
+    "first_scored": "2020-01",
+    "last_scored_b": "2025-12",
+    "a4_months": [
+      "2020-01",
+      "2020-04",
+      "2021-01",
+      "2021-06",
+      "2022-06",
+      "2022-12",
+      "2023-08",
+      "2024-03",
+      "2025-04",
+      "2025-12"
+    ],
+    "a3_tolerance": 1e-09
+  },
+  "statistic": {
+    "a1_ci_lo": {
+      "BTCUSDT": -0.0002077822361007463,
+      "ETHUSDT": 0.00035636894443775595
+    },
+    "a2_ok": {
+      "BTCUSDT": true,
+      "ETHUSDT": true
+    },
+    "a3_violations": {
+      "BTCUSDT": 0,
+      "ETHUSDT": 0
+    },
+    "a4_mismatches": {
+      "BTCUSDT": 0,
+      "ETHUSDT": 0
+    },
+    "a5_valid_months": {
+      "BTCUSDT": 72,
+      "ETHUSDT": 72
+    }
+  },
+  "ci": {},
+  "verdict": "VOID",
+  "extra": {
+    "failing_checks": [
+      "a1_BTCUSDT"
+    ],
+    "amendment_1_open_question": "Answered by Amendment 1 (2026-09-29 22:10): the primary is the conjunction (vs BH AND vs the exposure-matched book). Stage B is gated only on the user's go-ahead, not on this question."
+  }
+}
