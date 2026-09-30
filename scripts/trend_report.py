@@ -28,17 +28,24 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import model.trend as trend  # noqa: E402
 from model.cross_section import funding_by_day  # noqa: E402
 from model.spot_archive import load_spot_klines  # noqa: E402
 from model.trend import (  # noqa: E402
+    BOOT_BLOCK,
+    BOOT_REPS,
     COST_SIDE_PERP,
+    COST_SIDE_SPOT,
     COV_MONTHS,
     EWMA_COM,
     FIRST_HOLD,
     GROSS_CAP,
     LAST_HOLD_B,
     LOOKBACKS,
+    SEED,
     TARGET_VOL,
+    _monthly_sum,
+    annualised_ir,
     block_bootstrap_ci,
     book_returns,
     conditions,
@@ -46,7 +53,10 @@ from model.trend import (  # noqa: E402
     hop_exposures,
     month_end_closes,
     monthly_returns,
+    pass_95,
+    primary_verdict,
     rebalance_exposures,
+    signed_exposure_matched_return,
     signed_null,
     stage_a_valid,
 )
@@ -55,6 +65,7 @@ from report_results import write_result  # noqa: E402
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
 CUTOFF_2026 = pd.Timestamp("2026-01-01", tz="UTC")
+ARTIFACTS_DIR = ROOT / "model" / "artifacts"
 
 # 64 holding months, Sept 2020 .. Dec 2025 -> decision times (T_{h-1}) and
 # the holding-month index (T_h) they produce, per the frozen note's T_m
@@ -137,17 +148,21 @@ def _run_book(spot_daily, r_tilde, price_ret, cost_side, signal="trend", overrid
     """Run every decision in DECISION_TIMES, indexing the resulting
     exposure at the HOLDING month's end (decision T + 1 month) -- the
     convention `book_returns`/`r_tilde`/`price_ret` all share. Returns
-    (e, book_returns_frame)."""
+    (e, book_returns_frame, capped_series) where `capped_series` is the
+    per-holding-month HOP gross-cap flag, indexed the same as `e`/`br`."""
     symbols = list(spot_daily.columns)
     rows = {}
+    capped = {}
     for T in DECISION_TIMES:
         h = T + pd.DateOffset(months=1)
         override_S = override_fn(r_tilde.loc[h]) if override_fn is not None else None
-        e, _capped = rebalance_exposures(spot_daily, T, signal=signal, override_S=override_S)
+        e, is_capped = rebalance_exposures(spot_daily, T, signal=signal, override_S=override_S)
         rows[h] = e
+        capped[h] = is_capped
     e_df = pd.DataFrame(rows).T[symbols].loc[HOLD_INDEX]
+    capped_series = pd.Series(capped).loc[HOLD_INDEX]
     br = book_returns(e_df, r_tilde, price_ret, cost_side)
-    return e_df, br
+    return e_df, br, capped_series
 
 
 def _load_all(root: Path, stage: str):
@@ -173,16 +188,16 @@ def _load_all(root: Path, stage: str):
 # --------------------------------------------------------------------------
 
 def _a1_a2(spot_daily, r_tilde, price_ret):
-    e_plus, br_plus = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP, signal="plus_one")
+    e_plus, br_plus, _cap_plus = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP, signal="plus_one")
 
-    e_o, br_o = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP,
+    e_o, br_o, _cap_o = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP,
                           signal="trend", override_fn=_oracle_sign)
     n_o, _ = signed_null(e_o, r_tilde, br_o["kappa"])
     x_o, d_o = conditions(br_o["R"], n_o, br_plus["R"])
     _, a1_lo_x, _ = block_bootstrap_ci(x_o.to_numpy())
     _, a1_lo_d, _ = block_bootstrap_ci(d_o.to_numpy())
 
-    e_ao, br_ao = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP,
+    e_ao, br_ao, _cap_ao = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP,
                             signal="trend", override_fn=lambda row: -_oracle_sign(row))
     n_ao, _ = signed_null(e_ao, r_tilde, br_ao["kappa"])
     x_ao, d_ao = conditions(br_ao["R"], n_ao, br_plus["R"])
@@ -329,9 +344,42 @@ def run_stage_a(archive_root: Path, results_dir=None):
 
 
 # --------------------------------------------------------------------------
-# Stage B / C (guards + loaders only -- scoring bodies are stage B's own
-# task once the user has answered the open "beats" question; see the
-# vault's Handoff section)
+# Stage B report-only stats (private to this runner -- not part of the
+# frozen model/trend.py function list, since they never touch a verdict)
+# --------------------------------------------------------------------------
+
+def _max_drawdown(returns) -> float:
+    """Max peak-to-trough drawdown (a <= 0 fraction) of the compounded
+    curve built from a monthly net-return series."""
+    r = np.asarray(returns, dtype=float)
+    if len(r) == 0:
+        return 0.0
+    curve = np.cumprod(1.0 + r)
+    peak = np.maximum.accumulate(curve)
+    dd = curve / peak - 1.0
+    return float(dd.min())
+
+
+def _expected_shortfall_90(returns) -> float:
+    """Mean of the ceil(0.10 * n) worst (most negative) months."""
+    r = np.asarray(returns, dtype=float)
+    n = len(r)
+    if n == 0:
+        return float("nan")
+    k = max(int(np.ceil(0.10 * n)), 1)
+    return float(np.sort(r)[:k].mean())
+
+
+def _per_year_means(series: pd.Series) -> dict:
+    grouped = series.groupby(series.index.year).mean()
+    return {str(int(y)): float(v) for y, v in grouped.items()}
+
+
+# --------------------------------------------------------------------------
+# Stage B: the pre-registered primary (pooled long/short) and long/flat
+# secondary. Every constant, reference and formula here is pinned in the
+# vault note ("Statistics and verdict rule, fixed now" + Amendment 1) --
+# this function applies them, never chooses them.
 # --------------------------------------------------------------------------
 
 def run_stage_b(archive_root: Path, results_dir=None):
@@ -342,10 +390,167 @@ def run_stage_b(archive_root: Path, results_dir=None):
     a_result = json.loads(a_path.read_text())
     if a_result.get("verdict") != "VALID":
         raise RuntimeError(f"stage A verdict is {a_result.get('verdict')!r}, not VALID; refusing")
-    raise NotImplementedError(
-        "stage B scoring is not built yet -- the vault's open question "
-        "('what does beats mean') must be answered before it is written"
+
+    (spot_daily, perp_daily, perp_month_closes, events_by_symbol,
+     funding_daily, price_ret, r_tilde) = _load_all(archive_root, "B")
+    symbols = list(SYMBOLS)
+
+    # ---- Primary: pooled long/short candidate ------------------------------
+    e_c, br_c, capped_c = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP, signal="trend")
+    e_plus, br_plus, _cap_plus = _run_book(spot_daily, r_tilde, price_ret, COST_SIDE_PERP, signal="plus_one")
+    n_c, e_bar_c = signed_null(e_c, r_tilde, br_c["kappa"])
+    x, d = conditions(br_c["R"], n_c, br_plus["R"])
+
+    mean_x, mean_d = float(x.mean()), float(d.mean())
+    ir_x, ir_d = annualised_ir(x), annualised_ir(d)
+    _px, lo_x, hi_x = block_bootstrap_ci(x.to_numpy())
+    _pd_, lo_d, hi_d = block_bootstrap_ci(d.to_numpy())
+    median_x, mlo_x, mhi_x = block_bootstrap_ci(x.to_numpy(), stat=np.median)
+    median_d, mlo_d, mhi_d = block_bootstrap_ci(d.to_numpy(), stat=np.median)
+
+    verdict = primary_verdict(mean_x, mean_d)
+    p95 = pass_95(lo_x, lo_d)
+
+    # ---- Long/flat secondary: e^LF = max(e, 0), scored on SPOT with spot
+    # costs; its control is the SAME +1 book, re-scored on spot -----------
+    e_lf = e_c.clip(lower=0.0)
+    spot_month_closes = pd.DataFrame({s: month_end_closes(spot_daily[s]) for s in symbols})[symbols]
+    spot_ret = monthly_returns(spot_month_closes).reindex(HOLD_INDEX)[symbols]
+
+    br_lf = book_returns(e_lf, spot_ret, spot_ret, COST_SIDE_SPOT)
+    br_plus_lf = book_returns(e_plus, spot_ret, spot_ret, COST_SIDE_SPOT)
+    n_lf, e_bar_lf = signed_null(e_lf, spot_ret, br_lf["kappa"])
+    x_lf, d_lf = conditions(br_lf["R"], n_lf, br_plus_lf["R"])
+
+    mean_x_lf, mean_d_lf = float(x_lf.mean()), float(d_lf.mean())
+    ir_x_lf, ir_d_lf = annualised_ir(x_lf), annualised_ir(d_lf)
+    _pxl, lo_x_lf, hi_x_lf = block_bootstrap_ci(x_lf.to_numpy())
+    _pdl, lo_d_lf, hi_d_lf = block_bootstrap_ci(d_lf.to_numpy())
+    verdict_lf = primary_verdict(mean_x_lf, mean_d_lf)  # labelled SECONDARY
+    p95_lf = pass_95(lo_x_lf, lo_d_lf)
+
+    # ---- Report-only --------------------------------------------------------
+    per_symbol_x = {s: float(((e_c[s] - e_bar_c[s]) * r_tilde[s]).mean()) for s in symbols}
+    per_symbol_d = {
+        s: float((e_c[s] * r_tilde[s] - e_plus[s] * r_tilde[s]
+                   - (br_c[f"kappa_{s}"] - br_plus[f"kappa_{s}"])).mean())
+        for s in symbols
+    }
+
+    net_sharpe = {
+        "candidate": annualised_ir(br_c["R"]), "control": annualised_ir(br_plus["R"]),
+        "null": annualised_ir(n_c),
+        "secondary_candidate": annualised_ir(br_lf["R"]),
+        "secondary_control": annualised_ir(br_plus_lf["R"]),
+        "secondary_null": annualised_ir(n_lf),
+    }
+    drawdown_and_es_90 = {
+        name: {"max_drawdown": _max_drawdown(series), "es_90": _expected_shortfall_90(series)}
+        for name, series in (
+            ("candidate", br_c["R"]), ("control", br_plus["R"]), ("null", n_c),
+            ("secondary_candidate", br_lf["R"]), ("secondary_control", br_plus_lf["R"]),
+            ("secondary_null", n_lf),
+        )
+    }
+
+    n_months = len(HOLD_INDEX)
+    years = n_months / 12.0
+    turnover_i = {s: float((br_c[f"kappa_{s}"] / COST_SIDE_PERP).sum()) for s in symbols}
+    turnover_per_year = {s: turnover_i[s] / years for s in symbols}
+    capped_months = int(capped_c.sum())
+
+    funding_monthly = pd.DataFrame(
+        {s: _monthly_sum(funding_daily[s]) for s in symbols}
+    ).reindex(HOLD_INDEX)[symbols]
+    total_funding_paid = {s: float((e_c[s] * funding_monthly[s]).sum()) for s in symbols}
+
+    total_return_null_form = {}
+    for s in symbols:
+        br_total = float(np.prod(1.0 + r_tilde[s].reindex(HOLD_INDEX).to_numpy()) - 1.0)
+        total_return_null_form[s] = signed_exposure_matched_return(
+            float(e_bar_c[s]), br_total, 1, COST_SIDE_PERP)
+
+    per_year_x = _per_year_means(x)
+    per_year_d = _per_year_means(d)
+    surprise_rule_triggered = bool(abs(ir_x) > 0.85 or abs(ir_d) > 0.85)
+
+    # Amendment 1 (2026-09-29): report-only one-sided lower bounds at 80/90/95%
+    # confidence, printed next to the verdict -- required before any scale-up
+    # reads PASS_95 (the frozen note's OWN two-sided-95%-CI flag) as meaningful.
+    # A one-sided lower bound at confidence L is the (1-L) percentile of the
+    # SAME pinned circular block bootstrap (block/reps/seed unchanged) --
+    # reusing block_bootstrap_ci's two-sided form at alpha = 2*(1-L) and
+    # keeping only its `lo`, since percentile(alpha/2) = percentile(1-L).
+    one_sided_levels = (0.80, 0.90, 0.95)
+    one_sided_lower_bounds = {
+        "x": {str(int(L * 100)): block_bootstrap_ci(x.to_numpy(), alpha=2 * (1 - L))[1]
+              for L in one_sided_levels},
+        "d": {str(int(L * 100)): block_bootstrap_ci(d.to_numpy(), alpha=2 * (1 - L))[1]
+              for L in one_sided_levels},
+    }
+
+    statistic = {
+        "mean_x": mean_x, "mean_d": mean_d, "ir_x": ir_x, "ir_d": ir_d,
+        "median_x": median_x, "median_d": median_d,
+        "pass_95": p95,
+        "secondary_verdict": verdict_lf,
+        "secondary_mean_x": mean_x_lf, "secondary_mean_d": mean_d_lf,
+        "secondary_ir_x": ir_x_lf, "secondary_ir_d": ir_d_lf,
+        "secondary_pass_95": p95_lf,
+        "e_bar": {s: float(e_bar_c[s]) for s in symbols},
+        "mean_gross_exposure": float(e_c[symbols].abs().sum(axis=1).mean()),
+        "capped_months": capped_months,
+        "turnover_per_year": turnover_per_year,
+        "total_funding_paid": total_funding_paid,
+    }
+    ci = {
+        "x": [lo_x, hi_x], "d": [lo_d, hi_d],
+        "median_x": [mlo_x, mhi_x], "median_d": [mlo_d, mhi_d],
+        "secondary_x": [lo_x_lf, hi_x_lf], "secondary_d": [lo_d_lf, hi_d_lf],
+    }
+    extra = {
+        "per_symbol_x": per_symbol_x, "per_symbol_d": per_symbol_d,
+        "net_sharpe": net_sharpe, "drawdown_and_es_90": drawdown_and_es_90,
+        "total_return_null_form": total_return_null_form,
+        "per_year_x": per_year_x, "per_year_d": per_year_d,
+        "surprise_rule_triggered": surprise_rule_triggered,
+        "one_sided_lower_bounds": one_sided_lower_bounds,
+    }
+
+    path = write_result(
+        "e16_stage_b",
+        inputs={
+            "symbols": symbols,
+            "scored_holding_months": n_months,
+            "first_hold": FIRST_HOLD, "last_hold": LAST_HOLD_B,
+        },
+        parameters={
+            "lookbacks": list(LOOKBACKS), "ewma_com": EWMA_COM,
+            "target_vol": TARGET_VOL, "cov_months": COV_MONTHS,
+            "gross_cap": GROSS_CAP,
+            "cost_side_perp": COST_SIDE_PERP, "cost_side_spot": COST_SIDE_SPOT,
+            "boot_block": BOOT_BLOCK, "boot_reps": BOOT_REPS, "seed": SEED,
+        },
+        statistic=statistic,
+        ci=ci,
+        verdict=verdict,
+        extra=extra,
+        results_dir=results_dir,
     )
+
+    monthly = pd.DataFrame({
+        "e_BTCUSDT": e_c["BTCUSDT"], "e_ETHUSDT": e_c["ETHUSDT"],
+        "e_secondary_BTCUSDT": e_lf["BTCUSDT"], "e_secondary_ETHUSDT": e_lf["ETHUSDT"],
+        "R_candidate": br_c["R"], "R_control": br_plus["R"], "N_null": n_c,
+        "x": x, "d": d,
+        "R_secondary_candidate": br_lf["R"], "R_secondary_control": br_plus_lf["R"],
+    })
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    monthly.to_csv(ARTIFACTS_DIR / "e16_monthly.csv", index_label="T_h")
+
+    print(f"stage B: {verdict} (mean_x={mean_x:.5f}, mean_d={mean_d:.5f}) "
+          f"secondary={verdict_lf} -> {path}")
+    return verdict, statistic, path
 
 
 def run_stage_c(archive_root: Path, results_dir=None):
