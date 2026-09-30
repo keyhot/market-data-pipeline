@@ -119,6 +119,23 @@ def test_stage_a_json_has_expected_top_level_keys(small_stage_a):
         assert set(written["statistic"][stat_key].keys()) == set(vmr.SYMBOLS)
 
 
+def test_a1_oracle_uses_ci_lower_bound_not_upper(monkeypatch, small_stage_a):
+    # Pin the "read ci_lo, not ci_hi" contract with a stubbed bootstrap
+    # whose lower and upper bounds have OPPOSITE signs, independent of any
+    # real effect size in the synthetic data.
+    monkeypatch.setattr(vmr, "FIRST_SCORED", "2020-01")
+    monkeypatch.setattr(vmr, "LAST_SCORED_B", "2020-06")
+    close = _synthetic_close(9, warmup_months=8, scored_months=6)
+    r = vmr.daily_returns(close)
+
+    def fake_bootstrap(a, b, stat, block=None, reps=None, seed=None):
+        return (0.5, -3.0, 7.0)
+
+    monkeypatch.setattr(vmr, "paired_block_bootstrap", fake_bootstrap)
+    result = vmr._a1_oracle(close, r)
+    assert result == pytest.approx(-3.0)
+
+
 def test_stage_a_checks_boundaries():
     # a1: strict > 0, not >= 0 (mutant: a1_lo >= 0)
     assert vmr.stage_a_checks(0.0, True, 0, 0, 72)["a1"] is False
