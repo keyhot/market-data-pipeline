@@ -1,0 +1,61 @@
+{
+  "experiment": "e15c_stage_a0",
+  "git_hash": "9322209",
+  "timestamp": "2026-09-30T09:13:02.186390+00:00",
+  "inputs": {
+    "data": "synthetic only -- no real returns read",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ]
+  },
+  "parameters": {
+    "sigma_star": 0.026171196129510688,
+    "l_max": 1.0,
+    "cost_side": 0.0011,
+    "boot_block": 30,
+    "boot_reps": 2000,
+    "boot_seed": 7,
+    "n_seeds": 500,
+    "phi_persistent": 0.9,
+    "phi_iid": 0.0,
+    "sd": 0.4,
+    "warmup_months": 1,
+    "mean_log_sigma": -3.506557897319982,
+    "corr": 0.8,
+    "clean_months": 27,
+    "fallback_months": 72,
+    "power_gate": 0.5,
+    "size_gate": 0.1
+  },
+  "statistic": {
+    "a0_power": 0.62,
+    "a0_size": 0.0,
+    "a0_mde": 0.007824940333404778,
+    "branch": "contaminated"
+  },
+  "ci": {},
+  "verdict": "contaminated",
+  "extra": {
+    "clean": {
+      "power": 0.12,
+      "size": 0.0,
+      "mde": 0.008515715165312378,
+      "median_se": 0.0030396062105245347,
+      "median_ebar": 0.839792106056005,
+      "median_months_below_1": 18.0,
+      "n_paths": 500
+    },
+    "contaminated": {
+      "power": 0.62,
+      "size": 0.0,
+      "mde": 0.007824940333404778,
+      "median_se": 0.0027930404872259017,
+      "median_ebar": 0.8243916274983227,
+      "median_months_below_1": 47.0,
+      "n_paths": 500
+    },
+    "size_gate_ok_on_chosen_branch": true,
+    "note": "VOID_UNDERPOWERED means A0-power failed on both branches; B is never run. A size-gate failure on the chosen branch (size_gate_ok_on_chosen_branch=False) is a separate VOID condition the stage-A0 report surfaces but does not fold into `branch`, since choose_branch()'s three-way return is power-only per the implementation spec."
+  }
+}
