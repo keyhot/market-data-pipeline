@@ -70,6 +70,11 @@ STAGE_A_ALLOWLIST = {
     "a6_pass_rate_uc", "a6_pass_rate_cc", "a6_pass_rate_dq", "a6_pass_rate_all",
 }
 
+# "Scoring rows and validity": scored rows / target origins must be >= 0.99
+# per symbol/horizon/year, else that stage's run is VOID.
+STAGE_B_VALIDITY_MIN = 0.99
+ARTIFACTS_DIR = ROOT / "model" / "artifacts"
+
 
 # --------------------------------------------------------------------------
 # Data
@@ -306,6 +311,30 @@ def run_a6(seeds=range(10), years_scored=5.0, warmup_years=1.0, horizons=(1,)):
 # Stage B / C
 # --------------------------------------------------------------------------
 
+def _scored_share_by_year(grid, h, common_index):
+    """Per calendar year in [STAGE_B_START, STAGE_B_END): scored rows (in
+    `common_index`) / origins that have a target, plus outage-origin and
+    floored-hour counts. Reused for the general validity/VOID rule."""
+    from model.range_forecast import _target_rv_sum, RV_FLOOR
+    window = grid.loc[(grid.index >= STAGE_B_START) & (grid.index < STAGE_B_END)]
+    target_rv = _target_rv_sum(window, h)
+    has_target = target_rv.notna()
+    common_set = set(common_index)
+    years = window.index.year
+    by_year = {}
+    outage_by_year = {}
+    for yr in sorted(set(years)):
+        yr_mask = years == yr
+        idx_yr = window.index[yr_mask]
+        n_target = int(has_target.to_numpy()[yr_mask].sum())
+        n_scored = sum(1 for t, ok in zip(idx_yr, has_target.to_numpy()[yr_mask])
+                        if ok and t in common_set)
+        by_year[str(yr)] = (n_scored / n_target) if n_target else 1.0
+        outage_by_year[str(yr)] = int((~has_target.to_numpy()[yr_mask]).sum())
+    floored = int((window["valid"] & (window["rv"] <= RV_FLOOR)).sum())
+    return by_year, outage_by_year, floored
+
+
 def run_stage_b(symbols=SYMBOLS, results_dir=None):
     rd = Path(results_dir) if results_dir is not None else report_results.RESULTS_DIR
     a_path = rd / "e15_stage_a.json"
@@ -315,23 +344,54 @@ def run_stage_b(symbols=SYMBOLS, results_dir=None):
     if a_result.get("verdict") != "VALID":
         raise RuntimeError(f"stage A verdict is {a_result.get('verdict')!r}, not VALID; refusing")
 
-    inputs, statistic, ci, extra = {"symbols": list(symbols)}, {}, {}, {}
+    inputs = {"symbols": list(symbols), "source": "price_bars 15m spot",
+              "first_bar": {}, "last_bar": {}, "validity_by_year": {}}
+    statistic, ci, extra = {}, {}, {"calibration_i": {}, "calibration_ii": {},
+                                     "qlike_mean": {}, "band_width_bps": {},
+                                     "coverage_deviation_pp_by_year": {}}
     symbol_pass = {}
     fourh_pass = {}
+    void_keys = []
     for symbol in symbols:
         bars = load_bars(symbol, "B")
+        inputs["first_bar"][symbol] = str(bars["timestamp"].min())
+        inputs["last_bar"][symbol] = str(bars["timestamp"].max())
         grid = hourly_grid(bars)
         for h in HORIZONS:
             wf_cand = _score(grid, h, "seasonal_har", STAGE_B_START, STAGE_B_END)
             wf_ii = _score(grid, h, "plain_har", STAGE_B_START, STAGE_B_END)
-            common = wf_cand.index.intersection(wf_ii.index)
-            wf_cand_c, wf_ii_c = wf_cand.loc[common], wf_ii.loc[common]
+            wf_i = _score(grid, h, "rolling", STAGE_B_START, STAGE_B_END)
+            key = f"{symbol}_{h}h"
+
+            # "Scored rows": a target and a forecast from every model in
+            # play for this stage (candidate, (i), (ii); oracle is stage-A
+            # only). Same set for every statistic.
+            common = wf_cand.index.intersection(wf_ii.index).intersection(wf_i.index)
+
+            by_year, outage_by_year, floored = _scored_share_by_year(grid, h, common)
+            inputs["validity_by_year"][key] = {
+                "scored_share": by_year, "outage_origins": outage_by_year,
+                "floored_hours": floored,
+            }
+            if any(v < STAGE_B_VALIDITY_MIN for v in by_year.values()):
+                void_keys.append(key)
+
+            wf_cand_c, wf_ii_c, wf_i_c = wf_cand.loc[common], wf_ii.loc[common], wf_i.loc[common]
+
             cal = _calibration(wf_cand_c, h)
             mean, lo, hi, _ = _winkler_ci(wf_ii_c, wf_cand_c)
-            key = f"{symbol}_{h}h"
+
             statistic[key] = {
                 "p_uc": cal.p_uc, "p_cc": cal.p_cc, "p_dq": cal.p_dq,
                 "coverage": cal.coverage, "n": cal.n, "mean_d": mean,
+                "mean_winkler_bps": {
+                    "candidate": float(winkler(wf_cand_c["L80"], wf_cand_c["U80"],
+                                                wf_cand_c["r"], ALPHA_PRIMARY).mean() * 1e4),
+                    "i": float(winkler(wf_i_c["L80"], wf_i_c["U80"],
+                                        wf_i_c["r"], ALPHA_PRIMARY).mean() * 1e4),
+                    "ii": float(winkler(wf_ii_c["L80"], wf_ii_c["U80"],
+                                         wf_ii_c["r"], ALPHA_PRIMARY).mean() * 1e4),
+                },
             }
             ci[key] = [lo, hi]
             if h == 1:
@@ -343,11 +403,32 @@ def run_stage_b(symbols=SYMBOLS, results_dir=None):
                 fourh_pass[symbol] = gate
                 statistic[key]["verdict"] = "PASS" if gate else "FAIL"
 
-    overall = overall_verdict(symbol_pass)
+            # Report-only extras (never change a verdict).
+            extra["calibration_i"][key] = _calibration(wf_i_c, h).__dict__
+            extra["calibration_ii"][key] = _calibration(wf_ii_c, h).__dict__
+            extra["qlike_mean"][key] = {
+                "candidate": float(qlike(wf_cand_c["rv_target"], wf_cand_c["sigma"] ** 2).mean()),
+                "i": float(qlike(wf_i_c["rv_target"], wf_i_c["sigma"] ** 2).mean()),
+                "ii": float(qlike(wf_ii_c["rv_target"], wf_ii_c["sigma"] ** 2).mean()),
+            }
+            extra["band_width_bps"][key] = float(
+                (wf_cand_c["U80"] - wf_cand_c["L80"]).mean() * 1e4)
+
+            ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+            wf_cand.to_csv(ARTIFACTS_DIR / f"e15_oos_{symbol}_{h}h.csv")
+
+    if void_keys:
+        overall = "VOID"
+        extra["void_keys"] = void_keys
+        for key in void_keys:
+            statistic[key]["verdict"] = "VOID"
+    else:
+        overall = overall_verdict(symbol_pass)
     statistic["_4h_gate"] = fourh_pass
     path = write_result(
         "e15_stage_b", inputs=inputs,
-        parameters={"alpha_primary": ALPHA_PRIMARY, "p_level": 0.05},
+        parameters={"alpha_primary": ALPHA_PRIMARY, "p_level": 0.05,
+                    "validity_min": STAGE_B_VALIDITY_MIN},
         statistic=statistic, ci=ci, verdict=overall, extra=extra,
         results_dir=results_dir,
     )
