@@ -10,8 +10,6 @@ import pandas as pd
 import pytest
 
 from model.vol_target import (
-    A0_MEAN_LOG_SIGMA,
-    A0_SD,
     CLEAN_MONTHS,
     POWER_GATE,
     SIGMA_STAR,
@@ -262,8 +260,11 @@ def test_regime_pair_stationary_sd_pinned_at_0_4_not_0_6():
     exercises."""
     _, _, _, _, ln_sig = _regime_pair(seed=0, phi=0.9, scored_months=2000)
     late = ln_sig[500:]
-    assert float(np.std(late)) == pytest.approx(A0_SD, abs=0.05)
-    assert float(np.mean(late)) == pytest.approx(A0_MEAN_LOG_SIGMA, abs=0.1)
+    # Hardcoded literals, NOT the imported A0_SD/A0_MEAN_LOG_SIGMA constants
+    # -- comparing against those would move WITH a mutated default and never
+    # go red (mutant 10 must be caught against the pre-reg's own number).
+    assert float(np.std(late)) == pytest.approx(0.4, abs=0.05)
+    assert float(np.mean(late)) == pytest.approx(float(np.log(0.03)), abs=0.1)
 
 
 def test_regime_pair_shares_sigma_path_correlated_shocks():
