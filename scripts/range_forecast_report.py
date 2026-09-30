@@ -97,6 +97,15 @@ def _score(grid, h, model, start, end):
 
 
 def _calibration(wf, h, alpha=ALPHA_PRIMARY):
+    """UC/CC/DQ on the scored hit sequence. At h=1 the hits don't overlap
+    and every origin enters. At h=4, per the frozen note (Tests >
+    Calibration, 'At h = 4'), only the non-overlapping origins at UTC
+    hours {0,4,8,12,16,20} enter the hit sequence and the DQ design --
+    hourly origins in between are overlapping-target scoring artifacts
+    (they still carry Winkler, which is scored on all hourly origins
+    elsewhere, but not calibration)."""
+    if h == 4:
+        wf = wf[wf.index.hour.isin((0, 4, 8, 12, 16, 20))]
     hits = miss(wf["r"], wf["L80"], wf["U80"])
     _, p_uc = lr_uc(hits, alpha)
     _, p_cc = lr_cc(hits, alpha)
