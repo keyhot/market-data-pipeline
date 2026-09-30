@@ -119,6 +119,20 @@ def test_stage_a_json_has_expected_top_level_keys(small_stage_a):
         assert set(written["statistic"][stat_key].keys()) == set(vmr.SYMBOLS)
 
 
+def test_stage_a_checks_boundaries():
+    # a1: strict > 0, not >= 0 (mutant: a1_lo >= 0)
+    assert vmr.stage_a_checks(0.0, True, 0, 0, 72)["a1"] is False
+    assert vmr.stage_a_checks(1e-9, True, 0, 0, 72)["a1"] is True
+    # a2/a3/a4/a5 boundaries
+    assert vmr.stage_a_checks(1.0, False, 0, 0, 72)["a2"] is False
+    assert vmr.stage_a_checks(1.0, True, 1, 0, 72)["a3"] is False
+    assert vmr.stage_a_checks(1.0, True, 0, 1, 72)["a4"] is False
+    assert vmr.stage_a_checks(1.0, True, 0, 0, 71)["a5"] is False
+    assert vmr.stage_a_checks(1.0, True, 0, 0, 72) == {
+        "a1": True, "a2": True, "a3": True, "a4": True, "a5": True,
+    }
+
+
 def test_stage_a_statistic_has_no_return_es_or_sharpe_leakage(small_stage_a):
     # The stage-A JSON may contain ONLY the allowlisted A1-A5 keys: assert
     # no forbidden substrings ever appear as a top-level statistic key.
