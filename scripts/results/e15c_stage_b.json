@@ -1,0 +1,192 @@
+{
+  "experiment": "e15c_stage_b",
+  "git_hash": "b5fc025",
+  "timestamp": "2026-09-30T12:50:34.557195+00:00",
+  "inputs": {
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "source": "binance spot 1d klines",
+    "branch": "contaminated",
+    "window": [
+      "2020-01",
+      "2025-12"
+    ]
+  },
+  "parameters": {
+    "sigma_star": 0.026171196129510688,
+    "l_max": 1.0,
+    "cost_side": 0.0011,
+    "boot_block": 30,
+    "boot_reps": 10000,
+    "boot_seed": 7,
+    "es_level": 0.975,
+    "perp_cost_side": 0.0006
+  },
+  "statistic": {
+    "branch": "contaminated",
+    "per_symbol": {
+      "BTCUSDT": {
+        "ebar": 0.8584891204113347,
+        "months_below_1": 41,
+        "n_months": 72,
+        "delta_es_bh": {
+          "point": 0.013686515364937576,
+          "ci_lo": 0.008038402263278802,
+          "ci_hi": 0.02011020544319436
+        },
+        "delta_es_ebar": {
+          "point": 0.0003973194098875754,
+          "ci_lo": -0.005138351061990816,
+          "ci_hi": 0.006095188503364163
+        },
+        "pass": false
+      },
+      "ETHUSDT": {
+        "ebar": 0.7135053292616992,
+        "months_below_1": 60,
+        "n_months": 72,
+        "delta_es_bh": {
+          "point": 0.03925782096225158,
+          "ci_lo": 0.02780741889185499,
+          "ci_hi": 0.05243217176230602
+        },
+        "delta_es_ebar": {
+          "point": 0.005580669019662476,
+          "ci_lo": -0.002039963978553016,
+          "ci_hi": 0.013339856039027572
+        },
+        "pass": false
+      }
+    }
+  },
+  "ci": {},
+  "verdict": "FAIL",
+  "extra": {
+    "window_label": "(contaminated window)",
+    "contamination_caveat": "This branch was run because A0 ruled the clean 2017-10..2019-12 window UNDERPOWERED; E15c's rule design was shaped by a prior look at 2020-25 (the E15b A1 audit). A PASS or SPLIT here licenses ONLY the 2026 stage-C read; it is never quoted alone, on stream or in the plan (pre-reg 'What this cannot tell us' / Windows table).",
+    "report_only": {
+      "BTCUSDT": {
+        "ebar": 0.8584891204113347,
+        "n_months": 72,
+        "months_below_1": 41,
+        "months_below_0_95": 36,
+        "daily_es99": {
+          "vt": 0.10477630296306865,
+          "bh": 0.12125972878743796,
+          "ebar_book": 0.10358868171112286
+        },
+        "monthly_es99": {
+          "vt": 0.2800251866581537,
+          "bh": 0.3729069866897431,
+          "ebar_book": 0.3201528250018435
+        },
+        "max_drawdown": {
+          "vt": -0.6788287321468796,
+          "bh": -0.7662925431645939,
+          "ebar_book": -0.7036662803178119
+        },
+        "lw_sharpe_diff_vt_minus_bh": {
+          "delta": -0.0028586469637163214,
+          "ci_lo": -0.012787457741682124,
+          "ci_hi": 0.007070163814249481
+        },
+        "lw_sharpe_diff_vt_minus_ebar": {
+          "delta": -0.002844621816076094,
+          "ci_lo": -0.012523761523518515,
+          "ci_hi": 0.006834517891366326
+        },
+        "total_cost_paid": 0.01037289234258314,
+        "turnover": 9.429902129621036,
+        "permuted_vs_vt": {
+          "point": 0.00638163872872452,
+          "ci_lo": -0.0030884762294321466,
+          "ci_hi": 0.014893540552768184
+        },
+        "permuted_vs_ebar_book": {
+          "point": 0.005984319318836945,
+          "ci_lo": 0.000770516383377735,
+          "ci_hi": 0.01039309766344007
+        },
+        "permutation_beats_ebar_book": true,
+        "relative_delta_es_ebar": 0.005141372011175344,
+        "per_year_delta_es_ebar": {
+          "2020": -0.009248702373431561,
+          "2021": 0.015236353563577151,
+          "2022": -0.0007189660382284496,
+          "2023": -0.005701800950952761,
+          "2024": -0.0070295924075031505,
+          "2025": -0.006780303724242424
+        },
+        "perp_taker_sensitivity": {
+          "cost_side": 0.0006,
+          "funding_included": false,
+          "note": "funding omitted -- coverage confirmed, parsing deferred; report-only, cannot move the verdict",
+          "delta_es_bh_point": 0.013686515364937576,
+          "delta_es_ebar_point": 0.0003971326975138051
+        }
+      },
+      "ETHUSDT": {
+        "ebar": 0.7135053292616992,
+        "n_months": 72,
+        "months_below_1": 60,
+        "months_below_0_95": 57,
+        "daily_es99": {
+          "vt": 0.10712798496071539,
+          "bh": 0.1595689682476027,
+          "ebar_book": 0.11423108787563274
+        },
+        "monthly_es99": {
+          "vt": 0.2519665651488908,
+          "bh": 0.4484731448581286,
+          "ebar_book": 0.3200433591731273
+        },
+        "max_drawdown": {
+          "vt": -0.6507347519007662,
+          "bh": -0.7930253453633338,
+          "ebar_book": -0.6470249788111552
+        },
+        "lw_sharpe_diff_vt_minus_bh": {
+          "delta": 0.0010459745296549083,
+          "ci_lo": -0.011227622072013235,
+          "ci_hi": 0.013319571131323052
+        },
+        "lw_sharpe_diff_vt_minus_ebar": {
+          "delta": 0.001404250780418427,
+          "ci_lo": -0.010695012981236233,
+          "ci_hi": 0.013503514542073087
+        },
+        "total_cost_paid": 0.01389494241209284,
+        "turnover": 12.631765829175308,
+        "permuted_vs_vt": {
+          "point": 0.017910188712964792,
+          "ci_lo": 0.005560740012863893,
+          "ci_hi": 0.030467923672592254
+        },
+        "permuted_vs_ebar_book": {
+          "point": 0.012329519693302315,
+          "ci_lo": 0.003993521758260504,
+          "ci_hi": 0.02115512316169079
+        },
+        "permutation_beats_ebar_book": true,
+        "relative_delta_es_ebar": 0.06484293413612095,
+        "per_year_delta_es_ebar": {
+          "2020": 0.015579675616599606,
+          "2021": 0.017975541253597807,
+          "2022": 0.0018148870747691365,
+          "2023": -0.012385127043762142,
+          "2024": -0.014102881731443348,
+          "2025": -0.0029088285712310646
+        },
+        "perp_taker_sensitivity": {
+          "cost_side": 0.0006,
+          "funding_included": false,
+          "note": "funding omitted -- coverage confirmed, parsing deferred; report-only, cannot move the verdict",
+          "delta_es_bh_point": 0.0392610006774929,
+          "delta_es_ebar_point": 0.005583848734903793
+        }
+      }
+    }
+  }
+}
