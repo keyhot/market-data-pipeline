@@ -14,9 +14,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
+import numpy as np
+
 import range_forecast_report as rfr  # noqa: E402
 import report_results  # noqa: E402
-from model.range_forecast import hourly_grid, seasonal_dgp  # noqa: E402
+from model.range_forecast import (  # noqa: E402
+    ALPHA_PRIMARY,
+    dq_design,
+    dq_test,
+    hourly_grid,
+    lr_cc,
+    lr_uc,
+    miss,
+    seasonal_dgp,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +47,74 @@ def _write_stage_b(tmp_path, statistic):
     path.write_text(json.dumps({"experiment": "e15_stage_b", "verdict": "SPLIT",
                                  "statistic": statistic}))
     return path
+
+
+def test_calibration_h4_thins_to_nonoverlapping_origins():
+    """Frozen note (Tests > Calibration, 'At h = 4'): calibration (UC/CC/DQ)
+    uses ONLY the non-overlapping origins at UTC hours {0,4,8,12,16,20};
+    hourly origins in between are overlapping-target artifacts of the
+    walk-forward scoring and must not enter the hit sequence or the DQ
+    design. Every non-kept-hour origin here is a forced miss (r=5, way
+    outside the [-1,1] band); if they leaked into the hit sequence, the
+    empirical miss rate would be dominated by 18/24 forced misses per day
+    and coverage would collapse toward ~25%, not sit near the kept
+    origins' ~80% target coverage."""
+    idx = pd.date_range("2021-01-01", periods=24 * 60, freq="h", tz="UTC")  # 60 days
+    kept_hours = {0, 4, 8, 12, 16, 20}
+    is_kept = np.isin(idx.hour, list(kept_hours))
+
+    rng = np.random.default_rng(5)
+    r_kept = np.where(rng.random(len(idx)) < 0.2, 5.0, 0.0)
+    r = np.where(is_kept, r_kept, 5.0)  # every non-kept origin is a forced miss
+
+    wf = pd.DataFrame({"r": r, "L80": -1.0, "U80": 1.0}, index=idx)
+
+    cal = rfr._calibration(wf, h=4)
+
+    # 1) which origins are kept
+    assert cal.n == int(is_kept.sum())
+
+    # 2) the hit series and the DQ design are built from that SAME kept
+    #    set: recompute independently from the pre-thinned frame and
+    #    require an exact match against what _calibration returned.
+    thinned = wf[is_kept]
+    hits_expected = miss(thinned["r"], thinned["L80"], thinned["U80"])
+    _, p_uc_expected = lr_uc(hits_expected, ALPHA_PRIMARY)
+    _, p_cc_expected = lr_cc(hits_expected, ALPHA_PRIMARY)
+    X_expected, Hit_expected = dq_design(thinned.index, hits_expected, ALPHA_PRIMARY, 4)
+    _, p_dq_expected, _ = dq_test(X_expected, Hit_expected, ALPHA_PRIMARY)
+
+    assert cal.p_uc == pytest.approx(p_uc_expected)
+    assert cal.p_cc == pytest.approx(p_cc_expected)
+    assert cal.p_dq == pytest.approx(p_dq_expected)
+    assert cal.coverage == pytest.approx(1.0 - hits_expected.mean())
+
+    # The forced-miss overlapping origins did NOT leak in.
+    assert cal.coverage > 0.5
+
+
+def test_calibration_h1_is_unfiltered_and_unchanged():
+    """h=1 hits don't overlap (frozen note); every origin is scored, and
+    this path must stay byte-identical to before the h=4 fix."""
+    idx = pd.date_range("2021-01-01", periods=500, freq="h", tz="UTC")
+    rng = np.random.default_rng(9)
+    r = np.where(rng.random(len(idx)) < 0.2, 5.0, 0.0)
+    wf = pd.DataFrame({"r": r, "L80": -1.0, "U80": 1.0}, index=idx)
+
+    cal = rfr._calibration(wf, h=1)
+
+    assert cal.n == len(wf)  # no thinning at h=1
+
+    hits_expected = miss(wf["r"], wf["L80"], wf["U80"])
+    _, p_uc_expected = lr_uc(hits_expected, ALPHA_PRIMARY)
+    _, p_cc_expected = lr_cc(hits_expected, ALPHA_PRIMARY)
+    X_expected, Hit_expected = dq_design(wf.index, hits_expected, ALPHA_PRIMARY, 1)
+    _, p_dq_expected, _ = dq_test(X_expected, Hit_expected, ALPHA_PRIMARY)
+
+    assert cal.p_uc == pytest.approx(p_uc_expected)
+    assert cal.p_cc == pytest.approx(p_cc_expected)
+    assert cal.p_dq == pytest.approx(p_dq_expected)
+    assert cal.coverage == pytest.approx(1.0 - hits_expected.mean())
 
 
 def test_load_bars_stage_b_never_returns_a_bar_at_or_after_cutoff(monkeypatch):

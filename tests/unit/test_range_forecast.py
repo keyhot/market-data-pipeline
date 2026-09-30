@@ -13,6 +13,7 @@ import pytest
 from model.range_forecast import (
     ALPHA_PRIMARY,
     Calibration,
+    _dq_indicator_matrix,
     band,
     dq_design,
     dq_test,
@@ -172,6 +173,26 @@ def test_dq_forced_miss_every_14utc_rejects():
     assert np.linalg.matrix_rank(X) == 9
     _, p, _ = dq_test(X, Hit, 0.2)
     assert p < 1e-6
+
+
+def test_dq_indicator_matrix_h4_matches_window_contains_rule():
+    """Frozen note (Tests > Calibration, 'At h = 4'): D_H = 1 iff the
+    4h window [t, t+4h) contains UTC hour H. For the non-overlapping
+    origins {0,4,8,12,16,20}: D00<-window[00,04)<-origin hour 0;
+    D08<-[08,12)<-hour 8; D16<-[16,20)<-hour 16; D14<-[12,16)<-hour 12.
+    The baseline windows [04,08) and [20,24) (origin hours 4 and 20)
+    carry no dummy."""
+    hours = np.array([0, 4, 8, 12, 16, 20])
+    d = _dq_indicator_matrix(hours, h=4)
+    expected = np.array([
+        [1, 0, 0, 0],  # hour 0  -> D00
+        [0, 0, 0, 0],  # hour 4  -> baseline
+        [0, 1, 0, 0],  # hour 8  -> D08
+        [0, 0, 0, 1],  # hour 12 -> D14
+        [0, 0, 1, 0],  # hour 16 -> D16
+        [0, 0, 0, 0],  # hour 20 -> baseline
+    ])
+    np.testing.assert_array_equal(d, expected)
 
 
 def test_dq_design_drops_row_with_missing_lag_origin():
