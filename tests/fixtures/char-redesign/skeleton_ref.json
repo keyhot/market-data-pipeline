@@ -1,0 +1,231 @@
+{
+  "_": "The reference trader's pose, traced as joints in REFERENCE-characters.jpeg frame coordinates (1376x768). Depth is explicit: a seated three-quarter pose is a 2.5D problem, and a joint table that does not say which limb is nearer produces a flat figure no matter how good the volumes are.",
+  "source": "Docs/char-redesign-reference/REFERENCE-characters.jpeg",
+  "frame": [
+    1376,
+    768
+  ],
+  "joints": {
+    "crown": {
+      "x": 1088,
+      "y": 398
+    },
+    "head": {
+      "x": 1066,
+      "y": 418
+    },
+    "neck": {
+      "x": 1040,
+      "y": 448
+    },
+    "chest": {
+      "x": 1010,
+      "y": 478
+    },
+    "pelvis": {
+      "x": 968,
+      "y": 508
+    },
+    "shoulder_far": {
+      "x": 1030,
+      "y": 441,
+      "depth": "far"
+    },
+    "elbow_far": {
+      "x": 982,
+      "y": 466,
+      "depth": "far"
+    },
+    "wrist_far": {
+      "x": 946,
+      "y": 484,
+      "depth": "far"
+    },
+    "hand_far": {
+      "x": 930,
+      "y": 493,
+      "depth": "far"
+    },
+    "shoulder_near": {
+      "x": 1068,
+      "y": 462,
+      "depth": "near"
+    },
+    "elbow_near": {
+      "x": 1072,
+      "y": 520,
+      "depth": "near"
+    },
+    "wrist_near": {
+      "x": 1014,
+      "y": 524,
+      "depth": "near"
+    },
+    "hand_near": {
+      "x": 1000,
+      "y": 538,
+      "depth": "near"
+    },
+    "hip_far": {
+      "x": 958,
+      "y": 502,
+      "depth": "far"
+    },
+    "knee_far": {
+      "x": 888,
+      "y": 536,
+      "depth": "far"
+    },
+    "ankle_far": {
+      "x": 838,
+      "y": 604,
+      "depth": "far"
+    },
+    "toe_far": {
+      "x": 808,
+      "y": 618,
+      "depth": "far"
+    },
+    "hip_near": {
+      "x": 976,
+      "y": 518,
+      "depth": "near"
+    },
+    "knee_near": {
+      "x": 912,
+      "y": 562,
+      "depth": "near"
+    },
+    "ankle_near": {
+      "x": 897,
+      "y": 645,
+      "depth": "near"
+    },
+    "toe_near": {
+      "x": 864,
+      "y": 668,
+      "depth": "near"
+    }
+  },
+  "bones": [
+    [
+      "pelvis",
+      "chest",
+      "spine",
+      34
+    ],
+    [
+      "chest",
+      "neck",
+      "spine",
+      28
+    ],
+    [
+      "neck",
+      "head",
+      "spine",
+      16
+    ],
+    [
+      "head",
+      "crown",
+      "spine",
+      30
+    ],
+    [
+      "shoulder_far",
+      "elbow_far",
+      "far",
+      17
+    ],
+    [
+      "elbow_far",
+      "wrist_far",
+      "far",
+      14
+    ],
+    [
+      "wrist_far",
+      "hand_far",
+      "far",
+      13
+    ],
+    [
+      "shoulder_near",
+      "elbow_near",
+      "near",
+      18
+    ],
+    [
+      "elbow_near",
+      "wrist_near",
+      "near",
+      15
+    ],
+    [
+      "wrist_near",
+      "hand_near",
+      "near",
+      14
+    ],
+    [
+      "hip_far",
+      "knee_far",
+      "far",
+      26
+    ],
+    [
+      "knee_far",
+      "ankle_far",
+      "far",
+      20
+    ],
+    [
+      "ankle_far",
+      "toe_far",
+      "far",
+      15
+    ],
+    [
+      "hip_near",
+      "knee_near",
+      "near",
+      28
+    ],
+    [
+      "knee_near",
+      "ankle_near",
+      "near",
+      22
+    ],
+    [
+      "ankle_near",
+      "toe_near",
+      "near",
+      16
+    ]
+  ],
+  "chair": {
+    "_": "The painted furniture the figure is measured against, same frame coords. backrest_crown/seat_surface give the vertical span the plate records as ~220px; armrest_top is where the near wrist rests.",
+    "backrest_crown": {
+      "x": 1110,
+      "y": 400
+    },
+    "seat_surface": {
+      "x": 990,
+      "y": 555
+    },
+    "seat_front": {
+      "x": 945,
+      "y": 580
+    },
+    "armrest_top": {
+      "x": 1010,
+      "y": 545
+    },
+    "base_centre": {
+      "x": 999,
+      "y": 630
+    }
+  }
+}

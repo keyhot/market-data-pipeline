@@ -36,7 +36,7 @@ from scripts.measure_chair import measure_plate_chair  # noqa: E402
 
 PAGE = ROOT / "api" / "templates" / "world.html"
 TESTS = ROOT / "tests" / "api" / "test_world_page.py"
-SKELETON = ROOT / "data" / "visual-qa" / "char-redesign" / "skeleton_ref.json"
+SKELETON = ROOT / "tests" / "fixtures" / "char-redesign" / "skeleton_ref.json"
 OUT = ROOT / "tools" / "charsheet" / "prelude.js"
 
 # The sheet's canvas, defined once. `scripts/sheet_shot.py` sizes its viewport
@@ -148,7 +148,7 @@ def build() -> str:
     if not SKELETON.exists():
         raise SystemExit(
             f"REFUSED: {SKELETON} is missing — it is the traced pose the sheet "
-            "is a picture OF. It is gitignored; recover it before shooting."
+            "is a picture OF."
         )
 
     # The globals every extracted block closes over. `PLATE = null` is not a

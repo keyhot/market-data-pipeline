@@ -48,7 +48,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLATE_PNG = ROOT / "api" / "static" / "world-plate-btc-eth.png"
 PLATE_JSON = ROOT / "api" / "static" / "world-plate-btc-eth.json"
-SKELETON = ROOT / "data" / "visual-qa" / "char-redesign" / "skeleton_ref.json"
+SKELETON = ROOT / "tests" / "fixtures" / "char-redesign" / "skeleton_ref.json"
 
 # The chair's upholstery is the one blue-grey material in this corner: the wall
 # is warm (R > B), the desk and floor are darker and less saturated. Sampled,
