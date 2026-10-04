@@ -216,12 +216,19 @@ def _s_sum_series(index: pd.DatetimeIndex, h: int, factor: np.ndarray | None) ->
 
 
 def _fold_core(model: str, grid: pd.DataFrame, T: pd.Timestamp, h: int,
-                factor: np.ndarray | None):
+                factor: np.ndarray | None, extra: pd.Series | None = None):
     """One refit's worth of work: fit (beta, c) on the purged/expanding and
     trailing-52wk windows respectively, and return sigma^2 = c*V for every
     row of `grid` (not just the test month), plus the standardized FHS
-    training residuals z for this fold."""
+    training residuals z for this fold.
+
+    `extra` (E17 only; None = E15 exactly): ONE additional OLS regressor per
+    origin, e.g. DVOL's x_iv, appended after x168. An origin whose `extra`
+    is NaN has no forecast and is never a training row. Valid only for the
+    two HAR models."""
     T = pd.Timestamp(T)
+    if extra is not None and model not in ("seasonal_har", "plain_har"):
+        raise ValueError(f"extra regressor is only defined for HAR models, not {model!r}")
     train_end = T - pd.Timedelta(hours=h)
     fhs_start = max(T - pd.Timedelta(hours=FACTOR_WINDOW_H), grid.index.min())
 
@@ -233,10 +240,15 @@ def _fold_core(model: str, grid: pd.DataFrame, T: pd.Timestamp, h: int,
         rv_star = _rv_star(grid, s_arr)
         feats = har_features(rv_star, grid["valid"])
         y = har_target(rv_star, grid["valid"], h)
-        X_all = np.column_stack([
+        cols = [
             np.ones(len(grid)), feats["x1"].to_numpy(),
             feats["x24"].to_numpy(), feats["x168"].to_numpy(),
-        ])
+        ]
+        if extra is not None:
+            ex = pd.Series(extra).reindex(grid.index)
+            feats = feats.assign(x_extra=ex.to_numpy(dtype=float))
+            cols.append(feats["x_extra"].to_numpy())
+        X_all = np.column_stack(cols)
         # A forecast for origin t needs only its FEATURES (backward-looking,
         # available the moment t arrives); a TRAINING row additionally needs
         # its TARGET (forward-looking h hours). Conflating the two made a
@@ -327,7 +339,8 @@ def miss(r, L, U) -> np.ndarray:
 # Walk-forward
 # --------------------------------------------------------------------------
 
-def walk_forward(grid: pd.DataFrame, h: int, model: str, start, end) -> pd.DataFrame:
+def walk_forward(grid: pd.DataFrame, h: int, model: str, start, end,
+                 extra: pd.Series | None = None) -> pd.DataFrame:
     """Monthly-refit walk-forward over [start, end). Per scored origin:
     sigma, L80, U80, L95, U95, r, rv_target. A row is scored only if this
     model has both a target and a forecast for it."""
@@ -339,7 +352,7 @@ def walk_forward(grid: pd.DataFrame, h: int, model: str, start, end) -> pd.DataF
         test_end = T + pd.DateOffset(months=1)
         factor = seasonal_factor(grid, T) if model == "seasonal_har" else None
         sigma2_all, c, row_ok, target_rv, realized_r, z_train = _fold_core(
-            model, grid, T, h, factor
+            model, grid, T, h, factor, extra
         )
         month_mask = (grid.index >= T) & (grid.index < test_end)
         scored_mask = (
@@ -538,7 +551,8 @@ def stage_a_valid(checks: dict[str, bool]) -> tuple[bool, list[str]]:
 # --------------------------------------------------------------------------
 
 def seasonal_dgp(seed: int, years: float, seasonal: bool = True,
-                  start: pd.Timestamp = pd.Timestamp("2020-01-01", tz="UTC")) -> pd.DataFrame:
+                  start: pd.Timestamp = pd.Timestamp("2020-01-01", tz="UTC"),
+                  latent: np.ndarray | None = None) -> pd.DataFrame:
     """A synthetic 15m-bar price path whose hourly RV truly follows the
     candidate's log-HAR-on-deseasonalized-variance model, generated so it
     can be run through the REAL pipeline (hourly_grid -> ... -> walk_forward)
@@ -552,6 +566,10 @@ def seasonal_dgp(seed: int, years: float, seasonal: bool = True,
     - RV_t = s_how(t) * RV*_t; four Gaussian 15m sub-returns per hour with
       variance RV_t/4 each, so their sum of squares is an unbiased (noisy)
       proxy for RV_t -- the same proxy noise the real pipeline has.
+    - `latent` (E17's A0 only; None = E15 exactly, same RNG draws): a
+      per-hour additive term in ln RV_t applied AFTER the HAR recursion
+      (no feedback into it), i.e. a latent log-vol component the HAR
+      features only see through past, noisy RV.
     """
     rng = np.random.default_rng(seed)
     n_hours = int(round(years * 365 * 24))
@@ -583,6 +601,8 @@ def seasonal_dgp(seed: int, years: float, seasonal: bool = True,
         rv_star[t] = np.exp(ln_rv_star[t])
 
     rv_true = rv_star * s
+    if latent is not None:
+        rv_true = rv_true * np.exp(np.asarray(latent, dtype=float))
     sub_std = np.sqrt(np.maximum(rv_true, RV_FLOOR) / 4.0)
     sub_returns = rng.normal(0.0, 1.0, size=(n_hours, 4)) * sub_std[:, None]
     log_price = np.concatenate([[0.0], np.cumsum(sub_returns.reshape(-1))])
