@@ -1,0 +1,122 @@
+{
+ "git_hash": "c16fa26",
+ "amendment": 1,
+ "method": "t",
+ "window": [
+  "2024-01-01",
+  "2025-01-01"
+ ],
+ "k": 8.5,
+ "symbols": {
+  "PF_XBTUSD": {
+   "gate": {
+    "gap_share": 0.0,
+    "flat_share": 0.018898318403268898,
+    "ok": true
+   },
+   "fills": 351,
+   "rate_per_day": 0.9915254237288136
+  },
+  "PF_ETHUSD": {
+   "gate": {
+    "gap_share": 0.0,
+    "flat_share": 0.07254832626119755,
+    "ok": true
+   },
+   "fills": 272,
+   "rate_per_day": 0.768361581920904
+  }
+ },
+ "synthetic": {
+  "per_day": 1.7598870056497176,
+  "gating_N": 1080.5706214689267,
+  "power30": {
+   "primary": 0.9866666666666667,
+   "paired": 0.9833333333333333,
+   "joint": 0.98,
+   "mean_events": 1083.14
+  },
+  "null": {
+   "primary": 0.05333333333333334,
+   "paired": 0.05333333333333334,
+   "joint": 0.05333333333333334,
+   "mean_events": 1080.2466666666667
+  },
+  "plant_200": {
+   "primary": 1.0,
+   "paired": 1.0,
+   "joint": 1.0,
+   "mean_events": 1083.4966666666667
+  },
+  "sign_mutant_-200": {
+   "primary": 0.0,
+   "paired": 0.0,
+   "joint": 0.0,
+   "mean_events": 1080.89
+  },
+  "null_icc0.20_clustered": {
+   "primary": 0.056666666666666664,
+   "paired": 0.056666666666666664,
+   "joint": 0.05,
+   "mean_events": 1078.25
+  },
+  "null_icc0.20_iid_mutant": {
+   "primary": 0.09666666666666666,
+   "paired": 0.08,
+   "joint": 0.08,
+   "mean_events": 1078.3066666666666
+  }
+ },
+ "dev_result": {
+  "n": 623,
+  "days": 250,
+  "method": "t",
+  "mean_primary": -0.9705901904976636,
+  "mean_paired": 6.696842434673913,
+  "mean_control": -7.667432625171575,
+  "lb_primary": -9.213634972090455,
+  "lb_paired": -1.3306472448285316,
+  "ci95_primary": [
+   -10.714651884054764,
+   8.139044523654372
+  ],
+  "ci95_paired": [
+   -2.8333119729137692,
+   15.464400917347046
+  ],
+  "se_primary": 4.811225458840622,
+  "se_paired": 4.664012296002864,
+  "degenerate_resamples": 0,
+  "pass": false
+ },
+ "controls_missing": {
+  "PF_XBTUSD": 0,
+  "PF_ETHUSD": 0
+ },
+ "plant": {
+  "delta_primary": 200.54614544115478,
+  "delta_paired": 200.51444834714576,
+  "pass_test": true,
+  "ok": true
+ },
+ "placebo": {
+  "draws": 300,
+  "seed": 20261015,
+  "paired_rejection": 0.06333333333333334
+ },
+ "stage_a1": {
+  "checks": {
+   "data_gates": true,
+   "min_fills": true,
+   "K1_power30_joint>=0.50": true,
+   "K2_null_primary_in_[0.02,0.08]": true,
+   "K2_plant200_joint>=0.95": true,
+   "syn_sign_mutant<=0.01": true,
+   "syn_iid_mutant_over_rejects": true,
+   "S1_plant": true,
+   "S2_placebo_in_[0.02,0.08]": true,
+   "controls_complete": true
+  },
+  "result": "VALID"
+ }
+}
