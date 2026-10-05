@@ -1,0 +1,194 @@
+{
+ "git_hash": "57f2d3b",
+ "window": [
+  "2024-01-01",
+  "2025-01-01"
+ ],
+ "eligible_days": 354,
+ "symbols": {
+  "PF_XBTUSD": {
+   "n_bars": 509040,
+   "gate": {
+    "gap_share": 0.0,
+    "flat_share": 0.018898318403268898,
+    "ok": true
+   },
+   "fills": 351,
+   "rate_per_day": 0.9915254237288136,
+   "bid_share": 0.5242165242165242,
+   "one_tick_through_share": 0.008547008547008548,
+   "ambiguous_bars": 0,
+   "touch_fills": 353,
+   "depth_bps_median": 43.74848656065855,
+   "controls_missing": 0
+  },
+  "PF_ETHUSD": {
+   "n_bars": 509040,
+   "gate": {
+    "gap_share": 0.0,
+    "flat_share": 0.07254832626119755,
+    "ok": true
+   },
+   "fills": 272,
+   "rate_per_day": 0.768361581920904,
+   "bid_share": 0.6213235294117647,
+   "one_tick_through_share": 0.01838235294117647,
+   "ambiguous_bars": 1,
+   "touch_fills": 280,
+   "depth_bps_median": 56.48154663768001,
+   "controls_missing": 0
+  }
+ },
+ "k": 8.5,
+ "k_rates": {
+  "7.5": {
+   "PF_XBTUSD": 1.3644067796610169,
+   "PF_ETHUSD": 1.1836158192090396
+  },
+  "7.75": {
+   "PF_XBTUSD": 1.2627118644067796,
+   "PF_ETHUSD": 1.0649717514124293
+  },
+  "8.0": {
+   "PF_XBTUSD": 1.152542372881356,
+   "PF_ETHUSD": 0.9548022598870056
+  },
+  "8.25": {
+   "PF_XBTUSD": 1.0621468926553672,
+   "PF_ETHUSD": 0.867231638418079
+  },
+  "8.5": {
+   "PF_XBTUSD": 0.9915254237288136,
+   "PF_ETHUSD": 0.768361581920904
+  },
+  "8.75": {
+   "PF_XBTUSD": 0.9293785310734464,
+   "PF_ETHUSD": 0.7175141242937854
+  },
+  "9.0": {
+   "PF_XBTUSD": 0.867231638418079,
+   "PF_ETHUSD": 0.6497175141242938
+  },
+  "9.25": {
+   "PF_XBTUSD": 0.8050847457627118,
+   "PF_ETHUSD": 0.5875706214689266
+  },
+  "9.5": {
+   "PF_XBTUSD": 0.7372881355932204,
+   "PF_ETHUSD": 0.5254237288135594
+  }
+ },
+ "synthetic": {
+  "per_day": 1.7598870056497176,
+  "gating_N": 1080.5706214689267,
+  "power30": {
+   "primary": 0.98,
+   "paired": 0.98,
+   "joint": 0.98,
+   "mean_events": 1077.5433333333333
+  },
+  "null": {
+   "primary": 0.043333333333333335,
+   "paired": 0.04,
+   "joint": 0.04,
+   "mean_events": 1078.5866666666666
+  },
+  "plant_200": {
+   "primary": 1.0,
+   "paired": 1.0,
+   "joint": 1.0,
+   "mean_events": 1081.0033333333333
+  },
+  "sign_mutant_-200": {
+   "primary": 0.0,
+   "paired": 0.0,
+   "joint": 0.0,
+   "mean_events": 1080.3066666666666
+  },
+  "null_icc0.20_clustered": {
+   "primary": 0.04666666666666667,
+   "paired": 0.04666666666666667,
+   "joint": 0.043333333333333335,
+   "mean_events": 1079.9466666666667
+  },
+  "null_icc0.20_iid_mutant": {
+   "primary": 0.09666666666666666,
+   "paired": 0.11333333333333333,
+   "joint": 0.09,
+   "mean_events": 1084.4766666666667
+  }
+ },
+ "dev_result": {
+  "n": 623,
+  "days": 250,
+  "mean_primary": -0.9705901904976636,
+  "mean_paired": 6.696842434673913,
+  "mean_control": -7.667432625171575,
+  "lb_primary": -8.8937983129149,
+  "lb_paired": -1.069600288535732,
+  "ci95_primary": [
+   -10.774858375831618,
+   8.135050038280566
+  ],
+  "ci95_paired": [
+   -2.829076761649589,
+   15.54920561452301
+  ],
+  "pass": false
+ },
+ "descriptive": {
+  "PF_XBTUSD_bid": {
+   "n": 184,
+   "mean_net": 10.93729032392429,
+   "mean_control": -7.741578791474853,
+   "mean_paired": 18.67886911539914
+  },
+  "PF_XBTUSD_ask": {
+   "n": 167,
+   "mean_net": -12.043266613108703,
+   "mean_control": -9.039907202990701,
+   "mean_paired": -3.0033594101179983
+  },
+  "PF_XBTUSD_gross_mean": 7.503521068982667,
+  "PF_ETHUSD_bid": {
+   "n": 169,
+   "mean_net": 8.886040507172991,
+   "mean_control": -6.28821015752506,
+   "mean_paired": 15.174250664698052
+  },
+  "PF_ETHUSD_ask": {
+   "n": 103,
+   "mean_net": -20.462664365099002,
+   "mean_control": -7.57269910999356,
+   "mean_paired": -12.889965255105428
+  },
+  "PF_ETHUSD_gross_mean": 5.2723765298052925
+ },
+ "plant": {
+  "delta_primary": 200.54614544115478,
+  "delta_paired": 200.51444834714576,
+  "pass_test": true,
+  "ok": true
+ },
+ "placebo": {
+  "draws": 300,
+  "paired_rejection": 0.08666666666666667,
+  "paired_rejection_iid_mutant": 0.08666666666666667
+ },
+ "stage_a": {
+  "checks": {
+   "data_gates": true,
+   "min_fills": true,
+   "K1_power30_joint>=0.50": true,
+   "K2_null_primary<=0.08": true,
+   "K2_plant200_joint>=0.95": true,
+   "syn_null>=0.02": true,
+   "syn_sign_mutant<=0.01": true,
+   "syn_iid_mutant_over_rejects": true,
+   "S1_plant": true,
+   "S2_placebo_in_[0.02,0.08]": false,
+   "controls_complete": true
+  },
+  "result": "INVALID"
+ }
+}

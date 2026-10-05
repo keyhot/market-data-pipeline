@@ -1,0 +1,12 @@
+{
+ "draws": 300,
+ "paired_rejection": 0.056666666666666664,
+ "mean_of_paired_means": -0.024420912767704042,
+ "se_of_that_mean": 0.12571353657724926,
+ "sd_of_paired_means": 2.177422325509642,
+ "mean_bootstrap_se": 2.0932182742009386,
+ "per_side_mean_paired": {
+  "bid": -0.1021861487663889,
+  "ask": 0.07724993281576178
+ }
+}
