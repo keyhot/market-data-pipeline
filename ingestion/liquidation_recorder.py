@@ -90,9 +90,11 @@ KRAKEN_SYMBOLS_ENV = "LIQ_KRAKEN_SYMBOLS"
 KRAKEN_SYMBOLS_DEFAULT = ("PF_XBTUSD", "PF_ETHUSD")
 KRAKEN_POLL_SECONDS_ENV = "LIQ_KRAKEN_POLL_SECONDS"
 # A real recorded window (tests/fixtures/liquidations/kraken_trade_history_
-# pf_xbtusd.json) filled its 100-trade cap in as little as ~6s on a quiet
-# BTC perp; polling every 5s leaves headroom before the cap is at risk, and
-# kraken_gap() counts the times it wasn't enough rather than hiding it.
+# pf_xbtusd.json) filled its 100-trade cap in ~6s on an UNEXCEPTIONAL BTC
+# perp moment — a cascade, the only window that actually matters here, is
+# busier than that, not calmer. 5s is a guess, not a measured margin:
+# kraken_gap() exists because this interval will sometimes lose the race,
+# and it counts that rather than hiding it.
 KRAKEN_POLL_SECONDS_DEFAULT = 5.0
 
 PING_EVERY_S = 10.0

@@ -160,8 +160,12 @@ CREATE TABLE IF NOT EXISTS liquidations (
 
 -- Natural key: the WS push and the REST window describe the same OKX fill
 -- with the same (instId, ts, side, bkPx, sz), so the second copy is dropped.
+-- Restricted to NULL venue_trade_id (every venue but Kraken): a cascade can
+-- produce several distinct real Kraken fills sharing this whole tuple, so
+-- this key alone would silently drop them (see scripts/migrate_018.sql).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_liquidations_natural
-    ON liquidations (venue, symbol, event_ts, side, price, size);
+    ON liquidations (venue, symbol, event_ts, side, price, size)
+    WHERE venue_trade_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_liquidations_symbol_time
     ON liquidations (symbol, event_ts);
 -- Kraken's own trade_id counts down within a 100-row window and isn't a

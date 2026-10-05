@@ -258,6 +258,18 @@ def test_parse_kraken_history_array_is_ascending_not_descending():
     assert trades[0].event_ts < trades[-1].event_ts
 
 
+def test_kraken_natural_key_collides_but_uid_does_not():
+    # The schema fact that justifies venue_trade_id/uq_liquidations_natural's
+    # WHERE clause (scripts/migrate_018.sql): on a busy window, several
+    # distinct real fills share (event_ts, side, price, size) — the old
+    # natural key, applied to Kraken, would have silently merged them.
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    natural_keys = [(t.event_ts, t.side, t.price, t.size) for t in trades]
+    uids = [t.uid for t in trades]
+    assert len(set(natural_keys)) < len(trades)
+    assert len(set(uids)) == len(trades)
+
+
 def test_kraken_trade_id_is_not_stable_across_the_window():
     # Pins the other seam bug: trade_id counts DOWN as time goes up, so it
     # cannot be a persistent cross-poll id — uid is the only safe key.

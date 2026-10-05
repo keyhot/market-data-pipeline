@@ -21,11 +21,14 @@ _LIQUIDATIONS_SQL = """
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT DO NOTHING
 """
-# No explicit conflict target: Kraken rows are additionally deduplicated by
-# (venue, venue_trade_id) (uq_liquidations_venue_trade_id, a partial unique
-# index — see scripts/migrate_018.sql), since Kraken's own `trade_id` is not
-# a stable cross-poll key but its `uid` is. ON CONFLICT DO NOTHING with no
-# target catches a violation of either unique index, for every venue.
+# No explicit conflict target: ON CONFLICT DO NOTHING with no target catches
+# a violation of either unique index. The two indexes partition by whether
+# venue_trade_id is NULL (scripts/migrate_018.sql) precisely so they never
+# both apply to the same row: Kraken rows (venue_trade_id set) dedupe only
+# on (venue, venue_trade_id), since a cascade can produce several distinct
+# real Kraken fills sharing one (venue, symbol, event_ts, side, price, size)
+# tuple — the old natural key alone would have silently dropped them. Every
+# other venue (venue_trade_id NULL) still dedupes on that natural key.
 
 _COVERAGE_SQL = """
     INSERT INTO liquidation_coverage (venue, minute, rows_received)
