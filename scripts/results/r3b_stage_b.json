@@ -1,0 +1,126 @@
+{
+ "git_hash": "d3e2eae",
+ "window": [
+  "2025-01-01",
+  "2026-09-28"
+ ],
+ "eligible_days": 614,
+ "k": 8.5,
+ "method": "t",
+ "boot": 9999,
+ "seeds": {
+  "control": 20261105,
+  "boot": 20261106
+ },
+ "symbols": {
+  "PF_XBTUSD": {
+   "n_bars": 882900,
+   "gate": {
+    "gap_share": 0.0,
+    "flat_share": 0.025127420998980632,
+    "ok": true
+   },
+   "fills": 680,
+   "rate_per_day": 1.1074918566775245,
+   "bid_share": 0.4661764705882353,
+   "one_tick_through_share": 0.004411764705882353,
+   "ambiguous_bars": 2,
+   "touch_fills": 691,
+   "controls_missing": 0,
+   "exits_missing": 0
+  },
+  "PF_ETHUSD": {
+   "n_bars": 882900,
+   "gate": {
+    "gap_share": 0.0,
+    "flat_share": 0.02688299920715823,
+    "ok": true
+   },
+   "fills": 962,
+   "rate_per_day": 1.5667752442996743,
+   "bid_share": 0.49376299376299376,
+   "one_tick_through_share": 0.014553014553014554,
+   "ambiguous_bars": 3,
+   "touch_fills": 979,
+   "controls_missing": 0,
+   "exits_missing": 0
+  }
+ },
+ "verdict_result": {
+  "n": 1642,
+  "days": 509,
+  "method": "t",
+  "mean_primary": -4.011140926214096,
+  "mean_paired": 4.5366286792340516,
+  "mean_control": -8.54776960544815,
+  "lb_primary": -8.91800551376436,
+  "lb_paired": -0.29292040293195853,
+  "ci95_primary": [
+   -9.911422821229639,
+   1.281954023594598
+  ],
+  "ci95_paired": [
+   -1.3835934191646784,
+   9.81289452666931
+  ],
+  "se_primary": 2.8216111702845934,
+  "se_paired": 2.824972806884233,
+  "degenerate_resamples": 0,
+  "pass": false
+ },
+ "n_fills": 1642,
+ "n_scored": 1642,
+ "verdict": "FAIL",
+ "exploratory": {
+  "PF_XBTUSD_bid": {
+   "n": 317,
+   "mean_net": 3.124302332508708,
+   "mean_control": -7.465273137276015,
+   "mean_paired": 10.589575469784725
+  },
+  "PF_XBTUSD_ask": {
+   "n": 363,
+   "mean_net": -6.937441059006359,
+   "mean_control": -8.839267265489207,
+   "mean_paired": 1.901826206482847
+  },
+  "PF_XBTUSD_2025": {
+   "n": 272,
+   "mean_net": -9.395892061865448,
+   "mean_control": -8.2688550261302,
+   "mean_paired": -1.127037035735245
+  },
+  "PF_XBTUSD_2026": {
+   "n": 408,
+   "mean_net": 2.5191063132680243,
+   "mean_control": -8.15200253622957,
+   "mean_paired": 10.671108849497594
+  },
+  "PF_XBTUSD_gross_mean": 5.253106963214636,
+  "PF_ETHUSD_bid": {
+   "n": 475,
+   "mean_net": 0.7028311873017749,
+   "mean_control": -8.032722446290094,
+   "mean_paired": 8.735553633591866
+  },
+  "PF_ETHUSD_ask": {
+   "n": 487,
+   "mean_net": -11.072383880488383,
+   "mean_control": -9.537472131969169,
+   "mean_paired": -1.534911748519212
+  },
+  "PF_ETHUSD_2025": {
+   "n": 453,
+   "mean_net": -9.489215686430986,
+   "mean_control": -8.831868087033994,
+   "mean_paired": -0.6573475993969914
+  },
+  "PF_ETHUSD_2026": {
+   "n": 509,
+   "mean_net": -1.4927140076154475,
+   "mean_control": -8.761209915187388,
+   "mean_paired": 7.268495907571942
+  },
+  "PF_ETHUSD_gross_mean": 2.241781563586798
+ }
+}
