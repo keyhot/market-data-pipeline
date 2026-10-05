@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -40,7 +41,8 @@ def s3_list(prefix: str) -> list[str]:
     out: list[str] = []
     marker = ""
     while True:
-        text = _get(f"{S3}?delimiter=/&prefix={prefix}&marker={marker}").decode()
+        q = urllib.parse.urlencode({"delimiter": "/", "prefix": prefix, "marker": marker})
+        text = _get(f"{S3}?{q}").decode()
         prefixes = re.findall(r"<Prefix>([^<]+)</Prefix>", text)[1:]
         keys = re.findall(r"<Key>([^<]+)</Key>", text)
         out += prefixes + keys
