@@ -1,0 +1,590 @@
+{
+ "experiment": "R3-a stage A0",
+ "git_hash": "10e1532",
+ "gate": {
+  "effect": 0.1,
+  "sigma": 0.45,
+  "se_inflation": 1.3,
+  "min_joint_power": 0.5
+ },
+ "n_seeds": 300,
+ "n_boot": 999,
+ "counts": {
+  "s3_fundingrate_dirs": 988,
+  "exchangeinfo_symbols": 920,
+  "tokens_total": 685,
+  "censored": 9,
+  "renames": [
+   "A",
+   "LUNC",
+   "POL",
+   "RENDER",
+   "S",
+   "SKY"
+  ],
+  "by_window": {
+   "a": 603,
+   "b": 51,
+   "straddle": 13,
+   "None": 3
+  },
+  "by_year": {
+   "2020": 69,
+   "2021": 59,
+   "2022": 26,
+   "2023": 96,
+   "2024": 129,
+   "2025": 237,
+   "2026": 54
+  },
+  "precision": {
+   "day": 622,
+   "month": 48
+  }
+ },
+ "k2_tradability_2024_25": {
+  "n_denominator": 363,
+  "n_open_by_day1": 14,
+  "share": 0.03856749311294766,
+  "n_matched_on_kraken": 59,
+  "n_month_precision_excluded": 3,
+  "lag_days_quantiles": {
+   "0.1": -4.216807870370356,
+   "0.25": 3.1177777777777775,
+   "0.5": 12.457037037037036,
+   "0.75": 37.06419560185185,
+   "0.9": 68.02516666666669
+  },
+  "matched_lag_le_1d": 14,
+  "matched_kraken_before_binance": 7,
+  "k2_fired": true,
+  "upper_bound_share_if_all_kraken_2024_25_openings_were_day1": 0.25895316804407714,
+  "kraken_pf_openings_2024_25": 94
+ },
+ "k2_info_window_b": {
+  "n_denominator": 49,
+  "n_open_by_day1": 2,
+  "share": 0.04081632653061224,
+  "n_matched_on_kraken": 3,
+  "n_month_precision_excluded": 2
+ },
+ "cost": {
+  "taker_bps_per_side": 5.0,
+  "fees_round_trip_bps": 10.0,
+  "n_alt_pf_tickers": 150,
+  "spread_bps_median": 23.808971063844815,
+  "spread_bps_p90": 75.80835187588747,
+  "note": "round trip = fees + 1 full spread (2 x half); funding not read in A0"
+ },
+ "windows": {
+  "a": {
+   "n_events": 603,
+   "n_months": 71,
+   "placebo_per_month": 11.8,
+   "curves": {
+    "sigma_0.30": {
+     "rows": [
+      {
+       "effect": 0.0,
+       "primary": 0.07,
+       "placebo_leg": 0.05,
+       "joint": 0.03,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.025,
+       "primary": 0.5666666666666667,
+       "placebo_leg": 0.3566666666666667,
+       "joint": 0.34,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.05,
+       "primary": 0.9433333333333334,
+       "placebo_leg": 0.8,
+       "joint": 0.79,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.075,
+       "primary": 1.0,
+       "placebo_leg": 0.9933333333333333,
+       "joint": 0.9933333333333333,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.1,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.15,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.2,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.3,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.4,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      }
+     ],
+     "mde80_joint": 0.05122950819672131,
+     "mde80_primary": 0.04048672566371682
+    },
+    "sigma_0.45": {
+     "rows": [
+      {
+       "effect": 0.0,
+       "primary": 0.06333333333333334,
+       "placebo_leg": 0.06,
+       "joint": 0.03666666666666667,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.025,
+       "primary": 0.33666666666666667,
+       "placebo_leg": 0.19666666666666666,
+       "joint": 0.15666666666666668,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.05,
+       "primary": 0.7833333333333333,
+       "placebo_leg": 0.5666666666666667,
+       "joint": 0.5466666666666666,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.075,
+       "primary": 0.9666666666666667,
+       "placebo_leg": 0.8966666666666666,
+       "joint": 0.8933333333333333,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.1,
+       "primary": 1.0,
+       "placebo_leg": 0.9933333333333333,
+       "joint": 0.9933333333333333,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.15,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.2,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.3,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.4,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      }
+     ],
+     "mde80_joint": 0.06826923076923078,
+     "mde80_primary": 0.05227272727272728
+    },
+    "sigma_0.60": {
+     "rows": [
+      {
+       "effect": 0.0,
+       "primary": 0.06666666666666667,
+       "placebo_leg": 0.05,
+       "joint": 0.03,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.025,
+       "primary": 0.24333333333333335,
+       "placebo_leg": 0.17333333333333334,
+       "joint": 0.11666666666666667,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.05,
+       "primary": 0.6166666666666667,
+       "placebo_leg": 0.45,
+       "joint": 0.39,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.075,
+       "primary": 0.9233333333333333,
+       "placebo_leg": 0.7466666666666667,
+       "joint": 0.7266666666666667,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.1,
+       "primary": 0.99,
+       "placebo_leg": 0.93,
+       "joint": 0.9266666666666666,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.15,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.2,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.3,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      },
+      {
+       "effect": 0.4,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.09208646616541355
+      }
+     ],
+     "mde80_joint": 0.08416666666666667,
+     "mde80_primary": 0.06494565217391304
+    }
+   },
+   "se_inflation_at_gate": {
+    "1.0": {
+     "primary": 1.0,
+     "placebo_leg": 1.0,
+     "joint": 1.0,
+     "rho": 0.0
+    },
+    "1.3": {
+     "primary": 1.0,
+     "placebo_leg": 0.9933333333333333,
+     "joint": 0.9933333333333333,
+     "rho": 0.09208646616541355
+    },
+    "1.6": {
+     "primary": 0.99,
+     "placebo_leg": 0.8866666666666667,
+     "joint": 0.8866666666666667,
+     "rho": 0.20819548872180457
+    }
+   },
+   "gate_joint_power": 0.9933333333333333,
+   "gate_primary_power": 1.0,
+   "self_checks": {
+    "plant40_joint": 1.0,
+    "plant40_ok": true,
+    "null_primary_size": 0.06333333333333334,
+    "null_size_ok": true,
+    "sign_mutant_joint": 0.0,
+    "sign_mutant_ok": true,
+    "iid_mutant_size_se1.6": 0.20666666666666667,
+    "clustered_size_se1.6": 0.05,
+    "iid_mutant_ok": true
+   },
+   "void": false,
+   "k1_fired": false,
+   "k1_status": "PASS"
+  },
+  "b": {
+   "n_events": 51,
+   "n_months": 9,
+   "placebo_per_month": 46.6,
+   "curves": {
+    "sigma_0.30": {
+     "rows": [
+      {
+       "effect": 0.0,
+       "primary": 0.08,
+       "placebo_leg": 0.07333333333333333,
+       "joint": 0.056666666666666664,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.025,
+       "primary": 0.18333333333333332,
+       "placebo_leg": 0.19666666666666666,
+       "joint": 0.15333333333333332,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.05,
+       "primary": 0.3,
+       "placebo_leg": 0.2866666666666667,
+       "joint": 0.2633333333333333,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.075,
+       "primary": 0.4766666666666667,
+       "placebo_leg": 0.43666666666666665,
+       "joint": 0.4,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.1,
+       "primary": 0.6766666666666666,
+       "placebo_leg": 0.6533333333333333,
+       "joint": 0.6333333333333333,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.15,
+       "primary": 0.9433333333333334,
+       "placebo_leg": 0.91,
+       "joint": 0.9066666666666666,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.2,
+       "primary": 0.99,
+       "placebo_leg": 0.99,
+       "joint": 0.99,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.3,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.4,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.14785714285714288
+      }
+     ],
+     "mde80_joint": 0.13048780487804879,
+     "mde80_primary": 0.12312500000000001
+    },
+    "sigma_0.45": {
+     "rows": [
+      {
+       "effect": 0.0,
+       "primary": 0.11,
+       "placebo_leg": 0.09666666666666666,
+       "joint": 0.08,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.025,
+       "primary": 0.15,
+       "placebo_leg": 0.16333333333333333,
+       "joint": 0.13333333333333333,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.05,
+       "primary": 0.22333333333333333,
+       "placebo_leg": 0.19666666666666666,
+       "joint": 0.18,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.075,
+       "primary": 0.4533333333333333,
+       "placebo_leg": 0.43,
+       "joint": 0.38666666666666666,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.1,
+       "primary": 0.4633333333333333,
+       "placebo_leg": 0.43666666666666665,
+       "joint": 0.38666666666666666,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.15,
+       "primary": 0.7566666666666667,
+       "placebo_leg": 0.75,
+       "joint": 0.7133333333333334,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.2,
+       "primary": 0.92,
+       "placebo_leg": 0.8866666666666667,
+       "joint": 0.8733333333333333,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.3,
+       "primary": 1.0,
+       "placebo_leg": 0.9966666666666667,
+       "joint": 0.9966666666666667,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.4,
+       "primary": 1.0,
+       "placebo_leg": 1.0,
+       "joint": 1.0,
+       "rho": 0.14785714285714288
+      }
+     ],
+     "mde80_joint": 0.17708333333333334,
+     "mde80_primary": 0.16326530612244897
+    },
+    "sigma_0.60": {
+     "rows": [
+      {
+       "effect": 0.0,
+       "primary": 0.10666666666666667,
+       "placebo_leg": 0.09333333333333334,
+       "joint": 0.07333333333333333,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.025,
+       "primary": 0.17,
+       "placebo_leg": 0.14333333333333334,
+       "joint": 0.12333333333333334,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.05,
+       "primary": 0.19,
+       "placebo_leg": 0.17333333333333334,
+       "joint": 0.13,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.075,
+       "primary": 0.31,
+       "placebo_leg": 0.2833333333333333,
+       "joint": 0.25333333333333335,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.1,
+       "primary": 0.3933333333333333,
+       "placebo_leg": 0.37666666666666665,
+       "joint": 0.35,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.15,
+       "primary": 0.6433333333333333,
+       "placebo_leg": 0.5933333333333334,
+       "joint": 0.57,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.2,
+       "primary": 0.7866666666666666,
+       "placebo_leg": 0.7533333333333333,
+       "joint": 0.7233333333333334,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.3,
+       "primary": 0.98,
+       "placebo_leg": 0.96,
+       "joint": 0.96,
+       "rho": 0.14785714285714288
+      },
+      {
+       "effect": 0.4,
+       "primary": 0.9966666666666667,
+       "placebo_leg": 0.9933333333333333,
+       "joint": 0.9933333333333333,
+       "rho": 0.14785714285714288
+      }
+     ],
+     "mde80_joint": 0.23239436619718312,
+     "mde80_primary": 0.20689655172413798
+    }
+   },
+   "se_inflation_at_gate": {
+    "1.0": {
+     "primary": 0.6866666666666666,
+     "placebo_leg": 0.6866666666666666,
+     "joint": 0.6533333333333333,
+     "rho": 0.0
+    },
+    "1.3": {
+     "primary": 0.49333333333333335,
+     "placebo_leg": 0.48,
+     "joint": 0.43666666666666665,
+     "rho": 0.14785714285714288
+    },
+    "1.6": {
+     "primary": 0.39,
+     "placebo_leg": 0.36666666666666664,
+     "joint": 0.3333333333333333,
+     "rho": 0.33428571428571435
+    }
+   },
+   "gate_joint_power": 0.38666666666666666,
+   "gate_primary_power": 0.4633333333333333,
+   "self_checks": {
+    "plant40_joint": 1.0,
+    "plant40_ok": true,
+    "null_primary_size": 0.11,
+    "null_size_ok": false,
+    "sign_mutant_joint": 0.0,
+    "sign_mutant_ok": true,
+    "iid_mutant_size_se1.6": 0.18666666666666668,
+    "clustered_size_se1.6": 0.15666666666666668,
+    "iid_mutant_ok": true
+   },
+   "void": true,
+   "k1_fired": true,
+   "k1_status": "VOID"
+  }
+ },
+ "k3": {
+  "tests": "tests/unit/test_listing_short.py::test_event_rows_*, ::test_mutant_without_filter_raises",
+  "k3_fired": false
+ },
+ "verdict_by_window": {
+  "a": "KILLED",
+  "b": "KILLED"
+ },
+ "reads_returns": false
+}
