@@ -2,10 +2,12 @@
 
     docker compose --profile recorder up -d liquidations
 
-Records Binance, OKX and Bybit forced liquidations into Postgres, with the
-minutes it can prove it was listening (ingestion/liquidation_recorder.py).
-Gaps are permanent — no venue serves free liquidation history — so this is
-worth running continuously, and its value is elapsed time.
+Records Binance, OKX, Bybit and Kraken Futures forced liquidations into
+Postgres, with the minutes it can prove it was listening (Binance/OKX/Bybit)
+or the gaps it detected (Kraken's polled trade-history endpoint has no
+liveness concept of its own — see ingestion/liquidation_recorder.py). Gaps
+are permanent — no venue serves free liquidation history — so this is worth
+running continuously, and its value is elapsed time.
 """
 
 import asyncio

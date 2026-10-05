@@ -175,8 +175,9 @@ services:
     restart: unless-stopped
     # C1 · the liquidations recorder. Opt-in, like the director:
     # `docker compose --profile recorder up -d liquidations`. Outbound
-    # websockets only (Binance, OKX, Bybit) — no ports, no secrets. Its gaps
-    # are permanent, so once started it should stay up; coverage is recorded
+    # websockets (Binance, OKX, Bybit) plus a polled public REST endpoint
+    # (Kraken Futures trade history) — no ports, no secrets. Its gaps are
+    # permanent, so once started it should stay up; coverage is recorded
     # per minute in liquidation_coverage, and an absent minute is a gap.
     profiles: ["recorder"]
     command: python scripts/liquidation_recorder.py
@@ -185,6 +186,8 @@ services:
       DEPLOY_ROLE: ${DEPLOY_ROLE:-dev}
       DATABASE_URL: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-market_data}@postgres:5432/${POSTGRES_DB:-market_data}
       LIQ_BINANCE_WS_URL: ${LIQ_BINANCE_WS_URL:-wss://fstream.binance.com/market/ws/!forceOrder@arr}
+      LIQ_KRAKEN_SYMBOLS: ${LIQ_KRAKEN_SYMBOLS:-PF_XBTUSD,PF_ETHUSD}
+      LIQ_KRAKEN_POLL_SECONDS: ${LIQ_KRAKEN_POLL_SECONDS:-5}
     depends_on:
       postgres:
         condition: service_healthy

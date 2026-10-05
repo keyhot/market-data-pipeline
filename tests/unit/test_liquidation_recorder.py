@@ -1,9 +1,10 @@
 import asyncio
 import threading
+from datetime import datetime, timedelta, timezone
 
 from ingestion.liquidation_recorder import Buffer, LiquidationRecorder, recorder_enabled
 from ingestion.liquidations import parse_binance
-from tests.unit.test_liquidations import BINANCE_FRAME, BYBIT_FRAME, OKX_FRAME
+from tests.unit.test_liquidations import BINANCE_FRAME, BYBIT_FRAME, KRAKEN_PAYLOAD, OKX_FRAME
 
 T0 = 1_790_650_800  # a whole minute
 
@@ -180,3 +181,103 @@ def test_binance_without_a_liquidation_claims_no_coverage():
         recorder.on_pong("binance")
     _flush(recorder)
     assert sink.batches == []
+
+
+# --- Kraken REST polling ------------------------------------------------------
+
+
+def test_kraken_symbols_default_to_btc_and_eth(monkeypatch):
+    monkeypatch.delenv("LIQ_KRAKEN_SYMBOLS", raising=False)
+    recorder, _ = _recorder()
+    assert recorder._kraken_symbols == ("PF_XBTUSD", "PF_ETHUSD")
+    assert recorder.kraken_gaps == {"PF_XBTUSD": 0, "PF_ETHUSD": 0}
+
+
+def test_kraken_symbols_configurable_via_env(monkeypatch):
+    monkeypatch.setenv("LIQ_KRAKEN_SYMBOLS", "PF_SOLUSD, PF_XRPUSD")
+    recorder, _ = _recorder()
+    assert recorder._kraken_symbols == ("PF_SOLUSD", "PF_XRPUSD")
+
+
+def test_kraken_poll_seconds_default_and_env(monkeypatch):
+    monkeypatch.delenv("LIQ_KRAKEN_POLL_SECONDS", raising=False)
+    recorder, _ = _recorder()
+    assert recorder._kraken_poll_seconds == 5.0
+    monkeypatch.setenv("LIQ_KRAKEN_POLL_SECONDS", "2.5")
+    recorder2, _ = _recorder()
+    assert recorder2._kraken_poll_seconds == 2.5
+
+
+def test_process_kraken_response_buffers_only_liquidations_and_advances_last_ts():
+    recorder, _ = _recorder()
+    liquidation_row = {
+        **KRAKEN_PAYLOAD["history"][0],
+        "type": "liquidation",
+        "uid": "liq-1",
+        "time": "2026-10-05T15:49:10.000000Z",
+    }
+    payload = {"history": KRAKEN_PAYLOAD["history"] + [liquidation_row]}
+    new = recorder.process_kraken_response("PF_XBTUSD", payload)
+    assert len(new) == len(payload["history"])  # first poll: everything is "new"
+    assert [x.venue for x in recorder.buffer.liquidations] == ["kraken"]
+    assert recorder.buffer.liquidations[0].venue_trade_id == "liq-1"
+    assert recorder._kraken_last_ts["PF_XBTUSD"] == datetime(
+        2026, 10, 5, 15, 49, 10, tzinfo=timezone.utc
+    )
+    assert recorder.kraken_gaps["PF_XBTUSD"] == 0
+
+
+def test_process_kraken_response_counts_a_gap_when_window_cant_reach_back():
+    recorder, _ = _recorder()
+    recorder._kraken_last_ts["PF_XBTUSD"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
+    assert recorder.kraken_gaps["PF_XBTUSD"] == 1
+    assert recorder.kraken_gaps["PF_ETHUSD"] == 0  # the other symbol is untouched
+
+
+def test_process_kraken_response_empty_poll_leaves_state_untouched():
+    recorder, _ = _recorder()
+    known = datetime(2026, 10, 5, 15, 0, 0, tzinfo=timezone.utc)
+    recorder._kraken_last_ts["PF_XBTUSD"] = known
+    recorder.process_kraken_response("PF_XBTUSD", {"history": []})
+    assert recorder._kraken_last_ts["PF_XBTUSD"] == known
+    assert recorder.kraken_gaps["PF_XBTUSD"] == 0
+
+
+def test_process_kraken_response_second_poll_only_forwards_rows_after_last_ts():
+    recorder, _ = _recorder()
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
+    first_last_ts = recorder._kraken_last_ts["PF_XBTUSD"]
+    # The same window polled again: nothing is new, no re-buffering.
+    before = len(recorder.buffer.liquidations)
+    new = recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
+    assert new == []
+    assert len(recorder.buffer.liquidations) == before
+    assert recorder._kraken_last_ts["PF_XBTUSD"] == first_last_ts
+
+
+def test_kraken_rest_loop_survives_a_request_failure_and_keeps_polling(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_get_json(url, timeout=10.0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("boom")
+        return {"history": []}
+
+    monkeypatch.setattr("ingestion.liquidation_recorder._get_json", fake_get_json)
+    recorder, _ = _recorder()
+    recorder._kraken_symbols = ("PF_XBTUSD",)
+    recorder._kraken_poll_seconds = 0.01
+
+    async def scenario():
+        task = asyncio.create_task(recorder._kraken_rest_loop())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+    assert calls["n"] >= 2  # the failed first call did not kill the loop

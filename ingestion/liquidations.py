@@ -21,6 +21,24 @@ per second (documented), so its counts are a lower bound. Bybit's
 500ms; OKX's completeness is unverified. The pre-registration (vault `Docs/liquidation-cascade-experiment.md`)
 says how each venue may be used.
 
+**Kraken Futures** has no public liquidation push feed; instead its public
+`GET /derivatives/api/v3/history` trade-history endpoint tags ordinary fills
+with a `type` that is `liquidation`/`partial liquidation` among regular
+`fill`s (vault `Docs/dataset-scouting-2026-10-05.md`). It is capped at the
+most recent 100 trades per request with no forward-paging parameter, so the
+recorder must poll it repeatedly and notice when more than 100 trades landed
+between polls (`kraken_gap`). A real recorded response
+(`tests/fixtures/liquidations/kraken_trade_history_pf_xbtusd.json`) pinned two
+surprises the docs page gets wrong: the array comes back ascending by time
+(oldest first), not descending, and `trade_id` counts down within the
+request window rather than being a stable id — Kraken's `uid` is the only
+field safe to dedupe on, so it rides along as `Liquidation.venue_trade_id`.
+Only the `liquidation`/`partial liquidation` rows are kept: storing every
+fill on a busy perpetual would be orders of magnitude more volume than this
+project's other three venues combined for data this project's experiments
+don't use (plain fills, no cascade signal) — the flag is the only part of
+the feed anyone has a pre-registered use for.
+
 Pure: no network, no DB, no clock. The runner supplies all three.
 """
 
@@ -33,6 +51,7 @@ from datetime import datetime, timezone
 BINANCE = "binance"
 OKX = "okx"
 BYBIT = "bybit"
+KRAKEN = "kraken"
 
 # The side of the POSITION that was liquidated. On Binance and OKX the frame
 # carries the forced ORDER's side: a long is closed by a sell. Bybit's
@@ -56,6 +75,10 @@ class Liquidation:
     notional: float | None  # quote-currency value, when it can be derived
     source: str  # "ws" | "rest"
     raw: dict = field(compare=False, hash=False)
+    # Kraken's own trade uid (NULL for the other venues): the one field they
+    # hand back that is actually stable across polls, unlike their `trade_id`
+    # (see parse_kraken_history) — the idempotency key for storage.
+    venue_trade_id: str | None = None
 
 
 def _ms(value) -> datetime:
@@ -280,6 +303,118 @@ def parse_bybit(message: str | bytes) -> tuple[str, list[Liquidation]]:
             )
         )
     return "data", out
+
+
+KRAKEN_LIQUIDATION_TYPES = frozenset({"liquidation", "partial liquidation"})
+
+
+@dataclass(frozen=True)
+class KrakenTrade:
+    """One row of Kraken's trade-history response, regardless of `type`.
+
+    Kept separate from `Liquidation` because most rows are plain `fill`s we
+    never store; this is only what `kraken_gap` needs to judge coverage.
+    """
+
+    symbol: str
+    event_ts: datetime
+    uid: str
+    type: str
+    side: str | None
+    price: float
+    size: float
+    raw: dict = field(compare=False, hash=False)
+
+
+def _kraken_ts(value: str) -> datetime:
+    # "2026-10-05T15:48:56.419439Z" — fromisoformat wants "+00:00", not "Z".
+    text = str(value)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    return datetime.fromisoformat(text)
+
+
+def parse_kraken_history(payload: dict, symbol: str) -> list[KrakenTrade]:
+    """`GET /derivatives/api/v3/history` response → every row, parsed.
+
+    A malformed row is dropped rather than failing the whole poll — one bad
+    row must not blind the recorder to the 99 good ones next to it.
+    """
+    out: list[KrakenTrade] = []
+    for row in payload.get("history") or []:
+        try:
+            out.append(
+                KrakenTrade(
+                    symbol=symbol,
+                    event_ts=_kraken_ts(row["time"]),
+                    uid=str(row["uid"]),
+                    type=str(row.get("type") or ""),
+                    side=(str(row["side"]) if row.get("side") else None),
+                    price=float(row["price"]),
+                    size=float(row["size"]),
+                    raw=row,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def kraken_liquidations(trades: list[KrakenTrade]) -> list[Liquidation]:
+    """The subset worth storing: `type` is a (partial) liquidation.
+
+    Side follows the same order-side convention as Binance/OKX (the forced
+    order closing a long is a sell) since Kraken's docs don't say otherwise
+    and the field is named identically; unverified against a real liquidated
+    row, since none appeared in any sample pulled so far.
+    """
+    out: list[Liquidation] = []
+    for t in trades:
+        if t.type not in KRAKEN_LIQUIDATION_TYPES or t.side is None:
+            continue
+        side = _liquidated_side(t.side)
+        if side is None or t.price <= 0 or t.size <= 0:
+            continue
+        out.append(
+            Liquidation(
+                venue=KRAKEN,
+                symbol=t.symbol,
+                event_ts=t.event_ts,
+                side=side,
+                price=t.price,
+                size=t.size,
+                size_unit="contracts",
+                qty_base=None,
+                notional=None,
+                source="rest",
+                raw=t.raw,
+                venue_trade_id=t.uid,
+            )
+        )
+    return out
+
+
+def kraken_new_trades(
+    trades: list[KrakenTrade], last_ts: datetime | None
+) -> list[KrakenTrade]:
+    """Rows not yet forwarded: everything, the first poll; newer ones after."""
+    if last_ts is None:
+        return list(trades)
+    return [t for t in trades if t.event_ts > last_ts]
+
+
+def kraken_gap(trades: list[KrakenTrade], last_ts: datetime | None) -> bool:
+    """True when this 100-row window can't reach back to the last poll.
+
+    The response has no `since`/forward-paging parameter, so a busy market
+    can push more than 100 trades between two polls; when that happens the
+    oldest row this poll got back is already newer than the last trade the
+    previous poll forwarded, and everything in between is permanently gone.
+    """
+    if not trades or last_ts is None:
+        return False
+    oldest = min(t.event_ts for t in trades)
+    return oldest > last_ts
 
 
 def _floor_minute(t: float) -> int:

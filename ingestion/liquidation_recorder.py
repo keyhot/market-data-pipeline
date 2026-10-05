@@ -20,6 +20,17 @@ Three venues, one process:
 A server-acknowledged subscription (OKX, Bybit) counts as proof the feed is
 flowing; Binance has no ack, so it must deliver a liquidation first.
 
+- **Kraken Futures** (`PF_XBTUSD`, `PF_ETHUSD` by default, `LIQ_KRAKEN_SYMBOLS`
+  to override) has no push feed to subscribe to: its public trade-history
+  REST endpoint is polled every `LIQ_KRAKEN_POLL_SECONDS` (default 5s) for
+  the newest ≤100 trades, `type`-filtered down to `liquidation`/`partial
+  liquidation` rows (`process_kraken_response`, pure parsing in
+  `ingestion/liquidations.py`). It has no `since`-forward paging, so a busy
+  window can outrun the 100-trade cap between polls; `kraken_gap` detects
+  and counts that (`self.kraken_gaps`) rather than silently losing rows.
+  Read-only and keyless like OKX's REST audit; a failed poll is logged and
+  retried next tick, never raised into the shared `asyncio.gather`.
+
 Parsing and the coverage rule live in `ingestion/liquidations.py` (pure,
 tested); this module only wires them to the network. Every write goes through
 `Buffer`, which keeps rows through a Postgres outage and writes a minute's
@@ -35,6 +46,7 @@ import os
 import time
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime
 
 import websockets
 
@@ -43,11 +55,16 @@ from ingestion.liquidations import (
     BYBIT,
     OKX,
     CoverageTracker,
+    KrakenTrade,
     Liquidation,
     OkxContract,
+    kraken_gap,
+    kraken_liquidations,
+    kraken_new_trades,
     okx_contracts,
     parse_binance,
     parse_bybit,
+    parse_kraken_history,
     parse_okx,
     parse_okx_data,
 )
@@ -67,6 +84,16 @@ BYBIT_SUBSCRIBE = json.dumps(
     {"op": "subscribe", "args": [f"allLiquidation.{s}" for s in BYBIT_SYMBOLS]}
 )
 BYBIT_PING = json.dumps({"op": "ping"})
+KRAKEN_REST_BASE = "https://futures.kraken.com"
+KRAKEN_HISTORY_PATH = "/derivatives/api/v3/history"
+KRAKEN_SYMBOLS_ENV = "LIQ_KRAKEN_SYMBOLS"
+KRAKEN_SYMBOLS_DEFAULT = ("PF_XBTUSD", "PF_ETHUSD")
+KRAKEN_POLL_SECONDS_ENV = "LIQ_KRAKEN_POLL_SECONDS"
+# A real recorded window (tests/fixtures/liquidations/kraken_trade_history_
+# pf_xbtusd.json) filled its 100-trade cap in as little as ~6s on a quiet
+# BTC perp; polling every 5s leaves headroom before the cap is at risk, and
+# kraken_gap() counts the times it wasn't enough rather than hiding it.
+KRAKEN_POLL_SECONDS_DEFAULT = 5.0
 
 PING_EVERY_S = 10.0
 PONG_TIMEOUT_S = 10.0
@@ -150,6 +177,8 @@ class LiquidationRecorder:
         write: Callable,
         binance_url: str | None = None,
         clock: Callable[[], float] = time.time,
+        kraken_symbols: tuple[str, ...] | None = None,
+        kraken_poll_seconds: float | None = None,
     ):
         self._write = write
         self.buffer = Buffer()
@@ -161,6 +190,25 @@ class LiquidationRecorder:
             OKX: CoverageTracker(),
             BYBIT: CoverageTracker(),
         }
+        if kraken_symbols is not None:
+            self._kraken_symbols = kraken_symbols
+        else:
+            raw = os.environ.get(KRAKEN_SYMBOLS_ENV)
+            self._kraken_symbols = (
+                tuple(s.strip() for s in raw.split(",") if s.strip())
+                if raw
+                else KRAKEN_SYMBOLS_DEFAULT
+            )
+        self._kraken_poll_seconds = kraken_poll_seconds or float(
+            os.environ.get(KRAKEN_POLL_SECONDS_ENV, KRAKEN_POLL_SECONDS_DEFAULT)
+        )
+        # Last trade timestamp forwarded per symbol; None means "never
+        # polled successfully yet", which also silences gap detection (there
+        # is nothing to have a gap relative to).
+        self._kraken_last_ts: dict[str, datetime | None] = {
+            s: None for s in self._kraken_symbols
+        }
+        self.kraken_gaps: dict[str, int] = {s: 0 for s in self._kraken_symbols}
 
     # --- frame handling (sync, testable) ------------------------------------
 
@@ -195,6 +243,37 @@ class LiquidationRecorder:
             tracker.count(now, len(rows))
             self.buffer.add(rows)
         return kind
+
+    def process_kraken_response(self, symbol: str, payload: dict) -> list[KrakenTrade]:
+        """One poll's worth of a symbol's trade history, synchronous and testable.
+
+        Compares against this symbol's own last-forwarded timestamp (held in
+        memory — a restart starts the gap count over, the same way a venue
+        reconnect doesn't blame minutes before it on the new connection),
+        counts a gap when the window can't reach back that far, then buffers
+        only the newly-seen liquidation rows.
+        """
+        trades = parse_kraken_history(payload, symbol)
+        last_ts = self._kraken_last_ts.get(symbol)
+        if kraken_gap(trades, last_ts):
+            self.kraken_gaps[symbol] = self.kraken_gaps.get(symbol, 0) + 1
+            logger.warning(
+                "Kraken trade-history gap: more than one window's worth of "
+                "trades landed between polls",
+                extra={
+                    "symbol": symbol,
+                    "last_ts": last_ts.isoformat() if last_ts else None,
+                    "oldest_in_window": min(t.event_ts for t in trades).isoformat(),
+                    "gap_count": self.kraken_gaps[symbol],
+                },
+            )
+        new = kraken_new_trades(trades, last_ts)
+        if new:
+            self._kraken_last_ts[symbol] = max(t.event_ts for t in new)
+            liquidations = kraken_liquidations(new)
+            if liquidations:
+                self.buffer.add(liquidations)
+        return new
 
     def on_pong(self, venue: str) -> None:
         self.trackers[venue].proof(self._clock())
@@ -237,6 +316,7 @@ class LiquidationRecorder:
             self._venue_loop(BYBIT, self._bybit_session),
             self._flush_loop(),
             self._okx_rest_loop(),
+            self._kraken_rest_loop(),
         )
 
     async def _venue_loop(self, venue: str, session) -> None:
@@ -353,3 +433,28 @@ class LiquidationRecorder:
                     logger.warning("OKX REST liquidation poll failed",
                                    extra={"uly": uly, "error": str(e)})
             await asyncio.sleep(REST_POLL_EVERY_S)
+
+    async def _kraken_rest_loop(self) -> None:
+        # Every exception is caught inside the loop body: this task shares
+        # an asyncio.gather with Binance/OKX/Bybit in run(), and an
+        # unhandled exception here would take the whole process — including
+        # the other venues' live sockets — down with it.
+        backoff = self._kraken_poll_seconds
+        while True:
+            ok = True
+            for symbol in self._kraken_symbols:
+                try:
+                    payload = await asyncio.to_thread(
+                        _get_json, f"{KRAKEN_REST_BASE}{KRAKEN_HISTORY_PATH}?symbol={symbol}"
+                    )
+                    self.process_kraken_response(symbol, payload)
+                except Exception as e:
+                    ok = False
+                    logger.warning(
+                        "Kraken trade-history poll failed",
+                        extra={"symbol": symbol, "error": f"{type(e).__name__}: {e}"},
+                    )
+            backoff = (
+                self._kraken_poll_seconds if ok else min(backoff * 2, _BACKOFF_MAX_S)
+            )
+            await asyncio.sleep(backoff)

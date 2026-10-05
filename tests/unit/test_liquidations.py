@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -7,12 +8,22 @@ from ingestion.liquidations import (
     LONG,
     SHORT,
     CoverageTracker,
+    KrakenTrade,
     OkxContract,
+    kraken_gap,
+    kraken_liquidations,
+    kraken_new_trades,
     okx_contracts,
     parse_binance,
+    parse_kraken_history,
     parse_okx,
     parse_okx_data,
     parse_bybit,
+)
+
+KRAKEN_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures" / "liquidations" / "kraken_trade_history_pf_xbtusd.json"
 )
 
 # Real frames, captured 2026-09-29 from the live feeds.
@@ -199,6 +210,140 @@ def test_all_three_venues_agree_on_a_liquidated_long():
 )
 def test_bybit_control_frames_are_classified(frame, kind):
     assert parse_bybit(frame) == (kind, [])
+
+
+# --- Kraken --------------------------------------------------------------
+
+# Real response, captured 2026-10-05 from
+# GET https://futures.kraken.com/derivatives/api/v3/history?symbol=PF_XBTUSD
+# (see the fixture file's _comment for what it pins: numeric size/price,
+# ascending time order, trade_id counting down within the window).
+KRAKEN_PAYLOAD = json.loads(KRAKEN_FIXTURE.read_text())
+
+KRAKEN_LIQUIDATION_ROW = {
+    "time": "2026-10-05T15:49:10.000000Z",
+    "trade_id": 1,
+    "price": 85000.0,
+    "size": 1.5,
+    "side": "sell",
+    "type": "liquidation",
+    "uid": "11111111-1111-1111-1111-111111111111",
+    "sequence_id": "999",
+}
+
+
+def test_parse_kraken_history_reads_every_real_row():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    assert len(trades) == len(KRAKEN_PAYLOAD["history"])
+    first = trades[0]
+    assert first.symbol == "PF_XBTUSD"
+    assert first.uid == "6c4a50dd-19bd-4ede-81c0-260ec996cdb3"
+    assert first.type == "fill"
+    assert first.side == "sell"
+    assert first.price == pytest.approx(85360)
+    assert first.size == pytest.approx(0.0005)
+    assert first.event_ts == datetime(2026, 10, 5, 15, 48, 56, 419439, tzinfo=timezone.utc)
+
+
+def test_parse_kraken_history_real_sample_has_no_liquidations():
+    # Confirms the fixture is what it claims to be: an ordinary busy window.
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    assert kraken_liquidations(trades) == []
+
+
+def test_parse_kraken_history_array_is_ascending_not_descending():
+    # Pins the seam bug: docs.kraken.com claims descending-by-time order;
+    # the real response is ascending (oldest first).
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    assert trades[0].event_ts < trades[-1].event_ts
+
+
+def test_kraken_trade_id_is_not_stable_across_the_window():
+    # Pins the other seam bug: trade_id counts DOWN as time goes up, so it
+    # cannot be a persistent cross-poll id — uid is the only safe key.
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    ids_by_time = [t.raw["trade_id"] for t in sorted(trades, key=lambda t: t.event_ts)]
+    assert ids_by_time == sorted(ids_by_time, reverse=True)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"time": "not-a-time", "uid": "x", "price": "1", "size": "1", "side": "sell"},
+        {"time": "2026-10-05T00:00:00Z", "uid": "x", "price": "bad", "size": "1", "side": "sell"},
+        {"uid": "x", "price": "1", "size": "1", "side": "sell"},  # missing time
+    ],
+)
+def test_parse_kraken_history_drops_malformed_rows_without_failing(row):
+    assert parse_kraken_history({"history": [row]}, "PF_XBTUSD") == []
+
+
+def test_kraken_liquidation_type_sell_closes_a_long():
+    trades = parse_kraken_history({"history": [KRAKEN_LIQUIDATION_ROW]}, "PF_XBTUSD")
+    (liq,) = kraken_liquidations(trades)
+    assert liq.venue == "kraken"
+    assert liq.symbol == "PF_XBTUSD"
+    assert liq.side == LONG
+    assert liq.price == pytest.approx(85000.0)
+    assert liq.size == pytest.approx(1.5)
+    assert liq.size_unit == "contracts"
+    assert liq.source == "rest"
+    assert liq.venue_trade_id == "11111111-1111-1111-1111-111111111111"
+
+
+def test_kraken_liquidation_type_buy_closes_a_short():
+    row = {**KRAKEN_LIQUIDATION_ROW, "side": "buy"}
+    trades = parse_kraken_history({"history": [row]}, "PF_XBTUSD")
+    (liq,) = kraken_liquidations(trades)
+    assert liq.side == SHORT
+
+
+def test_kraken_partial_liquidation_type_is_also_kept():
+    row = {**KRAKEN_LIQUIDATION_ROW, "type": "partial liquidation"}
+    trades = parse_kraken_history({"history": [row]}, "PF_XBTUSD")
+    assert len(kraken_liquidations(trades)) == 1
+
+
+def test_kraken_plain_fills_are_not_liquidations():
+    row = {**KRAKEN_LIQUIDATION_ROW, "type": "fill"}
+    trades = parse_kraken_history({"history": [row]}, "PF_XBTUSD")
+    assert kraken_liquidations(trades) == []
+
+
+def test_kraken_new_trades_forwards_everything_on_the_first_poll():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    assert kraken_new_trades(trades, None) == trades
+
+
+def test_kraken_new_trades_filters_to_strictly_after_last_ts():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    midpoint = sorted(t.event_ts for t in trades)[len(trades) // 2]
+    new = kraken_new_trades(trades, midpoint)
+    assert new and all(t.event_ts > midpoint for t in new)
+
+
+def test_kraken_gap_false_on_first_poll_with_no_prior_state():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    assert kraken_gap(trades, None) is False
+
+
+def test_kraken_gap_false_when_oldest_row_reaches_back_to_last_ts():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    oldest = min(t.event_ts for t in trades)
+    assert kraken_gap(trades, oldest) is False
+
+
+def test_kraken_gap_true_when_more_than_a_window_landed_between_polls():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    oldest = min(t.event_ts for t in trades)
+    from datetime import timedelta
+
+    last_ts = oldest - timedelta(seconds=1)  # a trade existed before this window
+    assert kraken_gap(trades, last_ts) is True
+
+
+def test_kraken_gap_false_on_an_empty_poll():
+    assert kraken_gap([], datetime(2026, 1, 1, tzinfo=timezone.utc)) is False
 
 
 # --- CoverageTracker ---------------------------------------------------------
