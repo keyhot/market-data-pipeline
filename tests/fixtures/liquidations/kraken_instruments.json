@@ -1,0 +1,24 @@
+{
+  "_comment": "Real sample, recorded 2026-10-05 via GET https://futures.kraken.com/derivatives/api/v3/instruments, trimmed to the fields the recorder reads for PF_XBTUSD/PF_ETHUSD. Both are type=flexible_futures with contractSize=1 in the base asset (BTC/ETH) -- confirmed against the real trade-history fixture, whose sizes (0.0001-0.0011) are fractional BTC, not whole-USD contracts.",
+  "result": "success",
+  "instruments": [
+    {
+      "symbol": "PF_XBTUSD",
+      "type": "flexible_futures",
+      "tickSize": 1,
+      "contractSize": 1,
+      "tradeable": true,
+      "base": "BTC",
+      "quote": "USD"
+    },
+    {
+      "symbol": "PF_ETHUSD",
+      "type": "flexible_futures",
+      "tickSize": 0.1,
+      "contractSize": 1,
+      "tradeable": true,
+      "base": "ETH",
+      "quote": "USD"
+    }
+  ]
+}

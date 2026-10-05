@@ -1,0 +1,87 @@
+{
+  "_comment": "Real sample, recorded 2026-10-05 via GET https://futures.kraken.com/derivatives/api/v3/history?symbol=PF_XBTUSD, trimmed to the newest/oldest 4 rows of a 100-row response. Pins the seam: the live response has no notional_amount/isin/etc fields the docs page describes, size/price are numbers not strings, and the array is ascending by time (oldest first) despite docs.kraken.com claiming descending order; trade_id counts DOWN within the window (100..1) and is not a stable cross-poll id, which is why uid is the idempotency key.",
+  "result": "success",
+  "serverTime": "2026-10-05T15:49:06.866Z",
+  "history": [
+    {
+      "time": "2026-10-05T15:48:56.419439Z",
+      "trade_id": 100,
+      "price": 85360,
+      "size": 0.0005,
+      "side": "sell",
+      "type": "fill",
+      "uid": "6c4a50dd-19bd-4ede-81c0-260ec996cdb3",
+      "sequence_id": "101303522"
+    },
+    {
+      "time": "2026-10-05T15:48:56.419439Z",
+      "trade_id": 99,
+      "price": 85360,
+      "size": 0.0002,
+      "side": "sell",
+      "type": "fill",
+      "uid": "eba84e6c-ea42-4f4d-b092-39e57ed0b7ed",
+      "sequence_id": "101303521"
+    },
+    {
+      "time": "2026-10-05T15:48:56.419439Z",
+      "trade_id": 98,
+      "price": 85361,
+      "size": 0.0002,
+      "side": "sell",
+      "type": "fill",
+      "uid": "ecd411cb-35cb-4b13-8e83-c2e4d4011a22",
+      "sequence_id": "101303520"
+    },
+    {
+      "time": "2026-10-05T15:48:56.419439Z",
+      "trade_id": 97,
+      "price": 85361,
+      "size": 0.0002,
+      "side": "sell",
+      "type": "fill",
+      "uid": "01a7a081-c36f-46fd-a8de-cfa72b559fd3",
+      "sequence_id": "101303519"
+    },
+    {
+      "time": "2026-10-05T15:49:02.386763Z",
+      "trade_id": 4,
+      "price": 85328,
+      "size": 0.0005,
+      "side": "sell",
+      "type": "fill",
+      "uid": "8e4a751d-31f9-4607-a328-646503d196b9",
+      "sequence_id": "101303608"
+    },
+    {
+      "time": "2026-10-05T15:49:02.538006Z",
+      "trade_id": 3,
+      "price": 85327,
+      "size": 0.0011,
+      "side": "sell",
+      "type": "fill",
+      "uid": "a4af04a2-0be0-40e8-ae0d-961d0d199dbc",
+      "sequence_id": "101303614"
+    },
+    {
+      "time": "2026-10-05T15:49:02.538006Z",
+      "trade_id": 2,
+      "price": 85327,
+      "size": 0.0001,
+      "side": "sell",
+      "type": "fill",
+      "uid": "ef05ad51-aeed-4cf6-ac65-cd78f2ee44f0",
+      "sequence_id": "101303613"
+    },
+    {
+      "time": "2026-10-05T15:49:02.538006Z",
+      "trade_id": 1,
+      "price": 85327,
+      "size": 0.0001,
+      "side": "sell",
+      "type": "fill",
+      "uid": "a5cfbfeb-1660-4c9a-85a6-ac41a7840c0e",
+      "sequence_id": "101303612"
+    }
+  ]
+}

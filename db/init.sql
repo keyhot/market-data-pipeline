@@ -139,29 +139,40 @@ CREATE TABLE IF NOT EXISTS music_now_playing (
 
 -- C1 · the liquidations recorder. Append-only by convention: no venue serves
 -- free liquidation history, so a lost row is lost for good. Keep in sync with
--- scripts/migrate_017.sql (which carries the full commentary).
+-- scripts/migrate_017.sql and scripts/migrate_018.sql (which carry the full
+-- commentary).
 CREATE TABLE IF NOT EXISTS liquidations (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    venue       TEXT        NOT NULL,             -- 'binance' | 'okx'
-    symbol      TEXT        NOT NULL,             -- venue-native (BTCUSDT, BTC-USDT-SWAP)
-    event_ts    TIMESTAMPTZ NOT NULL,             -- exchange time of the fill
-    side        TEXT        NOT NULL CHECK (side IN ('long', 'short')),  -- position liquidated
-    price       NUMERIC     NOT NULL,
-    size        NUMERIC     NOT NULL,             -- venue-native units, see size_unit
-    size_unit   TEXT        NOT NULL,             -- 'base' | 'contracts'
-    qty_base    NUMERIC,                          -- NULL when the contract value was unknown
-    notional    NUMERIC,                          -- quote currency; NULL likewise
-    source      TEXT        NOT NULL,             -- 'ws' | 'rest'
-    raw         JSONB       NOT NULL,             -- the venue frame, to recompute anything
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    venue          TEXT        NOT NULL,             -- 'binance' | 'okx' | 'bybit' | 'kraken'
+    symbol         TEXT        NOT NULL,             -- venue-native (BTCUSDT, BTC-USDT-SWAP)
+    event_ts       TIMESTAMPTZ NOT NULL,             -- exchange time of the fill
+    side           TEXT        NOT NULL CHECK (side IN ('long', 'short')),  -- position liquidated
+    price          NUMERIC     NOT NULL,
+    size           NUMERIC     NOT NULL,             -- venue-native units, see size_unit
+    size_unit      TEXT        NOT NULL,             -- 'base' | 'contracts'
+    qty_base       NUMERIC,                          -- NULL when the contract value was unknown
+    notional       NUMERIC,                          -- quote currency; NULL likewise
+    source         TEXT        NOT NULL,             -- 'ws' | 'rest'
+    raw            JSONB       NOT NULL,             -- the venue frame, to recompute anything
+    received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    venue_trade_id TEXT                               -- Kraken's `uid`; NULL elsewhere
 );
 
 -- Natural key: the WS push and the REST window describe the same OKX fill
 -- with the same (instId, ts, side, bkPx, sz), so the second copy is dropped.
+-- Restricted to NULL venue_trade_id (every venue but Kraken): a cascade can
+-- produce several distinct real Kraken fills sharing this whole tuple, so
+-- this key alone would silently drop them (see scripts/migrate_018.sql).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_liquidations_natural
-    ON liquidations (venue, symbol, event_ts, side, price, size);
+    ON liquidations (venue, symbol, event_ts, side, price, size)
+    WHERE venue_trade_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_liquidations_symbol_time
     ON liquidations (symbol, event_ts);
+-- Kraken's own trade_id counts down within a 100-row window and isn't a
+-- stable cross-poll key; uid is, so it gets its own idempotency key.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_liquidations_venue_trade_id
+    ON liquidations (venue, venue_trade_id)
+    WHERE venue_trade_id IS NOT NULL;
 
 -- One row per venue per whole minute during which liveness proofs arrived at
 -- most 30s apart (ingestion/liquidations.py CoverageTracker). An absent minute
@@ -172,4 +183,32 @@ CREATE TABLE IF NOT EXISTS liquidation_coverage (
     minute        TIMESTAMPTZ NOT NULL,
     rows_received INTEGER     NOT NULL,
     PRIMARY KEY (venue, minute)
+);
+
+-- K2 (scripts/migrate_018.sql): a compact per-minute aggregate of ALL
+-- Kraken trade prints, so R3-b can check whether a 1m candle's wick was a
+-- real tradeable print with real size, not just whether it was flagged a
+-- liquidation.
+CREATE TABLE IF NOT EXISTS kraken_trade_minutes (
+    symbol        TEXT        NOT NULL,
+    minute        TIMESTAMPTZ NOT NULL,
+    min_price     NUMERIC     NOT NULL,
+    max_price     NUMERIC     NOT NULL,
+    trade_count   INTEGER     NOT NULL,
+    total_size    NUMERIC     NOT NULL,
+    size_near_min NUMERIC     NOT NULL,
+    size_near_max NUMERIC     NOT NULL,
+    liq_count     INTEGER     NOT NULL,
+    liq_size      NUMERIC     NOT NULL,
+    PRIMARY KEY (symbol, minute)
+);
+
+-- Kraken's own per-symbol, gap-aware coverage record (a different grain
+-- than liquidation_coverage above, which is per-venue wall-clock liveness).
+CREATE TABLE IF NOT EXISTS liquidation_coverage_kraken (
+    symbol        TEXT        NOT NULL,
+    minute        TIMESTAMPTZ NOT NULL,
+    covered       BOOLEAN     NOT NULL,
+    rows_received INTEGER     NOT NULL,
+    PRIMARY KEY (symbol, minute)
 );
