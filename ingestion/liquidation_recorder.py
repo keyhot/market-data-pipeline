@@ -55,9 +55,14 @@ from ingestion.liquidations import (
     BYBIT,
     OKX,
     CoverageTracker,
+    KrakenContract,
+    KrakenMinuteAgg,
     KrakenTrade,
     Liquidation,
     OkxContract,
+    aggregate_kraken_minutes,
+    kraken_contracts,
+    kraken_coverage_minutes,
     kraken_gap,
     kraken_liquidations,
     kraken_new_trades,
@@ -86,6 +91,11 @@ BYBIT_SUBSCRIBE = json.dumps(
 BYBIT_PING = json.dumps({"op": "ping"})
 KRAKEN_REST_BASE = "https://futures.kraken.com"
 KRAKEN_HISTORY_PATH = "/derivatives/api/v3/history"
+KRAKEN_INSTRUMENTS_PATH = "/derivatives/api/v3/instruments"
+# A uid seen this many polls ago can never recur: the history endpoint caps
+# at 100 rows, so keeping a few windows' worth of uids is plenty to dedupe
+# the all-trade minute aggregate across polls without growing unbounded.
+KRAKEN_SEEN_UID_CAP = 400
 KRAKEN_SYMBOLS_ENV = "LIQ_KRAKEN_SYMBOLS"
 KRAKEN_SYMBOLS_DEFAULT = ("PF_XBTUSD", "PF_ETHUSD")
 KRAKEN_POLL_SECONDS_ENV = "LIQ_KRAKEN_POLL_SECONDS"
@@ -125,6 +135,17 @@ def _get_json(url: str, timeout: float = 10.0) -> dict:
         return json.loads(resp.read().decode())
 
 
+def _kraken_mark_seen(seen: dict[str, None], uids) -> None:
+    """Record uids as folded into the minute aggregate; evict the oldest."""
+    for u in uids:
+        seen.pop(u, None)
+        seen[u] = None
+    overflow = len(seen) - KRAKEN_SEEN_UID_CAP
+    if overflow > 0:
+        for u in list(seen)[:overflow]:
+            del seen[u]
+
+
 class Buffer:
     """Rows waiting for Postgres, in receive order.
 
@@ -141,6 +162,12 @@ class Buffer:
         self._max_rows = max_rows
         self.liquidations: list[Liquidation] = []
         self.coverage: list[tuple[str, int, int]] = []
+        # Separate from `coverage`: per-symbol, gap-aware, and keyed on
+        # exchange event time rather than this process's wall-clock liveness
+        # proofs — doesn't fit CoverageTracker's per-venue grain, so it gets
+        # its own table (storage/liquidation_store.py, liquidation_coverage_kraken).
+        self.kraken_coverage: list[tuple[str, int, bool, int]] = []
+        self.kraken_minutes: list[KrakenMinuteAgg] = []
         self.rows_written = 0
         self.rows_dropped = 0
 
@@ -151,14 +178,40 @@ class Buffer:
     def cover(self, venue: str, minutes: list[tuple[int, int]]) -> None:
         self.coverage.extend((venue, m, n) for m, n in minutes)
 
-    def take(self) -> tuple[list[Liquidation], list[tuple[str, int, int]]]:
-        batch = (self.liquidations, self.coverage)
-        self.liquidations, self.coverage = [], []
+    def cover_kraken(self, symbol: str, minutes: list[tuple[int, bool, int]]) -> None:
+        self.kraken_coverage.extend((symbol, m, covered, n) for m, covered, n in minutes)
+
+    def add_kraken_minutes(self, aggs: list[KrakenMinuteAgg]) -> None:
+        self.kraken_minutes.extend(aggs)
+
+    def take(
+        self,
+    ) -> tuple[
+        list[Liquidation],
+        list[tuple[str, int, int]],
+        list[KrakenMinuteAgg],
+        list[tuple[str, int, bool, int]],
+    ]:
+        batch = (self.liquidations, self.coverage, self.kraken_minutes, self.kraken_coverage)
+        self.liquidations, self.coverage, self.kraken_minutes, self.kraken_coverage = (
+            [],
+            [],
+            [],
+            [],
+        )
         return batch
 
-    def restore(self, liquidations: list[Liquidation], coverage: list) -> None:
+    def restore(
+        self,
+        liquidations: list[Liquidation],
+        coverage: list,
+        kraken_minutes: list | None = None,
+        kraken_coverage: list | None = None,
+    ) -> None:
         self.liquidations = liquidations + self.liquidations
         self.coverage = coverage + self.coverage
+        self.kraken_minutes = (kraken_minutes or []) + self.kraken_minutes
+        self.kraken_coverage = (kraken_coverage or []) + self.kraken_coverage
         self._trim()
 
     def _trim(self) -> None:
@@ -211,6 +264,13 @@ class LiquidationRecorder:
             s: None for s in self._kraken_symbols
         }
         self.kraken_gaps: dict[str, int] = {s: 0 for s in self._kraken_symbols}
+        self.kraken_contracts: dict[str, KrakenContract] = {}
+        # Trade uids already folded into the all-trade minute aggregate, per
+        # symbol, oldest-first — bounded so a long-running process doesn't
+        # grow this forever (KRAKEN_SEEN_UID_CAP).
+        self._kraken_seen_uids: dict[str, dict[str, None]] = {
+            s: {} for s in self._kraken_symbols
+        }
 
     # --- frame handling (sync, testable) ------------------------------------
 
@@ -249,15 +309,26 @@ class LiquidationRecorder:
     def process_kraken_response(self, symbol: str, payload: dict) -> list[KrakenTrade]:
         """One poll's worth of a symbol's trade history, synchronous and testable.
 
-        Compares against this symbol's own last-forwarded timestamp (held in
-        memory — a restart starts the gap count over, the same way a venue
-        reconnect doesn't blame minutes before it on the new connection),
-        counts a gap when the window can't reach back that far, then buffers
-        only the newly-seen liquidation rows.
+        Three independent things happen against this symbol's own
+        last-forwarded timestamp (held in memory — a restart starts the gap
+        count over, the same way a venue reconnect doesn't blame minutes
+        before it on the new connection):
+
+        1. gap detection (unchanged) and, from it, which whole minutes since
+           the last poll are provably covered vs. contain a detected gap
+           (`kraken_coverage_minutes`);
+        2. the all-trade-per-minute aggregate (K2), fed every trade this poll
+           hasn't already folded in — deduped by `uid`, NOT by the
+           `last_ts` cutoff below, because two distinct trades can share an
+           `event_ts` (confirmed in the real fixture) and a ts-cutoff would
+           silently drop the later one;
+        3. liquidation-row forwarding (unchanged): only rows strictly newer
+           than `last_ts`.
         """
         trades = parse_kraken_history(payload, symbol)
         last_ts = self._kraken_last_ts.get(symbol)
-        if kraken_gap(trades, last_ts):
+        gap = kraken_gap(trades, last_ts)
+        if gap:
             self.kraken_gaps[symbol] = self.kraken_gaps.get(symbol, 0) + 1
             logger.warning(
                 "Kraken trade-history gap: more than one window's worth of "
@@ -269,10 +340,23 @@ class LiquidationRecorder:
                     "gap_count": self.kraken_gaps[symbol],
                 },
             )
+
+        minutes = kraken_coverage_minutes(last_ts, trades, gap)
+        if minutes:
+            self.buffer.cover_kraken(symbol, minutes)
+
+        seen = self._kraken_seen_uids.setdefault(symbol, {})
+        fresh = [t for t in trades if t.uid not in seen]
+        _kraken_mark_seen(seen, (t.uid for t in trades))
+        if fresh:
+            aggs = aggregate_kraken_minutes(fresh)
+            if aggs:
+                self.buffer.add_kraken_minutes(aggs)
+
         new = kraken_new_trades(trades, last_ts)
         if new:
             self._kraken_last_ts[symbol] = max(t.event_ts for t in new)
-            liquidations = kraken_liquidations(new)
+            liquidations = kraken_liquidations(new, self.kraken_contracts.get(symbol))
             if liquidations:
                 self.buffer.add(liquidations)
         return new
@@ -286,12 +370,20 @@ class LiquidationRecorder:
             if minutes:
                 self.buffer.cover(venue, minutes)
 
-    def write_batch(self, liquidations: list, coverage: list) -> bool:
+    def write_batch(
+        self,
+        liquidations: list,
+        coverage: list,
+        kraken_minutes: list | None = None,
+        kraken_coverage: list | None = None,
+    ) -> bool:
         """The writer-thread half of a flush: True when the batch landed."""
-        if not liquidations and not coverage:
+        kraken_minutes = kraken_minutes or []
+        kraken_coverage = kraken_coverage or []
+        if not liquidations and not coverage and not kraken_minutes and not kraken_coverage:
             return True
         try:
-            self._write(liquidations, coverage)
+            self._write(liquidations, coverage, kraken_minutes, kraken_coverage)
         except Exception as e:
             logger.warning(
                 "Liquidation write failed; keeping rows to retry",
@@ -303,10 +395,12 @@ class LiquidationRecorder:
 
     async def flush(self) -> bool:
         self.collect_coverage()
-        liquidations, coverage = self.buffer.take()
-        ok = await asyncio.to_thread(self.write_batch, liquidations, coverage)
+        liquidations, coverage, kraken_minutes, kraken_coverage = self.buffer.take()
+        ok = await asyncio.to_thread(
+            self.write_batch, liquidations, coverage, kraken_minutes, kraken_coverage
+        )
         if not ok:
-            self.buffer.restore(liquidations, coverage)
+            self.buffer.restore(liquidations, coverage, kraken_minutes, kraken_coverage)
         return ok
 
     # --- network --------------------------------------------------------------
@@ -442,7 +536,19 @@ class LiquidationRecorder:
         # unhandled exception here would take the whole process — including
         # the other venues' live sockets — down with it.
         backoff = self._kraken_poll_seconds
+        contracts_at = 0.0
         while True:
+            if self._clock() - contracts_at > CONTRACTS_REFRESH_S:
+                try:
+                    payload = await asyncio.to_thread(
+                        _get_json, f"{KRAKEN_REST_BASE}{KRAKEN_INSTRUMENTS_PATH}"
+                    )
+                    fresh = kraken_contracts(payload)
+                    if fresh:
+                        self.kraken_contracts = fresh
+                        contracts_at = self._clock()
+                except Exception as e:
+                    logger.warning("Kraken instruments fetch failed", extra={"error": str(e)})
             ok = True
             for symbol in self._kraken_symbols:
                 try:

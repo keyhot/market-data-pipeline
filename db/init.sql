@@ -184,3 +184,31 @@ CREATE TABLE IF NOT EXISTS liquidation_coverage (
     rows_received INTEGER     NOT NULL,
     PRIMARY KEY (venue, minute)
 );
+
+-- K2 (scripts/migrate_018.sql): a compact per-minute aggregate of ALL
+-- Kraken trade prints, so R3-b can check whether a 1m candle's wick was a
+-- real tradeable print with real size, not just whether it was flagged a
+-- liquidation.
+CREATE TABLE IF NOT EXISTS kraken_trade_minutes (
+    symbol        TEXT        NOT NULL,
+    minute        TIMESTAMPTZ NOT NULL,
+    min_price     NUMERIC     NOT NULL,
+    max_price     NUMERIC     NOT NULL,
+    trade_count   INTEGER     NOT NULL,
+    total_size    NUMERIC     NOT NULL,
+    size_near_min NUMERIC     NOT NULL,
+    size_near_max NUMERIC     NOT NULL,
+    liq_count     INTEGER     NOT NULL,
+    liq_size      NUMERIC     NOT NULL,
+    PRIMARY KEY (symbol, minute)
+);
+
+-- Kraken's own per-symbol, gap-aware coverage record (a different grain
+-- than liquidation_coverage above, which is per-venue wall-clock liveness).
+CREATE TABLE IF NOT EXISTS liquidation_coverage_kraken (
+    symbol        TEXT        NOT NULL,
+    minute        TIMESTAMPTZ NOT NULL,
+    covered       BOOLEAN     NOT NULL,
+    rows_received INTEGER     NOT NULL,
+    PRIMARY KEY (symbol, minute)
+);

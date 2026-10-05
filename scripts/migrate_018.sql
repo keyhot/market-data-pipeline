@@ -34,4 +34,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_liquidations_venue_trade_id
     ON liquidations (venue, venue_trade_id)
     WHERE venue_trade_id IS NOT NULL;
 
+-- K2: a compact per-minute aggregate of ALL Kraken trade prints (not just
+-- the liquidation-flagged subset above), so R3-b can later check whether a
+-- 1m candle's wick low/high was a real, tradeable print with real size.
+-- Idempotent upsert merges partial minutes across polls additively; the
+-- caller (ingestion/liquidation_recorder.py) dedupes by trade `uid` before
+-- aggregating, so a minute seen in two polls is never double-counted here.
+CREATE TABLE IF NOT EXISTS kraken_trade_minutes (
+    symbol        TEXT        NOT NULL,   -- PF_XBTUSD | PF_ETHUSD
+    minute        TIMESTAMPTZ NOT NULL,
+    min_price     NUMERIC     NOT NULL,
+    max_price     NUMERIC     NOT NULL,
+    trade_count   INTEGER     NOT NULL,
+    total_size    NUMERIC     NOT NULL,   -- base-asset units (see kraken_contracts)
+    size_near_min NUMERIC     NOT NULL,   -- size within ~2bps of min_price
+    size_near_max NUMERIC     NOT NULL,   -- size within ~2bps of max_price
+    liq_count     INTEGER     NOT NULL,
+    liq_size      NUMERIC     NOT NULL,
+    PRIMARY KEY (symbol, minute)
+);
+
+-- Kraken's own coverage/gap record: per-symbol and gap-aware, unlike
+-- liquidation_coverage above (per-venue, wall-clock liveness). `covered =
+-- false` rows are written deliberately so a detected gap is visible rather
+-- than merely absent; analyses that want "covered minutes only" filter on
+-- `covered`.
+CREATE TABLE IF NOT EXISTS liquidation_coverage_kraken (
+    symbol        TEXT        NOT NULL,
+    minute        TIMESTAMPTZ NOT NULL,
+    covered       BOOLEAN     NOT NULL,
+    rows_received INTEGER     NOT NULL,
+    PRIMARY KEY (symbol, minute)
+);
+
 COMMIT;

@@ -8,8 +8,12 @@ from ingestion.liquidations import (
     LONG,
     SHORT,
     CoverageTracker,
+    KrakenContract,
     KrakenTrade,
     OkxContract,
+    aggregate_kraken_minutes,
+    kraken_contracts,
+    kraken_coverage_minutes,
     kraken_gap,
     kraken_liquidations,
     kraken_new_trades,
@@ -24,6 +28,10 @@ from ingestion.liquidations import (
 KRAKEN_FIXTURE = (
     Path(__file__).resolve().parent.parent
     / "fixtures" / "liquidations" / "kraken_trade_history_pf_xbtusd.json"
+)
+KRAKEN_INSTRUMENTS_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures" / "liquidations" / "kraken_instruments.json"
 )
 
 # Real frames, captured 2026-09-29 from the live feeds.
@@ -352,6 +360,145 @@ def test_kraken_gap_true_when_more_than_a_window_landed_between_polls():
 
     last_ts = oldest - timedelta(seconds=1)  # a trade existed before this window
     assert kraken_gap(trades, last_ts) is True
+
+
+# --- K2: contract sizing (base-unit resolution) -------------------------------
+
+
+def test_kraken_contracts_reads_the_real_instruments_fixture():
+    payload = json.loads(KRAKEN_INSTRUMENTS_FIXTURE.read_text())
+    contracts = kraken_contracts(payload)
+    assert contracts["PF_XBTUSD"] == KrakenContract(contract_size=1.0, kind="flexible_futures")
+    assert contracts["PF_ETHUSD"] == KrakenContract(contract_size=1.0, kind="flexible_futures")
+
+
+def test_kraken_contracts_drops_malformed_rows():
+    payload = {"instruments": [{"symbol": "BROKEN"}]}
+    assert kraken_contracts(payload) == {}
+
+
+def test_kraken_liquidation_resolves_base_units_when_contract_known():
+    trades = parse_kraken_history({"history": [KRAKEN_LIQUIDATION_ROW]}, "PF_XBTUSD")
+    contract = KrakenContract(contract_size=1.0, kind="flexible_futures")
+    (liq,) = kraken_liquidations(trades, contract)
+    assert liq.size_unit == "base"
+    assert liq.qty_base == pytest.approx(1.5)
+    assert liq.notional == pytest.approx(1.5 * 85000.0)
+
+
+def test_kraken_liquidation_without_contract_stays_conservative():
+    trades = parse_kraken_history({"history": [KRAKEN_LIQUIDATION_ROW]}, "PF_XBTUSD")
+    (liq,) = kraken_liquidations(trades)  # no contract arg, same as before
+    assert liq.size_unit == "contracts"
+    assert liq.qty_base is None
+    assert liq.notional is None
+
+
+# --- K2: per-minute all-trade aggregate ---------------------------------------
+
+
+def test_aggregate_kraken_minutes_groups_by_symbol_and_minute():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    aggs = aggregate_kraken_minutes(trades)
+    # The fixture's 8 rows span two distinct minutes: 15:48 (4 rows at
+    # 85360/85360/85361/85361) and 15:49 (4 rows at 85328/85327/85327/85327).
+    assert len(aggs) == 2
+    by_min_price = {a.min_price: a for a in aggs}
+    m48 = by_min_price[85360.0]
+    assert m48.max_price == 85361.0
+    assert m48.trade_count == 4
+    assert m48.total_size == pytest.approx(0.0005 + 0.0002 + 0.0002 + 0.0002)
+    assert m48.liq_count == 0 and m48.liq_size == 0.0
+    m49 = by_min_price[85327.0]
+    assert m49.max_price == 85328.0
+    assert m49.trade_count == 4
+    assert m49.total_size == pytest.approx(0.0005 + 0.0011 + 0.0001 + 0.0001)
+
+
+def test_aggregate_kraken_minutes_near_wick_size_within_tolerance():
+    rows = [
+        {"time": "2026-01-01T00:00:00Z", "uid": "a", "price": 100.0, "size": 1.0, "side": "sell", "type": "fill"},
+        {"time": "2026-01-01T00:00:01Z", "uid": "b", "price": 100.019, "size": 2.0, "side": "sell", "type": "fill"},  # ~1.9bps from 100
+        {"time": "2026-01-01T00:00:02Z", "uid": "c", "price": 110.0, "size": 3.0, "side": "sell", "type": "fill"},  # far from min, is the max
+    ]
+    trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
+    (agg,) = aggregate_kraken_minutes(trades)
+    assert agg.min_price == 100.0
+    assert agg.max_price == 110.0
+    # a (0bps) and b (~1.9bps) both count toward size_near_min; c does not.
+    assert agg.size_near_min == pytest.approx(3.0)
+    # only c (the max itself) counts toward size_near_max.
+    assert agg.size_near_max == pytest.approx(3.0)
+
+
+def test_aggregate_kraken_minutes_counts_liquidation_rows_separately():
+    rows = [
+        {"time": "2026-01-01T00:00:00Z", "uid": "a", "price": 100.0, "size": 1.0, "side": "sell", "type": "fill"},
+        {"time": "2026-01-01T00:00:01Z", "uid": "b", "price": 99.0, "size": 2.0, "side": "sell", "type": "liquidation"},
+    ]
+    trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
+    (agg,) = aggregate_kraken_minutes(trades)
+    assert agg.trade_count == 2
+    assert agg.liq_count == 1
+    assert agg.liq_size == pytest.approx(2.0)
+
+
+def test_aggregate_kraken_minutes_is_pure_and_does_not_dedupe_itself():
+    # Dedup is the caller's job; handing the same trade twice double-counts
+    # here by design, which is exactly why the recorder dedupes by uid
+    # before calling this.
+    rows = [{"time": "2026-01-01T00:00:00Z", "uid": "a", "price": 100.0, "size": 1.0,
+             "side": "sell", "type": "fill"}]
+    trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
+    (agg,) = aggregate_kraken_minutes(trades + trades)
+    assert agg.trade_count == 2
+    assert agg.total_size == pytest.approx(2.0)
+
+
+# --- K2: per-symbol gap-aware coverage -----------------------------------------
+
+
+def test_kraken_coverage_minutes_empty_on_first_poll():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    assert kraken_coverage_minutes(None, trades, False) == []
+
+
+def test_kraken_coverage_minutes_empty_when_nothing_new_has_elapsed():
+    trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
+    newest = max(t.event_ts for t in trades)
+    assert kraken_coverage_minutes(newest, trades, False) == []
+
+
+def test_kraken_coverage_minutes_covers_the_stretch_since_last_poll():
+    rows = [
+        {"time": "2026-01-01T00:00:30Z", "uid": "a", "price": 1, "size": 1, "side": "sell", "type": "fill"},
+        {"time": "2026-01-01T00:05:10Z", "uid": "b", "price": 1, "size": 1, "side": "sell", "type": "fill"},
+    ]
+    trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
+    last_ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    minutes = kraken_coverage_minutes(last_ts, trades, False)
+    base = int(last_ts.timestamp())
+    # Whole minutes 00:01..00:04 have elapsed before the newest trade's own
+    # (still-open) minute 00:05; 00:00 isn't re-claimed (last_ts already in it).
+    assert [m - base for m, covered, _ in minutes] == [60, 120, 180, 240]
+    assert all(covered for _, covered, _ in minutes)
+    # rows_received counts trades landing in that minute; 00:00:30 is in the
+    # NOT-emitted minute 0, so every emitted minute here is quiet (0 rows).
+    assert all(n == 0 for _, _, n in minutes)
+
+
+def test_kraken_coverage_minutes_marks_the_whole_stretch_uncovered_on_a_gap():
+    rows = [
+        {"time": "2026-01-01T00:03:00Z", "uid": "a", "price": 1, "size": 1, "side": "sell", "type": "fill"},
+    ]
+    trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
+    last_ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    minutes = kraken_coverage_minutes(last_ts, trades, True)
+    base = int(last_ts.timestamp())
+    assert [(m - base, covered, n) for m, covered, n in minutes] == [
+        (60, False, 0),
+        (120, False, 0),
+    ]
 
 
 def test_kraken_gap_false_on_an_empty_poll():

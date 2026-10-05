@@ -360,13 +360,51 @@ def parse_kraken_history(payload: dict, symbol: str) -> list[KrakenTrade]:
     return out
 
 
-def kraken_liquidations(trades: list[KrakenTrade]) -> list[Liquidation]:
+@dataclass(frozen=True)
+class KrakenContract:
+    """What turns a Kraken size into a base-asset quantity (public/instruments).
+
+    Kraken's "flexible_futures" product (PF_*) is linear and base-denominated:
+    `contractSize` is in units of the underlying (1 for PF_XBTUSD/PF_ETHUSD —
+    confirmed live 2026-10-05, `tests/fixtures/liquidations/kraken_instruments.json`),
+    unlike the older PI_* inverse product where a contract is a fixed USD
+    notional. The real trade-history fixture's sizes (0.0001-0.0011) are
+    fractional BTC, consistent with base-denomination, not whole-USD contracts.
+    """
+
+    contract_size: float
+    kind: str  # e.g. "flexible_futures"
+
+
+def kraken_contracts(instruments_payload: dict) -> dict[str, KrakenContract]:
+    """`GET /derivatives/api/v3/instruments` → symbol → contract."""
+    out: dict[str, KrakenContract] = {}
+    for row in instruments_payload.get("instruments") or []:
+        try:
+            out[str(row["symbol"])] = KrakenContract(
+                contract_size=float(row["contractSize"]),
+                kind=str(row.get("type") or ""),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def kraken_liquidations(
+    trades: list[KrakenTrade], contract: KrakenContract | None = None
+) -> list[Liquidation]:
     """The subset worth storing: `type` is a (partial) liquidation.
 
     Side follows the same order-side convention as Binance/OKX (the forced
     order closing a long is a sell) since Kraken's docs don't say otherwise
     and the field is named identically; unverified against a real liquidated
     row, since none appeared in any sample pulled so far.
+
+    `contract` resolves size units: PF_* contracts are base-denominated
+    (see `KrakenContract`), so when it is known, `size_unit` is "base" and
+    `qty_base`/`notional` are derived; unknown contract keeps the old,
+    conservative "contracts"/None behaviour (same pattern as OKX's unknown
+    contract case).
     """
     out: list[Liquidation] = []
     for t in trades:
@@ -375,6 +413,14 @@ def kraken_liquidations(trades: list[KrakenTrade]) -> list[Liquidation]:
         side = _liquidated_side(t.side)
         if side is None or t.price <= 0 or t.size <= 0:
             continue
+        if contract is not None:
+            size_unit = "base"
+            qty_base = t.size * contract.contract_size
+            notional = qty_base * t.price
+        else:
+            size_unit = "contracts"
+            qty_base = None
+            notional = None
         out.append(
             Liquidation(
                 venue=KRAKEN,
@@ -383,9 +429,9 @@ def kraken_liquidations(trades: list[KrakenTrade]) -> list[Liquidation]:
                 side=side,
                 price=t.price,
                 size=t.size,
-                size_unit="contracts",
-                qty_base=None,
-                notional=None,
+                size_unit=size_unit,
+                qty_base=qty_base,
+                notional=notional,
                 source="rest",
                 raw=t.raw,
                 venue_trade_id=t.uid,
@@ -415,6 +461,125 @@ def kraken_gap(trades: list[KrakenTrade], last_ts: datetime | None) -> bool:
         return False
     oldest = min(t.event_ts for t in trades)
     return oldest > last_ts
+
+
+@dataclass(frozen=True)
+class KrakenMinuteAgg:
+    """One instrument-minute's worth of ALL trade prints, not just liquidations.
+
+    Built so R3-b can later ask "was there real, tradeable size at the 1m
+    candle's wick?" — a question the liquidation-flagged rows alone can't
+    answer. `size_near_min`/`size_near_max` are the size of prints within
+    `near_bps` of this aggregate's own min/max, which is exact for a minute
+    whose trades all arrive in one poll and a conservative (never inflated)
+    approximation when a busy minute's trades split across polls — see
+    `aggregate_kraken_minutes`.
+    """
+
+    symbol: str
+    minute: int  # epoch seconds, floor of the minute
+    min_price: float
+    max_price: float
+    trade_count: int
+    total_size: float
+    size_near_min: float
+    size_near_max: float
+    liq_count: int
+    liq_size: float
+
+
+KRAKEN_WICK_NEAR_BPS = 2.0
+
+
+def aggregate_kraken_minutes(
+    trades: list[KrakenTrade], near_bps: float = KRAKEN_WICK_NEAR_BPS
+) -> list[KrakenMinuteAgg]:
+    """Group ALREADY-DEDUPED (by uid) trades into one row per (symbol, minute).
+
+    Dedup is the caller's job (`ingestion/liquidation_recorder.py` tracks
+    seen uids across polls) — this function is pure aggregation and would
+    double-count a trade handed to it twice. `size_near_min`/`size_near_max`
+    are computed against THIS CALL's own min/max: when a minute's trades
+    split across two polls, a print near the eventual minute-low that isn't
+    near *this poll's* low is undercounted here, and the Postgres upsert
+    (storage/liquidation_store.py) sums the two calls' near-sizes rather than
+    recomputing them against the merged min/max — a documented, conservative
+    approximation, not an exact reconstruction.
+    """
+    groups: dict[tuple[str, int], list[KrakenTrade]] = {}
+    for t in trades:
+        key = (t.symbol, _floor_minute(t.event_ts.timestamp()))
+        groups.setdefault(key, []).append(t)
+    out: list[KrakenMinuteAgg] = []
+    near_frac = near_bps / 10_000.0
+    for (symbol, minute), rows in groups.items():
+        lo = min(r.price for r in rows)
+        hi = max(r.price for r in rows)
+        total_size = sum(r.size for r in rows)
+        near_min = sum(r.size for r in rows if lo > 0 and (r.price - lo) / lo <= near_frac)
+        near_max = sum(r.size for r in rows if hi > 0 and (hi - r.price) / hi <= near_frac)
+        liq_rows = [r for r in rows if r.type in KRAKEN_LIQUIDATION_TYPES]
+        out.append(
+            KrakenMinuteAgg(
+                symbol=symbol,
+                minute=minute,
+                min_price=lo,
+                max_price=hi,
+                trade_count=len(rows),
+                total_size=total_size,
+                size_near_min=near_min,
+                size_near_max=near_max,
+                liq_count=len(liq_rows),
+                liq_size=sum(r.size for r in liq_rows),
+            )
+        )
+    return out
+
+
+# A normal poll (every few seconds) never needs more than a couple of
+# minutes' worth of coverage rows. This bounds the pathological case — a
+# `last_ts` that is old for a reason other than a short-lived gap (a process
+# that sat dead for days before restarting with stale state) — so one call
+# can't emit an unbounded number of rows; the stretch older than the cap is
+# left unclaimed (neither covered nor an explicit gap row), same as the
+# "absence is the evidence" convention for the other venues.
+KRAKEN_COVERAGE_MAX_MINUTES = 1440  # 1 day
+
+
+def kraken_coverage_minutes(
+    last_ts: datetime | None, trades: list[KrakenTrade], gap: bool
+) -> list[tuple[int, bool, int]]:
+    """Whole minutes this poll can vouch for, since the previous poll.
+
+    `(minute_epoch, covered, rows_received)` per whole elapsed minute between
+    `last_ts` and the newest trade in this window — rows_received counts
+    every trade (not just liquidations) seen in that minute by this poll.
+    `covered` is False for the whole stretch when `kraken_gap` found one
+    anywhere in it (conservative: the gap's exact extent inside the stretch
+    is unknown, so none of it is claimed as proven), True otherwise. The
+    still-open minute containing the newest trade is never emitted — it
+    hasn't finished yet, matching `CoverageTracker`'s rule. The first poll
+    ever for a symbol (`last_ts is None`) claims nothing retroactively.
+    """
+    if last_ts is None or not trades:
+        return []
+    newest_minute = _floor_minute(max(t.event_ts for t in trades).timestamp())
+    start_minute = _floor_minute(last_ts.timestamp()) + 60
+    start_minute = max(start_minute, newest_minute - KRAKEN_COVERAGE_MAX_MINUTES * 60)
+    if start_minute >= newest_minute:
+        return []
+    counts: dict[int, int] = {}
+    for t in trades:
+        m = _floor_minute(t.event_ts.timestamp())
+        if start_minute <= m < newest_minute:
+            counts[m] = counts.get(m, 0) + 1
+    covered = not gap
+    out = []
+    minute = start_minute
+    while minute < newest_minute:
+        out.append((minute, covered, counts.get(minute, 0)))
+        minute += 60
+    return out
 
 
 def _floor_minute(t: float) -> int:

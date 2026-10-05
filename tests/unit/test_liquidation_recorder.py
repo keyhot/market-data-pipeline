@@ -2,8 +2,10 @@ import asyncio
 import threading
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from ingestion.liquidation_recorder import Buffer, LiquidationRecorder, recorder_enabled
-from ingestion.liquidations import parse_binance
+from ingestion.liquidations import KrakenContract, parse_binance
 from tests.unit.test_liquidations import BINANCE_FRAME, BYBIT_FRAME, KRAKEN_PAYLOAD, OKX_FRAME
 
 T0 = 1_790_650_800  # a whole minute
@@ -28,10 +30,12 @@ class Sink:
         self.fail = fail
         self.batches = []
 
-    def __call__(self, liquidations, coverage):
+    def __call__(self, liquidations, coverage, kraken_minutes=(), kraken_coverage=()):
         if self.fail:
             raise ConnectionError("postgres down")
-        self.batches.append((list(liquidations), list(coverage)))
+        self.batches.append(
+            (list(liquidations), list(coverage), list(kraken_minutes), list(kraken_coverage))
+        )
 
 
 def _recorder(sink=None, t=T0 - 5):
@@ -68,7 +72,7 @@ def test_a_minute_lands_in_the_same_batch_as_the_rows_received_in_it():
     clock.t = T0 + 61
     recorder.on_pong("binance")
     assert _flush(recorder)
-    (liquidations, coverage), = sink.batches
+    (liquidations, coverage, _km, _kc), = sink.batches
     assert len(liquidations) == 2
     assert coverage == [("binance", T0, 1)]
 
@@ -79,9 +83,9 @@ def test_a_row_arriving_during_a_failed_write_is_kept_with_the_batch():
     gate = threading.Event()
 
     class SlowFailingSink(Sink):
-        def __call__(self, liquidations, coverage):
+        def __call__(self, liquidations, coverage, kraken_minutes=(), kraken_coverage=()):
             gate.wait(5)
-            super().__call__(liquidations, coverage)
+            super().__call__(liquidations, coverage, kraken_minutes, kraken_coverage)
 
     sink = SlowFailingSink(fail=True)
     recorder, clock = _recorder(sink)
@@ -101,7 +105,7 @@ def test_a_row_arriving_during_a_failed_write_is_kept_with_the_batch():
     assert asyncio.run(scenario()) is False
     sink.fail = False
     assert _flush(recorder)
-    (liquidations, coverage), = sink.batches
+    (liquidations, coverage, _km, _kc), = sink.batches
     assert sorted(x.size for x in liquidations) == [7, 4012]
     assert coverage == [("binance", T0, 0)]
     assert recorder.buffer.rows_written == 2
@@ -152,7 +156,7 @@ def test_okx_data_rows_are_buffered_and_counted():
     clock.t = T0 + 61
     recorder.on_okx_frame("pong")
     _flush(recorder)
-    liquidations, coverage = sink.batches[0]
+    liquidations, coverage, _km, _kc = sink.batches[0]
     assert [x.venue for x in liquidations] == ["okx"]
     assert coverage == [("okx", T0, 1)]
 
@@ -168,7 +172,7 @@ def test_bybit_frames_flow_through_their_own_tracker():
     clock.t = T0 + 61
     recorder.on_bybit_frame(BYBIT_PONG)
     _flush(recorder)
-    liquidations, coverage = sink.batches[0]
+    liquidations, coverage, _km, _kc = sink.batches[0]
     assert [(x.venue, x.side) for x in liquidations] == [("bybit", "short")]
     assert coverage == [("bybit", T0, 1)]
 
@@ -254,6 +258,76 @@ def test_process_kraken_response_second_poll_only_forwards_rows_after_last_ts():
     assert new == []
     assert len(recorder.buffer.liquidations) == before
     assert recorder._kraken_last_ts["PF_XBTUSD"] == first_last_ts
+
+
+# --- K2: all-trade minute aggregate + per-symbol coverage --------------------
+
+
+def test_process_kraken_response_buffers_the_all_trade_minute_aggregate():
+    recorder, _ = _recorder()
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
+    # The fixture's 8 rows span two minutes (15:48 and 15:49 UTC).
+    assert len(recorder.buffer.kraken_minutes) == 2
+    assert sum(a.trade_count for a in recorder.buffer.kraken_minutes) == 8
+
+
+def test_process_kraken_response_does_not_double_count_a_minute_seen_twice():
+    # The exact gap the task flags: a minute polled twice (e.g. the window
+    # hasn't moved far enough yet) must contribute its trades to the
+    # aggregate exactly once, even though process_kraken_response runs
+    # twice over the same rows.
+    recorder, _ = _recorder()
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
+    first_total = sum(a.trade_count for a in recorder.buffer.kraken_minutes)
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)  # same window again
+    second_total = sum(a.trade_count for a in recorder.buffer.kraken_minutes)
+    assert first_total == 8
+    assert second_total == 8  # unchanged: no new aggregate rows were added
+
+
+def test_process_kraken_response_writes_kraken_coverage_once_last_ts_exists():
+    recorder, _ = _recorder()
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)  # first poll: no last_ts yet
+    assert recorder.buffer.kraken_coverage == []
+    later_row = {
+        **KRAKEN_PAYLOAD["history"][-1],
+        "uid": "later-trade",
+        "time": "2026-10-05T15:51:00.000000Z",  # a whole minute (15:50) has now elapsed
+    }
+    # Include the last-forwarded trade itself so the window still reaches
+    # back to last_ts (no gap) — only then does a later trade prove a
+    # whole intervening minute.
+    recorder.process_kraken_response(
+        "PF_XBTUSD", {"history": [KRAKEN_PAYLOAD["history"][-1], later_row]}
+    )
+    assert recorder.buffer.kraken_coverage  # non-empty: a minute was proven
+    assert all(covered for _, _, covered, _ in recorder.buffer.kraken_coverage)
+
+
+def test_process_kraken_response_marks_gap_minutes_uncovered():
+    recorder, _ = _recorder()
+    recorder._kraken_last_ts["PF_XBTUSD"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
+    assert recorder.buffer.kraken_coverage  # the gap stretch was still vouched for...
+    assert all(covered is False for _, _, covered, _ in recorder.buffer.kraken_coverage)
+
+
+def test_process_kraken_response_resolves_base_units_once_contracts_loaded():
+    recorder, _ = _recorder()
+    recorder.kraken_contracts["PF_XBTUSD"] = KrakenContract(
+        contract_size=1.0, kind="flexible_futures"
+    )
+    liquidation_row = {
+        **KRAKEN_PAYLOAD["history"][0],
+        "type": "liquidation",
+        "uid": "liq-base-units",
+        "time": "2026-10-05T15:49:10.000000Z",
+    }
+    payload = {"history": KRAKEN_PAYLOAD["history"] + [liquidation_row]}
+    recorder.process_kraken_response("PF_XBTUSD", payload)
+    (liq,) = recorder.buffer.liquidations
+    assert liq.size_unit == "base"
+    assert liq.qty_base == pytest.approx(liq.size)
 
 
 def test_kraken_rest_loop_survives_a_request_failure_and_keeps_polling(monkeypatch):
