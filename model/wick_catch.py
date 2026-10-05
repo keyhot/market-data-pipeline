@@ -196,14 +196,50 @@ def scale_tuples(tuples: np.ndarray, per_day: float, rng: np.random.Generator,
     return x.astype(int)
 
 
-def _lower_bounds(x, c, day, g, rng, n_boot, alpha=0.05):
+def boot_t_bounds(s, n, idx, alpha: float = 0.05, method: str = "t",
+                  _se_at_mhat: bool = False) -> dict:
+    """Day-clustered bound on the ratio mean sum(s)/sum(n) (Amendment 1, 2026-10-06).
+
+    s, n: per-day sums and counts; idx: (B, G) resampled day indices.
+    method "t" (the frozen-by-amendment test): studentized bootstrap with the
+    CR1 cluster SE, each resample's SE taken at that resample's OWN mean;
+    LB = m - q_{1-alpha}(t*) se. method "percentile" is the stage-A test, kept
+    only as the record / mutant. ``_se_at_mhat`` is a test-only bug mutant.
+    """
+    s, n = np.asarray(s, float), np.asarray(n, float)
+    g = len(s)
+    tot = max(n.sum(), 1.0)
+    m = float(s.sum() / tot)
+    ss, nn = s[idx], n[idx]
+    cnt = np.maximum(nn.sum(1), 1.0)
+    mb = ss.sum(1) / cnt
+    if method == "percentile":
+        return {"mean": m, "se": float(np.std(mb)), "lb": float(np.quantile(mb, alpha)),
+                "ci95": [float(np.quantile(mb, 0.025)), float(np.quantile(mb, 0.975))],
+                "degenerate": 0}
+    if method != "t":
+        raise ValueError(method)
+    f = g / (g - 1) if g > 1 else 1.0
+    se = float(np.sqrt(f * np.sum((s - m * n) ** 2)) / tot)
+    ref = np.full_like(mb, m) if _se_at_mhat else mb
+    seb = np.sqrt(f * np.sum((ss - ref[:, None] * nn) ** 2, axis=1)) / cnt
+    ok = seb > 0
+    t = (mb[ok] - m) / seb[ok]
+    if len(t) == 0:
+        return {"mean": m, "se": se, "lb": float("nan"), "ci95": [float("nan")] * 2,
+                "degenerate": int((~ok).sum())}
+    return {"mean": m, "se": se, "lb": float(m - np.quantile(t, 1 - alpha) * se),
+            "ci95": [float(m - np.quantile(t, 0.975) * se), float(m - np.quantile(t, 0.025) * se)],
+            "degenerate": int((~ok).sum())}
+
+
+def _lower_bounds(x, c, day, g, rng, n_boot, alpha=0.05, method="t"):
     s = np.bincount(day, weights=x, minlength=g)
     sd = np.bincount(day, weights=x - c, minlength=g)
     n = np.bincount(day, minlength=g).astype(float)
     idx = rng.integers(0, g, (n_boot, g))
-    cnt = np.maximum(n[idx].sum(1), 1.0)
-    return (float(np.quantile(s[idx].sum(1) / cnt, alpha)),
-            float(np.quantile(sd[idx].sum(1) / cnt, alpha)))
+    return (boot_t_bounds(s, n, idx, alpha, method=method)["lb"],
+            boot_t_bounds(sd, n, idx, alpha, method=method)["lb"])
 
 
 def _draw_window(effect, days, icc, rng, symbols=("PF_XBTUSD", "PF_ETHUSD")):
@@ -235,7 +271,7 @@ def _draw_window(effect, days, icc, rng, symbols=("PF_XBTUSD", "PF_ETHUSD")):
 
 def power(effect: float, tuples: np.ndarray, n_days: int, icc: float = 0.10,
           per_day: float | None = None, n_seeds: int = 300, n_boot: int = 999,
-          seed: int = 0, iid_bootstrap: bool = False) -> dict:
+          seed: int = 0, iid_bootstrap: bool = False, method: str = "t") -> dict:
     """Pass rates of the stage-B test (effect in bps, net) on synthetic windows."""
     rng = np.random.default_rng(seed)
     per_day = tuples[:, :2].sum(1).mean() if per_day is None else per_day
@@ -248,7 +284,7 @@ def power(effect: float, tuples: np.ndarray, n_days: int, icc: float = 0.10,
         if iid_bootstrap:
             day = np.arange(len(x))
         g = len(x) if iid_bootstrap else n_days
-        lb1, lb2 = _lower_bounds(x, c, day, max(g, 1), rng, n_boot)
+        lb1, lb2 = _lower_bounds(x, c, day, max(g, 1), rng, n_boot, method=method)
         prim += lb1 > 0
         pair += lb2 > 0
         joint += (lb1 > 0) and (lb2 > 0)
@@ -388,8 +424,12 @@ def plant_exit(bars: pd.DataFrame, fills: pd.DataFrame, bps: float, hold: int = 
 
 
 def cluster_bootstrap(x, c, day, n_boot: int = 9999, rng: np.random.Generator | None = None,
-                      alpha: float = 0.05) -> dict:
-    """Day-clustered percentile bootstrap of the pooled mean (x) and paired mean (x - c)."""
+                      alpha: float = 0.05, method: str = "t") -> dict:
+    """Day-clustered bootstrap of the pooled mean (x) and paired mean (x - c).
+
+    Default (Amendment 1): studentized bootstrap-t via ``boot_t_bounds``; the
+    stage-A percentile test is ``method="percentile"`` (record only).
+    """
     rng = np.random.default_rng(0) if rng is None else rng
     x, c = np.asarray(x, float), np.asarray(c, float)
     _, day = np.unique(np.asarray(day), return_inverse=True)
@@ -398,13 +438,14 @@ def cluster_bootstrap(x, c, day, n_boot: int = 9999, rng: np.random.Generator | 
     sd = np.bincount(day, weights=x - c, minlength=g)
     n = np.bincount(day, minlength=g).astype(float)
     idx = rng.integers(0, g, (n_boot, g))
-    cnt = np.maximum(n[idx].sum(1), 1.0)
-    bp, bd = s[idx].sum(1) / cnt, sd[idx].sum(1) / cnt
-    r = {"n": int(len(x)), "days": g, "mean_primary": float(x.mean()), "mean_paired": float((x - c).mean()),
-         "mean_control": float(c.mean()),
-         "lb_primary": float(np.quantile(bp, alpha)), "lb_paired": float(np.quantile(bd, alpha)),
-         "ci95_primary": [float(np.quantile(bp, 0.025)), float(np.quantile(bp, 0.975))],
-         "ci95_paired": [float(np.quantile(bd, 0.025)), float(np.quantile(bd, 0.975))]}
+    bp = boot_t_bounds(s, n, idx, alpha, method=method)
+    bd = boot_t_bounds(sd, n, idx, alpha, method=method)
+    r = {"n": int(len(x)), "days": g, "method": method, "mean_primary": float(x.mean()),
+         "mean_paired": float((x - c).mean()), "mean_control": float(c.mean()),
+         "lb_primary": bp["lb"], "lb_paired": bd["lb"],
+         "ci95_primary": bp["ci95"], "ci95_paired": bd["ci95"],
+         "se_primary": bp["se"], "se_paired": bd["se"],
+         "degenerate_resamples": bp["degenerate"] + bd["degenerate"]}
     r["pass"] = bool(r["lb_primary"] > 0 and r["lb_paired"] > 0)
     return r
 
