@@ -1,9 +1,12 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from model import predict as predict_module
 from model import train as train_module
+from model.calibration import calibrator_path
 from model.predict import NoModelArtifact, predict
 from model.train import train
 
@@ -156,6 +159,83 @@ def test_predict_empty_bars_returns_none(written, monkeypatch):
 
     assert predict("TESTCOIN", "1m", bars=pd.DataFrame()) is None
     assert written == []
+
+
+def test_a_matching_calibrator_rescales_the_published_probability(
+        written, monkeypatch):
+    metrics = _train_live(monkeypatch, quantile=0.8)
+    cutoff = metrics["confidence_cutoff"]
+    monkeypatch.setattr(predict_module, "_probability_up",
+                        lambda booster, features: 0.5 + max(cutoff * 1.5, 0.3))
+    path = calibrator_path("TESTCOIN", "1m")
+    path.write_text(json.dumps({
+        "method": "platt", "a": 0.1, "b": 0.0,
+        "model_version": metrics["model_version"],
+    }))
+
+    signal = predict("TESTCOIN", "1m", bars=_bars())
+
+    raw_p = 0.5 + max(cutoff * 1.5, 0.3)
+    assert signal["direction"] == "up"
+    # Shallow slope (a=0.1) pulls a confident raw p back toward 0.5 — the
+    # calibrated call is honest about being less sure than the raw model.
+    assert 0.5 < signal["probability"] < raw_p
+
+
+def test_a_matching_calibrator_rescales_a_down_call_too(written, monkeypatch):
+    """Direction is decided on raw p (down: raw_p < 0.5), but the published
+    probability must calibrate P(down) = 1 - calibrated P(up), not the raw
+    P(up) run through the calibrator directly — pinning this against a
+    mutation that drops the `if direction == "up" else 1 - calibrated_up`
+    branch and always publishes `calibrated_up`."""
+    metrics = _train_live(monkeypatch, quantile=0.8)
+    cutoff = metrics["confidence_cutoff"]
+    raw_p_up = 0.5 - max(cutoff * 1.5, 0.3)  # < 0.5 -> direction "down"
+    monkeypatch.setattr(predict_module, "_probability_up",
+                        lambda booster, features: raw_p_up)
+    path = calibrator_path("TESTCOIN", "1m")
+    path.write_text(json.dumps({
+        "method": "platt", "a": 0.1, "b": 0.0,
+        "model_version": metrics["model_version"],
+    }))
+
+    signal = predict("TESTCOIN", "1m", bars=_bars())
+
+    from model.calibration import apply_calibrator
+    calibrated_up = apply_calibrator(
+        raw_p_up, {"method": "platt", "a": 0.1, "b": 0.0})
+    assert signal["direction"] == "down"
+    assert signal["probability"] == pytest.approx(1 - calibrated_up)
+
+
+def test_a_version_mismatched_calibrator_is_ignored(written, monkeypatch):
+    metrics = _train_live(monkeypatch, quantile=0.8)
+    cutoff = metrics["confidence_cutoff"]
+    raw_p = 0.5 + max(cutoff * 1.5, 0.3)
+    monkeypatch.setattr(predict_module, "_probability_up",
+                        lambda booster, features: raw_p)
+    path = calibrator_path("TESTCOIN", "1m")
+    path.write_text(json.dumps({
+        "method": "platt", "a": 0.1, "b": 0.0,
+        "model_version": "not-the-live-version",
+    }))
+
+    signal = predict("TESTCOIN", "1m", bars=_bars())
+
+    # Fail-open: a calibrator for a different model_version is never applied.
+    assert signal["probability"] == pytest.approx(raw_p)
+
+
+def test_no_calibrator_artifact_falls_back_to_raw_p(written, monkeypatch):
+    metrics = _train_live(monkeypatch, quantile=0.8)
+    cutoff = metrics["confidence_cutoff"]
+    raw_p = 0.5 + max(cutoff * 1.5, 0.3)
+    monkeypatch.setattr(predict_module, "_probability_up",
+                        lambda booster, features: raw_p)
+
+    signal = predict("TESTCOIN", "1m", bars=_bars())
+
+    assert signal["probability"] == pytest.approx(raw_p)
 
 
 def test_the_model_reads_fifteen_minute_bars_rolled_to_now(written, monkeypatch):

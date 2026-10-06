@@ -20,6 +20,7 @@ import logging
 import lightgbm as lgb
 import pandas as pd
 
+from model.calibration import apply_calibrator, load_calibrator
 from model.features import DEFAULT_HORIZON_BARS, build_latest_features, roll_bars
 from model.train import latest_artifact, latest_metrics
 from storage.postgres_store import get_price_bars, get_signals
@@ -80,14 +81,26 @@ def predict(
                                                "p": round(probability_up, 4)})
         return {"held": "low_confidence"}
 
+    # Gating and direction above are decided on raw p — the holdout cutoff
+    # was measured against raw p's own distribution. Only the PUBLISHED
+    # probability is calibrated, so it means "how often does this actually
+    # resolve", not just "which side". Fail-open: no artifact, or one that
+    # doesn't match this exact model_version, means raw p ships unchanged.
+    direction = "up" if probability_up >= 0.5 else "down"
+    probability = probability_up if direction == "up" else 1 - probability_up
+    calibrator = load_calibrator(symbol, interval, version)
+    if calibrator is not None:
+        calibrated_up = apply_calibrator(probability_up, calibrator)
+        probability = calibrated_up if direction == "up" else 1 - calibrated_up
+
     signal = {
         "symbol": symbol.upper(),
         "interval": interval,
         "signal_timestamp": now.to_pydatetime(),
         "model_version": version,
         "horizon_bars": horizon_bars,
-        "direction": "up" if probability_up >= 0.5 else "down",
-        "probability": probability_up if probability_up >= 0.5 else 1 - probability_up,
+        "direction": direction,
+        "probability": probability,
     }
     write_signals([signal])
     logger.info("Signal written", extra={k: str(v) for k, v in signal.items()})
