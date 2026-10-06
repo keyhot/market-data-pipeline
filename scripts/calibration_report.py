@@ -179,6 +179,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--interval", default="1m")
+    parser.add_argument("--cache", type=Path, default=None,
+                        help="OOS predictions cache to read (default: "
+                             "model/artifacts/oos_{symbol}_{interval}.csv)")
     parser.add_argument("--method", choices=("platt", "isotonic"), default=None,
                         help="skip the pick-lowest-log-loss rule, force this method")
     parser.add_argument("--write", action="store_true",
@@ -189,7 +192,7 @@ def main() -> None:
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
-    cache = CACHE_DIR / f"oos_{symbol}_{args.interval}.csv"
+    cache = args.cache or CACHE_DIR / f"oos_{symbol}_{args.interval}.csv"
     if not cache.exists():
         print(f"no cached OOS predictions at {cache} "
               f"(run scripts/confidence_report.py --symbol {symbol} first)")
