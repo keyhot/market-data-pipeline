@@ -26,6 +26,13 @@ from storage.postgres_store import get_price_bars
 
 TEST_YEARS = (2022, 2023, 2024, 2025)
 HORIZON = 1
+CACHE_DIR = Path(__file__).resolve().parent.parent / "model" / "artifacts"
+
+# E6 (vault Docs/model-improvement-plan.md "Current plan v2"): every
+# candidate since L1 cuts bars at 2026-01-01 and 2026 is read at most once,
+# never for selection. Extracted to its own function (rather than inlined in
+# main()) so collect_cached() enforces it too, not only the CLI path.
+SEALED_HOLDOUT_START = pd.Timestamp("2026-01-01", tz="UTC")
 
 
 def auc(y: np.ndarray, p: np.ndarray) -> float:
@@ -35,12 +42,20 @@ def auc(y: np.ndarray, p: np.ndarray) -> float:
     return float((ranks[pos].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
 
 
-def collect(bars: pd.DataFrame) -> pd.DataFrame:
+def exclude_sealed_holdout(bars: pd.DataFrame) -> pd.DataFrame:
+    """Drop every bar at or after the sealed 2026 holdout (E6). Both the CLI
+    path and collect_cached() funnel through here so nothing can read the
+    sealed window by skipping main()."""
+    stamps = pd.to_datetime(bars["timestamp"], utc=True)
+    return bars[stamps < SEALED_HOLDOUT_START].reset_index(drop=True)
+
+
+def collect(bars: pd.DataFrame, test_years=TEST_YEARS) -> pd.DataFrame:
     feats = build_features(bars, horizon_bars=HORIZON)
     X, y = feats.X, feats.y
     years = X.index.year
     chunks = []
-    for year in TEST_YEARS:
+    for year in test_years:
         test = np.flatnonzero(years == year)
         train_end = test[0] - HORIZON  # purge: the last label peeks one bar
         booster = lgb.train(
@@ -48,12 +63,32 @@ def collect(bars: pd.DataFrame) -> pd.DataFrame:
             num_boost_round=_NUM_ROUNDS,
         )
         chunks.append(pd.DataFrame({
-            "year": year, "p": booster.predict(X.iloc[test]),
+            "ts": X.index[test],
+            "year": year,
+            "fold": year,
+            "p": booster.predict(X.iloc[test]),
             "y": y.iloc[test].to_numpy(),
-        }, index=X.index[test]))
+        }))
         print(f"  {year}: trained on {train_end:,} rows, tested {len(test):,}",
               flush=True)
-    return pd.concat(chunks)
+    return pd.concat(chunks, ignore_index=True)
+
+
+def collect_cached(
+    bars: pd.DataFrame, cache: Path, test_years=TEST_YEARS, refresh: bool = False,
+) -> pd.DataFrame:
+    """Cache collect()'s per-row OOS predictions to `cache` (columns
+    ts/year/fold/p/y — the same shape scripts/confidence_report.py's
+    oos_{symbol}_{interval}.csv cache uses, so
+    scripts/calibration_report.py reads either unmodified). Refitting
+    LightGBM per test year is the expensive part; reused across runs until
+    `refresh=True`."""
+    if cache.exists() and not refresh:
+        return pd.read_csv(cache, parse_dates=["ts"])
+    oos = collect(bars, test_years=test_years)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    oos.to_csv(cache, index=False)
+    return oos
 
 
 def report(oos: pd.DataFrame) -> None:
@@ -87,12 +122,23 @@ def report(oos: pd.DataFrame) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", required=True)
+    parser.add_argument(
+        "--cache", type=Path, default=None,
+        help="cache per-row OOS predictions here (default: "
+             "model/artifacts/oos_{symbol}_15m_h1.csv); reused until --refresh",
+    )
+    parser.add_argument("--refresh", action="store_true",
+                        help="recollect even when the cache exists")
     args = parser.parse_args()
-    bars = pd.DataFrame(get_price_bars(args.symbol, "15m", 10_000_000))
-    stamps = pd.to_datetime(bars["timestamp"], utc=True)
-    bars = bars[stamps < "2026-01-01"]  # E6: 2026 is never read here
-    print(f"{args.symbol}: {len(bars):,} 15m bars through 2025")
-    report(collect(bars))
+    symbol = args.symbol.upper()
+    cache = args.cache or CACHE_DIR / f"oos_{symbol}_15m_h1.csv"
+
+    bars = pd.DataFrame(get_price_bars(symbol, "15m", 10_000_000))
+    bars = exclude_sealed_holdout(bars)  # E6: 2026 is never read here
+    print(f"{symbol}: {len(bars):,} 15m bars through 2025")
+    oos = collect_cached(bars, cache, refresh=args.refresh)
+    print(f"({'refreshed' if args.refresh else 'cached/loaded'} -> {cache})")
+    report(oos)
 
 
 if __name__ == "__main__":
