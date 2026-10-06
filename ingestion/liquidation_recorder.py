@@ -219,6 +219,7 @@ class Buffer:
         if overflow > 0:
             del self.liquidations[:overflow]
             self.coverage.clear()
+            self.kraken_coverage.clear()
             self.rows_dropped += overflow
             logger.error(
                 "Liquidation buffer overflowed; oldest rows and pending coverage dropped",
@@ -261,6 +262,13 @@ class LiquidationRecorder:
         # polled successfully yet", which also silences gap detection (there
         # is nothing to have a gap relative to).
         self._kraken_last_ts: dict[str, datetime | None] = {
+            s: None for s in self._kraken_symbols
+        }
+        # First minute (epoch s) not yet written to liquidation_coverage_kraken,
+        # per symbol — its own cursor, NOT "the minute after last_ts" (KI-104:
+        # that skipped the minute last_ts sat in, i.e. every minute that had
+        # a trade). None until the first poll returns trades.
+        self._kraken_cover_from: dict[str, int | None] = {
             s: None for s in self._kraken_symbols
         }
         self.kraken_gaps: dict[str, int] = {s: 0 for s in self._kraken_symbols}
@@ -341,7 +349,9 @@ class LiquidationRecorder:
                 },
             )
 
-        minutes = kraken_coverage_minutes(last_ts, trades, gap)
+        minutes, self._kraken_cover_from[symbol] = kraken_coverage_minutes(
+            self._kraken_cover_from.get(symbol), trades, gap
+        )
         if minutes:
             self.buffer.cover_kraken(symbol, minutes)
 

@@ -306,7 +306,9 @@ def test_process_kraken_response_writes_kraken_coverage_once_last_ts_exists():
 
 def test_process_kraken_response_marks_gap_minutes_uncovered():
     recorder, _ = _recorder()
-    recorder._kraken_last_ts["PF_XBTUSD"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    stale = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    recorder._kraken_last_ts["PF_XBTUSD"] = stale
+    recorder._kraken_cover_from["PF_XBTUSD"] = int(stale.timestamp())
     recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
     assert recorder.buffer.kraken_coverage  # the gap stretch was still vouched for...
     assert all(covered is False for _, _, covered, _ in recorder.buffer.kraken_coverage)
@@ -355,3 +357,80 @@ def test_kraken_rest_loop_survives_a_request_failure_and_keeps_polling(monkeypat
 
     asyncio.run(scenario())
     assert calls["n"] >= 2  # the failed first call did not kill the loop
+
+
+# --- KI-104: coverage must claim every elapsed minute, not just trade-less ones
+#
+# Live 2026-10-06: polls every 5s on a market that prints every minute left
+# `liquidation_coverage_kraken` with ONE row in 2.5h (PF_ETHUSD 01:29, the
+# only minute with zero trades) because coverage was measured from the
+# minute AFTER the previous poll's newest trade — so the minute that trade
+# sat in (still open at the time) was never claimed by any poll.
+
+_KBASE = datetime(2026, 10, 6, 1, 0, 0, tzinfo=timezone.utc)
+
+
+def _kraken_rows(seconds):
+    return {
+        "history": [
+            {
+                "time": (_KBASE + timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                "uid": f"u{s}",
+                "price": 100.0,
+                "size": 1.0,
+                "side": "buy",
+                "type": "fill",
+            }
+            for s in sorted(seconds, reverse=True)
+        ]
+    }
+
+
+def _kraken_coverage_by_minute(recorder, symbol):
+    base = int(_KBASE.timestamp())
+    return [
+        ((m - base) // 60, covered)
+        for s, m, covered, _ in recorder.buffer.kraken_coverage
+        if s == symbol
+    ]
+
+
+def test_kraken_coverage_claims_every_whole_minute_on_a_market_that_prints_every_minute():
+    recorder, _ = _recorder()
+    trade_times = [s * 2 for s in range(0, 121)]  # a print every 2s, 00:00:00..00:04:00
+    for poll_at in range(5, 241, 5):  # a poll every 5s
+        window = [t for t in trade_times if t <= poll_at][-100:]
+        for symbol in ("PF_XBTUSD", "PF_ETHUSD"):
+            recorder.process_kraken_response(symbol, _kraken_rows(window))
+    assert recorder.kraken_gaps == {"PF_XBTUSD": 0, "PF_ETHUSD": 0}
+    for symbol in ("PF_XBTUSD", "PF_ETHUSD"):
+        # The first poll's own open minute (00:00) may predate its window, so
+        # it is never claimed; every later whole minute that has closed is.
+        assert _kraken_coverage_by_minute(recorder, symbol) == [
+            (1, True),
+            (2, True),
+            (3, True),
+        ]
+
+
+def test_kraken_gap_whose_lost_trades_fall_in_the_newest_minute_is_never_claimed_covered():
+    # The live gap shape (last_ts 03:32:58 -> oldest_in_window 03:33:00.8):
+    # the lost stretch reaches into the window's own newest, still-open
+    # minute, so that minute must be written false and never re-claimed.
+    recorder, _ = _recorder()
+    recorder.process_kraken_response("PF_XBTUSD", _kraken_rows([10, 30, 58]))
+    recorder.process_kraken_response("PF_XBTUSD", _kraken_rows([61, 70, 80]))  # gap
+    assert recorder.kraken_gaps["PF_XBTUSD"] == 1
+    recorder.process_kraken_response("PF_XBTUSD", _kraken_rows([80, 100, 125]))
+    recorder.process_kraken_response("PF_XBTUSD", _kraken_rows([125, 150, 185]))
+    assert _kraken_coverage_by_minute(recorder, "PF_XBTUSD") == [(1, False), (2, True)]
+
+
+def test_buffer_overflow_drops_pending_kraken_coverage_too():
+    # Overflow drops liquidation rows, so no minute they may have sat in can
+    # still be claimed as covered — Kraken's coverage included.
+    buffer = Buffer(max_rows=1)
+    buffer.cover_kraken("PF_XBTUSD", [(T0, True, 3)])
+    rows = parse_binance(BINANCE_FRAME)
+    buffer.add(rows + rows)
+    assert buffer.kraken_coverage == []
