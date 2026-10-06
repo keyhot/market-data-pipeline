@@ -1,12 +1,17 @@
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from model.backtest import BacktestConfig
 from scripts.confidence_report import (
+    LN2,
     auc,
     bucket_table,
     find_episodes,
+    log_loss_report,
+    log_loss_score,
     position_table,
     round_trip_cost,
     selection_value,
@@ -122,6 +127,53 @@ def test_selection_value_is_the_edge_over_being_long_every_bar():
 def test_selection_value_is_zero_when_confidence_selects_nothing_special():
     oos = _oos(p=[0.9, 0.9, 0.1, 0.1], fwd=[0.001] * 4)
     assert selection_value(oos, 0.80) == 0.0
+
+
+def test_log_loss_score_matches_hand_computation():
+    # y=1,p=0.8 -> -ln(0.8); y=0,p=0.2 -> -ln(1-0.2) = -ln(0.8); mean of both.
+    ll = log_loss_score(np.array([1.0, 0.0]), np.array([0.8, 0.2]))
+    assert ll == pytest.approx(-math.log(0.8))
+
+
+def test_log_loss_score_clips_extreme_probabilities_instead_of_blowing_up():
+    """KI: an unclipped log loss gives -inf/inf at p=0 or p=1 (log(0)). This is
+    the mutation check — removing the clip must fail this test."""
+    ll = log_loss_score(np.array([0.0, 1.0]), np.array([1.0, 0.0]))
+    assert math.isfinite(ll)
+    # clipped to ~1e-15, so the per-row term is ~-ln(1e-15); 1-(1-1e-15) loses
+    # a little precision in float64, so allow a wider relative tolerance
+    assert ll == pytest.approx(-math.log(1e-15), rel=1e-4)
+
+
+def test_coin_flip_log_loss_is_ln2():
+    assert LN2 == pytest.approx(0.6931471805599453)
+
+
+def test_log_loss_report_perfectly_calibrated_constant_predictor_scores_zero_skill():
+    y = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # mean 0.1
+    p = np.full_like(y, 0.1)
+    report = log_loss_report(y, p)
+    assert report["log_loss_skill"] == pytest.approx(0.0, abs=1e-12)
+    assert report["log_loss"] == pytest.approx(report["base_rate_log_loss"])
+    assert report["base_rate_source"] == "eval"
+    assert report["base_rate"] == pytest.approx(0.1)
+    assert report["coin_flip_log_loss"] == pytest.approx(LN2)
+
+
+def test_log_loss_report_uses_the_training_base_rate_when_given():
+    y = np.array([1.0, 0.0, 1.0, 1.0])
+    p = np.array([0.9, 0.1, 0.9, 0.9])
+    report = log_loss_report(y, p, base_rate=0.3)
+    assert report["base_rate"] == pytest.approx(0.3)
+    assert report["base_rate_source"] == "train"
+
+
+def test_log_loss_report_skill_is_positive_when_model_beats_the_base_rate():
+    y = np.array([1.0, 0.0, 1.0, 0.0, 1.0, 0.0])  # base rate 0.5
+    p = np.array([0.9, 0.1, 0.9, 0.1, 0.9, 0.1])  # confident and correct
+    report = log_loss_report(y, p)
+    assert report["log_loss_skill"] > 0
+    assert report["log_loss"] < report["base_rate_log_loss"]
 
 
 def test_within_fold_lift_finds_ranking_a_global_threshold_would_miss():
