@@ -77,6 +77,49 @@ def _forward_returns(
     return fwd.loc[index].to_numpy()
 
 
+LN2 = float(np.log(2))  # coin-flip log loss: the reference every LL below is judged against
+
+
+def log_loss_score(y: np.ndarray, p: np.ndarray) -> float:
+    """Mean binary log loss. `p` is clipped to [1e-15, 1-1e-15] first — an
+    unclipped p of exactly 0 or 1 on the wrong side gives log(0) = -inf,
+    which would make one mispredicted row dominate the whole metric."""
+    y = np.asarray(y, dtype=float)
+    p = np.clip(np.asarray(p, dtype=float), 1e-15, 1 - 1e-15)
+    return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+
+
+def log_loss_report(
+    y: np.ndarray, p: np.ndarray, base_rate: float | None = None
+) -> dict:
+    """Log loss plus the two numbers that make it legible: the base-rate
+    constant predictor's log loss, and the coin-flip reference ln 2.
+
+    `base_rate` is the constant p the base-rate predictor uses. Pass the
+    TRAINING side's mean(y) when you have it (`base_rate_source` reports
+    "train"); omit it to fall back to the EVALUATED sample's own mean(y)
+    (`base_rate_source` reports "eval") — the same convention already used
+    for the Brier skill score above.
+
+    `log_loss_skill` = 1 - log_loss / base_rate_log_loss: 0 means no better
+    than guessing the base rate, negative means worse, matching the sign
+    convention of the Brier skill score.
+    """
+    y = np.asarray(y, dtype=float)
+    ll = log_loss_score(y, p)
+    source = "train" if base_rate is not None else "eval"
+    rate = float(base_rate) if base_rate is not None else float(y.mean())
+    base_ll = log_loss_score(y, np.full_like(y, rate))
+    return {
+        "log_loss": ll,
+        "base_rate": rate,
+        "base_rate_source": source,
+        "base_rate_log_loss": base_ll,
+        "coin_flip_log_loss": LN2,
+        "log_loss_skill": 1 - ll / base_ll if base_ll else float("nan"),
+    }
+
+
 def auc(y: np.ndarray, p: np.ndarray) -> float:
     """Rank-based ROC AUC. 0.5 is a coin flip; NaN when one class is absent."""
     y = np.asarray(y)
@@ -312,6 +355,13 @@ def _print_report(oos: pd.DataFrame, closes: pd.Series, config: BacktestConfig,
           f"best constant predictor: {max(base, 1 - base):.4f}")
     print(f"Brier: {brier:.4f}   base-rate Brier: {brier_base:.4f}   "
           f"skill score: {1 - brier / brier_base:+.4f}")
+
+    ll = log_loss_report(oos.y.to_numpy(), oos.p.to_numpy())
+    print(f"log loss: {ll['log_loss']:.4f}   "
+          f"base-rate ({ll['base_rate_source']}-mean p={ll['base_rate']:.4f}) "
+          f"log loss: {ll['base_rate_log_loss']:.4f}   "
+          f"coin-flip ln2: {ll['coin_flip_log_loss']:.4f}   "
+          f"skill score: {ll['log_loss_skill']:+.4f}")
 
     absolute = oos.fwd.abs()
     print(f"|{config.horizon_bars}-bar move|: "
