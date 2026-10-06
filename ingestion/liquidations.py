@@ -547,39 +547,61 @@ KRAKEN_COVERAGE_MAX_MINUTES = 1440  # 1 day
 
 
 def kraken_coverage_minutes(
-    last_ts: datetime | None, trades: list[KrakenTrade], gap: bool
-) -> list[tuple[int, bool, int]]:
-    """Whole minutes this poll can vouch for, since the previous poll.
+    next_minute: int | None, trades: list[KrakenTrade], gap: bool
+) -> tuple[list[tuple[int, bool, int]], int | None]:
+    """Whole minutes this poll can vouch for, and the new claim cursor.
 
-    `(minute_epoch, covered, rows_received)` per whole elapsed minute between
-    `last_ts` and the newest trade in this window — rows_received counts
-    every trade (not just liquidations) seen in that minute by this poll.
+    `next_minute` is the symbol's first minute not yet claimed (epoch s,
+    floored) — a cursor of its OWN, not derived from the last forwarded
+    trade's timestamp. Deriving it as "the minute after `last_ts`" (KI-104)
+    skipped the minute `last_ts` sat in: that minute was still open when the
+    previous poll saw it, and the next poll started one minute later, so on
+    a market that prints every minute NO minute was ever claimed — live, the
+    only row in 2.5h was the one minute with zero trades.
+
+    Returns `([(minute_epoch, covered, rows_received), ...], next_minute')`:
+    one row per whole minute from `next_minute` up to (not including) the
+    still-open minute holding this window's newest trade — it hasn't
+    finished, matching `CoverageTracker`'s rule. `rows_received` counts the
+    trades THIS poll's window holds in that minute (diagnostic only; it
+    undercounts a minute whose start predates the window — earlier polls
+    saw those trades).
+
     `covered` is False for the whole stretch when `kraken_gap` found one
-    anywhere in it (conservative: the gap's exact extent inside the stretch
-    is unknown, so none of it is claimed as proven), True otherwise. The
-    still-open minute containing the newest trade is never emitted — it
-    hasn't finished yet, matching `CoverageTracker`'s rule. The first poll
-    ever for a symbol (`last_ts is None`) claims nothing retroactively.
+    (conservative: the gap's exact extent is unknown). On a gap the lost
+    trades lie between the previous `last_ts` and this window's oldest
+    trade, which can fall INSIDE the still-open newest minute, so the false
+    stretch runs through the oldest trade's minute and the cursor moves past
+    it — that minute is written false now and never re-claimed as covered.
+
+    The first poll for a symbol (`next_minute is None`) claims nothing: its
+    window's newest minute may begin before the window does, so the cursor
+    starts one minute after it.
     """
-    if last_ts is None or not trades:
-        return []
+    if not trades:
+        return [], next_minute
     newest_minute = _floor_minute(max(t.event_ts for t in trades).timestamp())
-    start_minute = _floor_minute(last_ts.timestamp()) + 60
-    start_minute = max(start_minute, newest_minute - KRAKEN_COVERAGE_MAX_MINUTES * 60)
-    if start_minute >= newest_minute:
-        return []
+    if next_minute is None:
+        return [], newest_minute + 60
+    end_minute = newest_minute
+    if gap:
+        oldest_minute = _floor_minute(min(t.event_ts for t in trades).timestamp())
+        end_minute = max(end_minute, oldest_minute + 60)
+    start_minute = max(next_minute, end_minute - KRAKEN_COVERAGE_MAX_MINUTES * 60)
+    if start_minute >= end_minute:
+        return [], next_minute
     counts: dict[int, int] = {}
     for t in trades:
         m = _floor_minute(t.event_ts.timestamp())
-        if start_minute <= m < newest_minute:
+        if start_minute <= m < end_minute:
             counts[m] = counts.get(m, 0) + 1
     covered = not gap
     out = []
     minute = start_minute
-    while minute < newest_minute:
+    while minute < end_minute:
         out.append((minute, covered, counts.get(minute, 0)))
         minute += 60
-    return out
+    return out, end_minute
 
 
 def _floor_minute(t: float) -> int:

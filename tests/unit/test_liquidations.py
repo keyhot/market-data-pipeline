@@ -458,33 +458,45 @@ def test_aggregate_kraken_minutes_is_pure_and_does_not_dedupe_itself():
 # --- K2: per-symbol gap-aware coverage -----------------------------------------
 
 
-def test_kraken_coverage_minutes_empty_on_first_poll():
+def _minute_of(ts: datetime) -> int:
+    return int(ts.timestamp() // 60) * 60
+
+
+def test_kraken_coverage_minutes_first_poll_claims_nothing_and_starts_the_cursor():
     trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
-    assert kraken_coverage_minutes(None, trades, False) == []
+    newest_minute = _minute_of(max(t.event_ts for t in trades))
+    # The newest minute may begin before the window does: not claimable.
+    assert kraken_coverage_minutes(None, trades, False) == ([], newest_minute + 60)
 
 
 def test_kraken_coverage_minutes_empty_when_nothing_new_has_elapsed():
     trades = parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")
-    newest = max(t.event_ts for t in trades)
-    assert kraken_coverage_minutes(newest, trades, False) == []
+    cursor = _minute_of(max(t.event_ts for t in trades))  # newest minute still open
+    assert kraken_coverage_minutes(cursor, trades, False) == ([], cursor)
+    assert kraken_coverage_minutes(cursor, [], False) == ([], cursor)
 
 
-def test_kraken_coverage_minutes_covers_the_stretch_since_last_poll():
+def test_kraken_coverage_minutes_claims_the_minute_the_last_poll_left_open():
+    # KI-104: the previous poll's newest trade sat in 00:00, still open then,
+    # so the cursor is 00:00 and THIS poll must claim it — the old
+    # "minute after last_ts" rule skipped it, and on a market that prints
+    # every minute that skipped every minute.
     rows = [
         {"time": "2026-01-01T00:00:30Z", "uid": "a", "price": 1, "size": 1, "side": "sell", "type": "fill"},
         {"time": "2026-01-01T00:05:10Z", "uid": "b", "price": 1, "size": 1, "side": "sell", "type": "fill"},
     ]
     trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
-    last_ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    minutes = kraken_coverage_minutes(last_ts, trades, False)
-    base = int(last_ts.timestamp())
-    # Whole minutes 00:01..00:04 have elapsed before the newest trade's own
-    # (still-open) minute 00:05; 00:00 isn't re-claimed (last_ts already in it).
-    assert [m - base for m, covered, _ in minutes] == [60, 120, 180, 240]
-    assert all(covered for _, covered, _ in minutes)
-    # rows_received counts trades landing in that minute; 00:00:30 is in the
-    # NOT-emitted minute 0, so every emitted minute here is quiet (0 rows).
-    assert all(n == 0 for _, _, n in minutes)
+    base = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+    minutes, cursor = kraken_coverage_minutes(base, trades, False)
+    # 00:00..00:04 have closed before the newest trade's own minute 00:05.
+    assert [(m - base, covered, n) for m, covered, n in minutes] == [
+        (0, True, 1),
+        (60, True, 0),
+        (120, True, 0),
+        (180, True, 0),
+        (240, True, 0),
+    ]
+    assert cursor - base == 300  # 00:05 is claimed next time, once closed
 
 
 def test_kraken_coverage_minutes_marks_the_whole_stretch_uncovered_on_a_gap():
@@ -492,13 +504,17 @@ def test_kraken_coverage_minutes_marks_the_whole_stretch_uncovered_on_a_gap():
         {"time": "2026-01-01T00:03:00Z", "uid": "a", "price": 1, "size": 1, "side": "sell", "type": "fill"},
     ]
     trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
-    last_ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    minutes = kraken_coverage_minutes(last_ts, trades, True)
-    base = int(last_ts.timestamp())
+    base = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+    minutes, cursor = kraken_coverage_minutes(base, trades, True)
+    # The lost trades precede 00:03:00 and may share its minute, so the
+    # false stretch runs through 00:03 even though 00:03 is still open.
     assert [(m - base, covered, n) for m, covered, n in minutes] == [
+        (0, False, 0),
         (60, False, 0),
         (120, False, 0),
+        (180, False, 1),
     ]
+    assert cursor - base == 240
 
 
 def test_kraken_gap_false_on_an_empty_poll():
