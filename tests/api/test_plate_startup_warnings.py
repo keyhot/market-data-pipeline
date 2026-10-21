@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.main as main
+import api.routers.world as world_router
 from world.plate import load_manifest
 
 MANIFEST = Path(main.__file__).resolve().parent / "static" / "world-plate-btc-eth.json"
@@ -34,7 +35,7 @@ def _warnings_for(monkeypatch, caplog, tmp_path, edit) -> list[str]:
     path.write_text(json.dumps(raw))
     manifest = load_manifest(path)
     assert manifest is not None, "the edited manifest no longer loads at all"
-    monkeypatch.setattr(main, "load_manifest", lambda: manifest)
+    monkeypatch.setattr(world_router, "load_manifest", lambda: manifest)
     with caplog.at_level(logging.WARNING, logger=main.logger.name):
         assert client.get("/world").status_code == 200
     return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
@@ -76,7 +77,7 @@ def test_the_banner_copy_checked_is_the_copy_the_page_draws():
     """The overflow check is only as good as its text: it must be the
     template's own sentence behind the page's own symbol prefix, not a
     second copy of it that can drift."""
-    copy = main._banner_copy(["BTCUSDT", "ETHUSDT"])
+    copy = world_router._banner_copy(["BTCUSDT", "ETHUSDT"])
     assert copy.startswith("BTC · ETH — ")
     page = " ".join(client.get("/world").text.split())
     assert copy.removeprefix("BTC · ETH — ") in page

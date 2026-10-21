@@ -27,7 +27,7 @@ def _log():
 
 
 def test_events_flow_through_projection_to_endpoint():
-    with patch("api.main.get_world_events", return_value=_log()):
+    with patch("api.routers.world.get_world_events", return_value=_log()):
         data = client.get("/world/state").json()["data"]
 
     assert data["event_count"] == 3
@@ -60,8 +60,8 @@ def test_endpoint_state_matches_the_pure_projection():
     # the API layer — still holds.
     accuracy = {"window": 50, "resolved": 0, "wins": 0, "losses": 0,
                 "hit_rate": None, "per_symbol": {}}
-    with patch("api.main.get_world_events", return_value=_log()), \
-            patch("api.main.get_model_accuracy", return_value=accuracy):
+    with patch("api.routers.world.get_world_events", return_value=_log()), \
+            patch("api.routers.world.get_model_accuracy", return_value=accuracy):
         served = client.get("/world/state").json()["data"]
     direct = attach_reactions(project_state(_log()))
 

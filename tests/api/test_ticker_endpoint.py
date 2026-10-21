@@ -9,7 +9,7 @@ from config.exceptions import NoDataFoundError
 client = TestClient(app)
 
 
-@patch("api.main.fetch_ticker_async")
+@patch("api.routers.market.fetch_ticker_async")
 def test_fetch_ticker_success(mock_fetch):
     mock_fetch.return_value = pd.DataFrame({"Close": [100, 101]})
 
@@ -23,7 +23,7 @@ def test_fetch_ticker_success(mock_fetch):
     assert json_data["data"]["rows"] == 2
 
 
-@patch("api.main.fetch_ticker_async")
+@patch("api.routers.market.fetch_ticker_async")
 def test_fetch_ticker_no_data(mock_fetch):
     mock_fetch.side_effect = NoDataFoundError("No data returned")
 
@@ -38,12 +38,12 @@ def test_fetch_ticker_invalid_time_range():
     assert response.status_code == 422
 
 
-@patch("api.main.fetch_ticker_async")
+@patch("api.routers.market.fetch_ticker_async")
 def test_ticker_skips_csv_when_flag_disabled(mock_fetch, monkeypatch):
     monkeypatch.setenv("CSV_WRITE_ENABLED", "0")
     mock_fetch.return_value = pd.DataFrame({"Close": [100, 101]})
 
-    with patch("api.main.save_csv") as save:
+    with patch("api.routers.market.save_csv") as save:
         response = client.get("/ticker/AAPL/1d")
 
     assert response.status_code == 200
@@ -51,8 +51,8 @@ def test_ticker_skips_csv_when_flag_disabled(mock_fetch, monkeypatch):
     assert "file_path" not in response.json()["data"]
 
 
-@patch("api.main.csv_write_enabled", return_value=False)
-@patch("api.main.fetch_ticker_async")
+@patch("api.routers.market.csv_write_enabled", return_value=False)
+@patch("api.routers.market.fetch_ticker_async")
 def test_the_postgres_write_runs_off_the_event_loop(mock_fetch, _csv):
     # KI-080: the handler is async, so a synchronous write on a stalled
     # database socket froze the whole event loop — every request, /health
@@ -70,8 +70,8 @@ def test_the_postgres_write_runs_off_the_event_loop(mock_fetch, _csv):
             seen["on_loop"] = False
 
     with (
-        patch("api.main.write_price_bars", side_effect=write),
-        patch("api.main.get_default_provider") as provider,
+        patch("api.routers.market.write_price_bars", side_effect=write),
+        patch("api.routers.market.get_default_provider") as provider,
     ):
         provider.return_value.peek_history.return_value = None
         response = client.get("/ticker/AAPL/1d")

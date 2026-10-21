@@ -22,8 +22,8 @@ def make_news_df():
     )
 
 
-@patch("api.main.news_store")
-@patch("api.main.fetch_news")
+@patch("api.routers.market.news_store")
+@patch("api.routers.market.fetch_news")
 def test_news_success(mock_fetch, mock_store):
     mock_fetch.return_value = make_news_df()
     mock_store.save.return_value = "/tmp/news.csv"
@@ -40,8 +40,8 @@ def test_news_success(mock_fetch, mock_store):
     mock_fetch.assert_called_once_with("AAPL", limit=10, since=None)
 
 
-@patch("api.main.news_store")
-@patch("api.main.fetch_news")
+@patch("api.routers.market.news_store")
+@patch("api.routers.market.fetch_news")
 def test_news_passes_limit_and_since(mock_fetch, mock_store):
     mock_fetch.return_value = make_news_df()
     mock_store.save.return_value = "/tmp/news.csv"
@@ -52,7 +52,7 @@ def test_news_passes_limit_and_since(mock_fetch, mock_store):
     mock_fetch.assert_called_once_with("AAPL", limit=3, since="2026-06-01")
 
 
-@patch("api.main.fetch_news")
+@patch("api.routers.market.fetch_news")
 def test_news_not_found(mock_fetch):
     mock_fetch.side_effect = NoDataFoundError("No news found")
 

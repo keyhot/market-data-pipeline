@@ -953,7 +953,7 @@ def test_a_watchlist_symbol_with_no_painted_tube_warns_at_startup(caplog):
     """
     import logging as _logging
 
-    from api import main as api_main
+    from api.routers import world as world_router
 
     class _Spec:
         def __init__(self, symbol):
@@ -964,13 +964,13 @@ def test_a_watchlist_symbol_with_no_painted_tube_warns_at_startup(caplog):
     class _Watchlist:
         tickers = [_Spec("BTCUSDT"), _Spec("ETHUSDT"), _Spec("SOLUSDT")]
 
-    original = api_main.load_watchlist
-    api_main.load_watchlist = lambda: _Watchlist()
+    original = world_router.load_watchlist
+    world_router.load_watchlist = lambda: _Watchlist()
     try:
         with caplog.at_level(_logging.WARNING):
             client.get("/world")
     finally:
-        api_main.load_watchlist = original
+        world_router.load_watchlist = original
 
     warnings = " ".join(r.getMessage() for r in caplog.records)
     assert "SOLUSDT" in warnings, (
@@ -7119,7 +7119,7 @@ def test_glow_color_matches_the_shared_accent():
 
     Decision: pin the equality with a test rather than inject the palette
     value, because injecting it would add a new placeholder to
-    `api/main.py`'s `_THEME_REPLACEMENTS` (the shared injection surface
+    `api/templating.py`'s `_THEME_REPLACEMENTS` (the shared injection surface
     Override 1 says to keep changes out of) for a value that is deliberately
     room-local — the glow's own comment is explicit that it must NOT track
     `light.warmth`'s colour temperature, i.e. it is meant to be independent
@@ -7142,7 +7142,7 @@ def test_glow_color_matches_the_shared_accent():
 
 
 def test_no_placeholder_shaped_token_hides_in_a_comment():
-    """Finding 4 (coordinator, fix round 1): `_render_template` (api/main.py)
+    """Finding 4 (coordinator, fix round 1): `_render_template` (api/templating.py)
     is a blind whole-document `.replace()` — every occurrence of a
     placeholder's literal string is substituted, not just its own declared
     site. Task 9 shipped exactly this defect once already: a comment reading
@@ -7165,7 +7165,7 @@ def test_no_placeholder_shaped_token_hides_in_a_comment():
     always true: a substitution site is code (an assignment, a JSON
     injection point) — never English prose inside a comment.
 
-    Final review pass: `_render_template` (api/main.py) is not `world.html`'s
+    Final review pass: `_render_template` (api/templating.py) is not `world.html`'s
     alone — `overlay_signals.html`, `overlay_events.html`, `dashboard.html`,
     `chart.html`, `charts.html` and `standby.html` all go through the same
     blind whole-document `.replace()`, so the collision this test exists to
@@ -9702,7 +9702,7 @@ def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
 
 def _text_placements():
     """The resolved `__TEXT_JSON__` this page was actually served - read
-    from the same function `api/main.py` calls, not re-parsed out of the
+    from the same function `api/routers/world.py` calls, not re-parsed out of the
     HTML, matching `_manifest()`'s own convention above."""
     from world.plate import load_manifest
     from world.text_layout import as_json

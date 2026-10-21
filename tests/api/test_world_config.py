@@ -24,6 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.main as main
+import api.routers.world as world_router
 from api.main import app
 from world import monitors, reactions, visuals
 from world.light import as_json as light_as_json
@@ -179,7 +180,7 @@ def test_the_config_carries_every_value_the_placeholders_did():
     assert config["symbols"] == [
         s for s in dict.fromkeys(
             spec.symbol.upper()
-            for spec in main.load_watchlist().tickers
+            for spec in world_router.load_watchlist().tickers
             if spec.market == "crypto"
         )
     ]
@@ -230,7 +231,7 @@ def test_the_reaction_registry_reaches_the_page_whole():
 def test_no_plate_still_serves_null_for_the_plate_and_the_cast(monkeypatch):
     """Same fallback as before: the procedural room is a supported way to run,
     so the keys are present and `null` - never absent, never defaulted in JS."""
-    monkeypatch.setattr(main, "load_manifest", lambda: None)
+    monkeypatch.setattr(world_router, "load_manifest", lambda: None)
     config = _served_config()
     assert config["plate"] is None
     assert config["painted_cast"] is None

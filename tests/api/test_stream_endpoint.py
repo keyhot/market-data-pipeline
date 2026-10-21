@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from api.main import _bar_event_stream, app
+from api.main import app
+from api.routers.sse import _bar_event_stream
 
 client = TestClient(app)
 
@@ -40,7 +41,7 @@ def test_stream_emits_only_bars_newer_than_connect():
         await stream.aclose()
         return chunks
 
-    with patch("api.main.get_price_bars", side_effect=fake):
+    with patch("api.routers.sse.get_price_bars", side_effect=fake):
         chunks = asyncio.run(collect())
 
     assert chunks[0] == ": keepalive\n\n"
@@ -60,7 +61,7 @@ def test_stream_survives_db_errors():
         await stream.aclose()
         return first
 
-    with patch("api.main.get_price_bars", side_effect=boom):
+    with patch("api.routers.sse.get_price_bars", side_effect=boom):
         first = asyncio.run(first_chunk())
 
     assert first == ": keepalive\n\n"

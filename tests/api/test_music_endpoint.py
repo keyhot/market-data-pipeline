@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.main as main
+import api.routers.ops as ops
 
 ROW = {
     "file": "mixkit-sleepy-cat-135.mp3",
@@ -40,7 +41,7 @@ def client():
 
 
 def test_it_returns_the_current_track(client, monkeypatch):
-    monkeypatch.setattr(main, "get_now_playing", lambda: playing_now())
+    monkeypatch.setattr(ops, "get_now_playing", lambda: playing_now())
     body = client.get("/music/now-playing").json()
     assert body["status"] == 200
     playing = body["data"]["playing"]
@@ -51,7 +52,7 @@ def test_it_returns_the_current_track(client, monkeypatch):
 
 def test_no_bed_running_is_a_null_not_an_error(client, monkeypatch):
     """A stream with no music is a legitimate state; the strip shows nothing."""
-    monkeypatch.setattr(main, "get_now_playing", lambda: None)
+    monkeypatch.setattr(ops, "get_now_playing", lambda: None)
     response = client.get("/music/now-playing")
     assert response.status_code == 200
     assert response.json()["data"]["playing"] is None
@@ -61,7 +62,7 @@ def test_a_database_blip_does_not_500_the_overlay(client, monkeypatch):
     def boom():
         raise RuntimeError("postgres is down")
 
-    monkeypatch.setattr(main, "get_now_playing", boom)
+    monkeypatch.setattr(ops, "get_now_playing", boom)
     response = client.get("/music/now-playing")
     assert response.status_code == 200
     assert response.json()["data"]["playing"] is None
@@ -81,13 +82,13 @@ def test_a_credit_outliving_its_track_is_dropped(client, monkeypatch):
     feature must not have — a voluntary credit naming the wrong track is
     worse than no credit."""
     stale = {**ROW, "started_at": datetime.now(timezone.utc) - timedelta(minutes=30)}
-    monkeypatch.setattr(main, "get_now_playing", lambda: stale)
+    monkeypatch.setattr(ops, "get_now_playing", lambda: stale)
     assert client.get("/music/now-playing").json()["data"]["playing"] is None
 
 
 def test_a_track_still_within_its_length_is_credited(client, monkeypatch):
     fresh = {**ROW, "started_at": datetime.now(timezone.utc) - timedelta(seconds=60)}
-    monkeypatch.setattr(main, "get_now_playing", lambda: fresh)
+    monkeypatch.setattr(ops, "get_now_playing", lambda: fresh)
     playing = client.get("/music/now-playing").json()["data"]["playing"]
     assert playing["title"] == "Sleepy Cat"
 
@@ -101,7 +102,7 @@ def test_the_credit_survives_the_gap_between_tracks(client, monkeypatch):
         "started_at": datetime.now(timezone.utc)
         - timedelta(seconds=ROW["duration_seconds"] + 6),
     }
-    monkeypatch.setattr(main, "get_now_playing", lambda: just_over)
+    monkeypatch.setattr(ops, "get_now_playing", lambda: just_over)
     assert client.get("/music/now-playing").json()["data"]["playing"] is not None
 
 
@@ -111,5 +112,5 @@ def test_a_row_with_no_duration_still_expires(client, monkeypatch):
         "duration_seconds": None,
         "started_at": datetime.now(timezone.utc) - timedelta(hours=4),
     }
-    monkeypatch.setattr(main, "get_now_playing", lambda: unbounded)
+    monkeypatch.setattr(ops, "get_now_playing", lambda: unbounded)
     assert client.get("/music/now-playing").json()["data"]["playing"] is None

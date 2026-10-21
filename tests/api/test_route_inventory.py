@@ -105,6 +105,27 @@ def _middleware_entry(middleware) -> dict:
     }
 
 
+def _unwrap_lifespan(ctx):
+    """`(root, nested)`: the function the app was built with, and the type name
+    of every context FastAPI wrapped around it.
+
+    `app.include_router(r)` (any router, even one with no hooks) replaces the
+    app's lifespan with `merged_lifespan(original, nested=r.lifespan_context)`,
+    so after the split `app.router.lifespan_context` is a stack of those
+    wrappers over `api.main.lifespan`. Unwrapping them is what lets the
+    inventory keep pinning "the lifespan is `lifespan`" instead of the wrapper.
+    """
+    nested = []
+    while getattr(ctx, "__name__", "") == "merged_lifespan":
+        inner = ctx.__wrapped__
+        free = dict(
+            zip(inner.__code__.co_freevars, (c.cell_contents for c in inner.__closure__))
+        )
+        nested.append(type(free["nested_context"]).__name__)
+        ctx = free["original_context"]
+    return ctx, nested
+
+
 def build_inventory() -> dict:
     routes = sorted(
         (_route_entry(r) for r in app.routes),
@@ -120,7 +141,7 @@ def build_inventory() -> dict:
                 app.exception_handlers.items(), key=lambda kv: _describe(kv[0])
             )
         },
-        "lifespan": _describe(app.router.lifespan_context),
+        "lifespan": _describe(_unwrap_lifespan(app.router.lifespan_context)[0]),
     }
 
 
@@ -209,6 +230,35 @@ def test_openapi_path_set_is_unchanged():
 def test_every_url_still_dispatches_to_the_same_route():
     got = [(m, p, _dispatch(m, p)) for m, p, _ in DISPATCH]
     assert got == DISPATCH
+
+
+def test_routers_add_no_startup_or_shutdown_behaviour():
+    # The only thing a router contributes to the app's lifespan is FastAPI's
+    # own do-nothing default; nobody registered an on_startup/on_shutdown hook.
+    assert app.router.on_startup == []
+    assert app.router.on_shutdown == []
+    _, nested = _unwrap_lifespan(app.router.lifespan_context)
+    assert set(nested) <= {"_DefaultLifespan"}
+
+
+def test_lifespan_starts_and_stops_the_scheduler_once_in_order(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import api.main as main
+
+    calls = []
+    monkeypatch.setattr(main, "scheduler_enabled", lambda: True)
+    monkeypatch.setattr(main, "ws_ingest_enabled", lambda: False)
+    monkeypatch.setattr(
+        main.scheduler_service, "start", lambda: calls.append("start")
+    )
+    monkeypatch.setattr(
+        main.scheduler_service, "shutdown", lambda: calls.append("shutdown")
+    )
+    with TestClient(main.app) as client:
+        assert calls == ["start"]
+        assert client.get("/standby").status_code == 200
+    assert calls == ["start", "shutdown"]
 
 
 def test_route_names_are_unique():

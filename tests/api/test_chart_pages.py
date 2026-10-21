@@ -47,7 +47,7 @@ def _predict_watchlist(symbols=("BTCUSDT", "ETHUSDT")):
 def test_charts_page_renders_all_predict_symbols_with_markers():
     # B13: the stream charts BTC AND ETH (every predict symbol), each panel with
     # its own prediction markers.
-    with patch("api.main.load_watchlist", return_value=_predict_watchlist()):
+    with patch("api.routers.charts.load_watchlist", return_value=_predict_watchlist()):
         body = client.get("/charts?interval=1m").text
     assert "BTCUSDT" in body and "ETHUSDT" in body
     assert "setMarkers" in body
@@ -81,8 +81,8 @@ def test_dashboard_lists_watchlist_symbols_with_closes():
         {"symbol": "AAPL", "timestamp": "2026-07-16T00:00:00+00:00", "close": 231.5}
     ]
     with (
-        patch("api.main.load_watchlist", return_value=_watchlist()),
-        patch("api.main.get_latest_closes", return_value=closes) as reader,
+        patch("api.routers.charts.load_watchlist", return_value=_watchlist()),
+        patch("api.routers.charts.get_latest_closes", return_value=closes) as reader,
     ):
         response = client.get("/dashboard")
 
@@ -98,8 +98,8 @@ def test_dashboard_lists_watchlist_symbols_with_closes():
 
 def test_dashboard_503_when_postgres_down():
     with (
-        patch("api.main.load_watchlist", return_value=_watchlist()),
-        patch("api.main.get_latest_closes", side_effect=RuntimeError("down")),
+        patch("api.routers.charts.load_watchlist", return_value=_watchlist()),
+        patch("api.routers.charts.get_latest_closes", side_effect=RuntimeError("down")),
     ):
         assert client.get("/dashboard").status_code == 503
 
@@ -114,8 +114,8 @@ def test_dashboard_skips_symbols_failing_the_whitelist():
         events=(),
     )
     with (
-        patch("api.main.load_watchlist", return_value=watchlist),
-        patch("api.main.get_latest_closes", return_value=[]) as reader,
+        patch("api.routers.charts.load_watchlist", return_value=watchlist),
+        patch("api.routers.charts.get_latest_closes", return_value=[]) as reader,
     ):
         response = client.get("/dashboard")
 
@@ -131,8 +131,8 @@ def test_dashboard_renders_dash_for_null_close():
         {"symbol": "AAPL", "timestamp": "2026-07-16T00:00:00+00:00", "close": None}
     ]
     with (
-        patch("api.main.load_watchlist", return_value=_watchlist()),
-        patch("api.main.get_latest_closes", return_value=closes),
+        patch("api.routers.charts.load_watchlist", return_value=_watchlist()),
+        patch("api.routers.charts.get_latest_closes", return_value=closes),
     ):
         response = client.get("/dashboard")
 
@@ -145,7 +145,7 @@ def test_charts_page_can_be_narrowed_to_one_symbol():
     """KI-027: `event-focus` needs a single-symbol chart without the app's
     chrome. `/charts` is already the chrome-free broadcast surface, so it grows
     a filter rather than the dashboard page growing a `?chrome=0`."""
-    with patch("api.main.load_watchlist", return_value=_predict_watchlist()):
+    with patch("api.routers.charts.load_watchlist", return_value=_predict_watchlist()):
         body = client.get("/charts?interval=1m&symbols=BTCUSDT").text
     assert "BTCUSDT" in body
     assert "ETHUSDT" not in body
@@ -154,7 +154,7 @@ def test_charts_page_can_be_narrowed_to_one_symbol():
 def test_charts_page_rejects_a_symbol_that_is_not_on_the_watchlist():
     """The page renders the symbols into JS. Whatever reaches it has to come
     from the watchlist, never straight from the query string."""
-    with patch("api.main.load_watchlist", return_value=_predict_watchlist()):
+    with patch("api.routers.charts.load_watchlist", return_value=_predict_watchlist()):
         resp = client.get("/charts?symbols=DOGEUSDT")
     assert resp.status_code == 400
 

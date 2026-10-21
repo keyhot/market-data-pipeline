@@ -78,7 +78,7 @@ def test_health_answers_within_its_budget_when_queries_block(monkeypatch):
     client = TestClient(app)
 
     with (
-        patch("api.main._HEALTH_DB_BUDGET_SECONDS", _BUDGET),
+        patch("api.routers.ops._HEALTH_DB_BUDGET_SECONDS", _BUDGET),
         _blocked("signals", "world_events"),
     ):
         started = time.monotonic()

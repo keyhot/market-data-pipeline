@@ -41,7 +41,7 @@ _ROLE_PROBE_OPTIONS = (
 # the keepalive detection time (10 + 5 * 3 = 25s). What these cannot see is
 # a stall behind something that still ACKs locally — a userspace proxy, the
 # local end of an SSH tunnel (measured: still hanging at 15s with 1s
-# keepalives). That half is `/health`'s own deadline (api/main.py) and, for
+# keepalives). That half is `/health`'s own deadline (api/routers/ops.py) and, for
 # the tunnel, ssh's ServerAliveInterval.
 _KEEPALIVE_IDLE_SECONDS = 10
 _KEEPALIVE_INTERVAL_SECONDS = 5
