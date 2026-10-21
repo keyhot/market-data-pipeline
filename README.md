@@ -171,9 +171,12 @@ poetry run python scripts/stream_ctl.py start              # records a stream_st
 poetry run python scripts/stream_watchdog.py               # or the systemd unit
 ```
 
-Layout constants live in `scripts/stream_scene.py`; every source is a browser source, so
-**the pages are the scene**. `scripts/soak_report.py` computes uptime from the recorded
-events.
+Layout constants live in `stream/scene.py`; every source is a browser source, so
+**the pages are the scene**. `stream/soak_report.py` computes uptime from the recorded
+events. The watchdog, scene spec and soak report are importable modules in `stream/`
+(art tools in `tools/`); `scripts/stream_watchdog.py`, `scripts/soak_report.py`,
+`scripts/measure_chair.py` and `scripts/prepare_plate.py` are thin entry points over them,
+so every command above is unchanged.
 
 ## Endpoints
 

@@ -25,7 +25,7 @@ import pytest
 from director import service
 from director.policy import DirectorAction, DirectorConfig, DirectorState
 from director.scenes import DIRECTOR_SCENES, choose_scene
-from scripts.stream_scene import SCENE_STANDBY, scenes_spec
+from stream.scene import SCENE_STANDBY, scenes_spec
 
 BASE = datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc)
 

@@ -19,7 +19,7 @@ RECENT_LIMIT = 12
 # — because both folds that need it are pure and `world/stream_events.py` (the
 # writer, which owns the vocabulary) imports Postgres. Two copies of this rule
 # used to exist, hardcoded as `reason == "dropped_frames"` in this file and in
-# scripts/soak_report.py; KI-019 is what happens when two surfaces each carry
+# stream/soak_report.py; KI-019 is what happens when two surfaces each carry
 # their own copy of "how big is this", and KI-021 was about to add a third.
 # Note what is NOT here: `content_unreachable` (KI-024). A stream whose pages
 # cannot reach the API is pushing pixels at nobody — that is a content outage
@@ -324,7 +324,7 @@ def fold_event(state: dict, event: dict) -> dict:
         # Degraded means the stream stayed LIVE — the watchdog records it and
         # deliberately does not restart, so no stream_started follows. Booking
         # that live span as downtime would fabricate an outage. One definition,
-        # shared with scripts/soak_report.py: is_degraded_stream_event.
+        # shared with stream/soak_report.py: is_degraded_stream_event.
         if not is_degraded_stream_event(etype, payload):
             opening = new["_down_since"] is None
             if opening:

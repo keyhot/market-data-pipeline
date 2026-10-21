@@ -233,7 +233,7 @@ def test_a_month_of_history_differs_materially_from_a_fresh_log():
 def test_dropped_frames_is_degraded_not_downtime():
     """dropped_frames = the stream degraded but stayed live; the watchdog
     records it and never restarts. It must not book live airtime as downtime
-    (scripts/soak_report.py, CLAUDE.md). Truthfulness invariant."""
+    (stream/soak_report.py, CLAUDE.md). Truthfulness invariant."""
     events = [
         _event(1, "stream_started", 1.0, symbol=None),
         _event(2, "stream_dropped", 5.0, {"reason": "dropped_frames"},

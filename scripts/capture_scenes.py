@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.stream_ctl import ObsUnreachable, make_client  # noqa: E402
-from scripts.stream_scene import scenes_spec  # noqa: E402
+from stream.scene import scenes_spec  # noqa: E402
 from world.state import severity_tier  # noqa: E402
 
 EXIT_OBS_UNREACHABLE = 2

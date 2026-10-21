@@ -89,7 +89,7 @@ def test_overlay_signals_uses_shared_palette_vars():
 
 # --- B3: overlay & typography polish -------------------------------------
 #
-# Both overlays are mounted at more than one size by `scripts/stream_scene.py`
+# Both overlays are mounted at more than one size by `stream/scene.py`
 # (`/overlay/events` at 480x840 and 960x1080; `/overlay/signals` at 1920x120
 # and 960x120), and they are read by a newcomer who has never seen the project.
 # These pin the parts of "polish" that a screenshot can't grade.

@@ -219,6 +219,6 @@ def test_the_harness_reads_tier_from_the_one_scale(tmp_path):
 def test_scene_names_come_from_the_scene_spec():
     """A hard-coded list here would silently skip a scene added later — the
     standby card was exactly such an addition (B10)."""
-    from scripts.stream_scene import scenes_spec
+    from stream.scene import scenes_spec
 
     assert capture_scenes.default_scenes() == [s["scene"] for s in scenes_spec()]

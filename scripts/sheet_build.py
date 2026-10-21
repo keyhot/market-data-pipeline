@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.measure_chair import measure_plate_chair  # noqa: E402
+from tools.measure_chair import measure_plate_chair  # noqa: E402
 
 PAGE = ROOT / "api" / "templates" / "world.html"
 TESTS = ROOT / "tests" / "api" / "test_world_page.py"

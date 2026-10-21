@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts import stream_scene  # noqa: E402
+from stream import scene as stream_scene  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

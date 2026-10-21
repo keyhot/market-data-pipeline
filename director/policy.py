@@ -1,6 +1,6 @@
 """Director decision layer (Sprint 13): pure functions over world state.
 
-Shaped like scripts/stream_watchdog.py — ``tick()`` decides, the runner acts —
+Shaped like stream/watchdog.py — ``tick()`` decides, the runner acts —
 so every decision tests with no OBS, no Piper, no clock, and no DB. Defaults are
 tuned for the ambient "fireplace that swells" register: calm by default, a low
 line rate, a home scene the director rests on and decays back to.

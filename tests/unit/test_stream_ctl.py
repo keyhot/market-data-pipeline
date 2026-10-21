@@ -3,7 +3,8 @@ request the tool would issue is pinned here instead."""
 
 import pytest
 
-from scripts import stream_ctl, stream_scene
+from scripts import stream_ctl
+from stream import scene as stream_scene
 
 
 class FakeResp:
@@ -162,7 +163,7 @@ def test_build_creates_all_scenes_and_sources():
 
 def test_build_single_spec_back_compat():
     client = FakeClient()
-    from scripts import stream_scene
+    from stream import scene as stream_scene
 
     result = stream_ctl.build_scene(client, stream_scene.scenes_spec()[1])
     assert result["scene"] == "world-focus"
@@ -312,7 +313,7 @@ def test_a_missing_transition_is_skipped_rather_than_crashing_the_stream():
 def test_audio_bed_gain_ramps_with_tier_and_is_silent_by_default():
     """The swell hook: louder as the world gets dramatic. Tier 0 is the resting
     bed level, and the ramp must be monotonic or a bigger event would duck."""
-    from scripts.stream_scene import audio_gain_db
+    from stream.scene import audio_gain_db
 
     gains = [audio_gain_db(t) for t in range(4)]
     assert gains == sorted(gains), gains

@@ -255,7 +255,7 @@ def test_every_screen_quad_lands_on_glass_the_intake_actually_flattened():
 
 def test_the_manifests_chart_screens_match_the_intakes_own_derivation():
     """The manifest's `quad`/`x`/`y`/`w`/`h` are a COPY of what
-    scripts/prepare_plate.py's SCREEN_FRAMES + screen_quad() emit - the
+    tools/prepare_plate.py's SCREEN_FRAMES + screen_quad() emit - the
     intake's own `main()` prints exactly this so Task 2 could paste it
     rather than re-measure by hand (see its docstring: "two hand-kept copies
     of one rect is how a candle ends up drawn 6px off the painted glass").
@@ -270,14 +270,14 @@ def test_the_manifests_chart_screens_match_the_intakes_own_derivation():
     # states - exactly the "two hand-kept copies of one rect" bug class
     # this ticket exists to fix. `rect_from_quad` is now the one definition,
     # imported here rather than restated.
-    from scripts.prepare_plate import SCREEN_FRAMES, rect_from_quad, screen_quad
+    from tools.prepare_plate import SCREEN_FRAMES, rect_from_quad, screen_quad
 
     manifest = load_manifest()
     charts = [s for s in manifest.screens if s.get("role") == "chart"]
     assert charts, "no chart screens to check"
     for screen in charts:
         assert screen["id"] in SCREEN_FRAMES, (
-            f"{screen['id']}: no matching frame in scripts.prepare_plate"
+            f"{screen['id']}: no matching frame in tools.prepare_plate"
         )
         quad = screen_quad(SCREEN_FRAMES[screen["id"]])
         assert [list(corner) for corner in quad] == screen["quad"], (
@@ -297,7 +297,7 @@ def test_a_quad_with_non_vertical_sides_is_refused():
     inside the quad, so failing it is a data error and must raise one - not an
     `assert`, which `python -O` removes and which reads as a developer slip
     rather than a refusal to derive a rect from art it does not fit."""
-    from scripts.prepare_plate import rect_from_quad
+    from tools.prepare_plate import rect_from_quad
 
     slanted = ((10, 0), (100, 0), (104, 50), (10, 50))  # right edge slants
     with pytest.raises(ValueError, match="vertical"):
@@ -312,7 +312,7 @@ def test_the_quad_precondition_still_refuses_under_python_O():
     does not guarantee vertical sides (KI-067: the monitors are trapezoids);
     `screen_quad` does, by construction, and this is what says so out loud."""
     code = (
-        "from scripts.prepare_plate import rect_from_quad\n"
+        "from tools.prepare_plate import rect_from_quad\n"
         "try:\n"
         "    rect_from_quad(((10, 0), (100, 0), (104, 50), (10, 50)))\n"
         "except ValueError:\n"
@@ -1181,7 +1181,7 @@ def test_the_chair_back_foreground_traces_the_backrests_own_painted_edge():
     chair is painted across his chest". It is therefore checked against the
     plate's own pixels, not eyeballed once off a screenshot.
 
-    The edge is found with `scripts.measure_chair._chair` - the project's ONE
+    The edge is found with `tools.measure_chair._chair` - the project's ONE
     chair-upholstery predicate, imported rather than restated, the same rule
     `measure_floor_band` already gets. A plain luminance threshold was tried
     first and is wrong: above y~590 the lit desk front panel sits immediately
@@ -1198,7 +1198,7 @@ def test_the_chair_back_foreground_traces_the_backrests_own_painted_edge():
     """
     from PIL import Image
 
-    from scripts.measure_chair import _chair
+    from tools.measure_chair import _chair
 
     manifest = load_manifest()
     regions = {f["id"]: f for f in manifest.foreground}
@@ -1252,7 +1252,7 @@ def test_the_trader_sits_where_the_measurement_puts_him():
     and a hand edit to either, or a changed default without a re-measure,
     fails here.
     """
-    from scripts.measure_chair import measure_sit_anchor
+    from tools.measure_chair import measure_sit_anchor
 
     measured = measure_sit_anchor()
     trader = load_manifest().cast["trader"]
@@ -1277,7 +1277,7 @@ def test_the_seat_occluder_is_the_measured_cushion():
     polygon, so it has to be the painted cushion's own silhouette; a hand edit,
     or a changed tolerance without a re-measure, fails here.
     """
-    from scripts.measure_chair import measure_seat_occluder
+    from tools.measure_chair import measure_seat_occluder
 
     trader = load_manifest().cast["trader"]
     assert trader.get("seat_occluder") == measure_seat_occluder(), (
