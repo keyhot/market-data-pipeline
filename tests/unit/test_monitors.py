@@ -168,10 +168,17 @@ def test_the_page_reads_the_rule_from_the_config_and_bakes_no_number():
     js = "\n".join(_function_text(body, name) for name in _RULE_FUNCTIONS)
     for key in rules:
         assert f"MONITOR_RULES.{key}" in js, f"the page never reads {key}"
-    for number in (MIN_WIDTH, MIN_HEIGHT, MIN_BARS, STALE_AFTER_SECONDS, STALE_ALPHA):
-        assert not re.search(rf"(?<![\w.]){re.escape(str(number))}(?![\w.])", js), (
-            f"{number} is baked into the page's rule functions"
-        )
+    # Take away the formulas' own structural literals (the two sides of the
+    # padding, the floor at zero, the "fresh" alpha of 1); no number may be left.
+    # Checking each constant's value instead would false-positive the day one of
+    # them is 0, 1 or 2.
+    stripped = (
+        js.replace("2 * MONITOR_RULES.pad_cells", "MONITOR_RULES.pad_cells")
+        .replace("Math.max(0,", "Math.max(")
+        .replace(": 1;", ";")
+    )
+    baked = re.findall(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])", stripped)
+    assert not baked, f"numbers baked into the page's rule functions: {baked}"
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed on this host")

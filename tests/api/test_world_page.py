@@ -599,7 +599,10 @@ def test_the_tier_function_is_injected_not_written_out_per_page():
     """Injecting the *cuts* was only half of KI-019. The three lines that read
     them were then written out twice, byte-identical, in `world.html` and
     `overlay_events.html` — and two copies of a rule is exactly how the first
-    version drifted from the server. One definition, in `world.state`."""
+    version drifted from the server. One definition, in `world.state`. (Since
+    #41 `/world` carries it as page code reading the config; the overlay is
+    still injected, and test_world_config.py runs the page's copy against
+    `severity_tier`.)"""
     from world.state import severity_tier, tier_of_js
 
     for path in ("/world", "/overlay/events"):
@@ -886,14 +889,11 @@ def test_the_page_reports_that_it_is_still_drawing():
 
 
 def test_the_monitors_rules_are_injected_rather_than_written_into_the_page():
-    """M1: the painted monitors decide nothing. Both halves are injected — the
-    constants AND the functions that read them — because injecting only the
-    numbers is the half-fix that let KI-019 happen. `__TIER_OF_JS__` above is
-    the precedent; Task 11's page consumes these two placeholders.
-
-    Asserted against the replacement map rather than the rendered body: the
-    template does not carry the placeholders until the candles land, and a
-    seam that is only proven once its consumer exists is a seam nobody checked.
+    """M1: the painted monitors decide nothing. The numbers come from the
+    server in the config block, and the functions that read them read nothing
+    else (#41 made those page code; test_monitors.py runs them against
+    world/monitors.py) - because injecting only the numbers was the half-fix
+    that let KI-019 happen.
     """
     from world.monitors import monitor_rules
 

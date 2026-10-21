@@ -133,14 +133,13 @@ def test_the_shipped_manifest_loads():
     assert manifest.cell == 4
 
 
-def test_the_manifests_cell_agrees_with_the_one_python_bakes_into_the_js():
-    """`CELL` has three definitions that all have to agree: `monitors.CELL`
-    (read by the page's `barsThatFit`/`isDrawable` from the config's
-    `monitor_rules`), `MONITOR_RULES.cell` (the same constant, injected as data),
-    and the page's own `const CELL = (PLATE && PLATE.cell) || 4;` (read from
-    THIS manifest). `drawCandles` mixes sources - pitch/pad/`yOf` use the
+def test_the_manifests_cell_agrees_with_the_one_the_monitor_rules_serve():
+    """`CELL` has two definitions that have to agree: `monitors.CELL`, which the
+    page receives as `MONITOR_RULES.cell` (and which `barsThatFit`/`isDrawable`
+    read), and the page's own `const CELL = (PLATE && PLATE.cell) || 4;` (read
+    from THIS manifest). `drawCandles` mixes sources - pitch/pad/`yOf` use the
     page's `CELL` (so the manifest's value), `barsThatFit`/`isDrawable` use
-    Python's baked literal - so a repaint that changed `cell` without a
+    the rules' - so a repaint that changed `cell` without a
     matching code change would double the layout pitch without changing how
     many bars the fit-count rule believes fit. A schema check on the
     manifest alone can't see that; this pins the one thing that keeps it from

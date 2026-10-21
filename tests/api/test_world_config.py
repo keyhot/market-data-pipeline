@@ -310,19 +310,27 @@ def test_the_pages_const_lines_resolve_to_the_config_through_json_parse(
     prologue = next(
         line.strip() for line in body.splitlines() if "const WORLD_CONFIG =" in line
     )
-    names = list(PAGE_CONSTS)
+    rim = next(
+        line.strip() for line in body.splitlines() if line.strip().startswith("const BODY_RIM = ")
+    )
+    names = [*PAGE_CONSTS, "BODY_RIM"]
     script = (
-        "const document = { getElementById: (id) => ({ textContent: "
-        "require('fs').readFileSync(0, 'utf8') }) };\n"
+        "const document = { getElementById: (id) => id === 'world-config' ? "
+        "({ textContent: require('fs').readFileSync(0, 'utf8') }) : null };\n"
         + prologue
         + "\n"
-        + "\n".join(lines)
+        + "\n".join([*lines, rim])
         + f"\nconsole.log(JSON.stringify({{ {', '.join(names)} }}));"
     )
     got = _node(script, stdin=_config_text(body))
     config = json.loads(_config_text(body))
     for const, key in PAGE_CONSTS.items():
         assert got[const] == config[key], const
+    assert got["BODY_RIM"] == {
+        "width": 1.5,
+        "color": config["body_rim_fill"],
+        "alignment": 1,
+    }
 
 
 # --- the tier function: page code, not generated code ------------------------------
