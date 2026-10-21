@@ -20,7 +20,7 @@ NEWS = [
 
 
 def test_stored_events_returns_rows():
-    with patch("api.main.get_corporate_events", return_value=EVENTS) as reader:
+    with patch("api.routers.stored.get_corporate_events", return_value=EVENTS) as reader:
         response = client.get("/stored/events/aapl/dividends?limit=50")
 
     assert response.status_code == 200
@@ -32,7 +32,7 @@ def test_stored_events_returns_rows():
 
 
 def test_stored_events_actions_reads_all_types():
-    with patch("api.main.get_corporate_events", return_value=EVENTS) as reader:
+    with patch("api.routers.stored.get_corporate_events", return_value=EVENTS) as reader:
         response = client.get("/stored/events/AAPL/actions")
 
     assert response.status_code == 200
@@ -40,12 +40,12 @@ def test_stored_events_actions_reads_all_types():
 
 
 def test_stored_events_404_when_empty():
-    with patch("api.main.get_corporate_events", return_value=[]):
+    with patch("api.routers.stored.get_corporate_events", return_value=[]):
         assert client.get("/stored/events/ZZ/dividends").status_code == 404
 
 
 def test_stored_events_503_when_postgres_down():
-    with patch("api.main.get_corporate_events", side_effect=RuntimeError("down")):
+    with patch("api.routers.stored.get_corporate_events", side_effect=RuntimeError("down")):
         assert client.get("/stored/events/AAPL/dividends").status_code == 503
 
 
@@ -54,7 +54,7 @@ def test_stored_events_rejects_unknown_type():
 
 
 def test_stored_news_returns_rows():
-    with patch("api.main.get_news_items", return_value=NEWS) as reader:
+    with patch("api.routers.stored.get_news_items", return_value=NEWS) as reader:
         response = client.get("/stored/news/aapl?limit=5")
 
     assert response.status_code == 200
@@ -66,10 +66,10 @@ def test_stored_news_returns_rows():
 
 
 def test_stored_news_404_when_empty():
-    with patch("api.main.get_news_items", return_value=[]):
+    with patch("api.routers.stored.get_news_items", return_value=[]):
         assert client.get("/stored/news/ZZ").status_code == 404
 
 
 def test_stored_news_503_when_postgres_down():
-    with patch("api.main.get_news_items", side_effect=RuntimeError("down")):
+    with patch("api.routers.stored.get_news_items", side_effect=RuntimeError("down")):
         assert client.get("/stored/news/AAPL").status_code == 503

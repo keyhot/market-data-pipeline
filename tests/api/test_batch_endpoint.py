@@ -3,14 +3,15 @@ from unittest.mock import patch
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from api.main import MAX_BATCH_SYMBOLS, app
+from api.main import app
+from api.routers.market import MAX_BATCH_SYMBOLS
 from config.exceptions import NoDataFoundError
 
 client = TestClient(app)
 
 
-@patch("api.main.save_csv")
-@patch("api.main.fetch_ticker_async")
+@patch("api.routers.market.save_csv")
+@patch("api.routers.market.fetch_ticker_async")
 def test_batch_fetch_success(mock_fetch, mock_save):
     mock_fetch.return_value = pd.DataFrame({"Close": [100, 101]})
 
@@ -25,8 +26,8 @@ def test_batch_fetch_success(mock_fetch, mock_save):
     assert data["results"]["MSFT"]["rows"] == 2
 
 
-@patch("api.main.save_csv")
-@patch("api.main.fetch_ticker_async")
+@patch("api.routers.market.save_csv")
+@patch("api.routers.market.fetch_ticker_async")
 def test_batch_fetch_partial_failure(mock_fetch, mock_save):
     async def fetch(symbol, time_range):
         if symbol == "MSFT":
@@ -45,8 +46,8 @@ def test_batch_fetch_partial_failure(mock_fetch, mock_save):
     assert data["results"]["MSFT"] == {"error": "No data returned", "status": 404}
 
 
-@patch("api.main.save_csv")
-@patch("api.main.fetch_ticker_async")
+@patch("api.routers.market.save_csv")
+@patch("api.routers.market.fetch_ticker_async")
 def test_batch_fetch_deduplicates_and_normalizes_symbols(mock_fetch, mock_save):
     mock_fetch.return_value = pd.DataFrame({"Close": [100]})
 

@@ -17,7 +17,7 @@ def teardown_function(_):
     factory.reset_default_provider()
 
 
-@patch("api.main.save_csv")
+@patch("api.routers.market.save_csv")
 @patch("ingestion.yfinance_provider.yf.Ticker")
 def test_ticker_second_request_is_cached_and_skips_save(mock_ticker, mock_save):
     instance = mock_ticker.return_value
@@ -40,7 +40,7 @@ def test_ticker_second_request_is_cached_and_skips_save(mock_ticker, mock_save):
     assert instance.history.call_count == 1
 
 
-@patch("api.main.save_csv")
+@patch("api.routers.market.save_csv")
 @patch("ingestion.yfinance_provider.yf.Ticker")
 def test_events_second_request_is_cached_and_skips_save(mock_ticker, mock_save):
     instance = mock_ticker.return_value
@@ -61,7 +61,7 @@ def test_events_second_request_is_cached_and_skips_save(mock_ticker, mock_save):
     assert mock_save.call_count == 1
 
 
-@patch("api.main.save_csv")
+@patch("api.routers.market.save_csv")
 @patch("ingestion.yfinance_provider.yf.Ticker")
 def test_ticker_invalidate_forces_refetch_and_save(mock_ticker, mock_save):
     instance = mock_ticker.return_value

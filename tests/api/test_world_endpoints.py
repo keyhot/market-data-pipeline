@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from api.main import _world_event_stream, app
+from api.main import app
+from api.routers.sse import _world_event_stream
 
 client = TestClient(app)
 
@@ -47,7 +48,7 @@ def _accuracy():
 
 
 def test_world_events_returns_rows():
-    with patch("api.main.get_world_events", return_value=[_event(1)]):
+    with patch("api.routers.world.get_world_events", return_value=[_event(1)]):
         response = client.get("/world/events")
 
     assert response.status_code == 200
@@ -57,12 +58,12 @@ def test_world_events_returns_rows():
 
 
 def test_world_events_404_when_empty():
-    with patch("api.main.get_world_events", return_value=[]):
+    with patch("api.routers.world.get_world_events", return_value=[]):
         assert client.get("/world/events").status_code == 404
 
 
 def test_world_events_503_when_postgres_down():
-    with patch("api.main.get_world_events", side_effect=RuntimeError("down")):
+    with patch("api.routers.world.get_world_events", side_effect=RuntimeError("down")):
         assert client.get("/world/events").status_code == 503
 
 
@@ -73,7 +74,7 @@ def test_world_events_rejects_unknown_type_and_bad_symbol():
 
 
 def test_world_events_passes_filters():
-    with patch("api.main.get_world_events", return_value=[_event(1)]) as mock:
+    with patch("api.routers.world.get_world_events", return_value=[_event(1)]) as mock:
         client.get("/world/events?event_type=streak&symbol=btcusdt&limit=5")
 
     kwargs = mock.call_args.kwargs
@@ -84,8 +85,8 @@ def test_world_events_passes_filters():
 
 def test_signals_endpoint_includes_accuracy():
     with (
-        patch("api.main.get_signals", return_value=[_signal_row()]),
-        patch("api.main.get_signal_accuracy", return_value=_accuracy()),
+        patch("api.routers.stored.get_signals", return_value=[_signal_row()]),
+        patch("api.routers.stored.get_signal_accuracy", return_value=_accuracy()),
     ):
         response = client.get("/signals/BTCUSDT")
 
@@ -97,8 +98,8 @@ def test_signals_endpoint_includes_accuracy():
 
 def test_signals_404_when_empty():
     with (
-        patch("api.main.get_signals", return_value=[]),
-        patch("api.main.get_signal_accuracy", return_value=_accuracy()),
+        patch("api.routers.stored.get_signals", return_value=[]),
+        patch("api.routers.stored.get_signal_accuracy", return_value=_accuracy()),
     ):
         assert client.get("/signals/BTCUSDT").status_code == 404
 
@@ -123,7 +124,7 @@ def test_world_stream_emits_only_new_events():
         await stream.aclose()
         return chunks
 
-    with patch("api.main.get_world_events", side_effect=fake):
+    with patch("api.routers.sse.get_world_events", side_effect=fake):
         chunks = asyncio.run(collect())
 
     data_chunks = [c for c in chunks if c.startswith("data: ")]
@@ -139,5 +140,5 @@ def test_world_stream_survives_db_errors():
         await stream.aclose()
         return first
 
-    with patch("api.main.get_world_events", side_effect=RuntimeError("down")):
+    with patch("api.routers.sse.get_world_events", side_effect=RuntimeError("down")):
         assert asyncio.run(first_chunk()) == ": keepalive\n\n"

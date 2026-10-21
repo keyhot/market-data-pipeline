@@ -524,7 +524,7 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
         # guard falls back rather than throwing - but it would silently
         # exercise nothing of the new rim colour path.
         "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
-        # `LIGHT` computed the same way `api/main.py` computes it for the
+        # `LIGHT` computed the same way `api/routers/world.py` computes it for the
         # real page (`light_for(manifest)`), not re-typed as a literal - so
         # this driver runs the same measured direction the shipped room does.
         f"const LIGHT = {as_json(light_for(manifest))};\n"

@@ -139,7 +139,7 @@ def latest_bar_timestamp(symbol: str, interval: str = BAR_INTERVAL) -> datetime 
 # /health must answer even through an outage (KI-024: the watchdog gives it
 # 5s before counting a content failure). The pool's default connect-acquire
 # timeout is 30s, so the caller gates this behind a `postgres_readable()`
-# that already confirmed the DB reachable (api/main.py) — that gating is
+# that already confirmed the DB reachable (api/routers/ops.py) — that gating is
 # what keeps this off the cold path, not the bound below. The bound is
 # belt-and-braces for the gap between that check and this call (the DB could
 # still drop mid-request), sized to match `storage.writes.ping()`'s own probe.

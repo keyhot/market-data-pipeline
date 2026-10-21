@@ -358,7 +358,7 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
 
     # KI-051 (Task 6): every `BODIES.*` style now calls `paint`, so the driver
     # needs the whole shading chain - `LIGHT` computed the real way
-    # (`light_for`, the same call `api/main.py` makes) rather than typed as a
+    # (`light_for`, the same call `api/routers/world.py` makes) rather than typed as a
     # literal, since `WORLD_TEMPLATE.read_text()` above reads the raw
     # template, where `__LIGHT_JSON__` is still the unsubstituted placeholder.
     manifest = load_manifest()

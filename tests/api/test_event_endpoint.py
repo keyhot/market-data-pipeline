@@ -9,7 +9,7 @@ from config.exceptions import NoDataFoundError
 client = TestClient(app)
 
 
-@patch("api.main.fetch_events")
+@patch("api.routers.market.fetch_events")
 def test_fetch_events_success(mock_fetch):
     mock_fetch.return_value = pd.DataFrame({"value": [1.0, 2.0]})
 
@@ -26,7 +26,7 @@ def test_fetch_events_success(mock_fetch):
     mock_fetch.assert_called_once_with("AAPL", "dividends", start=None, end=None)
 
 
-@patch("api.main.fetch_events")
+@patch("api.routers.market.fetch_events")
 def test_fetch_events_with_date_filters(mock_fetch):
     mock_fetch.return_value = pd.DataFrame({"value": [1.0]})
 
@@ -41,7 +41,7 @@ def test_fetch_events_with_date_filters(mock_fetch):
     )
 
 
-@patch("api.main.fetch_events")
+@patch("api.routers.market.fetch_events")
 def test_fetch_events_no_data(mock_fetch):
     mock_fetch.side_effect = NoDataFoundError("No events found")
 

@@ -21,7 +21,7 @@ def _watchlist(symbols=("BTCUSDT", "ETHUSDT"), predict=True):
 
 
 def test_overlay_signals_renders_predict_symbols():
-    with patch("api.main.load_watchlist", return_value=_watchlist()):
+    with patch("api.routers.world.load_watchlist", return_value=_watchlist()):
         response = client.get("/overlay/signals")
 
     assert response.status_code == 200
@@ -41,7 +41,7 @@ def test_overlay_signals_excludes_non_predict_and_invalid_symbols():
         ),
         events=(),
     )
-    with patch("api.main.load_watchlist", return_value=watchlist):
+    with patch("api.routers.world.load_watchlist", return_value=watchlist):
         response = client.get("/overlay/signals")
 
     assert '["BTCUSDT"]' in response.text
@@ -81,7 +81,7 @@ def test_every_known_event_type_has_an_overlay_headline():
 
 
 def test_overlay_signals_uses_shared_palette_vars():
-    with patch("api.main.load_watchlist", return_value=_watchlist()):
+    with patch("api.routers.world.load_watchlist", return_value=_watchlist()):
         body = client.get("/overlay/signals").text
     assert "--bg: #131722" in body
     assert "var(--up)" in body and "var(--down)" in body
@@ -186,7 +186,7 @@ def test_both_overlays_say_what_they_are_showing():
     stream sees a rail of rows and a strip of dots with nothing naming either."""
     events = client.get("/overlay/events").text
     assert "Live events" in events
-    with patch("api.main.load_watchlist", return_value=_watchlist()):
+    with patch("api.routers.world.load_watchlist", return_value=_watchlist()):
         signals = client.get("/overlay/signals").text
     assert "Model calls" in signals
     assert "last 10 resolved" in signals   # the dots, named
@@ -195,7 +195,7 @@ def test_both_overlays_say_what_they_are_showing():
 def test_signal_cells_share_the_strip_width():
     """1920 wide on two scenes, 960 on a third, and a third predict symbol
     would silently overflow the fixed 260px cells."""
-    with patch("api.main.load_watchlist", return_value=_watchlist()):
+    with patch("api.routers.world.load_watchlist", return_value=_watchlist()):
         rules = _css_rules(client.get("/overlay/signals").text)
     assert "flex: 1" in rules[".cell"]
     assert "min-width: 260px" not in rules[".cell"]
@@ -205,7 +205,7 @@ def test_neither_overlay_nests_the_theme_block_in_another_rule():
     """`visuals.css_variables()` already emits a complete `:root { … }`. B10
     wrapped it in a second one and the standby card rendered white-on-white
     with a green suite. Same pin, both stream surfaces."""
-    with patch("api.main.load_watchlist", return_value=_watchlist()):
+    with patch("api.routers.world.load_watchlist", return_value=_watchlist()):
         pages = [client.get("/overlay/events").text,
                  client.get("/overlay/signals").text]
     for body in pages:
@@ -216,7 +216,7 @@ def test_the_strip_drops_the_caption_before_the_number():
     """At the 960-wide mount the row ran out of room and ellipsised its END —
     losing `hit 44% of 50`, the honest record this strip exists to show, while
     keeping the caption that explains the dots. Priority is explicit now."""
-    with patch("api.main.load_watchlist", return_value=_watchlist()):
+    with patch("api.routers.world.load_watchlist", return_value=_watchlist()):
         body = client.get("/overlay/signals").text
     narrow = re.search(r"@container[^{]*\{(.*?)\n    \}", body, re.S).group(1)
     assert ".dotlabel { display: none; }" in narrow
@@ -248,7 +248,7 @@ def test_each_overlay_paints_its_own_surface():
     rows had live candles running through them."""
     rules = _css_rules(client.get("/overlay/events").text)
     assert "background" in rules["#rail"]
-    with patch("api.main.load_watchlist", return_value=_watchlist()):
+    with patch("api.routers.world.load_watchlist", return_value=_watchlist()):
         strip = _css_rules(client.get("/overlay/signals").text)
     assert "background" in strip["#strip"]
 

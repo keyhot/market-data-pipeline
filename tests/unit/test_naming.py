@@ -1,4 +1,4 @@
-from api.main import EventType, TimeRange
+from schemas.enums import EventType, TimeRange
 from storage.naming import raw_data_path, raw_event_path, sanitize_ticker
 
 

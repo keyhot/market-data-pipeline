@@ -209,7 +209,7 @@ def test_bounds_the_connection_acquire_wait(monkeypatch):
     # /health cannot pay the pool's 30s default connect-acquire timeout when
     # Postgres is down — see TestRoleProbeLatency in
     # tests/unit/test_db_deploy_guard.py for the 5s budget this protects
-    # (KI-024). The caller in api/main.py also gates this behind a
+    # (KI-024). The caller in api/routers/ops.py also gates this behind a
     # confirmed-readable postgres_readable(), so this bound is belt-and-braces
     # for the gap between that check and this call, not the only guard.
     _, pool = _wire(monkeypatch, (_SIGNAL_TS, _EVENT_TS))

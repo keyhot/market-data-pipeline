@@ -19,7 +19,7 @@ BARS = [
 
 
 def test_bars_returns_stored_bars():
-    with patch("api.main.get_price_bars", return_value=BARS) as reader:
+    with patch("api.routers.stored.get_price_bars", return_value=BARS) as reader:
         response = client.get("/bars/aapl?limit=50")
 
     assert response.status_code == 200
@@ -32,14 +32,14 @@ def test_bars_returns_stored_bars():
 
 
 def test_bars_404_when_nothing_stored():
-    with patch("api.main.get_price_bars", return_value=[]):
+    with patch("api.routers.stored.get_price_bars", return_value=[]):
         response = client.get("/bars/ZZUNKNOWN")
 
     assert response.status_code == 404
 
 
 def test_bars_503_when_postgres_unreachable():
-    with patch("api.main.get_price_bars", side_effect=RuntimeError("db down")):
+    with patch("api.routers.stored.get_price_bars", side_effect=RuntimeError("db down")):
         response = client.get("/bars/AAPL")
 
     assert response.status_code == 503

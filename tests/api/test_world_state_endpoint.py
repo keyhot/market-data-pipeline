@@ -1,4 +1,4 @@
-"""Endpoint tests patch api.main.get_world_events — the projection itself is
+"""Endpoint tests patch api.routers.world.get_world_events — the projection itself is
 covered by unit tests, so these assert wiring and the established error shape."""
 
 from unittest.mock import patch
@@ -22,7 +22,7 @@ def _event(event_id, event_type="big_move", severity=6.0, payload=None):
 
 
 def test_world_state_returns_projection():
-    with patch("api.main.get_world_events", return_value=[_event(1)]):
+    with patch("api.routers.world.get_world_events", return_value=[_event(1)]):
         response = client.get("/world/state")
 
     assert response.status_code == 200
@@ -37,7 +37,7 @@ def test_world_state_includes_model_record():
         _event(1, "signal_resolved", 0.8, {"outcome": "win"}),
         _event(2, "signal_resolved", 1.4, {"outcome": "loss"}),
     ]
-    with patch("api.main.get_world_events", return_value=events):
+    with patch("api.routers.world.get_world_events", return_value=events):
         data = client.get("/world/state").json()["data"]
 
     assert data["model"]["wins"] == 1
@@ -45,14 +45,14 @@ def test_world_state_includes_model_record():
 
 
 def test_world_state_404_when_empty():
-    with patch("api.main.get_world_events", return_value=[]):
+    with patch("api.routers.world.get_world_events", return_value=[]):
         response = client.get("/world/state")
 
     assert response.status_code == 404
 
 
 def test_world_state_503_when_postgres_down():
-    with patch("api.main.get_world_events", side_effect=RuntimeError("no pool")):
+    with patch("api.routers.world.get_world_events", side_effect=RuntimeError("no pool")):
         response = client.get("/world/state")
 
     assert response.status_code == 503
@@ -64,7 +64,7 @@ def test_world_state_rejects_out_of_range_limit():
 
 
 def test_world_state_is_stable_across_identical_calls():
-    with patch("api.main.get_world_events", return_value=[_event(1), _event(2)]):
+    with patch("api.routers.world.get_world_events", return_value=[_event(1), _event(2)]):
         first = client.get("/world/state").json()["data"]
         second = client.get("/world/state").json()["data"]
 
@@ -78,13 +78,13 @@ def test_world_state_carries_latest_prices_for_the_now_band(monkeypatch):
     /world/state — carrying prices here keeps it to ONE request rather than a
     second per symbol. Each of those would be another long-lived connection in
     a browser process that already hit its per-origin limit once (KI-013)."""
-    import api.main as main
+    import api.routers.world as world
 
     monkeypatch.setattr(
-        main, "get_price_bars",
+        world, "get_price_bars",
         lambda symbol, interval="1m", limit=1: [{"close": 118432.5}],
     )
-    with patch("api.main.get_world_events", return_value=[_event(1)]):
+    with patch("api.routers.world.get_world_events", return_value=[_event(1)]):
         body = client.get("/world/state").json()
     assert body["data"]["prices"]["BTCUSDT"] == 118432.5
 
@@ -92,13 +92,13 @@ def test_world_state_carries_latest_prices_for_the_now_band(monkeypatch):
 def test_world_state_survives_a_price_lookup_failure(monkeypatch):
     """Enrichment must never break the room: no prices is a missing line in the
     band, not a 503 and a dead stream."""
-    import api.main as main
+    import api.routers.world as world
 
     def boom(symbol, interval="1m", limit=1):
         raise RuntimeError("pg down")
 
-    monkeypatch.setattr(main, "get_price_bars", boom)
-    with patch("api.main.get_world_events", return_value=[_event(1)]):
+    monkeypatch.setattr(world, "get_price_bars", boom)
+    with patch("api.routers.world.get_world_events", return_value=[_event(1)]):
         response = client.get("/world/state")
     assert response.status_code == 200
     assert response.json()["data"]["prices"] == {}

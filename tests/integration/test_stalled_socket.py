@@ -80,9 +80,9 @@ def proxied_pool(monkeypatch):
     finally:
         # Closing the proxy's sockets errors out whatever is still stuck.
         proxy.close()
-        from api import main
+        from api.routers import ops
 
-        main._health_db_wait_idle()
+        ops._health_db_wait_idle()
         if db._pool is not None:
             db._pool.close(timeout=1)
 
@@ -91,7 +91,7 @@ def test_health_answers_within_its_budget_through_a_stalled_socket(proxied_pool)
     from api.main import app
 
     client = TestClient(app)
-    with patch("api.main._HEALTH_DB_BUDGET_SECONDS", _BUDGET):
+    with patch("api.routers.ops._HEALTH_DB_BUDGET_SECONDS", _BUDGET):
         warm = client.get("/health").json()["data"]
         assert warm["postgres"]["connected"] is True  # the proxy forwards
 

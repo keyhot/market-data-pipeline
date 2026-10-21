@@ -40,9 +40,9 @@ _CONNECTED = {"enabled": True, "connected": True}
 def test_health_includes_world_liveness():
     now = datetime.now(timezone.utc)
     with (
-        patch("api.main.postgres_status", return_value=_CONNECTED),
+        patch("api.routers.ops.postgres_status", return_value=_CONNECTED),
         patch(
-            "api.main.world_liveness_times",
+            "api.routers.ops.world_liveness_times",
             return_value=(now - timedelta(minutes=3), now - timedelta(minutes=1)),
         ),
     ):
@@ -67,9 +67,9 @@ def test_health_degrades_world_to_none_on_database_error():
     # before it ever reaches the mocked reader (see the latency test below)
     # and this would pass vacuously against a narrowed `except`.
     with (
-        patch("api.main.postgres_status", return_value=_CONNECTED),
+        patch("api.routers.ops.postgres_status", return_value=_CONNECTED),
         patch(
-            "api.main.world_liveness_times",
+            "api.routers.ops.world_liveness_times",
             side_effect=RuntimeError("connection lost"),
         ),
     ):
@@ -94,8 +94,8 @@ def test_health_skips_the_world_read_when_postgres_is_not_readable():
     # `tests/unit/test_db_deploy_guard.py::TestRoleProbeLatency`). Gating on
     # `postgres_readable()` is what keeps this reader off that cold path.
     with (
-        patch("api.main.postgres_readable", return_value=False),
-        patch("api.main.world_liveness_times") as reader,
+        patch("api.routers.ops.postgres_readable", return_value=False),
+        patch("api.routers.ops.world_liveness_times") as reader,
     ):
         response = client.get("/health")
 
@@ -116,12 +116,12 @@ def test_health_reads_world_liveness_when_writes_are_disabled_but_db_is_reachabl
     now = datetime.now(timezone.utc)
     with (
         patch(
-            "api.main.postgres_status",
+            "api.routers.ops.postgres_status",
             return_value={"enabled": False, "connected": None},
         ),
-        patch("api.main.postgres_readable", return_value=True),
+        patch("api.routers.ops.postgres_readable", return_value=True),
         patch(
-            "api.main.world_liveness_times",
+            "api.routers.ops.world_liveness_times",
             return_value=(now - timedelta(minutes=3), now - timedelta(minutes=1)),
         ),
     ):
@@ -145,10 +145,10 @@ def test_health_gives_the_world_read_only_what_the_budget_has_left():
         return _CONNECTED
 
     with (
-        patch("api.main._HEALTH_DB_BUDGET_SECONDS", 1.0),
-        patch("api.main.postgres_status", side_effect=slow_status),
+        patch("api.routers.ops._HEALTH_DB_BUDGET_SECONDS", 1.0),
+        patch("api.routers.ops.postgres_status", side_effect=slow_status),
         patch(
-            "api.main.world_liveness_times",
+            "api.routers.ops.world_liveness_times",
             return_value=(now - timedelta(minutes=3), now - timedelta(minutes=1)),
         ) as reader,
     ):
@@ -186,12 +186,12 @@ def test_health_db_budget_leaves_headroom_under_every_consumer():
     # compose's healthchecks gave /health 3s, and director/broadcast wait on
     # `api: service_healthy` — a degraded database would have marked the api
     # container unhealthy under a 4s budget.
-    from api import main
+    from api.routers import ops
 
     consumers = _health_consumers()
     assert {"watchdog", "compose:api", "compose:scheduler"} <= set(consumers)
     for name, waits in consumers.items():
-        assert main._HEALTH_DB_BUDGET_SECONDS <= waits - 1.0, name
+        assert ops._HEALTH_DB_BUDGET_SECONDS <= waits - 1.0, name
 
 
 def test_health_db_budget_covers_a_cold_unreachable_database():
@@ -200,12 +200,12 @@ def test_health_db_budget_covers_a_cold_unreachable_database():
     # together must fit, or the gate cannot even answer inside the budget.
     # (Reachable-but-slow is bounded separately: the probe carries a
     # statement_timeout of the same length, see test_db_deploy_guard.py.)
-    from api import main
+    from api.routers import ops
     from storage import db
 
     ping_default = inspect.signature(db.ping).parameters["timeout_seconds"].default
     cold = db._ROLE_PROBE_TIMEOUT_SECONDS + ping_default
-    assert cold <= main._HEALTH_DB_BUDGET_SECONDS
+    assert cold <= ops._HEALTH_DB_BUDGET_SECONDS
 
 
 def test_metrics_includes_scheduler_status():
@@ -256,63 +256,63 @@ class TestStalledDatabase:
         return release, calls, stuck
 
     def test_a_stalled_gate_answers_within_the_budget(self):
-        from api import main
+        from api.routers import ops
 
         release, _, stuck = self._stall()
         try:
             with (
-                patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
-                patch("api.main.postgres_status", side_effect=stuck),
+                patch("api.routers.ops._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+                patch("api.routers.ops.postgres_status", side_effect=stuck),
             ):
                 started = time.monotonic()
                 response = client.get("/health")
                 elapsed = time.monotonic() - started
         finally:
             release.set()
-            main._health_db_wait_idle()
+            ops._health_db_wait_idle()
 
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["postgres"]["connected"] is False
         assert data["world"] is None
         assert data["world_unavailable_reason"] == "not_connected"
-        assert elapsed < self._BUDGET + main._HEALTH_DB_GRACE_SECONDS + 0.5
+        assert elapsed < self._BUDGET + ops._HEALTH_DB_GRACE_SECONDS + 0.5
 
     def test_a_stalled_reader_keeps_what_the_gate_already_answered(self):
         # The gate answered, then the world read stalled: the database WAS
         # reachable, so this is the existing "reader_error", not an outage.
-        from api import main
+        from api.routers import ops
 
         release, _, stuck = self._stall()
         try:
             with (
-                patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
-                patch("api.main.postgres_status", return_value=_CONNECTED),
-                patch("api.main.world_liveness_times", side_effect=stuck),
+                patch("api.routers.ops._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+                patch("api.routers.ops.postgres_status", return_value=_CONNECTED),
+                patch("api.routers.ops.world_liveness_times", side_effect=stuck),
             ):
                 started = time.monotonic()
                 response = client.get("/health")
                 elapsed = time.monotonic() - started
         finally:
             release.set()
-            main._health_db_wait_idle()
+            ops._health_db_wait_idle()
 
         data = response.json()["data"]
         assert data["postgres"] == _CONNECTED
         assert data["world"] is None
         assert data["world_unavailable_reason"] == "reader_error"
-        assert elapsed < self._BUDGET + main._HEALTH_DB_GRACE_SECONDS + 0.5
+        assert elapsed < self._BUDGET + ops._HEALTH_DB_GRACE_SECONDS + 0.5
 
     def test_a_stuck_probe_is_not_joined_by_another(self):
         # Single flight: while one probe is still stuck, the next request
         # answers at once instead of parking a second thread behind it.
-        from api import main
+        from api.routers import ops
 
         release, calls, stuck = self._stall()
         try:
             with (
-                patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
-                patch("api.main.postgres_status", side_effect=stuck),
+                patch("api.routers.ops._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+                patch("api.routers.ops.postgres_status", side_effect=stuck),
             ):
                 client.get("/health")
                 started = time.monotonic()
@@ -320,23 +320,23 @@ class TestStalledDatabase:
                 elapsed = time.monotonic() - started
         finally:
             release.set()
-            main._health_db_wait_idle()
+            ops._health_db_wait_idle()
 
         assert len(calls) == 1
         assert second.json()["data"]["postgres"]["connected"] is False
         assert elapsed < self._BUDGET
 
     def test_a_recovered_probe_lets_the_next_request_through(self):
-        from api import main
+        from api.routers import ops
 
         release, calls, stuck = self._stall()
         with (
-            patch("api.main._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
-            patch("api.main.postgres_status", side_effect=stuck),
+            patch("api.routers.ops._HEALTH_DB_BUDGET_SECONDS", self._BUDGET),
+            patch("api.routers.ops.postgres_status", side_effect=stuck),
         ):
             client.get("/health")
         release.set()
-        main._health_db_wait_idle()
+        ops._health_db_wait_idle()
 
         response = client.get("/health")
         assert response.json()["data"]["postgres"] == {
@@ -347,10 +347,10 @@ class TestStalledDatabase:
     def test_the_wait_fits_every_consumer(self):
         # The grace past the deadline comes out of the second the handler
         # keeps for everything else (see the headroom test above).
-        from api import main
+        from api.routers import ops
 
         for name, waits in _health_consumers().items():
             assert (
-                main._HEALTH_DB_BUDGET_SECONDS + main._HEALTH_DB_GRACE_SECONDS
+                ops._HEALTH_DB_BUDGET_SECONDS + ops._HEALTH_DB_GRACE_SECONDS
                 <= waits - 0.5
             ), name
