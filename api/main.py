@@ -160,35 +160,13 @@ def _validated_symbol(raw: str) -> str:
 
 
 # The shared visual identity (world/visuals.py) reaches every page from one
-# place: the palette vars, the calm->dramatic tier ramp, and the mood->colour
-# map the canvas reads. Injecting them here means a page can never drift from
-# the source of truth, and no caller can forget to pass them.
+# place. `__THEME_VARS__` is CSS in a <style> block, so it has to be in the
+# document before first paint and cannot ride in the JSON config below; the
+# tier entries are what `/overlay/events` still reads. Everything `/world`'s
+# script reads moved to `_world_config` (#41).
 _THEME_REPLACEMENTS = {
     "__THEME_VARS__": visuals.css_variables(),
     "__TIER_STYLES__": visuals.tier_styles_css(),
-    "__MOOD_COLORS_JSON__": json.dumps(visuals.MOOD_COLORS),
-    # KI-028: the cast measured 1.19:1 and 1.00:1 against its own background.
-    # Body colour is not the mood colour — PixiJS tint MULTIPLIES the base fill
-    # — so the page cannot work it out from __MOOD_COLORS_JSON__ alone, and the
-    # old attempt to (a luminance floor applied to the tint) was floored on the
-    # wrong number. Precomputed per mood here, where the contrast maths and the
-    # base fill live together.
-    "__BODY_TINTS_JSON__": json.dumps(visuals.body_tints()),
-    # KI-060: `BODY_TINT` covers every mood MOOD_COLORS claims, and nothing
-    # else — but `character()` builds every figure at mood "neutral", which it
-    # deliberately does not claim. The page used to answer that with a hex of
-    # its own at 3.05:1, the one colour in the room below KI-028's floor. Both
-    # neutrals come from here now: the identity grey for chrome, and the same
-    # grey lifted for anything that gets painted as a body.
-    "__NEUTRAL_COLOR__": hex(int(visuals.PALETTE["neutral"][1:], 16)),
-    "__NEUTRAL_TINT__": hex(int(visuals.neutral_body_tint()[1:], 16)),
-    "__BODY_BASE_FILL__": hex(visuals.BODY_BASE_FILL),
-    "__BODY_RIM_FILL__": hex(visuals.BODY_RIM_FILL),
-    # B2: scene-wide lighting per tier, from the same module as everything else
-    # visual. The canvas gets a ramp shaped for a canvas — see `room_light`.
-    "__ROOM_LIGHT_JSON__": json.dumps(
-        [visuals.room_light(tier) for tier in range(4)]
-    ),
     # The 0..3 tier scale, from world.state. Severities are rule-specific, so a
     # page that hard-codes absolute cuts disagrees with the server about how
     # big an event is — which is how every `signal_resolved` came out tier 0.
@@ -200,17 +178,67 @@ _THEME_REPLACEMENTS = {
     ),
     # ...and the three lines that read them, which were written out twice,
     # byte-identical, in two templates. One definition, injected — see
-    # `world.state.tier_of_js`.
+    # `world.state.tier_of_js`. `/world` carries its own copy as page code
+    # that reads `tier_cuts` from the config; a test runs it against
+    # `severity_tier`, so neither copy can drift.
     "__TIER_OF_JS__": tier_of_js(),
-    # B5: one accent per speaking character, from the same palette module, so
-    # a speech bubble can never drift from the room's colours.
-    "__CHARACTER_COLORS_JSON__": json.dumps(visuals.CHARACTER_COLORS),
-    # B1: the reaction registry itself reaches the canvas, so "what happened"
-    # maps to a face and a named animation from ONE source of truth. The
-    # renderer must not re-invent this mapping — drift between the room and the
-    # overlays was the failure world/visuals.py exists to prevent.
-    "__REACTIONS_JSON__": json.dumps(
-        {
+}
+
+
+def _render_template(name: str, replacements: dict[str, str]) -> str:
+    html = (_TEMPLATES_DIR / name).read_text()
+    # Page-specific replacements win over theme defaults if a key collides.
+    for placeholder, value in {**_THEME_REPLACEMENTS, **replacements}.items():
+        html = html.replace(placeholder, value)
+    return html
+
+
+def _world_config(symbols: list[str], manifest) -> dict:
+    """Everything `/world`'s script reads, as ONE dict (#41).
+
+    It replaces about twenty text placeholders, each spliced into JavaScript as
+    a literal (two of them as generated code). Values that were JS hex literals
+    — `0xd0d0d0` — are numbers here, so `JSON.parse` hands the page the same
+    thing the literal did. A missing plate stays `null`, never absent: the page
+    carries no defaults of its own, so the procedural room is chosen HERE.
+    """
+    return {
+        "symbols": symbols,
+        "plate": manifest.as_dict() if manifest else None,
+        # The cast, already sorted into people and settings (`cast_payload`).
+        "painted_cast": manifest.cast_payload() if manifest else None,
+        "light": json.loads(light.as_json(light.light_for(manifest))),
+        "text": json.loads(text_layout.as_json(manifest)),
+        # The mood -> colour map the canvas reads.
+        "mood_colors": visuals.MOOD_COLORS,
+        # KI-028: the cast measured 1.19:1 and 1.00:1 against its own background.
+        # Body colour is not the mood colour — PixiJS tint MULTIPLIES the base
+        # fill — so the page cannot work it out from `mood_colors` alone.
+        # Precomputed per mood here, where the contrast maths and the base fill
+        # live together.
+        "body_tints": visuals.body_tints(),
+        # KI-060: `character()` builds every figure at mood "neutral", which
+        # MOOD_COLORS deliberately does not claim. Both neutrals come from here:
+        # the identity grey for chrome, and the same grey lifted for anything
+        # that gets painted as a body.
+        "neutral_color": int(visuals.PALETTE["neutral"][1:], 16),
+        "neutral_tint": int(visuals.neutral_body_tint()[1:], 16),
+        "body_base_fill": visuals.BODY_BASE_FILL,
+        "body_rim_fill": visuals.BODY_RIM_FILL,
+        # B2: scene-wide lighting per tier. The canvas gets a ramp shaped for a
+        # canvas — see `room_light`.
+        "room_light": [visuals.room_light(tier) for tier in range(4)],
+        "tier_cuts": {
+            "cuts": {k: list(v) for k, v in tier_cuts().items()},
+            "generic": list(GENERIC_TIER_CUTS),
+        },
+        # B5: one accent per speaking character, so a speech bubble can never
+        # drift from the room's colours.
+        "character_colors": visuals.CHARACTER_COLORS,
+        # B1: the reaction registry itself reaches the canvas, so "what
+        # happened" maps to a face and a named animation from ONE source of
+        # truth. The renderer must not re-invent this mapping.
+        "reactions": {
             "base": {
                 event_type: {"mood": mood, "animation": animation}
                 for event_type, (mood, animation) in reactions.REACTIONS.items()
@@ -227,26 +255,45 @@ _THEME_REPLACEMENTS = {
                 "mood": reactions._FALLBACK[0],
                 "animation": reactions._FALLBACK[1],
             },
-        }
-    ),
-    # M1: the monitors' decisions are made in Python and injected, like every
-    # other threshold the room reads (see __TIER_CUTS_JSON__ above).
-    "__MONITOR_RULES_JSON__": json.dumps(monitors.monitor_rules()),
-    # ...and the rules themselves, not only their numbers — see
-    # `world.state.tier_of_js` for why injecting constants alone was not
-    # enough (KI-019). `world/monitors.py` runs this text in node against its
-    # own Python, so the page and the server cannot disagree about how many
-    # candles fit or when a screen is too old to be believed.
-    "__MONITOR_JS__": monitors.rules_js(),
-}
+        },
+        # M1: the monitors' decisions are made in Python and the numbers
+        # injected, like every other threshold the room reads. The rule
+        # functions that read them are page code, run against `world.monitors`
+        # in node by `test_monitors.py`, so the page and the server cannot
+        # disagree about how many candles fit or when a screen is too old.
+        "monitor_rules": monitors.monitor_rules(),
+    }
 
 
-def _render_template(name: str, replacements: dict[str, str]) -> str:
-    html = (_TEMPLATES_DIR / name).read_text()
-    # Page-specific replacements win over theme defaults if a key collides.
-    for placeholder, value in {**_THEME_REPLACEMENTS, **replacements}.items():
-        html = html.replace(placeholder, value)
-    return html
+_WORLD_CONFIG_SLOT = "__WORLD_CONFIG__"
+
+
+def _json_for_script(value) -> str:
+    """JSON that is safe as the text of a `<script>` element.
+
+    Script text is not entity-decoded, so `html.escape` would corrupt it; what
+    ends a script element (or opens a comment inside one) is `<`, so `<`, `>`
+    and `&` become JSON `\\u` escapes, which `JSON.parse` reads back as the
+    same characters. `ensure_ascii` already writes everything non-ASCII,
+    U+2028/2029 included, as an escape. `allow_nan=False` fails here, at the
+    server, rather than as a `JSON.parse` error on a page that already
+    returned 200.
+    """
+    return (
+        json.dumps(value, allow_nan=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
+def _render_world_page(config: dict) -> str:
+    html = _render_template("world.html", {})
+    if html.count(_WORLD_CONFIG_SLOT) != 1:
+        raise RuntimeError("world.html has no single slot for the JSON config block")
+    # Substituted LAST and in one `replace`, so a value that happens to spell a
+    # placeholder is data, not a slot: nothing re-scans what was just inserted.
+    return html.replace(_WORLD_CONFIG_SLOT, _json_for_script(config))
 
 
 @app.post("/world/heartbeat")
@@ -1007,20 +1054,7 @@ def world_page():
     # KI-074: the other manifest validators run here too, for the same reason.
     for problem in _plate_warnings(manifest, deduped):
         logger.warning("%s", problem)
-    return HTMLResponse(
-        _render_template(
-            "world.html",
-            {
-                "__SYMBOLS__": json.dumps(deduped),
-                "__PLATE_JSON__": json.dumps(manifest.as_dict() if manifest else None),
-                "__CAST_JSON__": json.dumps(
-                    manifest.cast_payload() if manifest else None
-                ),
-                "__LIGHT_JSON__": light.as_json(light.light_for(manifest)),
-                "__TEXT_JSON__": text_layout.as_json(manifest),
-            },
-        )
-    )
+    return HTMLResponse(_render_world_page(_world_config(deduped, manifest)))
 
 
 _ALLOWED_CHART_INTERVALS = {"1d", "1m"}

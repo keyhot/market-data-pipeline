@@ -135,8 +135,8 @@ def test_the_shipped_manifest_loads():
 
 def test_the_manifests_cell_agrees_with_the_one_python_bakes_into_the_js():
     """`CELL` has three definitions that all have to agree: `monitors.CELL`
-    (baked as a literal into the `barsThatFit`/`isDrawable` JS `rules_js()`
-    generates), `MONITOR_RULES.cell` (the same constant, injected as data),
+    (read by the page's `barsThatFit`/`isDrawable` from the config's
+    `monitor_rules`), `MONITOR_RULES.cell` (the same constant, injected as data),
     and the page's own `const CELL = (PLATE && PLATE.cell) || 4;` (read from
     THIS manifest). `drawCandles` mixes sources - pitch/pad/`yOf` use the
     page's `CELL` (so the manifest's value), `barsThatFit`/`isDrawable` use

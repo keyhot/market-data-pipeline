@@ -12,11 +12,14 @@ image, and P2 measures them off the asset. Nothing in this module knows or
 needs to know where the glass actually is.
 """
 import json
+import re
 import shutil
 import subprocess
 
 import pytest
+from fastapi.testclient import TestClient
 
+from api.main import app
 from world.monitors import (
     BODY_CELLS,
     CELL,
@@ -30,7 +33,6 @@ from world.monitors import (
     bars_that_fit,
     is_drawable,
     monitor_rules,
-    rules_js,
     stale_alpha_for,
 )
 
@@ -131,32 +133,62 @@ def test_the_rules_survive_the_trip_through_json():
     assert json.loads(json.dumps(monitor_rules())) == monitor_rules()
 
 
-def test_the_page_is_served_the_rule_itself_not_just_its_numbers():
-    """KI-019's actual lesson: injecting the CUTS was half the fix, because
-    the three-line function reading them was then written out twice and
-    drifted. `world.state.tier_of_js` is the precedent. The monitors get the
-    same treatment - the JS is generated from these constants, so a page
-    cannot own a second copy of the rule."""
-    js = rules_js()
-    assert "function barsThatFit(" in js
-    assert "function isDrawable(" in js
-    assert "function staleAlpha(" in js
-    assert str(MIN_WIDTH) in js
-    assert str(MIN_HEIGHT) in js
-    assert str(MIN_BARS) in js
-    assert str(STALE_AFTER_SECONDS) in js
-    assert str(STALE_ALPHA) in js
+def _served_page() -> tuple[str, dict]:
+    """The `/world` page as served, and the `monitor_rules` it carries."""
+    body = TestClient(app).get("/world").text
+    block = re.search(
+        r'<script type="application/json" id="world-config">(.*?)</script>',
+        body,
+        re.S,
+    )
+    assert block, "the page carries no world-config block"
+    return body, json.loads(block.group(1))["monitor_rules"]
+
+
+def _function_text(source: str, name: str) -> str:
+    start = source.index(f"function {name}(")
+    depth = 0
+    for i in range(source.index("{", start), len(source)):
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        if depth == 0:
+            return source[start : i + 1]
+    raise AssertionError(f"unbalanced braces in {name}")
+
+
+_RULE_FUNCTIONS = ("barsThatFit", "isDrawable", "staleAlpha")
+
+
+def test_the_page_reads_the_rule_from_the_config_and_bakes_no_number():
+    """KI-019's actual lesson: injecting the CUTS was half the fix, because the
+    function reading them was then written out twice and drifted. The page's
+    three functions read `MONITOR_RULES` - the config's numbers - and nothing
+    else, so there is no second copy of any constant to drift."""
+    body, rules = _served_page()
+    assert rules == monitor_rules()
+    js = "\n".join(_function_text(body, name) for name in _RULE_FUNCTIONS)
+    for key in rules:
+        assert f"MONITOR_RULES.{key}" in js, f"the page never reads {key}"
+    for number in (MIN_WIDTH, MIN_HEIGHT, MIN_BARS, STALE_AFTER_SECONDS, STALE_ALPHA):
+        assert not re.search(rf"(?<![\w.]){re.escape(str(number))}(?![\w.])", js), (
+            f"{number} is baked into the page's rule functions"
+        )
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed on this host")
-def test_the_emitted_javascript_agrees_with_python():
-    """The claim `rules_js` makes is that the page and the server apply the
-    same rule. A substring check cannot see that. This runs the emitted text
-    in a real JS engine and compares every answer against Python's.
+def test_the_pages_javascript_agrees_with_python():
+    """The claim is that the page and the server apply the same rule. A
+    substring check cannot see that. This runs the page's own three functions,
+    as served, against the config's own numbers in a real JS engine and
+    compares every answer against Python's.
 
-    It skips where node is absent, which is why the constants are also pinned
+    It skips where node is absent, which is why the page is also pinned
     structurally above - that check still runs everywhere.
     """
+    body, rules = _served_page()
+    rules_js = (
+        f"const MONITOR_RULES = {json.dumps(rules)};\n"
+        + "\n".join(_function_text(body, name) for name in _RULE_FUNCTIONS)
+    )
     widths = [0, 4, 16, 40, 159, 160, 320, 321, 640, 1000]
     rects = [
         {"w": 40, "h": 30},
@@ -169,7 +201,7 @@ def test_the_emitted_javascript_agrees_with_python():
     ages = [0, 1.5, STALE_AFTER_SECONDS, STALE_AFTER_SECONDS + 0.1, 86_400]
 
     driver = (
-        f"{rules_js()}\n"
+        f"{rules_js}\n"
         f"const widths = {json.dumps(widths)};\n"
         f"const rects = {json.dumps(rects)};\n"
         f"const ages = {json.dumps(ages)};\n"

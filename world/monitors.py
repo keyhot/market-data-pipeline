@@ -77,33 +77,3 @@ def monitor_rules() -> dict:
         "stale_after_seconds": STALE_AFTER_SECONDS,
         "stale_alpha": STALE_ALPHA,
     }
-
-
-def rules_js() -> str:
-    """`bars_that_fit`, `is_drawable` and `stale_alpha_for`, as the JavaScript
-    the page is served.
-
-    The same lesson as `world.state.tier_of_js`: injecting the *constants* is
-    only half of it. A page that re-derives the rule from them owns a second
-    copy, and two copies of a rule is how KI-019 happened. The text below is
-    generated FROM the constants above, so the tested definition and the
-    running definition cannot drift - `test_monitors.py` runs this text in
-    node and compares every answer against Python's.
-
-    `isDrawable` is emitted at the default cell only; the page draws on the
-    cast's 4px grid and has no reason to ask about another.
-    """
-    return (
-        "function barsThatFit(widthPx) {\n"
-        f"      const usable = widthPx - 2 * {PAD_CELLS} * {CELL};\n"
-        f"      const pitch = ({BODY_CELLS} + {GAP_CELLS}) * {CELL};\n"
-        "      return Math.max(0, Math.floor(usable / pitch));\n"
-        "    }\n"
-        "    function isDrawable(rect) {\n"
-        f"      return rect.w >= {MIN_WIDTH} && rect.h >= {MIN_HEIGHT}\n"
-        f"        && barsThatFit(rect.w) >= {MIN_BARS};\n"
-        "    }\n"
-        "    function staleAlpha(ageSeconds) {\n"
-        f"      return ageSeconds > {STALE_AFTER_SECONDS} ? {STALE_ALPHA} : 1;\n"
-        "    }"
-    )
