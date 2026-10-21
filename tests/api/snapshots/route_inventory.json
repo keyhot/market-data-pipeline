@@ -1,0 +1,729 @@
+{
+  "title": "Market Data Pipeline API",
+  "routes": [
+    {
+      "type": "APIRoute",
+      "path": "/bars/{ticker_symbol}",
+      "name": "bars",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "bars",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "bars_bars__ticker_symbol__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "interval",
+        "limit"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/chart/{ticker_symbol}",
+      "name": "chart",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "chart",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "HTMLResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "chart_chart__ticker_symbol__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "interval"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/charts",
+      "name": "charts",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "charts",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "HTMLResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "charts_charts_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [
+        "interval",
+        "symbols"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/dashboard",
+      "name": "dashboard",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "dashboard",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "HTMLResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "dashboard_dashboard_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "Route",
+      "path": "/docs",
+      "name": "swagger_ui_html",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "endpoint": "swagger_ui_html"
+    },
+    {
+      "type": "Route",
+      "path": "/docs/oauth2-redirect",
+      "name": "swagger_ui_redirect",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "endpoint": "swagger_ui_redirect"
+    },
+    {
+      "type": "APIRoute",
+      "path": "/events/{ticker_symbol}/{event_type}",
+      "name": "event",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "event",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "event_events__ticker_symbol___event_type__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "event_type",
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "end",
+        "start"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/health",
+      "name": "health",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "health",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "health_health_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/metrics",
+      "name": "metrics",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "metrics",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "metrics_metrics_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/music/now-playing",
+      "name": "music_now_playing",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "music_now_playing",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "music_now_playing_music_now_playing_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/news/{ticker_symbol}",
+      "name": "news",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "news",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "news_news__ticker_symbol__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "limit",
+        "since"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "Route",
+      "path": "/openapi.json",
+      "name": "openapi",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "endpoint": "openapi"
+    },
+    {
+      "type": "APIRoute",
+      "path": "/overlay/events",
+      "name": "overlay_events",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "overlay_events",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "HTMLResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "overlay_events_overlay_events_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/overlay/signals",
+      "name": "overlay_signals",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "overlay_signals",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "HTMLResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "overlay_signals_overlay_signals_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "Route",
+      "path": "/redoc",
+      "name": "redoc_html",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "endpoint": "redoc_html"
+    },
+    {
+      "type": "APIRoute",
+      "path": "/signals/{ticker_symbol}",
+      "name": "signals",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "signals",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "signals_signals__ticker_symbol__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "interval",
+        "limit"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/standby",
+      "name": "standby_page",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "standby_page",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "HTMLResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "standby_page_standby_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [
+        "state"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "Mount",
+      "path": "/static",
+      "name": "static",
+      "methods": [],
+      "endpoint": "StaticFiles",
+      "directory": "static"
+    },
+    {
+      "type": "APIRoute",
+      "path": "/stored/events/{ticker_symbol}/{event_type}",
+      "name": "stored_events",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "stored_events",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "stored_events_stored_events__ticker_symbol___event_type__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "event_type",
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "limit"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/stored/news/{ticker_symbol}",
+      "name": "stored_news",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "stored_news",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "stored_news_stored_news__ticker_symbol__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "limit"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/stream/bars/{ticker_symbol}",
+      "name": "stream_bars",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "stream_bars",
+      "is_async": true,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "stream_bars_stream_bars__ticker_symbol__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "ticker_symbol"
+      ],
+      "query_params": [
+        "interval",
+        "poll_seconds"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/stream/world/events",
+      "name": "stream_world_events",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "stream_world_events",
+      "is_async": true,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "stream_world_events_stream_world_events_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [
+        "poll_seconds"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/ticker/{ticker_symbol}/{time_range}",
+      "name": "ticker",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "ticker",
+      "is_async": true,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "ticker_ticker__ticker_symbol___time_range__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "ticker_symbol",
+        "time_range"
+      ],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/tickers/{time_range}",
+      "name": "tickers",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "tickers",
+      "is_async": true,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "tickers_tickers__time_range__get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [
+        "time_range"
+      ],
+      "query_params": [
+        "symbols"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/world",
+      "name": "world_page",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "world_page",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "HTMLResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "world_page_world_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/world/events",
+      "name": "world_events",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "world_events",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "world_events_world_events_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [
+        "event_type",
+        "limit",
+        "since",
+        "symbol"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    },
+    {
+      "type": "APIRoute",
+      "path": "/world/heartbeat",
+      "name": "world_heartbeat",
+      "methods": [
+        "POST"
+      ],
+      "endpoint": "world_heartbeat",
+      "is_async": false,
+      "status_code": null,
+      "response_model": null,
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "world_heartbeat_world_heartbeat_post",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [
+        "beat"
+      ],
+      "request_param_name": "request"
+    },
+    {
+      "type": "APIRoute",
+      "path": "/world/state",
+      "name": "world_state",
+      "methods": [
+        "GET"
+      ],
+      "endpoint": "world_state",
+      "is_async": false,
+      "status_code": null,
+      "response_model": "ApiResponse",
+      "response_class": "JSONResponse",
+      "tags": [],
+      "include_in_schema": true,
+      "deprecated": null,
+      "operation_id": null,
+      "unique_id": "world_state_world_state_get",
+      "route_dependencies": [],
+      "resolved_dependencies": [],
+      "path_params": [],
+      "query_params": [
+        "limit"
+      ],
+      "header_params": [],
+      "cookie_params": [],
+      "body_params": [],
+      "request_param_name": null
+    }
+  ],
+  "middleware": [
+    {
+      "cls": "BaseHTTPMiddleware",
+      "args": [],
+      "kwargs": {
+        "dispatch": "record_request_metrics"
+      }
+    }
+  ],
+  "exception_handlers": {
+    "BaseAppException": "base_app_exception_handler",
+    "HTTPException": "http_exception_handler",
+    "RequestValidationError": "request_validation_exception_handler",
+    "WebSocketRequestValidationError": "websocket_request_validation_exception_handler"
+  },
+  "lifespan": "lifespan"
+}

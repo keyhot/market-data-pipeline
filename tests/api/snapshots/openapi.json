@@ -1,0 +1,1150 @@
+{
+  "components": {
+    "schemas": {
+      "ApiResponse": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ApiResponse",
+        "type": "object"
+      },
+      "EventType": {
+        "enum": [
+          "dividends",
+          "splits",
+          "actions"
+        ],
+        "title": "EventType",
+        "type": "string"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "RendererBeat": {
+        "properties": {
+          "frames": {
+            "title": "Frames",
+            "type": "integer"
+          },
+          "page": {
+            "title": "Page",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "frames"
+        ],
+        "title": "RendererBeat",
+        "type": "object"
+      },
+      "TimeRange": {
+        "enum": [
+          "1d",
+          "5d",
+          "1mo",
+          "3mo",
+          "6mo",
+          "1y",
+          "2y",
+          "5y",
+          "10y",
+          "ytd",
+          "max"
+        ],
+        "title": "TimeRange",
+        "type": "string"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Market Data Pipeline API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/bars/{ticker_symbol}": {
+      "get": {
+        "operationId": "bars_bars__ticker_symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "interval",
+            "required": false,
+            "schema": {
+              "default": "1d",
+              "title": "Interval",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bars"
+      }
+    },
+    "/chart/{ticker_symbol}": {
+      "get": {
+        "operationId": "chart_chart__ticker_symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "interval",
+            "required": false,
+            "schema": {
+              "default": "1d",
+              "title": "Interval",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chart"
+      }
+    },
+    "/charts": {
+      "get": {
+        "description": "Multi-symbol chart page (chart-focus scene): one candlestick panel per\nwatchlist `predict` symbol \u2014 BTC *and* ETH \u2014 each with prediction markers.\n\n`?symbols=BTCUSDT` narrows it to a subset. That exists so a scene needing a\nsingle-symbol chart uses this chrome-free broadcast surface instead of\n`/chart/{symbol}`, whose nav link, status line and footer are meant for a\nhuman with a browser and went out on air until KI-027.",
+        "operationId": "charts_charts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "interval",
+            "required": false,
+            "schema": {
+              "default": "1d",
+              "title": "Interval",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "symbols",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Symbols"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Charts"
+      }
+    },
+    "/dashboard": {
+      "get": {
+        "operationId": "dashboard_dashboard_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dashboard"
+      }
+    },
+    "/events/{ticker_symbol}/{event_type}": {
+      "get": {
+        "operationId": "event_events__ticker_symbol___event_type__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_type",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/EventType"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Event"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics"
+      }
+    },
+    "/music/now-playing": {
+      "get": {
+        "description": "The bed's current track, for the credit line on the signals strip.\n\nRead-only and forgiving: the bed is a courtesy (neither Mixkit's nor\nPixabay's licence requires attribution), so a missing runner, a stale row\nor a DB blip all answer `{\"playing\": null}` rather than an error. The strip\nthen shows nothing at all, which is the correct look for a stream with no\nmusic.",
+        "operationId": "music_now_playing_music_now_playing_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Music Now Playing"
+      }
+    },
+    "/news/{ticker_symbol}": {
+      "get": {
+        "operationId": "news_news__ticker_symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "News"
+      }
+    },
+    "/overlay/events": {
+      "get": {
+        "description": "OBS Browser Source feed (~480x1080): latest salient world events.",
+        "operationId": "overlay_events_overlay_events_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Overlay Events"
+      }
+    },
+    "/overlay/signals": {
+      "get": {
+        "description": "OBS Browser Source strip (~1920x120): live signals + track record.",
+        "operationId": "overlay_signals_overlay_signals_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Overlay Signals"
+      }
+    },
+    "/signals/{ticker_symbol}": {
+      "get": {
+        "operationId": "signals_signals__ticker_symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "interval",
+            "required": false,
+            "schema": {
+              "default": "1m",
+              "title": "Interval",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Signals"
+      }
+    },
+    "/standby": {
+      "get": {
+        "description": "Procedural standby card for the `standby` OBS scene (B10).\n\nUnknown states fall back rather than erroring: this page is the surface\nshown *because* something already went wrong, so it must never be the thing\nthat breaks. The state is escaped, never trusted \u2014 it reaches the DOM as\ntext through a template substitution, the same rule as every other page.",
+        "operationId": "standby_page_standby_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "reconnecting",
+              "title": "State",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Standby Page"
+      }
+    },
+    "/stored/events/{ticker_symbol}/{event_type}": {
+      "get": {
+        "operationId": "stored_events_stored_events__ticker_symbol___event_type__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_type",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/EventType"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stored Events"
+      }
+    },
+    "/stored/news/{ticker_symbol}": {
+      "get": {
+        "operationId": "stored_news_stored_news__ticker_symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stored News"
+      }
+    },
+    "/stream/bars/{ticker_symbol}": {
+      "get": {
+        "description": "Server-Sent Events: emits each bar stored after the client connected.\nPolls Postgres \u2014 works across containers, and EventSource auto-reconnects.",
+        "operationId": "stream_bars_stream_bars__ticker_symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "interval",
+            "required": false,
+            "schema": {
+              "default": "1d",
+              "title": "Interval",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "poll_seconds",
+            "required": false,
+            "schema": {
+              "default": 3.0,
+              "maximum": 60.0,
+              "minimum": 0.5,
+              "title": "Poll Seconds",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Bars"
+      }
+    },
+    "/stream/world/events": {
+      "get": {
+        "description": "SSE: emits world events stored after the client connected.",
+        "operationId": "stream_world_events_stream_world_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "poll_seconds",
+            "required": false,
+            "schema": {
+              "default": 3.0,
+              "maximum": 60.0,
+              "minimum": 0.5,
+              "title": "Poll Seconds",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream World Events"
+      }
+    },
+    "/ticker/{ticker_symbol}/{time_range}": {
+      "get": {
+        "operationId": "ticker_ticker__ticker_symbol___time_range__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker_symbol",
+            "required": true,
+            "schema": {
+              "title": "Ticker Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "time_range",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TimeRange"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ticker"
+      }
+    },
+    "/tickers/{time_range}": {
+      "get": {
+        "operationId": "tickers_tickers__time_range__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "time_range",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TimeRange"
+            }
+          },
+          {
+            "in": "query",
+            "name": "symbols",
+            "required": true,
+            "schema": {
+              "title": "Symbols",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tickers"
+      }
+    },
+    "/world": {
+      "get": {
+        "description": "The Living World room \u2014 a Browser Source for the world-focus scene.",
+        "operationId": "world_page_world_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "World Page"
+      }
+    },
+    "/world/events": {
+      "get": {
+        "operationId": "world_events_world_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "World Events"
+      }
+    },
+    "/world/heartbeat": {
+      "post": {
+        "description": "KI-046: the page says it is alive, and carries the frame count that\nstops a frozen page from being able to say so convincingly.\n\nKeyed by Host, because OBS's sources load 127.0.0.N shards and a developer\ntab on localhost must never cover for a dead on-air source.",
+        "operationId": "world_heartbeat_world_heartbeat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RendererBeat"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "World Heartbeat"
+      }
+    },
+    "/world/state": {
+      "get": {
+        "description": "The world_events log folded into what the room currently shows.\nThe renderer computes nothing \u2014 it draws this.",
+        "operationId": "world_state_world_state_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 2000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "World State"
+      }
+    }
+  }
+}
