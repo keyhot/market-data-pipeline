@@ -334,7 +334,12 @@ def test_a_character_does_not_sink_into_the_background():
     from world.visuals import MOOD_COLORS, SILHOUETTE_MIN_CONTRAST, body_contrast
 
     body = client.get("/world").text
-    assert "const BODY_TINT = {" in body, "the tint table never reached the page"
+    assert "const BODY_TINT = WORLD_CONFIG.body_tints;" in body, (
+        "the page does not read the tint table"
+    )
+    assert set(_served_config(body)["body_tints"]) == set(MOOD_COLORS), (
+        "the tint table never reached the page"
+    )
     assert "__BODY_TINTS_JSON__" not in body, "placeholder left unreplaced"
     expression = re.search(
         r"function setExpression\(char, mood\) \{(.*?)\n    \}", body, re.S
@@ -551,9 +556,13 @@ def test_the_tier_scale_is_injected_rather_than_reinvented():
         body = client.get(path).text
         assert "__TIER_CUTS_JSON__" not in body, path
         assert "severity >= 8" not in body, f"{path} still keeps its own scale"
-        found = re.search(r"const TIER_CUTS = (\{.*?\});", body, re.S)
-        assert found, f"{path} has no injected tier scale"
-        cuts = json.loads(found.group(1))
+        if path == "/world":
+            assert "const TIER_CUTS = WORLD_CONFIG.tier_cuts;" in body
+            cuts = _served_config(body)["tier_cuts"]
+        else:
+            found = re.search(r"const TIER_CUTS = (\{.*?\});", body, re.S)
+            assert found, f"{path} has no injected tier scale"
+            cuts = json.loads(found.group(1))
         assert cuts["cuts"]["signal_resolved"] == list(tier_cuts()["signal_resolved"])
         assert cuts["generic"] == list(GENERIC_TIER_CUTS), path
         assert "tierOf(e.event_type" in body or "tierOf(event.event_type" in body, (
@@ -590,14 +599,24 @@ def test_the_tier_function_is_injected_not_written_out_per_page():
     """Injecting the *cuts* was only half of KI-019. The three lines that read
     them were then written out twice, byte-identical, in `world.html` and
     `overlay_events.html` — and two copies of a rule is exactly how the first
-    version drifted from the server. One definition, in `world.state`."""
+    version drifted from the server. One definition, in `world.state`. (Since
+    #41 `/world` carries it as page code reading the config; the overlay is
+    still injected, and test_world_config.py runs the page's copy against
+    `severity_tier`.)"""
     from world.state import severity_tier, tier_of_js
 
     for path in ("/world", "/overlay/events"):
         body = client.get(path).text
         assert body.count("function tierOf") == 1, path
         assert "__TIER_OF_JS__" not in body, f"{path} never got the injection"
-        assert tier_of_js() in body, f"{path} carries its own copy"
+        if path == "/overlay/events":
+            assert tier_of_js() in body, f"{path} carries its own copy"
+        else:
+            # `/world` carries it as page code that reads the config (#41);
+            # test_world_config.py runs THAT function against `severity_tier`.
+            assert (
+                "const cuts = TIER_CUTS.cuts[eventType] ?? TIER_CUTS.generic;" in body
+            )
 
     # And the copy agrees with the server it mirrors: same lookup, same count.
     cuts = re.search(
@@ -617,8 +636,8 @@ def test_room_lighting_comes_from_the_shared_ramp():
 
     body = client.get("/world").text
     assert "__ROOM_LIGHT_JSON__" not in body
-    found = re.search(r"const ROOM_LIGHT = (\[.*?\]);", body, re.S)
-    injected = json.loads(found.group(1))
+    assert "const ROOM_LIGHT = WORLD_CONFIG.room_light;" in body
+    injected = _served_config(body)["room_light"]
     assert injected == [room_light(tier) for tier in range(4)]
     assert "ROOM_LIGHT[" in body, "the ramp is injected but never read"
 
@@ -731,6 +750,20 @@ def test_gallery_fits_every_style_on_one_screen():
 
 def _world_source():
     return client.get("/world").text
+
+
+def _served_config(body: str | None = None) -> dict:
+    """The page's one JSON config block (#41), parsed - what `const NAME =
+    WORLD_CONFIG.key;` resolves to. Tests that used to regex a literal out of
+    the served page read the value here instead."""
+    body = body if body is not None else client.get("/world").text
+    found = re.search(
+        r'<script type="application/json" id="world-config">(.*?)</script>',
+        body,
+        re.S,
+    )
+    assert found, "the page carries no world-config block"
+    return json.loads(found.group(1))
 
 
 def test_a_tier_three_event_starts_the_swell_sequence():
@@ -856,23 +889,21 @@ def test_the_page_reports_that_it_is_still_drawing():
 
 
 def test_the_monitors_rules_are_injected_rather_than_written_into_the_page():
-    """M1: the painted monitors decide nothing. Both halves are injected — the
-    constants AND the functions that read them — because injecting only the
-    numbers is the half-fix that let KI-019 happen. `__TIER_OF_JS__` above is
-    the precedent; Task 11's page consumes these two placeholders.
-
-    Asserted against the replacement map rather than the rendered body: the
-    template does not carry the placeholders until the candles land, and a
-    seam that is only proven once its consumer exists is a seam nobody checked.
+    """M1: the painted monitors decide nothing. The numbers come from the
+    server in the config block, and the functions that read them read nothing
+    else (#41 made those page code; test_monitors.py runs them against
+    world/monitors.py) - because injecting only the numbers was the half-fix
+    that let KI-019 happen.
     """
-    from api.main import _THEME_REPLACEMENTS
-    from world.monitors import monitor_rules, rules_js
+    from world.monitors import monitor_rules
 
-    assert json.loads(_THEME_REPLACEMENTS["__MONITOR_RULES_JSON__"]) == monitor_rules()
-    assert _THEME_REPLACEMENTS["__MONITOR_JS__"] == rules_js()
+    # #41: the numbers ride in the config block; the three functions that read
+    # them are page code, run against world/monitors.py by test_monitors.py.
+    body = client.get("/world").text
+    assert _served_config(body)["monitor_rules"] == monitor_rules()
+    assert "const MONITOR_RULES = WORLD_CONFIG.monitor_rules;" in body
 
     # Whatever the template does with them, it must not ship them unsubstituted.
-    body = client.get("/world").text
     assert "__MONITOR_RULES_JSON__" not in body
     assert "__MONITOR_JS__" not in body
 
@@ -956,7 +987,16 @@ def _js_const(source: str, name: str) -> str:
     """
     match = re.search(rf"^\s*const {name} = .*;$", source, re.M)
     assert match, f"the page no longer declares a one-line const {name}"
-    return match.group(0).strip() + "\n"
+    line = match.group(0).strip() + "\n"
+    # A const that reads the config is lifted WITH the values it resolves to:
+    # the driver has no `WORLD_CONFIG`, and restating the value in the test
+    # would test the test.
+    if "WORLD_CONFIG." in line:
+        config = _served_config(source)
+        line = re.sub(
+            r"WORLD_CONFIG\.(\w+)", lambda m: json.dumps(config[m.group(1)]), line
+        )
+    return line
 
 
 def _js_block(source: str, opening: str) -> str:
@@ -1283,9 +1323,8 @@ def test_the_cast_payload_reaches_the_page_substituted():
     body = TestClient(app).get("/world").text
     assert "__CAST_JSON__" not in body, "placeholder left unreplaced"
 
-    payload = json.loads(
-        re.search(r"const PAINTED_CAST = (.*);", body).group(1)
-    )
+    assert "const PAINTED_CAST = WORLD_CONFIG.painted_cast;" in body
+    payload = _served_config(body)["painted_cast"]
     assert set(payload) == {"characters", "scale"}
     assert payload["scale"] == load_manifest().cast["scale"]
     assert set(payload["characters"]) == {"model", "trader"}, (
@@ -7470,7 +7509,7 @@ def test_the_glow_eases_in_step_with_the_rest_of_the_room_not_a_frame():
         # `ambient.tier = 3` forces the tick snippet's own tier/want lookup
         # to a hard jump straight to tier 3; `.light` starts at the calm end,
         # same as the real `ambient` object's own initializer
-        # (`light: { ...__ROOM_LIGHT_JSON__[0] }`).
+        # (`light: { ...ROOM_LIGHT[0] }`).
         + "const ambient = { tier: 3, light: { ...ROOM_LIGHT[0] } };\n"
         + "const dt = 1 / 60;\n"
         + "const alphas = [];\n"
@@ -8159,9 +8198,8 @@ def test_the_cast_is_shaded_rather_than_flat_filled():
     the wrong side of the room if it ever reached the page.
     """
     source = _world_source()
-    light_match = re.search(r"const LIGHT = (\{.*\});", source)
-    assert light_match, "the page no longer declares a one-line const LIGHT"
-    light = json.loads(light_match.group(1))
+    assert "const LIGHT = WORLD_CONFIG.light;" in source
+    light = _served_config(source)["light"]
 
     def mix_hex(a, b, t):
         pa = a if isinstance(a, int) else int(str(a).lstrip("#"), 16)
@@ -8841,9 +8879,8 @@ def _shadow_driver(source: str, body: str, *, light: dict | None = None,
 
 
 def _page_light(source: str) -> dict:
-    match = re.search(r"const LIGHT = (\{.*\});", source)
-    assert match, "the page no longer declares a one-line const LIGHT"
-    return json.loads(match.group(1))
+    assert "const LIGHT = WORLD_CONFIG.light;" in source
+    return _served_config(source)["light"]
 
 
 @needs_node
@@ -9320,9 +9357,8 @@ def test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_multiplier():
     # NEUTRAL_TINT, not NEUTRAL: an un-mooded BODY is painted in the lifted
     # grey, because the identity grey renders at 3.05:1 against the room and
     # the floor KI-028 set is 4.5 (KI-060).
-    neutral_tint = int(
-        re.search(r"const NEUTRAL_TINT = (0x[0-9a-fA-F]+);", source).group(1), 16
-    )
+    assert "const NEUTRAL_TINT = WORLD_CONFIG.neutral_tint;" in source
+    neutral_tint = _served_config(source)["neutral_tint"]
     assert emitted["__unknown__"]["fill"] == _int(
         _mul_channels(base, _rgb(neutral_tint))
     ), (
@@ -9388,7 +9424,8 @@ def test_every_mood_the_cast_can_wear_resolves_to_a_body_colour():
     from world.visuals import MOOD_COLORS
 
     source = _world_source()
-    table = json.loads(re.search(r"const BODY_TINT = (\{.*?\});", source).group(1))
+    assert "const BODY_TINT = WORLD_CONFIG.body_tints;" in source
+    table = _served_config(source)["body_tints"]
     assert set(table) == set(MOOD_COLORS), (
         "the page's body-colour table and world.visuals.MOOD_COLORS disagree: "
         f"page-only {sorted(set(table) - set(MOOD_COLORS))}, "
@@ -9527,7 +9564,7 @@ def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
     from world.visuals import BODY_BASE_FILL, BODY_RIM_FILL, body_tint
 
     source = _world_source()
-    light = json.loads(re.search(r"const LIGHT = (\{.*\});", source).group(1))
+    light = _served_config(source)["light"]
     apply_block = _js_block(source, "function applyMood(")
     repaint_block = _js_block(source, "function repaint(")
     emitted = _run_node(_mood_paint_driver(source, apply_block, repaint_block))
@@ -10384,9 +10421,10 @@ def test_the_body_tint_fallback_clears_the_silhouette_floor():
     from world import visuals
 
     body = client.get("/world").text
-    match = re.search(r"const NEUTRAL_TINT = (0x[0-9a-fA-F]{6});", body)
-    assert match, "the page has no injected neutral body tint"
-    assert int(match.group(1), 16) == int(visuals.neutral_body_tint()[1:], 16), (
+    assert "const NEUTRAL_TINT = WORLD_CONFIG.neutral_tint;" in body
+    assert _served_config(body)["neutral_tint"] == int(
+        visuals.neutral_body_tint()[1:], 16
+    ), (
         "the page's neutral body tint is not visuals.neutral_body_tint()"
     )
     assert visuals.neutral_body_contrast() >= visuals.SILHOUETTE_MIN_CONTRAST
@@ -10399,8 +10437,8 @@ def test_the_template_states_no_colour_of_its_own():
     as `0x787b86`, correct as an identity colour and wrong as a body tint,
     with nothing to keep the copy honest."""
     source = TEMPLATE.read_text()
-    assert "__NEUTRAL_TINT__" in source
-    assert "__NEUTRAL_COLOR__" in source
+    assert "const NEUTRAL_TINT = WORLD_CONFIG.neutral_tint;" in source
+    assert "const NEUTRAL = WORLD_CONFIG.neutral_color;" in source
     assert "0x787b86" not in source, (
         "world.html hand-copies PALETTE['neutral'] again — inject it"
     )
