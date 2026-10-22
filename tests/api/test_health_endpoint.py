@@ -164,7 +164,7 @@ def test_health_gives_the_world_read_only_what_the_budget_has_left():
 
 def _health_consumers() -> dict[str, float]:
     """Every process that polls /health, and how long each waits for it."""
-    from scripts.stream_watchdog import WatchdogConfig
+    from stream.watchdog import WatchdogConfig
 
     consumers = {"watchdog": WatchdogConfig().content_timeout_seconds}
     compose = yaml.safe_load((REPO / "docker-compose.yml").read_text())

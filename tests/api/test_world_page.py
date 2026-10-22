@@ -1265,7 +1265,7 @@ def test_the_cast_stands_where_the_plate_painted_it():
         "pose": "seated",
         # The two measurements the painted chair carries: which way its cushion
         # points, and how big a body sitting in it has to be drawn
-        # (`scripts/measure_chair.py::measure_seat_axes`).
+        # (`tools/measure_chair.py::measure_seat_axes`).
         "facing": cast["trader"]["facing"],
         "figureScale": cast["trader"]["figure_scale"],
     }
@@ -3076,7 +3076,7 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
         }));
         """
     )
-    from scripts.measure_chair import measure_plate_chair
+    from tools.measure_chair import measure_plate_chair
 
     emitted = _run_node(driver)
     trader = _manifest()["cast"]["trader"]
@@ -3647,7 +3647,7 @@ def test_the_seated_figure_has_a_neck():
     giraffe is as wrong as a mole. It reads about -13 on the figure that
     shipped through increment 5 — the collar stood 13 units ABOVE the chin.
     """
-    from scripts.measure_chair import head_unit, measure_plate_chair
+    from tools.measure_chair import head_unit, measure_plate_chair
 
     emitted = _seated_rig_run()
     drawn = emitted["drawn"]
@@ -6344,7 +6344,7 @@ def test_the_seated_figure_points_where_the_painted_cushion_points():
     only space in which "perpendicular" means anything on a plate drawn in
     three-quarter view.
     """
-    from scripts.measure_chair import SIN_PHI
+    from tools.measure_chair import SIN_PHI
 
     source = _world_source()
     facing = _manifest()["cast"]["trader"]["facing"]
@@ -6612,7 +6612,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
     a seat-to-floor distance needs the projection; nominating a different
     castor as "the floor under the chair" swings the answer by 2x, which is the
     same under-determination that made anthropometry's px/cm range 2.7-4.4 and
-    got that whole method abandoned (`scripts/measure_chair.py`). A bracket
+    got that whole method abandoned (`tools/measure_chair.py`). A bracket
     asks the question the art CAN answer: the feet cannot be above the furthest
     painted contact point, nor below the nearest one.
 
@@ -6625,7 +6625,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
     which is a tenth of this bracket's width and exactly the sort of quiet
     substitution that makes a passing test describe a figure nobody drew.
     """
-    from scripts.measure_chair import measure_floor_band
+    from tools.measure_chair import measure_floor_band
 
     source = _world_source()
     driver = (
@@ -10640,7 +10640,8 @@ def test_both_shoes_sit_between_the_floor_and_the_jeans():
     `measure_floor_band` measures where the feet land, and against the jeans.
     """
     from PIL import Image
-    from scripts.measure_chair import PLATE_PNG, measure_floor_band
+
+    from tools.measure_chair import PLATE_PNG, measure_floor_band
 
     emitted = _seated_rig_run()
     palette = emitted["HUMAN"]

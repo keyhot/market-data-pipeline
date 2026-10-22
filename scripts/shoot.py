@@ -51,7 +51,7 @@ GATES = {
 
 DEFAULT_OUT_DIR = Path(__file__).resolve().parents[1] / "data" / "visual-qa"
 
-# The size of the `world-room` OBS browser source (scripts/stream_scene.py) and
+# The size of the `world-room` OBS browser source (stream/scene.py) and
 # of the painted plate itself. Judging the room at any other size judges a
 # different picture than the one that goes out.
 VIEWPORT = (1920, 960)
@@ -166,7 +166,7 @@ def shoot(
         session.cmd("Page.enable")
         # `--window-size` is the WINDOW, not the viewport: measured 2026-09-01,
         # `--window-size=1920,960` returns a 1920x817 frame. The deployed
-        # `world-room` browser source is 1920x960 (scripts/stream_scene.py), and
+        # `world-room` browser source is 1920x960 (stream/scene.py), and
         # the plate sprite is drawn at a fixed 960 regardless of the viewport —
         # so an 817 frame silently crops 143px off the bottom of the room and
         # shows the cast's feet cut off when on air they are not. A harness that

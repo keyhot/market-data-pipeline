@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.soak_report import (
+from stream.soak_report import (
     _broadcast_events_for_window,
     _fetch_report_events,
     compute_broadcast_uptime,

@@ -1,7 +1,7 @@
 """Broadcast manager runner (Sprint 14, A4): keep a YouTube broadcast alive and
 public with nobody clicking "Go Live".
 
-Shaped like scripts/stream_watchdog.py and director/service.py — a thin loop
+Shaped like stream/watchdog.py and director/service.py — a thin loop
 over a pure decision (`broadcast.policy.tick`), with all I/O injected so every
 behaviour above is unit-tested against a FakeYouTubeClient and never touches
 the network.

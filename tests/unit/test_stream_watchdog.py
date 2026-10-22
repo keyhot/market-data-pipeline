@@ -5,7 +5,7 @@ import logging
 import signal
 from datetime import datetime, timedelta, timezone
 
-from scripts.stream_watchdog import (
+from stream.watchdog import (
     WatchdogConfig,
     WatchdogState,
     probe_content,
@@ -108,7 +108,7 @@ def test_cold_start_not_streaming_starts_stream():
 
 # --- B10: standby card instead of a frozen frame ---
 
-from scripts.stream_scene import SCENE_CHART, SCENE_STANDBY  # noqa: E402
+from stream.scene import SCENE_CHART, SCENE_STANDBY  # noqa: E402
 
 
 def _switches(actions):
@@ -169,7 +169,7 @@ def test_unreachable_obs_asks_for_no_scene_switch():
 
 # --- KI-015: a relaunch that produces no OBS must be noticed ---
 
-from scripts.stream_watchdog import (  # noqa: E402
+from stream.watchdog import (  # noqa: E402
     clear_wedged_obs,
     note_relaunch_result,
     relaunch_obs,
@@ -259,7 +259,7 @@ def test_clear_wedged_obs_terminates_only_what_is_there():
 
 # --- KI-017: the relaunched OBS inherits an environment with no display ---
 
-from scripts.stream_watchdog import (  # noqa: E402
+from stream.watchdog import (  # noqa: E402
     DISPLAY_VARS,
     _launch_obs,
     desktop_env,
@@ -658,7 +658,7 @@ def test_content_outage_is_downtime_not_degraded():
     # The KI-024 window scored ~100% because nothing could be written. Now that
     # it is written, it must land in the fold as real downtime — a stream whose
     # pages cannot reach their API is pushing pixels at nobody.
-    from scripts.soak_report import compute_uptime
+    from stream.soak_report import compute_uptime
 
     start = datetime(2026, 8, 20, tzinfo=timezone.utc)
     report = compute_uptime(
@@ -676,7 +676,7 @@ def test_content_outage_is_downtime_not_degraded():
 
 
 def test_reconnects_are_counted_next_to_uptime_and_cost_no_downtime():
-    from scripts.soak_report import compute_uptime
+    from stream.soak_report import compute_uptime
 
     start = datetime(2026, 8, 20, tzinfo=timezone.utc)
     report = compute_uptime(
@@ -845,7 +845,7 @@ def test_the_runner_actually_seeds_its_state():
     A seed nothing calls is a seed that fixes nothing."""
     import inspect
 
-    from scripts.stream_watchdog import main
+    from stream.watchdog import main
 
     assert "seed_state(" in inspect.getsource(main)
 
@@ -895,7 +895,7 @@ def test_the_runner_seeds_the_card_from_what_obs_is_showing():
     scene, KI-038 the watchdog's `streaming`, and now `on_standby`."""
     import inspect
 
-    from scripts.stream_watchdog import main
+    from stream.watchdog import main
 
     assert "program_scene=" in inspect.getsource(main)
 
@@ -1117,11 +1117,11 @@ def test_a_healthy_renderer_on_a_fresh_watchdog_records_nothing():
 
 def test_the_runner_reads_the_on_air_shard_from_the_environment():
     """The shard `world-room` sits on is deployment configuration, not a
-    constant — if scripts/stream_scene.py's sharding changes, this must change
+    constant — if stream/scene.py's sharding changes, this must change
     with it."""
     import inspect
 
-    from scripts.stream_watchdog import main
+    from stream.watchdog import main
 
     assert "WATCHDOG_RENDERER_HOST" in inspect.getsource(main)
 
@@ -1183,7 +1183,7 @@ def test_execute_actions_actually_dispatches_a_refresh(monkeypatch):
     """The seam `tick` cannot see. An action kind `execute_actions` does not
     know falls straight through its if/elif chain and does nothing, silently —
     a self-heal that only exists in the decision is not a self-heal."""
-    from scripts import stream_watchdog as wd
+    from stream import watchdog as wd
 
     pressed = []
     monkeypatch.setattr(wd.stream_ctl, "make_client", lambda *a, **k: "client")
@@ -1201,7 +1201,7 @@ def test_a_refresh_that_never_happened_does_not_burn_the_one_attempt(monkeypatch
     press that never occurred would still disarm the self-heal — and nothing
     would re-arm it, because only a recovery does, and the recovery is what the
     press was for. One flaky call would cost the whole outage its cheap fix."""
-    from scripts import stream_watchdog as wd
+    from stream import watchdog as wd
 
     def boom(*a, **k):
         raise OSError("obs-websocket went away")
@@ -1215,7 +1215,7 @@ def test_a_refresh_that_never_happened_does_not_burn_the_one_attempt(monkeypatch
 
 def test_the_next_tick_retries_a_refresh_that_failed(monkeypatch):
     """End to end: decide, fail, retry once — and still only once at a time."""
-    from scripts import stream_watchdog as wd
+    from stream import watchdog as wd
 
     attempts = []
 
@@ -1284,7 +1284,7 @@ def test_end_to_end_a_permanently_failing_press_stops_hammering(monkeypatch):
     a press that ALWAYS throws must stop being attempted rather than
     building a new websocket client and logging an exception every 30s for
     the whole outage."""
-    from scripts import stream_watchdog as wd
+    from stream import watchdog as wd
 
     attempts = []
 
@@ -1324,7 +1324,7 @@ def test_a_shard_the_watchdog_watches_but_never_reloads_is_a_startup_warning():
     gets a watchdog that judges one page and reloads another — reloading a
     healthy source, forever, one per outage. P3 does this for a watchlist
     disagreement: say it out loud at startup, never mis-render silently."""
-    from scripts.stream_watchdog import renderer_config_warnings
+    from stream.watchdog import renderer_config_warnings
 
     spec = _scene_spec("world-room", "http://127.0.0.4:8000/world")
     ok = WatchdogConfig(renderer_host="127.0.0.4:8000", renderer_source="world-room")
@@ -1337,7 +1337,7 @@ def test_a_shard_the_watchdog_watches_but_never_reloads_is_a_startup_warning():
 
 def test_an_unnamed_source_is_a_warning_too():
     """A source name that matches nothing in the scene spec reloads nothing."""
-    from scripts.stream_watchdog import renderer_config_warnings
+    from stream.watchdog import renderer_config_warnings
 
     spec = _scene_spec("world-room", "http://127.0.0.4:8000/world")
     config = WatchdogConfig(renderer_host="127.0.0.4:8000", renderer_source="room-2")
@@ -1348,7 +1348,7 @@ def test_an_unnamed_source_is_a_warning_too():
 def test_an_unconfigured_watchdog_says_the_guard_is_off():
     """The default is now genuinely verdict-less, which is safe but silent —
     and a guard nobody knows is off is how KI-046 lasted two hours."""
-    from scripts.stream_watchdog import renderer_config_warnings
+    from stream.watchdog import renderer_config_warnings
 
     (warning,) = renderer_config_warnings(WatchdogConfig(), spec=[])
     assert "WATCHDOG_RENDERER_HOST" in warning
@@ -1359,7 +1359,7 @@ def test_the_real_scene_spec_still_carries_the_room_where_the_guard_looks():
     spec ever stops naming `world-room` as a browser source with a URL, the
     self-heal has nothing to reload and the warning above is the only thing that
     would say so."""
-    from scripts.stream_watchdog import renderer_config_warnings
+    from stream.watchdog import renderer_config_warnings
 
     config = WatchdogConfig(renderer_host="127.0.0.4:8000")
     assert renderer_config_warnings(config) == []
@@ -1372,7 +1372,7 @@ def test_a_shutdown_source_flips_the_guard_to_a_false_outage():
     plausible perf tweak, every dwell away from world-focus reads as a dead
     renderer — a false `stream_dropped renderer_blank` the director then
     speaks on air. That must be a loud startup warning, not a silent trap."""
-    from scripts.stream_watchdog import renderer_config_warnings
+    from stream.watchdog import renderer_config_warnings
 
     spec = _scene_spec("world-room", "http://127.0.0.4:8000/world")
     spec[0]["sources"][0]["settings"]["shutdown"] = True
@@ -1466,7 +1466,7 @@ def test_failures_do_not_carry_across_visits():
 def test_the_room_scene_in_config_is_the_scene_the_spec_puts_it_in():
     """Both sides of the seam: the scenes the rule treats as "room on air" must
     be exactly the scenes stream_scene.py puts `renderer_source` in."""
-    from scripts import stream_scene
+    from stream import scene as stream_scene
 
     config = WatchdogConfig()
     holding = {
@@ -1479,7 +1479,7 @@ def test_the_room_scene_in_config_is_the_scene_the_spec_puts_it_in():
 
 
 def test_the_obs_probe_reports_the_program_scene(monkeypatch):
-    from scripts import stream_watchdog
+    from stream import watchdog as stream_watchdog
 
     status = {"streaming": True, "dropped_ratio": 0.0}
     monkeypatch.setattr(stream_watchdog.stream_ctl, "make_client", lambda: object())

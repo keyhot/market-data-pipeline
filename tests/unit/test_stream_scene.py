@@ -3,7 +3,7 @@ resolve to real routes in api.main — the layout is code, so it gets tests."""
 
 from urllib.parse import urlparse
 
-from scripts import stream_scene
+from stream import scene as stream_scene
 
 
 def _spec():

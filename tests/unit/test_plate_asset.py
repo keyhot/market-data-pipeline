@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from scripts.prepare_plate import (
+from tools.prepare_plate import (
     DEFAULT_SOURCE,
     SCREEN_FRAMES,
     SOURCE_SHA256,
@@ -67,7 +67,7 @@ def _is_schematic_ink(pixel):
 
 
 def test_the_plate_is_exactly_the_browser_source_size():
-    """1920x960 matches `_world_focus` in scripts/stream_scene.py. A plate of
+    """1920x960 matches `_world_focus` in stream/scene.py. A plate of
     any other size makes every measured anchor in the manifest a lie."""
     with Image.open(PLATE) as im:
         assert im.size == (1920, 960)
@@ -195,7 +195,7 @@ def test_the_shipped_plates_fill_matches_the_frames_it_was_generated_from():
     defect pointed the other way, and KI-052/KI-067 were both found by looking
     at one edge and not the other.
     """
-    from scripts.prepare_plate import GLASS, SCREEN_INSET, SHEEN
+    from tools.prepare_plate import GLASS, SCREEN_INSET, SHEEN
 
     colours = {GLASS, SHEEN}
     with Image.open(PLATE) as im:

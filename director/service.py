@@ -1,6 +1,6 @@
 """Director runner (Sprint 13): poll /world/state, tick(), apply via injected
 clients. All I/O lives here; director.policy stays pure. Shaped like
-scripts/stream_watchdog.py — a thin loop over a pure decision.
+stream/watchdog.py — a thin loop over a pure decision.
 """
 
 import json

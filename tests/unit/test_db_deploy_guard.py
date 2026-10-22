@@ -94,7 +94,7 @@ class TestPoolWiring:
 
 class TestRoleProbeLatency:
     """The guard added a connect to the cold path, and the cold path is what
-    `/health` answers with. `scripts/stream_watchdog.py` reads `/health` with
+    `/health` answers with. `stream/watchdog.py` reads `/health` with
     `content_timeout_seconds = 5.0` and counts a real outage after 3 consecutive
     failures (KI-024), so the probe plus ping() has to fit inside that budget
     when Postgres is unreachable — otherwise a Postgres outage would also start
