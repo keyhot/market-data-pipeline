@@ -631,8 +631,25 @@ import { snap } from "./tiers.js";
     const litPath = (points, ox = 0, oy = 0) => {
       const x0 = snap(ox), y0 = snap(oy);
       const pts = points.map(([px, py]) => [x0 + px, y0 + py]);
+      // A CONCAVE outline (the splayed hand, Sprint 17 #7) is painted flat,
+      // in its BASE rung: the shade and base bands are the outline itself and
+      // the lit band is empty. Shrinking it about its centroid would poke the
+      // bands out through its notches, the corner leak the containment rule
+      // exists to stop; and a flat LIT rung lifted the shadowed hand to a pale
+      // glove on the first shot. The matte rule's rung, for the same reason.
+      // Convex outlines are unchanged.
+      // Inline rather than a helper: the suite lifts this function by name.
+      const convex = pts.every((_, i) => {
+        const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
+        const [cx, cy] = pts[(i + 2) % pts.length];
+        const [px, py] = pts[(i + pts.length - 1) % pts.length];
+        const turn = (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
+        const prev = (ax - px) * (by - ay) - (ay - py) * (bx - ax);
+        return Math.abs(turn) < 1e-9 || Math.abs(prev) < 1e-9 || Math.sign(turn) === Math.sign(prev);
+      });
       return {
-        band: (g, band) => g.poly(pathBand(pts, band).flat()),
+        band: (g, band) => g.poly((convex ? pathBand(pts, band)
+          : band > BAND_INSET.base ? [pts[0], pts[0], pts[0]] : pts).flat()),
         rim: (g, style) => g.poly(pts.flat()).stroke(style || BODY_RIM_SHADED),
       };
     };
