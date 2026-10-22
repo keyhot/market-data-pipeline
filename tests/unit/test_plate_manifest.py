@@ -8,7 +8,7 @@ them go further and check the manifest against the PNG itself: numbers measured
 off an image drift the moment the image is replaced, and a candle drawn 6px off
 the painted glass is not something a schema check can see.
 """
-from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
+from world_node import run_driver, run_world, world_driver
 import dataclasses
 import json
 import math
@@ -21,7 +21,6 @@ import pytest
 from PIL import Image
 
 from world import monitors
-from world.light import as_json, light_for
 from world.plate import (
     DEFAULT_MANIFEST_PATH,
     glow_chart_overlaps,
@@ -35,77 +34,13 @@ NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 
-def _js_block(source: str, opening: str) -> str:
-    """The brace-matched source of one JS construct - mirrors
-    tests/api/test_world_page.py's helper of the same name and purpose
-    (kept local rather than imported: that module builds a TestClient at
-    import time, which a plate-manifest unit test has no business pulling
-    in)."""
-    start = source.index(opening)
-    depth = 0
-    for j in range(source.index("{", start), len(source)):
-        if source[j] == "{":
-            depth += 1
-        elif source[j] == "}":
-            depth -= 1
-            if depth == 0:
-                return source[start : j + 1]
-    raise AssertionError(f"unbalanced braces after {opening!r}")
-
-
 def _js_const(source: str, name: str) -> str:
     """One `const NAME = ...;` line - mirrors tests/api/test_world_page.py's
-    helper of the same name (kept local for the same reason as `_js_block`
-    above)."""
+    helper of the same name (kept local: that module builds a TestClient at
+    import time, which a plate-manifest unit test has no business pulling in)."""
     match = re.search(rf"^\s*const {name} = .*;$", source, re.M)
     assert match, f"the page no longer declares a one-line const {name}"
     return match.group(0).strip() + "\n"
-
-
-def _shading_prelude(source: str) -> str:
-    """Everything `seatedRig`/`BODIES.*` need to draw since KI-051
-    (world.html, Sprint 16 Task 6): they now call `paint`, which calls
-    `shade`/`mixHex`, and draw their rim via
-    `rimStyle`/`rimStroke`/`BODY_RIM_SHADED` (Task 8 put `rimStyle` between
-    `paint` and the stroke, so a mood can reach the rim's own albedo).
-    Pulled from the real page source, not re-typed, for the reason every
-    other driver in this file pulls `snap`/`CAST_SCALE` the same way: a
-    second definition drifts from the first and stops proving anything about
-    the page that actually ships.
-    """
-    return (
-        _js_block(source, "function mixHex(") + "\n"
-        + _js_block(source, "function shade(") + "\n"
-        + _js_block(source, "function rampLevel(") + "\n"
-        + _js_block(source, "function keyAxis(") + "\n"
-        + _js_const(source, "KEY_AXIS")
-        + _js_const(source, "BAND_INSET")
-        + _js_const(source, "BAND_MAX")
-        + _js_block(source, "function circleBand(") + "\n"
-        + _js_block(source, "function bandExtent(") + "\n"
-        + _js_block(source, "function bandInside(") + "\n"
-        + _js_block(source, "function slideToKey(") + "\n"
-        + _js_const(source, "quant")
-        + _js_const(source, "MIN_BAND")
-        + _js_block(source, "const litRect = ") + "\n"
-        + _js_block(source, "const litCircle = ") + "\n"
-        + _js_block(source, "const litPath = ") + "\n"
-        + _js_block(source, "function insideConvex(") + "\n"
-        + _js_block(source, "function pathBand(") + "\n"
-        + _js_const(source, "BODY_RIM_SHADED")
-        + _js_block(source, "function rimStyle(") + "\n"
-        + _js_block(source, "function paint(") + "\n"
-        + _js_block(source, "function rimStroke(") + "\n"
-        + _js_block(source, "function rimStrokeCircle(") + "\n"
-        # KI-085: this copy of the prelude went without `HUMAN` from the day
-        # the redesign gave `seatedRig` authored colours, so every driver here
-        # that runs the seated rig has been dying on `ReferenceError: HUMAN is
-        # not defined` instead of measuring anything. It did not show up as a
-        # regression because the failure looks like the assertion below, and
-        # the branch's green runs were `tests/api/test_world_page.py` alone.
-        # A driver that throws is not a lenient test, it is an absent one.
-        + _js_block(source, "const HUMAN = {") + "\n"
-    )
 
 
 PLATE_PNG = DEFAULT_MANIFEST_PATH.with_suffix(".png")
@@ -450,6 +385,58 @@ def test_the_seat_is_a_rect_inside_the_canvas():
     assert seat["y"] <= height
 
 
+_SEATED_RIG_JS = '''
+class FakeGraphics {
+  addChild(c) { (this.children || (this.children = [])).push(c); return c; }
+  constructor() {
+    this.calls = []; this.x = 0;
+    this.pivot = { x: 0, y: 0 }; this.rotation = 0;
+  }
+  roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
+  circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
+  poly(f) { const xs = f.filter((_, i) => i % 2 === 0); this.calls.push([Math.min(...xs), Math.max(...xs) - Math.min(...xs)]); return this; }
+  fill() { return this; }
+  stroke() { return this; }
+}
+setPixi({ Graphics: FakeGraphics });
+const bodyCalls = [];
+const fakeGfx = {
+  roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
+  circle(x, y, r) { bodyCalls.push([x - r, 2 * r]); return this; },
+  poly(f) { const xs = f.filter((_, i) => i % 2 === 0); bodyCalls.push([Math.min(...xs), Math.max(...xs) - Math.min(...xs)]); return this; },
+  fill() { return this; },
+  stroke() { return this; },
+};
+const { seatedRig } = need(await W("animation.js"), "seatedRig");
+const { CAST_SCALE } = need(await W("cast.js"), "CAST_SCALE");
+const accents = [];
+seatedRig(fakeGfx, accents);
+function range(calls, offset) {
+  let lo = Infinity, hi = -Infinity;
+  for (const [x, w] of calls) {
+    lo = Math.min(lo, offset + x);
+    hi = Math.max(hi, offset + x + w);
+  }
+  return [lo, hi];
+}
+let [lo, hi] = range(bodyCalls, 0);
+for (const accent of accents) {
+  // Limbs are exempt, and the exemption is the claim: the seat is a
+  // budget for what SITS on it, and a seated person's legs overhang
+  // the front of the cushion. Holding the rig to the cushion's width
+  // including its legs is what kept the figure at doll proportions.
+  // The legs answer to the painted floor band instead (see
+  // `tests/api/test_world_page.py::test_the_seated_figure_puts_its_
+  // feet_on_the_painted_floor`); the torso and arms still answer here.
+  if (accent.limb) continue;
+  const [alo, ahi] = range(accent.calls, accent.x);
+  lo = Math.min(lo, alo);
+  hi = Math.max(hi, ahi);
+}
+console.log(JSON.stringify({ lo, hi, castScale: CAST_SCALE }));
+'''
+
+
 @needs_node
 def test_the_seated_rig_fits_inside_the_manifest_seat():
     """The check `test_the_seated_rig_fits_inside_the_painted_seat_not_just_
@@ -505,95 +492,12 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     # Grading the coordinate that no longer renders is grading nothing.
     anchor_x = manifest.cast["trader"]["sit_anchor"]["x"]
     seat = manifest.cast["trader"]["seat"]
-    source = world_page_source()
-
-    driver = (
-        # The real manifest, not `null`: `CAST_SCALE` reads `cast.scale` now,
-        # and the fallback literal is a different number from the shipped one.
-        # This test is about the rig the room actually draws, so it has to run
-        # the scale the room actually uses.
-        f"const PLATE = {json.dumps(manifest.as_dict())};\n"
-        # The cast as the page receives it (KI-076): people and settings
-        # separated by `cast_payload()`, which is where `CAST_SCALE` now
-        # reads its value from.
-        f"const PAINTED_CAST = {json.dumps(manifest.cast_payload())};\n"
-        "const plateReady = true;\n"
-        "const CELL = 4;\n"
-        # KI-051 (Task 6): `BODY_RIM` needs a real `.color` now - it feeds
-        # `BODY_RIM_SHADED` via `shade()`. A plain `{}` rim (this driver's
-        # value before Task 6) would still run, since `shade()`'s own NaN
-        # guard falls back rather than throwing - but it would silently
-        # exercise nothing of the new rim colour path.
-        "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
-        # `LIGHT` computed the same way `api/routers/world.py` computes it for the
-        # real page (`light_for(manifest)`), not re-typed as a literal - so
-        # this driver runs the same measured direction the shipped room does.
-        f"const LIGHT = {as_json(light_for(manifest))};\n"
-        + """
-        class FakeGraphics {
-          addChild(c) { (this.children || (this.children = [])).push(c); return c; }
-          constructor() {
-            this.calls = []; this.x = 0;
-            this.pivot = { x: 0, y: 0 }; this.rotation = 0;
-          }
-          roundRect(x, y, w, h, r) { this.calls.push([x, w]); return this; }
-          circle(x, y, r) { this.calls.push([x - r, 2 * r]); return this; }
-          poly(f) { const xs = f.filter((_, i) => i % 2 === 0); this.calls.push([Math.min(...xs), Math.max(...xs) - Math.min(...xs)]); return this; }
-          fill() { return this; }
-          stroke() { return this; }
-        }
-        const PIXI = { Graphics: FakeGraphics };
-        const bodyCalls = [];
-        const fakeGfx = {
-          roundRect(x, y, w, h, r) { bodyCalls.push([x, w]); return this; },
-          circle(x, y, r) { bodyCalls.push([x - r, 2 * r]); return this; },
-          poly(f) { const xs = f.filter((_, i) => i % 2 === 0); bodyCalls.push([Math.min(...xs), Math.max(...xs) - Math.min(...xs)]); return this; },
-          fill() { return this; },
-          stroke() { return this; },
-        };
-        """
-    )
-    driver += _js_block(source, "function snap(") + "\n"
-    driver += _shading_prelude(source)
-    driver += _js_const(source, "HAND_OUTLINE") + "\n"
-    driver += _js_block(source, "function outlineDepthAt(") + "\n"
-    driver += _js_block(source, "function seatedRig(") + "\n"
-    cast_scale_line = re.search(r"^\s*const CAST_SCALE = .*;$", source, re.M)
-    assert cast_scale_line, "the page no longer declares CAST_SCALE as a one-line const"
-    driver += cast_scale_line.group(0).strip() + "\n"
-    driver += """
-        const accents = [];
-        seatedRig(fakeGfx, accents);
-        function range(calls, offset) {
-          let lo = Infinity, hi = -Infinity;
-          for (const [x, w] of calls) {
-            lo = Math.min(lo, offset + x);
-            hi = Math.max(hi, offset + x + w);
-          }
-          return [lo, hi];
-        }
-        let [lo, hi] = range(bodyCalls, 0);
-        for (const accent of accents) {
-          // Limbs are exempt, and the exemption is the claim: the seat is a
-          // budget for what SITS on it, and a seated person's legs overhang
-          // the front of the cushion. Holding the rig to the cushion's width
-          // including its legs is what kept the figure at doll proportions.
-          // The legs answer to the painted floor band instead (see
-          // `tests/api/test_world_page.py::test_the_seated_figure_puts_its_
-          // feet_on_the_painted_floor`); the torso and arms still answer here.
-          if (accent.limb) continue;
-          const [alo, ahi] = range(accent.calls, accent.x);
-          lo = Math.min(lo, alo);
-          hi = Math.max(hi, ahi);
-        }
-        console.log(JSON.stringify({ lo, hi, castScale: CAST_SCALE }));
-    """
-
-    result = subprocess.run(
-        [NODE, "-e", driver], capture_output=True, text=True, timeout=30
-    )
-    assert result.returncode == 0, result.stderr
-    emitted = json.loads(result.stdout)
+    # #42: the real `seatedRig` (animation.js) and `CAST_SCALE` (cast.js),
+    # imported and run under node against the config /world serves - the
+    # shipped manifest, painted cast and light, so `CAST_SCALE` reads
+    # `cast.scale` and the rim/paint chain runs on the real palette. Only
+    # PIXI is faked; nothing is sliced out of the page text.
+    emitted = run_world(_SEATED_RIG_JS)
     left_screen = anchor_x + emitted["lo"] * emitted["castScale"]
     right_screen = anchor_x + emitted["hi"] * emitted["castScale"]
     assert left_screen >= seat["x"], (
@@ -1015,61 +919,52 @@ def test_every_tubes_bore_ry_matches_the_plates_own_cap_highlight():
 # geometry and fill shape.
 
 
-def _pillar_ellipse_driver(source, manifest_dict, symbol):
+_PILLAR_ELLIPSE_JS = '''
+await boot();
+class FakeGraphics {
+  constructor() { this.rects = []; this.ellipses = []; this.fills = []; }
+  addChild(c) { (this.children || (this.children = [])).push(c); return c; }
+  rect(x, y, w, h) { this.rects.push([x, y, w, h]); return this; }
+  roundRect() { return this; } circle() { return this; } poly() { return this; }
+  ellipse(cx, cy, rx, ry) { this.ellipses.push([cx, cy, rx, ry]); return this; }
+  fill(f) { this.fills.push(f); return this; }
+  stroke() { return this; }
+}
+class FakeContainer {
+  constructor() { this.children = []; }
+  addChild(...items) { this.children.push(...items); }
+}
+setPixi({ Graphics: FakeGraphics, Container: FakeContainer });
+const { layers } = need(await W("boot.js"), "layers");
+layers.props = {
+  children: [],
+  removeChildren() { this.children = []; },
+  addChild(...items) { this.children.push(...items); },
+};
+const { drawPillars } = need(await W("room.js"), "drawPillars");
+drawPillars({ symbols: { "__SYMBOL__": { pressure: 99, mood: "bullish" } } });
+const built = layers.props.children[0].children;
+// The stripe is the cell mask: the Graphics another one is masked by. (The
+// lit column paint() draws is a Graphics with rects too, and is not it.)
+const masks = new Set(built.map((g) => g.mask).filter(Boolean));
+const cells = built.find((g) => masks.has(g));
+const cap = built.find((g) => g.ellipses.length);
+console.log(JSON.stringify({
+  stripe: cells.rects[0],
+  ellipses: cap.ellipses,
+  fills: cap.fills,
+}));
+'''
+
+
+def _pillar_ellipse_driver(manifest_dict, symbol):
     """One fully-pressured tube's `drawPillars` output: the stripe it drew
-    and the two ellipses (cap, base) drawn over it."""
-    return (
-        f"const PLATE = {json.dumps(manifest_dict)};\n"
-        "const plateReady = true;\n"
-        "const app = { screen: { height: 960 } };\n"
-        + _js_const(source, "GROUND")
-        + _js_block(source, "function snap(") + "\n"
-        + _js_const(source, "CELL")
-        + _js_block(source, "function tubeFor(") + "\n"
-        + _js_block(source, "function pillarGeometry(") + "\n"
-        + "function shade(base, level) { return base; }\n"
-        + "function rampLevel(rung) { return 0; }\n"
-        + "const moodFill = () => 0x123456;\n"
-        + "function paint() {}\n"
-        + "const litColumn = () => ({});\n"
-        + "function pillarGlass() { return null; }\n"
-        + "const PILLAR_ALPHA = 0.85;\n"
-        + _js_block(source, "function drawPillars(") + "\n"
-        + f"""
-        const SYMBOLS = ["{symbol}"];
-        class FakeGraphics {{
-          addChild(c) {{ (this.children || (this.children = [])).push(c); return c; }}
-          constructor() {{ this.rects = []; this.ellipses = []; this.fills = []; }}
-          rect(x, y, w, h) {{ this.rects.push([x, y, w, h]); return this; }}
-          ellipse(cx, cy, rx, ry) {{
-            this.ellipses.push([cx, cy, rx, ry]);
-            return this;
-          }}
-          fill(f) {{ this.fills.push(f); return this; }}
-        }}
-        class FakeContainer {{
-          constructor() {{ this.children = []; }}
-          addChild(...items) {{ this.children.push(...items); }}
-        }}
-        const PIXI = {{ Graphics: FakeGraphics, Container: FakeContainer }};
-        const layers = {{ props: {{
-          children: [],
-          removeChildren() {{ this.children = []; }},
-          addChild(...items) {{ this.children.push(...items); }},
-        }} }};
-        const state = {{
-          symbols: {{ "{symbol}": {{ pressure: 99, mood: "bullish" }} }}
-        }};
-        drawPillars(state);
-        const built = layers.props.children[0].children;
-        const cells = built.find((g) => g.rects.length);
-        const cap = built.find((g) => g.ellipses.length);
-        console.log(JSON.stringify({{
-          stripe: cells.rects[0],
-          ellipses: cap.ellipses,
-          fills: cap.fills,
-        }}));
-        """
+    and the two ellipses (cap, base) drawn over it. #42: the page's real
+    `drawPillars` over its real paint chain, imported under node with only
+    PIXI faked, on the plate the test passes in."""
+    return world_driver(
+        _PILLAR_ELLIPSE_JS.replace("__SYMBOL__", symbol),
+        config={"plate": manifest_dict},
     )
 
 
@@ -1093,15 +988,10 @@ def test_the_cap_and_base_ellipses_are_snapped_to_the_stripes_and_translucent():
     column — and a cap fill carrying its own alpha would now make it LESS
     opaque than the column, so that is what fails.
     """
-    source = world_page_source()
     manifest = load_manifest()
     for tube in manifest.tubes:
-        driver = _pillar_ellipse_driver(source, manifest.as_dict(), tube["symbol"])
-        result = subprocess.run(
-            [NODE, "-e", driver], capture_output=True, text=True, timeout=30
-        )
-        assert result.returncode == 0, result.stderr
-        emitted = json.loads(result.stdout)
+        driver = _pillar_ellipse_driver(manifest.as_dict(), tube["symbol"])
+        emitted = run_driver(driver)
         stripe_x, _, stripe_w, _ = emitted["stripe"]
         stripe_centre = stripe_x + stripe_w / 2
         assert len(emitted["ellipses"]) == 2, (
@@ -1137,7 +1027,6 @@ def test_the_caps_offset_from_the_painted_bores_centre_is_pinned():
     `geo.baseY - geo.height + 3` moves BTC's measured offset from -4.5px to
     -7.5px, which fails the pin.
     """
-    source = world_page_source()
     manifest = load_manifest()
     # Pinned 2026-09-10 (review round 2): each tube's painted bore centre
     # minus the cap's drawn centre, in px. Not a formula - the art and the
@@ -1148,12 +1037,8 @@ def test_the_caps_offset_from_the_painted_bores_centre_is_pinned():
         pixels = im.convert("RGB").load()
         _, height = im.size
         for tube in manifest.tubes:
-            driver = _pillar_ellipse_driver(source, manifest.as_dict(), tube["symbol"])
-            result = subprocess.run(
-                [NODE, "-e", driver], capture_output=True, text=True, timeout=30
-            )
-            assert result.returncode == 0, result.stderr
-            emitted = json.loads(result.stdout)
+            driver = _pillar_ellipse_driver(manifest.as_dict(), tube["symbol"])
+            emitted = run_driver(driver)
             cap_cy = emitted["ellipses"][0][1]
             back_y, front_y = _measured_bore_peaks(pixels, height, tube)
             centre = (back_y + front_y) / 2

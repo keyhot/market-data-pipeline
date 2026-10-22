@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from world.light import as_json, light_for
 from world.plate import load_manifest
+from world_node import run_world
 
 WORLD_TEMPLATE = (
     Path(__file__).resolve().parents[2] / "api" / "templates" / "world.html"
@@ -193,23 +193,6 @@ def _node(driver: str):
     return json.loads(result.stdout)
 
 
-def _js_block(source: str, opening: str) -> str:
-    """The brace-matched source of one JS construct - mirrors
-    tests/api/test_world_page.py's helper of the same name and purpose
-    (kept local rather than imported, matching this project's other
-    plate/geometry test files)."""
-    start = source.index(opening)
-    depth = 0
-    for j in range(source.index("{", start), len(source)):
-        if source[j] == "{":
-            depth += 1
-        elif source[j] == "}":
-            depth -= 1
-            if depth == 0:
-                return source[start : j + 1]
-    raise AssertionError(f"unbalanced braces after {opening!r}")
-
-
 def _js_const(source: str, name: str) -> str:
     """One `const NAME = ...;` line - mirrors tests/api/test_world_page.py's
     helper of the same name."""
@@ -218,46 +201,44 @@ def _js_const(source: str, name: str) -> str:
     return match.group(0).strip() + "\n"
 
 
-def _shading_prelude(source: str) -> str:
-    """Everything `BODIES.*` need to draw since KI-051 (Task 6): each style
-    now calls `paint`, which calls `shade`/`mixHex`, and draws its rim via
-    `rimStyle`/`rimStroke`/`rimStrokeCircle`/`BODY_RIM_SHADED` (Task 8 put
-    `rimStyle` between `paint` and the stroke, so a mood can reach the rim's
-    own albedo). Pulled from the real
-    page rather than re-typed - a second definition drifts from the first
-    and stops proving anything about the page that actually ships.
-    """
-    return (
-        _js_block(source, "function mixHex(") + "\n"
-        + _js_block(source, "function shade(") + "\n"
-        + _js_block(source, "function rampLevel(") + "\n"
-        + _js_block(source, "function keyAxis(") + "\n"
-        + _js_const(source, "KEY_AXIS")
-        + _js_const(source, "BAND_INSET")
-        + _js_const(source, "BAND_MAX")
-        + _js_block(source, "function circleBand(") + "\n"
-        + _js_block(source, "function bandExtent(") + "\n"
-        + _js_block(source, "function bandInside(") + "\n"
-        + _js_block(source, "function slideToKey(") + "\n"
-        + _js_const(source, "quant")
-        + _js_const(source, "MIN_BAND")
-        + _js_block(source, "const litRect = ") + "\n"
-        + _js_block(source, "const litCircle = ") + "\n"
-        + _js_block(source, "const litPath = ") + "\n"
-        + _js_block(source, "function insideConvex(") + "\n"
-        + _js_block(source, "function pathBand(") + "\n"
-        + _js_const(source, "BODY_RIM_SHADED")
-        + _js_block(source, "function rimStyle(") + "\n"
-        + _js_block(source, "function paint(") + "\n"
-        + _js_block(source, "function rimStroke(") + "\n"
-        + _js_block(source, "function rimStrokeCircle(") + "\n"
-        # Increment 11: `BODIES.bars` is a plated machine and paints the cuts
-        # between its plates in an authored colour, so the palette is now as
-        # much a prerequisite for EXECUTING the registry as `paint` is. Pulled
-        # from the page for the reason every other entry here is — a second
-        # copy would drift and stop proving anything about what ships.
-        + _js_block(source, "const MACHINE = {") + ";\n"
-    )
+_BODY_HEIGHTS_JS = '''
+class FakeGraphics {
+  constructor() { this.calls = []; this.x = 0; this.y = 0; }
+  roundRect(x, y, w, h) { this.calls.push([y, h]); return this; }
+  circle(x, y, r) { this.calls.push([y - r, 2 * r]); return this; }
+  poly(f) { const ys = f.filter((_, i) => i % 2 === 1); this.calls.push([Math.min(...ys), Math.max(...ys) - Math.min(...ys)]); return this; }
+  fill() { return this; }
+  stroke() { return this; }
+}
+setPixi({ Graphics: FakeGraphics });
+const { BODIES } = need(await W("cast.js"), "BODIES");
+const heights = {};
+for (const style of Object.keys(BODIES)) {
+  const calls = [];
+  const gfx = {
+    roundRect(x, y, w, h) { calls.push([y, h]); return this; },
+    circle(x, y, r) { calls.push([y - r, 2 * r]); return this; },
+    poly(f) { const ys = f.filter((_, i) => i % 2 === 1); calls.push([Math.min(...ys), Math.max(...ys) - Math.min(...ys)]); return this; },
+    fill() { return this; },
+    stroke() { return this; },
+  };
+  const accents = [];
+  const headY = BODIES[style](gfx, accents);
+  let top = Infinity, bottom = -Infinity;
+  const eat = (list, offset) => {
+    for (const [y, h] of list) {
+      top = Math.min(top, offset + y);
+      bottom = Math.max(bottom, offset + y + h);
+    }
+  };
+  eat(calls, 0);
+  for (const accent of accents) eat(accent.calls, accent.y);
+  // Every body but the orb carries a 28-radius skull at `headY`.
+  if (style !== "orb") { top = Math.min(top, headY - 28); }
+  heights[style] = bottom - top;
+}
+console.log(JSON.stringify(heights));
+'''
 
 
 def _page_const(name: str) -> str:
@@ -347,77 +328,11 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
     is a 28-radius skull hung at the y each body returns), because `?style=`
     can put either character in any of them.
     """
-    source = world_page_source()
-    body_block = re.search(
-        r"^    const BODIES = \{.*?^    \};$", source, re.S | re.M
-    )
-    assert body_block, "the page no longer declares BODIES as one const block"
-    # #42: snap() is one line; the old `.*?^    \}$` (re.S) slice ran on into
-    # whatever followed it up to the next closing brace, which is a module
-    # boundary now. The slice is exactly the function.
-    snap_block = re.search(r"^    function snap\(.*\}$", source, re.M)
-    assert snap_block, "the page no longer declares snap() on one line"
-
-    # KI-051 (Task 6): every `BODIES.*` style now calls `paint`, so the driver
-    # needs the whole shading chain - `LIGHT` computed the real way
-    # (`light_for`, the same call `api/routers/world.py` makes) rather than typed as a
-    # literal, since `world_page_source()` above reads the raw
-    # template, where `__LIGHT_JSON__` is still the unsubstituted placeholder.
+    # #42: the real `BODIES` table imported from cast.js (and, through it, the
+    # real paint/shade chain, palette, config and LIGHT the page serves) and run
+    # under node; only PIXI is faked. Nothing is sliced out of the page text.
     manifest = load_manifest()
-    driver = (
-        "const CELL = 4;\n"
-        "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
-        f"const LIGHT = {as_json(light_for(manifest))};\n"
-        """
-        class FakeGraphics {
-          constructor() { this.calls = []; this.x = 0; this.y = 0; }
-          roundRect(x, y, w, h) { this.calls.push([y, h]); return this; }
-          circle(x, y, r) { this.calls.push([y - r, 2 * r]); return this; }
-          poly(f) { const ys = f.filter((_, i) => i % 2 === 1); this.calls.push([Math.min(...ys), Math.max(...ys) - Math.min(...ys)]); return this; }
-          fill() { return this; }
-          stroke() { return this; }
-        }
-        const PIXI = { Graphics: FakeGraphics };
-        """
-        + snap_block.group(0)
-        + "\n"
-        + _shading_prelude(source)
-        + body_block.group(0)
-        + "\n"
-        """
-        const heights = {};
-        for (const style of Object.keys(BODIES)) {
-          const calls = [];
-          const gfx = {
-            roundRect(x, y, w, h) { calls.push([y, h]); return this; },
-            circle(x, y, r) { calls.push([y - r, 2 * r]); return this; },
-            poly(f) { const ys = f.filter((_, i) => i % 2 === 1); calls.push([Math.min(...ys), Math.max(...ys) - Math.min(...ys)]); return this; },
-            fill() { return this; },
-            stroke() { return this; },
-          };
-          const accents = [];
-          const headY = BODIES[style](gfx, accents);
-          let top = Infinity, bottom = -Infinity;
-          const eat = (list, offset) => {
-            for (const [y, h] of list) {
-              top = Math.min(top, offset + y);
-              bottom = Math.max(bottom, offset + y + h);
-            }
-          };
-          eat(calls, 0);
-          for (const accent of accents) eat(accent.calls, accent.y);
-          // Every body but the orb carries a 28-radius skull at `headY`.
-          if (style !== "orb") { top = Math.min(top, headY - 28); }
-          heights[style] = bottom - top;
-        }
-        console.log(JSON.stringify(heights));
-        """
-    )
-    result = subprocess.run(
-        [NODE, "-e", driver], capture_output=True, text=True, timeout=30
-    )
-    assert result.returncode == 0, result.stderr
-    drawn = json.loads(result.stdout)
+    drawn = run_world(_BODY_HEIGHTS_JS)
     assert manifest.cast["rig_height"] == max(drawn.values()), (
         f"rig_height disagrees with what the page draws: {drawn}"
     )
