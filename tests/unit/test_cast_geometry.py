@@ -352,10 +352,11 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
         r"^    const BODIES = \{.*?^    \};$", source, re.S | re.M
     )
     assert body_block, "the page no longer declares BODIES as one const block"
-    snap_block = re.search(
-        r"^    function snap\(.*?^    \}$", source, re.S | re.M
-    )
-    assert snap_block, "the page no longer declares snap() at one indent level"
+    # #42: snap() is one line; the old `.*?^    \}$` (re.S) slice ran on into
+    # whatever followed it up to the next closing brace, which is a module
+    # boundary now. The slice is exactly the function.
+    snap_block = re.search(r"^    function snap\(.*\}$", source, re.M)
+    assert snap_block, "the page no longer declares snap() on one line"
 
     # KI-051 (Task 6): every `BODIES.*` style now calls `paint`, so the driver
     # needs the whole shading chain - `LIGHT` computed the real way
