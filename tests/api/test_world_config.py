@@ -44,6 +44,7 @@ TEMPLATE = Path(main.__file__).resolve().parent / "templates" / "world.html"
 # them); the right-hand side of each is the ONLY thing that changed.
 PAGE_CONSTS = {
     "SYMBOLS": "symbols",
+    "BANNER_PREFIX": "banner_prefix",
     "PLATE": "plate",
     "PAINTED_CAST": "painted_cast",
     "TEXT_PLACEMENTS": "text",

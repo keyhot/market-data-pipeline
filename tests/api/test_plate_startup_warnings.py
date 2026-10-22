@@ -78,9 +78,13 @@ def test_the_banner_copy_checked_is_the_copy_the_page_draws():
     template's own sentence behind the page's own symbol prefix, not a
     second copy of it that can drift."""
     copy = world_router._banner_copy(["BTCUSDT", "ETHUSDT"])
-    assert copy.startswith("BTC · ETH — ")
+    # KI-053: the prefix is the markets by name, the same `_banner_prefix`
+    # the page's config block carries (config.js writes it verbatim).
+    prefix = world_router._banner_prefix(["BTCUSDT", "ETHUSDT"]) + " — "
+    assert prefix == "Bitcoin & Ethereum, live — "
+    assert copy.startswith(prefix)
     page = " ".join(client.get("/world").text.split())
-    assert copy.removeprefix("BTC · ETH — ") in page
+    assert copy.removeprefix(prefix) in page
 
 
 @pytest.mark.parametrize("symbols", [["BTCUSDT", "ETHUSDT"]])

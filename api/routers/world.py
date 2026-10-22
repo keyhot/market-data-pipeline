@@ -28,6 +28,27 @@ from world.state import GENERIC_TIER_CUTS, project_state, tier_cuts
 
 router = APIRouter()
 
+# KI-053 (#25): the banner names the markets in words a stranger already
+# knows. "BTC · ETH" read as code; "Bitcoin & Ethereum" is the noun the
+# headline needs. A symbol with no entry falls back to its bare ticker, so a
+# new watchlist symbol is still named, just less kindly.
+_SYMBOL_NAMES = {"BTC": "Bitcoin", "ETH": "Ethereum"}
+
+
+def _banner_prefix(symbols: list[str]) -> str:
+    """The banner's lead-in (`#banner-syms`): the markets in play, by name,
+    and that they are live. ONE definition: the page's config key and the
+    glyph-fit check in `_plate_warnings` both read this, never a restatement."""
+    names = [
+        _SYMBOL_NAMES.get(s.removesuffix("USDT"), s.removesuffix("USDT"))
+        for s in symbols
+    ]
+    if not names:
+        return "Live"
+    if len(names) == 1:
+        return f"{names[0]}, live"
+    return ", ".join(names[:-1]) + " & " + names[-1] + ", live"
+
 
 def _world_config(symbols: list[str], manifest) -> dict:
     """Everything `/world`'s script reads, as ONE dict (#41).
@@ -40,6 +61,7 @@ def _world_config(symbols: list[str], manifest) -> dict:
     """
     return {
         "symbols": symbols,
+        "banner_prefix": _banner_prefix(symbols),
         "plate": manifest.as_dict() if manifest else None,
         # The cast, already sorted into people and settings (`cast_payload`).
         "painted_cast": manifest.cast_payload() if manifest else None,
@@ -273,8 +295,7 @@ def _banner_copy(symbols: list[str]) -> str:
     html = (_TEMPLATES_DIR / "world.html").read_text()
     match = re.search(r'<div id="banner">.*?<span class="tag">(.*?)</span>', html, re.S)
     premise = " ".join(match.group(1).split()) if match else ""
-    prefix = " · ".join(s.removesuffix("USDT") for s in symbols)
-    return f"{prefix} — {premise}"
+    return f"{_banner_prefix(symbols)} — {premise}"
 
 
 def _plate_warnings(manifest, symbols: list[str]) -> list[str]:
