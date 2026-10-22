@@ -11,6 +11,8 @@
     // a missing key is a test failure, not a quiet fallback.
     const WORLD_CONFIG = JSON.parse(document.getElementById("world-config").textContent);
     const SYMBOLS = WORLD_CONFIG.symbols;
+    // KI-053: the banner's lead-in, the markets by name (`_banner_prefix`).
+    const BANNER_PREFIX = WORLD_CONFIG.banner_prefix;
     // The plate's measured anchors, or null when there is no plate. Every
     // layout number below reads from here rather than from canvas fractions.
     // Same-origin by construction (KI-045/KI-047): the manifest names a bare
@@ -51,9 +53,11 @@
     const LIGHT = WORLD_CONFIG.light;
     const fallback = document.getElementById("fallback");
 
-    // Name the room for a newcomer: the symbols in play + the one-line premise.
+    // Name the room for a newcomer: the markets in play, by name, + the
+    // one-line premise. The words are the server's (`_banner_prefix`), so the
+    // glyph-fit check there measures exactly the line drawn here (KI-053).
     document.getElementById("banner-syms").textContent =
-      SYMBOLS.map((s) => s.replace(/USDT$/, "")).join(" · ") + " — ";
+      BANNER_PREFIX + " — ";
 
 export {
   WORLD_CONFIG, SYMBOLS, PLATE, PAINTED_CAST, PLATE_SRC, TEXT_PLACEMENTS,

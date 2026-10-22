@@ -11,15 +11,22 @@
     #room { width: 100vw; height: 100vh; }
     #fallback { position: absolute; top: 3rem; left: 1rem; color: var(--neutral);
                 font-size: 0.85rem; }
-    /* Newcomer legibility: an always-present line naming what this is. */
+    /* Newcomer legibility: an always-present line naming what this is.
+       KI-053 (#25): it is THE answer to "what am I looking at?", so it is the
+       loudest permanent text in the room - full foreground colour, at the size
+       its manifest placement sets (inline, from `TEXT_PLACEMENTS.banner`),
+       and one line only: a wrapped second line would hang over the ETH
+       monitor's top edge (y~79), so it clips instead of covering the chart. */
     /* border-box: drawPlate sets min-height to the painted quiet strip, and
        under content-box the padding added ~23px of bar onto the room (KI-071). */
     #banner { position: absolute; top: 0; left: 0; right: 0; z-index: 2;
               box-sizing: border-box; padding: 0.55rem 1rem; background: rgba(19, 23, 34, 0.72);
               color: var(--fg); font-size: 0.9rem; letter-spacing: 0.01em;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+              text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
               pointer-events: none; }
-    #banner-syms { color: var(--accent); font-weight: 600; }
-    #banner .tag { color: var(--neutral); }
+    #banner-syms { color: var(--accent); font-weight: 700; }
+    #banner .tag { color: var(--fg); }
 
     /* B5 — the stream has no audio, so a spoken line only exists if it can be
        READ. Bubbles sit above the floor line, left of the room, and stack
@@ -90,8 +97,9 @@
   </style>
 </head>
 <body>
-  <div id="banner"><span id="banner-syms"></span><span class="tag">a model
-    trades live, and the world remembers when it's wrong</span></div>
+  <div id="banner"><span id="banner-syms"></span><span class="tag">the robot
+    is an AI predicting their next move; every hit and miss stays on the
+    record</span></div>
   <div id="room"></div>
   <div id="speech"></div>
   <div id="nowband"></div>
