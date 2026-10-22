@@ -169,3 +169,63 @@ def test_every_python_file_a_host_unit_runs_is_in_the_table():
             seen.add(match.group(1))
     missing = seen - set(LIVE_PY_ENTRYPOINTS)
     assert not missing, f"a host unit runs {sorted(missing)}: add it to the table"
+
+
+# What a unit actually runs is each wrapper's `__main__` branch, which the import
+# probe above (run_name="_probe") never reaches. If that branch stopped calling
+# main(), stream-watchdog.service would exit 0 at once and Restart=always would
+# relaunch it every 10s with no watchdog running, and nothing would say so. The
+# real main() must never run here (it starts OBS), so the probe stubs it and
+# fails closed on any network, Popen or exec.
+_MAIN_PROBE = """
+import os, runpy, socket, subprocess, sys
+sys.path.insert(0, {repo!r})
+
+def _blocked(*args, **kwargs):
+    raise AssertionError("a real side effect while probing the __main__ branch")
+
+socket.socket.connect = _blocked
+socket.create_connection = _blocked
+socket.getaddrinfo = _blocked
+subprocess.Popen = _blocked
+for _name in [n for n in dir(os) if n.startswith(("exec", "spawn", "posix_spawn"))]:
+    setattr(os, _name, _blocked)
+
+import {module} as impl
+
+def _stub(*args, **kwargs):
+    print("MAIN-CALLED")
+    return 3
+
+impl.main = _stub
+sys.argv = [{script!r}]
+runpy.run_path({script!r}, run_name="__main__")
+"""
+
+
+@pytest.mark.parametrize(
+    "script, module, exit_code",
+    [
+        # main() returns None in both; the wrappers call it bare, as before.
+        ("scripts/stream_watchdog.py", "stream.watchdog", 0),
+        ("scripts/soak_report.py", "stream.soak_report", 0),
+        # `raise SystemExit(main())`: main's return value is the exit status.
+        ("scripts/measure_chair.py", "tools.measure_chair", 3),
+    ],
+)
+def test_running_the_wrapper_as_a_script_calls_main_with_its_exit_status(
+    script, module, exit_code, tmp_path
+):
+    probe = _MAIN_PROBE.format(
+        repo=str(REPO), module=module, script=str(REPO / script)
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        env=_neutral_env(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert "MAIN-CALLED" in result.stdout, result.stderr
+    assert result.returncode == exit_code, result.stderr
