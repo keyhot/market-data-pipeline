@@ -94,8 +94,16 @@ const fake = new Proxy(function () {}, {
     : fake,
   set: () => true, apply: () => fake, construct: () => fake,
 });
+// #fallback is recorded: boot() clears it once the canvas is up, and main.js
+// turns ANY rejection of boot() into retryBoot(), which writes the reason
+// there and is otherwise silent (its retry rides a stubbed setTimeout).
+const fallbackEl = new Proxy({}, {
+  get: (t, k) => k in t ? t[k] : fake,
+  set: (t, k, v) => { t[k] = v; return true; },
+});
 const element = (id) => id === "world-config"
-  ? { textContent: JSON.stringify(CONFIG) } : fake;
+  ? { textContent: JSON.stringify(CONFIG) }
+  : id === "fallback" ? fallbackEl : fake;
 globalThis.document = new Proxy({}, {
   get: (t, k) => k === "getElementById" ? element : fake,
 });
@@ -151,10 +159,14 @@ class FakeApplication {
   }
   async init() {}
 }
-// boot() proves it ran the page's own boot path: `app` is assigned and
-// `plateReady` is what the config and PLATE_LOADS say it must be (true only
-// when there is a plate AND it loads). A harness that silently fell onto the
-// procedural room would otherwise let layout tests pass on the wrong path.
+// boot() proves it ran the page's own boot path: `app` is assigned, the
+// page's boot() got past the canvas and drawPlate() without rejecting
+// (#fallback cleared, no retryBoot message; it then parks for good on its
+// first `await refresh()`, whose fetch never settles here), and `plateReady`
+// is what the config and PLATE_LOADS say it must be (true only when there is
+// a plate AND it loads). A harness that silently fell
+// onto the procedural room, or whose boot threw, would otherwise let layout
+// tests pass on the wrong path.
 const boot = async () => {
   await loadMain({
     Application: FakeApplication,
@@ -166,6 +178,13 @@ const boot = async () => {
   const { app } = await import(SANDBOX + "boot.js");
   const { plateReady } = await import(SANDBOX + "room.js");
   if (!app) throw new Error("boot() ran but app was never assigned");
+  // Cleared ("") and never overwritten: boot() reached the canvas and did not
+  // reject afterwards (main.js swallows a rejection into retryBoot's message;
+  // a throw after drawPlate() passed this harness before the check).
+  if (fallbackEl.textContent !== "") {
+    throw new Error("boot() did not complete: #fallback = "
+      + JSON.stringify(fallbackEl.textContent));
+  }
   const expected = Boolean(CONFIG.plate) && PLATE_LOADS;
   if (plateReady !== expected) {
     throw new Error("boot() left plateReady=" + plateReady + ", expected " + expected);
