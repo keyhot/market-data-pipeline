@@ -64,6 +64,9 @@ import { speak } from "./hud.js";
       source.onmessage = (message) => react(JSON.parse(message.data));
     }
 
+    // #42: stands the page's inline boot fallback down; the graph has run.
+    window.__worldModules = true;
+
     boot().catch(() => {
       retryBoot("renderer failed to start");
     });

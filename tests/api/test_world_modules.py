@@ -52,13 +52,91 @@ def test_the_page_loads_pixi_then_one_same_origin_module():
     ]
 
 
-def test_no_script_stays_inline_but_the_config_block():
+def test_no_script_stays_inline_but_the_config_block_and_the_boot_fallback():
     """The JSON block stays inline because the server renders it per request
-    (#41) and the page must not fetch its own config; it is data, not code."""
+    (#41) and the page must not fetch its own config; it is data, not code.
+    The one inline code is the boot fallback, which must run when no module
+    does (tested below); none of the room's code may drift back beside it."""
     page = client.get("/world").text
     inline = [(attrs, body) for attrs, body in _SCRIPT.findall(page) if body.strip()]
-    assert [attrs for attrs, _ in inline] == [' type="application/json" id="world-config"']
+    assert [attrs for attrs, _ in inline] == [
+        ' type="application/json" id="world-config"',
+        ' id="world-boot-fallback"',
+    ]
     json.loads(inline[0][1])
+    assert len(inline[1][1].strip().splitlines()) < 30, "the boot fallback grew"
+
+
+_FALLBACK_DRIVER = r"""
+const [code, search, ran] = process.argv.slice(2);
+const out = { delay: null, replaced: null };
+const fallback = { textContent: "Waking the world…" };
+globalThis.window = ran === "1" ? { __worldModules: true } : {};
+globalThis.location = {
+  search, href: "http://test/world" + search, replace: (u) => { out.replaced = u; },
+};
+globalThis.document = { getElementById: (id) => (id === "fallback" ? fallback : null) };
+globalThis.setTimeout = (fn, ms) => { out.delay = ms; fn(); };
+new Function(code)();
+out.text = fallback.textContent;
+console.log(JSON.stringify(out));
+"""
+
+
+@needs_node
+def test_the_boot_fallback_retries_a_module_graph_that_never_ran(tmp_path):
+    """retryBoot moved into the modules (#42), so a module that never loads (the
+    API restarting between the page and its scripts: the very case retryBoot
+    exists for) latched "Waking the world…". The page's inline fallback retries
+    it on retryBoot's own `boot_retry` counter, backoff and cap, and stands
+    down once main.js has run, so a boot() failure is never reloaded twice.
+    `scripts/check_world_boot.py modblock` drives it in Chrome."""
+    page = client.get("/world").text
+    code = next(b for a, b in _SCRIPT.findall(page) if 'id="world-boot-fallback"' in a)
+    backoff = json.loads(
+        re.search(r"const RETRY_BACKOFF_MS = (\[[^\]]*\]);", _source("boot.js")).group(1)
+    )
+    assert json.loads(re.search(r"var BACKOFF_MS = (\[[^\]]*\]);", code).group(1)) == backoff
+    driver = tmp_path / "fallback.cjs"
+    driver.write_text(_FALLBACK_DRIVER)
+
+    def run(search, ran=False):
+        result = subprocess.run(
+            [NODE, str(driver), code, search, "1" if ran else "0"],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    assert run("", ran=True)["replaced"] is None
+    assert run("?boot_retry=2", ran=True)["replaced"] is None
+    for attempt, wait in enumerate(backoff):
+        out = run(f"?boot_retry={attempt}" if attempt else "")
+        assert out["replaced"] == f"http://test/world?boot_retry={attempt + 1}"
+        assert out["delay"] > wait
+    for search in (f"?boot_retry={len(backoff)}", "?boot_retry=abc", "?boot_retry=-1"):
+        out = run(search)
+        assert out["replaced"] is None, search
+        assert "still running" in out["text"], search
+
+    main_js = _source("main.js")
+    assert main_js.index("window.__worldModules = true;") < main_js.index("boot().catch(")
+
+
+def test_only_the_world_modules_are_served_no_cache():
+    """The modules must revalidate on every load (the page beside them is
+    rendered fresh, so a cached module is a stale half of a deploy); a 304 on
+    the ETag keeps that cheap. The rest of /static keeps its old headers."""
+    for name in world_modules():
+        assert client.get(f"/static/world/{name}").headers.get("cache-control") == "no-cache"
+    first = client.get("/static/world/main.js")
+    again = client.get("/static/world/main.js", headers={"if-none-match": first.headers["etag"]})
+    assert again.status_code == 304
+    assert again.headers.get("cache-control") == "no-cache"
+    for path in ("/static/pixi-8.19.0.min.js", "/static/world-plate-btc-eth.png"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert "cache-control" not in response.headers, path
 
 
 def test_every_module_on_disk_is_loaded_and_served_as_javascript():

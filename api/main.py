@@ -81,7 +81,23 @@ async def record_request_metrics(request: Request, call_next):
 # only thing that can fail is the API that is already serving the page.
 _STATIC_DIR = Path(__file__).parent / "static"
 
-app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+class _StaticFiles(StaticFiles):
+    """#42: /world's script is ES modules under /static/world/. The page is
+    rendered fresh per request, but StaticFiles sends no Cache-Control, so a
+    browser source could pair a fresh page with modules cached before a deploy
+    (one mismatched export is a blank room). `no-cache` makes every load
+    revalidate them (a 304 on the ETag when unchanged). Scoped to `world/`
+    only: the plate and the vendored libraries keep their old headers."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if path.startswith("world/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 # Route groups. Registered after the static mount, as the routes always were;

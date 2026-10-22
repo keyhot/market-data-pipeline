@@ -414,7 +414,7 @@
       "path": "/static",
       "name": "static",
       "methods": [],
-      "endpoint": "StaticFiles",
+      "endpoint": "_StaticFiles",
       "directory": "static"
     },
     {
