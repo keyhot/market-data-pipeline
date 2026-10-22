@@ -13,6 +13,7 @@ file deliberately does not pretend otherwise: no assertion here grades whether
 the room looks right.
 """
 
+from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 import dataclasses
 import json
 import re
@@ -75,7 +76,7 @@ def _skull_radius_local() -> int:
     old bare call took, so the radius still lives at one place in the page.
     """
     match = re.search(
-        r"litCircle\(0, 0, (\d+)\)", WORLD_TEMPLATE.read_text()
+        r"litCircle\(0, 0, (\d+)\)", world_page_source()
     )
     assert match, "the page no longer draws the skull via litCircle(0, 0, r)"
     return int(match.group(1))
@@ -260,7 +261,7 @@ def _shading_prelude(source: str) -> str:
 
 
 def _page_const(name: str) -> str:
-    source = WORLD_TEMPLATE.read_text()
+    source = world_page_source()
     line = re.search(rf"^\s*const {name} = .*;$", source, re.M)
     assert line, f"the page no longer declares {name} as a one-line const"
     return line.group(0).strip()
@@ -309,7 +310,7 @@ def test_a_plate_without_a_sit_anchor_keeps_the_standing_anchor():
     shipped before this field existed. A degrade to the previous look, which
     is the rule, rather than to a character at (undefined, undefined).
     """
-    source = WORLD_TEMPLATE.read_text()
+    source = world_page_source()
     block = re.search(
         r"^    function sitAnchorFor\(name\) \{.*?^    \}$", source, re.S | re.M
     )
@@ -346,7 +347,7 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
     is a 28-radius skull hung at the y each body returns), because `?style=`
     can put either character in any of them.
     """
-    source = WORLD_TEMPLATE.read_text()
+    source = world_page_source()
     body_block = re.search(
         r"^    const BODIES = \{.*?^    \};$", source, re.S | re.M
     )
@@ -359,7 +360,7 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
     # KI-051 (Task 6): every `BODIES.*` style now calls `paint`, so the driver
     # needs the whole shading chain - `LIGHT` computed the real way
     # (`light_for`, the same call `api/routers/world.py` makes) rather than typed as a
-    # literal, since `WORLD_TEMPLATE.read_text()` above reads the raw
+    # literal, since `world_page_source()` above reads the raw
     # template, where `__LIGHT_JSON__` is still the unsubstituted placeholder.
     manifest = load_manifest()
     driver = (
@@ -422,7 +423,7 @@ def test_the_rig_height_is_the_tallest_body_the_page_can_actually_draw():
 
 
 def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
-    source = WORLD_TEMPLATE.read_text()
+    source = world_page_source()
     blocks = [
         re.search(rf"^    function {name}\(.*?^    \}}$", source, re.S | re.M)
         for name in ("seatOccluderFor", "occludeBehindSeat")
