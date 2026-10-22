@@ -5387,6 +5387,83 @@ def test_the_sleeve_laps_over_the_wrist_as_a_cuff():
         )
 
 
+def _edge_margin(pts, pt) -> float:
+    """How far `pt` sits inside the convex polygon `pts`: its distance to the
+    nearest edge line. Meaningful only for a point already inside."""
+    px, py = pt
+    best = math.inf
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        length = math.hypot(bx - ax, by - ay)
+        if length < 1e-9:
+            continue
+        best = min(best, abs((bx - ax) * (py - ay) - (by - ay) * (px - ax)) / length)
+    return best
+
+
+@needs_node
+def test_the_near_sleeve_carries_folds_inside_its_outline():
+    """Sprint 17 #4: the near sleeve carries folds, inside its own outline.
+
+    Matte (increment 15) left each garment two tones, and the reference has
+    folds. The first attempt put them on the torso and rendered with NO
+    visible change: the near arm composites in front of the chest. So they
+    are on the sleeve, upper arm and forearm both, painted over it.
+
+    Each fold is a crease with a lighter lip beside it, the dark/light pair
+    the figure's edge already wears (keyline outside, rim inside). Graded:
+    at least three creases across the two bones of the near arm, one lip per
+    crease, every point at least a unit inside its bone's outline (a fold that
+    reaches the edge notches the silhouette), creases not all parallel (the
+    increment-17 barcode), each thicker than one keyline block (2 frame px =
+    1.6 units at CAST_SCALE 1.25, or the filter drops rows of it), painted
+    after the sleeve (under it, a fold is invisible), and the values ordered
+    hem < crease < sweater < lip.
+    """
+    emitted = _run_node(_rig_bone_driver(_world_source()))
+    human, drawn = emitted["HUMAN"], emitted["drawn"]
+    near = [a for a in emitted["arms"] if a["depth"] == "near"]
+    assert len(near) == 1, f"{len(near)} near arm(s)"
+    arm = near[0]
+    hosts = {arm["gid"]: arm["outline"], arm["foreGid"]: arm["foreOutline"]}
+    assert all(hosts.values()), "the near arm's bones carry no outline"
+    on_arm = [(i, d) for i, d in enumerate(drawn) if d["gid"] in hosts]
+    creases = [(i, d) for i, d in on_arm if d["fill"] == human.get("fold")]
+    lips = [(i, d) for i, d in on_arm if d["fill"] == human.get("foldLip")]
+    assert len(creases) >= 3, (
+        f"{len(creases)} fold(s) on the near sleeve: it is two-tone, the "
+        "matte read #4 exists to fix"
+    )
+    assert {d["gid"] for _, d in creases} == set(hosts), (
+        "the folds sit on only one bone of the near arm"
+    )
+    assert len(lips) == len(creases), (
+        f"{len(lips)} lip(s) for {len(creases)} crease(s): a fold is the pair"
+    )
+    assert (_luma(human["hem"]) < _luma(human["fold"]) < _luma(human["sweater"])
+            < _luma(human["foldLip"])), "fold values are not hem < crease < sweater < lip"
+    for gid in hosts:
+        sleeve = next(i for i, d in on_arm if d["gid"] == gid and d["fill"] == human["sweater"])
+        assert all(i > sleeve for i, d in creases + lips if d["gid"] == gid), (
+            "a fold is painted before its sleeve, so the sleeve covers it"
+        )
+    slopes = set()
+    for _, d in creases + lips:
+        outline, pts = hosts[d["gid"]], d["points"]
+        assert d["opts"].get("keepFill") and d["opts"].get("noRim"), (
+            "a fold is not an interior keepFill volume"
+        )
+        for pt in pts:
+            assert _inside_convex(outline, *pt) and _edge_margin(outline, pt) >= 1.0, (
+                f"fold point {pt} is within a unit of (or past) its sleeve's edge"
+            )
+        thick = pts[3][1] - pts[0][1]
+        assert thick >= 1.6, f"a fold {thick:.2f} units thick is under one keyline block"
+    for _, d in creases:
+        (x0, y0), (x1, y1) = d["points"][0], d["points"][1]
+        slopes.add(round((y1 - y0) / (x1 - x0), 2))
+    assert len(slopes) > 1, f"every crease runs at slope {slopes}: stripes, not folds"
+
+
 @needs_node
 def test_nothing_blunt_is_painted_at_the_fingertips():
     """The fingertips end on one flat line, and that is CLOSED, not pending.

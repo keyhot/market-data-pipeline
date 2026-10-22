@@ -62,6 +62,14 @@ import { WORLD_CONFIG } from "./config.js";
       // sweater and jeans are too close in value to draw a waist on their
       // own (increment 21). `test_the_sweater_ends_in_a_hem`.
       hem:     0x2b3d4e,
+      // A fold in the sleeve (Sprint 17 #4) is a small keyline of its own:
+      // a dark crease with a light lip on the side it rises from, the pair
+      // the figure's edge already wears (dark keyline outside, light rim
+      // inside, KI-058). The crease sits between the sweater and its hem in
+      // value; near-black that wide reads as a barcode (increment 17).
+      // `test_the_near_sleeve_carries_folds_inside_its_outline`.
+      fold:    0x30455a,
+      foldLip: 0x506d85,
       jeans:   0x34495c,
       // Floor < shoe < jeans (2026-09-24, reversing increment 16's "darker
       // than the floor"). The dark `#181a22` sat on the figure's own soft
