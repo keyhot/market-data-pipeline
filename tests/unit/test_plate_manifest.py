@@ -8,7 +8,6 @@ them go further and check the manifest against the PNG itself: numbers measured
 off an image drift the moment the image is replaced, and a candle drawn 6px off
 the painted glass is not something a schema check can see.
 """
-from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 from world_node import run_driver, run_world, world_driver
 import dataclasses
 import json
@@ -22,7 +21,6 @@ import pytest
 from PIL import Image
 
 from world import monitors
-from world.light import as_json, light_for
 from world.plate import (
     DEFAULT_MANIFEST_PATH,
     glow_chart_overlaps,
@@ -38,8 +36,8 @@ needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 def _js_const(source: str, name: str) -> str:
     """One `const NAME = ...;` line - mirrors tests/api/test_world_page.py's
-    helper of the same name (kept local for the same reason as `_js_block`
-    above)."""
+    helper of the same name (kept local: that module builds a TestClient at
+    import time, which a plate-manifest unit test has no business pulling in)."""
     match = re.search(rf"^\s*const {name} = .*;$", source, re.M)
     assert match, f"the page no longer declares a one-line const {name}"
     return match.group(0).strip() + "\n"
@@ -990,7 +988,6 @@ def test_the_cap_and_base_ellipses_are_snapped_to_the_stripes_and_translucent():
     column — and a cap fill carrying its own alpha would now make it LESS
     opaque than the column, so that is what fails.
     """
-    source = world_page_source()
     manifest = load_manifest()
     for tube in manifest.tubes:
         driver = _pillar_ellipse_driver(manifest.as_dict(), tube["symbol"])
@@ -1030,7 +1027,6 @@ def test_the_caps_offset_from_the_painted_bores_centre_is_pinned():
     `geo.baseY - geo.height + 3` moves BTC's measured offset from -4.5px to
     -7.5px, which fails the pin.
     """
-    source = world_page_source()
     manifest = load_manifest()
     # Pinned 2026-09-10 (review round 2): each tube's painted bore centre
     # minus the cap's drawn centre, in px. Not a formula - the art and the

@@ -4,12 +4,21 @@ for the renderer (KI-045), the bounded boot retry, and the textContent-only
 rule that keeps event payloads from becoming markup."""
 
 from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
+from world_node import (
+    DRIVER_MARK,
+    NODE,
+    function_source,
+    needs_node,
+    run_driver,
+    run_world,
+    served_config,
+    world_driver,
+)
 import dataclasses
 import hashlib
 import json
 import math
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -386,6 +395,7 @@ def test_a_comment_cannot_satisfy_a_source_assertion():
     assert re.findall(r'gestureMode\s*=\s*"(\w+)"', stripped) == ["swing"], stripped
 
 
+@needs_node
 def test_an_accent_gestures_by_kind_rather_than_all_of_them_rotating():
     """Rotating an accent about its own base swings it like a felled tree, and
     the candle cluster came apart on cheer/wave/shrug. Only what hangs from a
@@ -402,7 +412,11 @@ def test_an_accent_gestures_by_kind_rather_than_all_of_them_rotating():
     """
     body = _world_source()
     assert "const GESTURE = {" in body
-    declared = set(re.findall(r"(\w+): \(", _js_block(body, "const GESTURE = {")))
+    declared = set(run_world(
+        'const { GESTURE } = need(await W("character.js"), "GESTURE");'
+        "console.log(JSON.stringify(Object.entries(GESTURE)"
+        '.filter(([, v]) => typeof v === "function").map(([k]) => k)));'
+    ))
     assert {"swing", "pump", "shift"} <= declared, declared
     asked = re.findall(r'gestureMode\s*=\s*"(\w+)"', _without_comments(body))
     assert asked, "no body chooses a gesture at all; every accent would swing"
@@ -643,6 +657,7 @@ def test_room_lighting_comes_from_the_shared_ramp():
     assert "ROOM_LIGHT[" in body, "the ramp is injected but never read"
 
 
+@needs_node
 def test_symbol_pillars_are_laid_out_from_the_canvas_not_a_fixed_pitch():
     """At a fixed 140px pitch from y=24 the top pillar was clipped by the canvas
     edge on the real 1920×1080 stream — furniture running off the top of the
@@ -651,7 +666,7 @@ def test_symbol_pillars_are_laid_out_from_the_canvas_not_a_fixed_pitch():
     # PIXI; the claim is unchanged and now lives where the numbers are. The
     # behavioural half is test_without_a_plate_the_pillars_march_off_toward_
     # the_corner_as_before, which executes it.
-    geometry = _js_block(_world_source(), "function pillarGeometry(")
+    geometry = function_source("room.js", "pillarGeometry")
     assert "app.screen.height" in geometry, "pillar layout ignores the canvas"
 
 
@@ -1080,6 +1095,20 @@ def _shading_prelude(source: str) -> str:
     )
 
 
+def _catch_clause(draw_plate: str) -> str:
+    """`drawPlate`'s catch clause, from `catch (` to the end of the function
+    text the engine reports. The catch is drawPlate's last construct, so that
+    is the clause plus the function's own closing brace and nothing else; the
+    brace count and the tail are asserted so a statement added AFTER the catch
+    cannot slip into (or out of) what the tests below call the failure path."""
+    clause = draw_plate[draw_plate.index("catch (") :]
+    assert clause.count("catch (") == 1, "drawPlate has more than one catch"
+    assert clause.count("{") + 1 == clause.count("}"), clause
+    assert re.search(r"\}\s*\}\s*$", clause), "drawPlate no longer ends in its catch"
+    return clause
+
+
+@needs_node
 def test_a_plate_that_fails_to_load_degrades_to_the_procedural_room():
     """KI-045's lesson applied to the asset that repeats its shape, and KI-047's
     applied to the page that already went white for 36 hours: the room must
@@ -1088,49 +1117,54 @@ def test_a_plate_that_fails_to_load_degrades_to_the_procedural_room():
     """
     body = _world_source()
     assert "function drawProceduralRoom()" in body
-    draw_plate = _js_block(body, "async function drawPlate(")
+    draw_plate = function_source("room.js", "drawPlate")
     assert "catch (" in draw_plate
-    failure_path = _js_block(draw_plate[draw_plate.index("catch (") :], "catch (")
+    failure_path = _catch_clause(draw_plate)
     assert "drawProceduralRoom()" in failure_path, (
         "the catch block must draw the fallback room, not merely log"
     )
 
 
+@needs_node
 def test_the_missing_plate_path_also_draws_the_room():
     """No manifest at all is a supported way to run, not a degraded one."""
-    draw_plate = _js_block(_world_source(), "async function drawPlate(")
+    draw_plate = function_source("room.js", "drawPlate")
     guard = draw_plate[: draw_plate.index("try")]
     assert "!PLATE_SRC" in guard and "drawProceduralRoom()" in guard
 
 
+@needs_node
 def test_plate_ready_is_claimed_only_on_the_success_path():
-    draw_plate = _js_block(_world_source(), "async function drawPlate(")
+    draw_plate = function_source("room.js", "drawPlate")
     assert "plateReady = true" in draw_plate
-    failure_path = _js_block(draw_plate[draw_plate.index("catch (") :], "catch (")
+    failure_path = _catch_clause(draw_plate)
     assert "plateReady = true" not in failure_path
 
 
+@needs_node
 def test_the_room_is_drawn_once_and_the_plate_decides_which():
     """The plan is explicit that `drawRoom()` must be *deleted* from boot, not
     renamed there: leaving the unconditional call draws the procedural room
     underneath the plate on the success path and twice on the failure path,
     and the fallback test can no longer tell the two apart.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
     assert "await drawPlate()" in boot
     assert "drawProceduralRoom()" not in boot
     assert "drawRoom()" not in boot
 
 
+@needs_node
 def test_the_canvas_has_a_background_before_the_plate_can_fail():
     """The third rung: no plate, no procedural room, still not a white frame.
     Asserted as an ORDERING inside boot, because the colour literal alone is
     already in every page via the injected theme vars and proves nothing.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
     assert boot.index("background: 0x131722") < boot.index("drawPlate()")
 
 
+@needs_node
 def test_the_heartbeat_is_installed_only_after_the_plate_settles():
     """KI-046, and the reason the ordering is not free: `probe_renderer` treats
     an absent beat as the literal blank-renderer signature, because the page
@@ -1139,7 +1173,7 @@ def test_the_heartbeat_is_installed_only_after_the_plate_settles():
     over an advancing ticker and an empty stage — the one failure the guard
     exists to catch, made invisible by its own heartbeat.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
     assert boot.index("await drawPlate()") < boot.index("/world/heartbeat")
 
 
@@ -1186,40 +1220,41 @@ def test_preview_modes_keep_the_room_and_plate_in_lockstep():
 # Task 4 checks above. These run the emitted layout helpers in node instead, so
 # an off-by-tens in the manifest or a fallback that never fires is a failure.
 
-NODE = shutil.which("node")
-needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
+# NODE / needs_node come from world_node (imported above).
 
 CANVAS = {"width": 1920, "height": 960}
 
 
-def _layout_driver(body: str, *, plate: bool, manifest: dict | None = None) -> str:
-    """The page's own layout helpers, lifted out and run against stubs.
+_LAYOUT_JS = '''await boot();
+const { anchorFor, tubeFor, pillarGeometry, bannerMinHeight, CAST_FRACTIONS, plateReady } = need(
+  await W("room.js"), "anchorFor", "tubeFor", "pillarGeometry", "bannerMinHeight",
+  "CAST_FRACTIONS", "plateReady");
+const { GROUND } = need(await W("cast.js"), "GROUND");
+const { app } = need(await W("boot.js"), "app");
+const PLATE = CONFIG.plate, PAINTED_CAST = CONFIG.painted_cast;
+'''
 
-    Only `app`, `GROUND` and the manifest are stubbed — the arithmetic under
-    test is the page's, character for character.
+
+def _layout_driver(body: str, *, plate: bool, manifest: dict | None = None) -> str:
+    """The page's own layout helpers, imported from the real modules and run.
+
+    #42: `boot()` runs for real against a PIXI fake whose `Application` is the
+    canvas below, so `app` and `plateReady` are set the way the page sets them.
+    `plate=False` makes the plate texture fail to load, which is how the page
+    reaches `plateReady == false` with a manifest still in the config. Only
+    PIXI is faked; the arithmetic under test is the page's.
     """
-    source = _world_source()
     plate_json = manifest or _manifest()
-    return (
-        f"const PLATE = {json.dumps(plate_json)};\n"
-        f"const PAINTED_CAST = {json.dumps(_painted_cast(plate_json))};\n"
-        f"const plateReady = {str(plate).lower()};\n"
-        f"const app = {{ screen: {json.dumps(CANVAS)} }};\n"
-        + _js_const(source, "GROUND")
-        + _js_const(source, "CAST_FRACTIONS")
-        + _js_block(source, "function anchorFor(")
-        + "\n"
-        + _js_block(source, "function tubeFor(")
-        + "\n"
-        + _js_block(source, "function pillarGeometry(")
-        + "\n"
-        + _js_block(source, "function bannerMinHeight(")
-        + "\n"
-        + body
+    return world_driver(
+        _LAYOUT_JS + body,
+        config={"plate": plate_json, "painted_cast": _painted_cast(plate_json)},
+        plate_loads=plate,
     )
 
 
 def _run_node(driver: str):
+    if driver.startswith(DRIVER_MARK):
+        return run_driver(driver)
     result = subprocess.run(
         [NODE, "-e", driver], capture_output=True, text=True, timeout=30
     )
@@ -1821,98 +1856,89 @@ def test_the_stacked_cell_fill_survives():
     assert "CELL" in _js_block(_world_source(), "function drawPillars(")
 
 
-def _pillar_light_driver(
-    source: str, mood: str, direction: list | None = None
-) -> str:
-    """The page's real `drawPillars` over the page's real `paint`/`litRect`
-    and `moodFill`, on the shipped plate, with only PIXI faked. The fakes
-    record every fill and stroke, so what is graded is what the draw handed
-    the GPU — not a reading of its source."""
-    return (
-        _layout_driver("", plate=True)
-        + _js_const(source, "MOOD_COLOR")
-        + _js_const(source, "NEUTRAL_TINT")
-        + _js_const(source, "BODY_TINT")
-        + _js_const(source, "BODY_FILL")
-        + _js_const(source, "BODY_RIM")
-        + _js_const(source, "LIGHT")
-        + (f"LIGHT.direction = {json.dumps(direction)};\n" if direction else "")
-        + _js_block(source, "function snap(") + "\n"
-        + _js_const(source, "CELL")
-        + _shading_prelude(source)
-        + _js_block(source, "function mulHex(") + "\n"
-        + _js_block(source, "function moodTint(") + "\n"
-        + _js_block(source, "function moodFill(") + "\n"
-        + _js_block(source, "const litColumn = ") + "\n"
-        + _js_const(source, "PILLAR_ALPHA")
-        + "let pillarGlassFilter = null;\n"
-        + _js_block(source, "function pillarGlass(") + "\n"
-        + _js_block(source, "function drawPillars(") + "\n"
-        + f"""
-        const SYMBOLS = ["BTCUSDT", "ETHUSDT"];
-        class FakeGraphics {{
-          constructor() {{
-            this.fills = []; this.strokes = []; this.alpha = 1;
-            this.shapes = []; this.pending = [];
-          }}
-          rect(x, y, w, h) {{ this.pending.push([x, y, w, h]); return this; }}
-          roundRect(x, y, w, h) {{ this.pending.push([x, y, w, h]); return this; }}
-          circle() {{ return this; }}
-          poly() {{ return this; }}
-          ellipse() {{ return this; }}
-          fill(f) {{
-            this.fills.push(f);
-            this.shapes.push(this.pending); this.pending = [];
-            return this;
-          }}
-          stroke(s) {{ this.strokes.push(s); return this; }}
-        }}
-        class FakeContainer {{
-          constructor() {{ this.children = []; this.alpha = 1; this.filters = null; }}
-          addChild(...c) {{ this.children.push(...c); return c[0]; }}
-        }}
-        class FakeAlphaFilter {{ constructor(o) {{ this.alpha = o.alpha; }} }}
-        const PIXI = {{ Graphics: FakeGraphics, Container: FakeContainer,
-                        AlphaFilter: FakeAlphaFilter }};
-        const layers = {{ props: new FakeContainer() }};
-        layers.props.removeChildren = function () {{ this.children = []; }};
-        const state = {{ symbols: {{
-          BTCUSDT: {{ pressure: 0.6, mood: "{mood}" }},
-          ETHUSDT: {{ pressure: -0.4, mood: "{mood}" }},
-        }} }};
-        drawPillars(state);
-        const firstFilter = layers.props.children[0].filters;
-        drawPillars(state);
-        const glass = layers.props.children[0];
-        const graphics = glass.children.filter((c) => c instanceof FakeGraphics);
-        const colourOf = (f) => (typeof f === "number" ? f : f && f.color);
-        const masks = new Set(graphics.map((g) => g.mask).filter(Boolean));
-        const drawn = graphics.filter((g) => !masks.has(g));
-        const base = moodFill("{mood}");
-        const rungs = ["shade", "base", "lit"].map((r) => shade(base, rampLevel(r)));
-        console.log(JSON.stringify({{
-          propsChildren: layers.props.children.length,
-          glassAlpha: glass.alpha,
-          filters: (glass.filters || []).map((f) => f.alpha),
-          sameFilter: firstFilter && glass.filters
-            && firstFilter[0] === glass.filters[0],
-          masked: graphics.filter((g) => g.mask).length,
-          masksInTree: [...masks].every((m) => glass.children.includes(m)),
-          colours: drawn.map((g) => g.fills.map(colourOf)),
-          fillAlphas: drawn.flatMap((g) => g.fills)
-            .map((f) => (f && typeof f === "object" && "alpha" in f ? f.alpha : 1)),
-          strokes: drawn.reduce((n, g) => n + g.strokes.length, 0),
-          rungs,
-          raw: parseInt(MOOD_COLOR["{mood}"].slice(1), 16),
-          neutral: moodFill("__no_such_mood__"),
-          litSide: Math.sign(-KEY_AXIS[0]),
-          litShare: 1 - BAND_INSET.lit,
-          columns: graphics.filter((g) => g.mask).map((g) => ({{
-            bands: g.shapes.map((s) => s[0]),
-            cells: g.mask.shapes.flat(),
-          }})),
-        }}));
-        """
+_PILLAR_LIGHT_JS = '''
+class FakeGraphics {
+  constructor() {
+    this.fills = []; this.strokes = []; this.alpha = 1;
+    this.shapes = []; this.pending = [];
+  }
+  rect(x, y, w, h) { this.pending.push([x, y, w, h]); return this; }
+  roundRect(x, y, w, h) { this.pending.push([x, y, w, h]); return this; }
+  circle() { return this; }
+  poly() { return this; }
+  ellipse() { return this; }
+  fill(f) {
+    this.fills.push(f);
+    this.shapes.push(this.pending); this.pending = [];
+    return this;
+  }
+  stroke(s) { this.strokes.push(s); return this; }
+}
+class FakeContainer {
+  constructor() { this.children = []; this.alpha = 1; this.filters = null; }
+  addChild(...c) { this.children.push(...c); return c[0]; }
+}
+class FakeAlphaFilter { constructor(o) { this.alpha = o.alpha; } }
+setPixi({ Graphics: FakeGraphics, Container: FakeContainer, AlphaFilter: FakeAlphaFilter });
+const { layers } = need(await W("boot.js"), "layers");
+layers.props = new FakeContainer();
+layers.props.removeChildren = function () { this.children = []; };
+const { drawPillars } = need(await W("room.js"), "drawPillars");
+const { MOOD_COLOR } = need(await W("palette.js"), "MOOD_COLOR");
+const { shade, rampLevel, KEY_AXIS, BAND_INSET, moodFill } = need(
+  await W("shading.js"), "shade", "rampLevel", "KEY_AXIS", "BAND_INSET", "moodFill");
+const state = { symbols: {
+  BTCUSDT: { pressure: 0.6, mood: "__MOOD__" },
+  ETHUSDT: { pressure: -0.4, mood: "__MOOD__" },
+} };
+drawPillars(state);
+const firstFilter = layers.props.children[0].filters;
+drawPillars(state);
+const glass = layers.props.children[0];
+const graphics = glass.children.filter((c) => c instanceof FakeGraphics);
+const colourOf = (f) => (typeof f === "number" ? f : f && f.color);
+const masks = new Set(graphics.map((g) => g.mask).filter(Boolean));
+const drawn = graphics.filter((g) => !masks.has(g));
+const base = moodFill("__MOOD__");
+const rungs = ["shade", "base", "lit"].map((r) => shade(base, rampLevel(r)));
+console.log(JSON.stringify({
+  propsChildren: layers.props.children.length,
+  glassAlpha: glass.alpha,
+  filters: (glass.filters || []).map((f) => f.alpha),
+  sameFilter: firstFilter && glass.filters
+    && firstFilter[0] === glass.filters[0],
+  masked: graphics.filter((g) => g.mask).length,
+  masksInTree: [...masks].every((m) => glass.children.includes(m)),
+  colours: drawn.map((g) => g.fills.map(colourOf)),
+  fillAlphas: drawn.flatMap((g) => g.fills)
+    .map((f) => (f && typeof f === "object" && "alpha" in f ? f.alpha : 1)),
+  strokes: drawn.reduce((n, g) => n + g.strokes.length, 0),
+  rungs,
+  raw: parseInt(MOOD_COLOR["__MOOD__"].slice(1), 16),
+  neutral: moodFill("__no_such_mood__"),
+  litSide: Math.sign(-KEY_AXIS[0]),
+  litShare: 1 - BAND_INSET.lit,
+  columns: graphics.filter((g) => g.mask).map((g) => ({
+    bands: g.shapes.map((s) => s[0]),
+    cells: g.mask.shapes.flat(),
+  })),
+}));
+'''
+
+
+def _pillar_light_driver(mood: str, direction: list | None = None) -> str:
+    """The page's real `drawPillars` over its real `paint`/`litColumn` and
+    `moodFill`, on the shipped plate, with only PIXI faked. The fakes record
+    every fill and stroke, so what is graded is what the draw handed the GPU -
+    not a reading of its source. #42: the modules are imported under node;
+    a lamp `direction` goes in through the served config, because KEY_AXIS is
+    derived from it when shading.js loads."""
+    config = {}
+    if direction:
+        config["light"] = {**served_config()["light"], "direction": direction}
+    return world_driver(
+        "await boot();\n" + _PILLAR_LIGHT_JS.replace("__MOOD__", mood),
+        config=config,
     )
 
 
@@ -1931,7 +1957,7 @@ def test_the_pillars_are_lit_like_the_cast(mood):
     symbol, so a mood missing from `BODY_TINT` (which would quietly paint the
     pillar the neutral grey) fails here by name.
     """
-    emitted = _run_node(_pillar_light_driver(_world_source(), mood))
+    emitted = _run_node(_pillar_light_driver(mood))
     rungs = emitted["rungs"]
     assert emitted["neutral"] not in rungs, (
         f"{mood!r} has no BODY_TINT; the pillar would paint neutral grey"
@@ -1963,7 +1989,7 @@ def test_a_pillar_is_lit_as_an_upright_cylinder(direction):
     lit band must follow it, so a side baked into the drawing fails here.
     """
     emitted = _run_node(
-        _pillar_light_driver(_world_source(), "bullish", direction)
+        _pillar_light_driver("bullish", direction)
     )
     side = emitted["litSide"]
     assert side == (1 if direction is None else -1), "control did not flip"
@@ -2001,7 +2027,7 @@ def test_the_pillar_translucency_is_one_fade_over_the_whole_group():
     across draws, since `drawPillars` runs every state update — and the cells
     that cut the column are masks inside that container, so they sway with
     it."""
-    emitted = _run_node(_pillar_light_driver(_world_source(), "bullish"))
+    emitted = _run_node(_pillar_light_driver("bullish"))
     assert emitted["propsChildren"] == 1, "pillars go into one container"
     assert emitted["filters"] == [0.85]
     assert emitted["glassAlpha"] == 1, "alpha on the container is per-primitive"

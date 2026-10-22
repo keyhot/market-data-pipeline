@@ -23,7 +23,6 @@ from pathlib import Path
 
 import pytest
 
-from world.light import as_json, light_for
 from world.plate import load_manifest
 from world_node import run_world
 
