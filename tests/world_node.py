@@ -151,13 +151,26 @@ class FakeApplication {
   }
   async init() {}
 }
-const boot = () => loadMain({
-  Application: FakeApplication,
-  Assets: { load: async () => {
-    if (!PLATE_LOADS) throw new Error("texture failed to load");
-    return fake;
-  } },
-});
+// boot() proves it ran the page's own boot path: `app` is assigned and
+// `plateReady` is what the config and PLATE_LOADS say it must be (true only
+// when there is a plate AND it loads). A harness that silently fell onto the
+// procedural room would otherwise let layout tests pass on the wrong path.
+const boot = async () => {
+  await loadMain({
+    Application: FakeApplication,
+    Assets: { load: async () => {
+      if (!PLATE_LOADS) throw new Error("texture failed to load");
+      return fake;
+    } },
+  });
+  const { app } = await import(SANDBOX + "boot.js");
+  const { plateReady } = await import(SANDBOX + "room.js");
+  if (!app) throw new Error("boot() ran but app was never assigned");
+  const expected = Boolean(CONFIG.plate) && PLATE_LOADS;
+  if (plateReady !== expected) {
+    throw new Error("boot() left plateReady=" + plateReady + ", expected " + expected);
+  }
+};
 """
 
 

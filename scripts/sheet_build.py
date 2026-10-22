@@ -111,6 +111,11 @@ def _test_helpers():
     beside it would go stale silently. Promoting it into a shared module is
     the cleaner end state and is deliberately not bundled into this increment.
     """
+    # The test module imports `world_node` (tests/world_node.py), which pytest
+    # finds through tests/conftest.py; a bare script run has to be told.
+    tests_dir = str(TESTS.parents[1])
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
     spec = importlib.util.spec_from_file_location("_world_page_tests", TESTS)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
