@@ -725,6 +725,7 @@ import { snap } from "./tiers.js";
     }
 
 export {
-  mixHex, shade, rampLevel, KEY_AXIS, CONTACT, SHADOW_THROW, paint, repaint,
+  mixHex, shade, rampLevel, KEY_AXIS, BAND_INSET, CONTACT, SHADOW_THROW, paint,
+  repaint,
   moodBlindParts, litRect, litCircle, litColumn, litPath, moodFill, moodRim,
 };

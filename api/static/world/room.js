@@ -530,5 +530,6 @@ import { buildMonitorGraphics } from "./monitors.js";
 
 export {
   vignette, ROOM_LIGHT, plateReady, drawPlate, layoutRoom, anchorFor,
-  sitAnchorFor, occludeBehindSeat, drawPillars,
+  sitAnchorFor, occludeBehindSeat, drawPillars, CAST_FRACTIONS, bannerMinHeight,
+  tubeFor, pillarGeometry,
 };
