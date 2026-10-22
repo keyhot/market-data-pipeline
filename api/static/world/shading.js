@@ -639,14 +639,12 @@ import { snap } from "./tiers.js";
       // glove on the first shot. The matte rule's rung, for the same reason.
       // Convex outlines are unchanged.
       // Inline rather than a helper: the suite lifts this function by name.
-      const convex = pts.every((_, i) => {
+      const turns = pts.map((_, i) => {
         const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
         const [cx, cy] = pts[(i + 2) % pts.length];
-        const [px, py] = pts[(i + pts.length - 1) % pts.length];
-        const turn = (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
-        const prev = (ax - px) * (by - ay) - (ay - py) * (bx - ax);
-        return Math.abs(turn) < 1e-9 || Math.abs(prev) < 1e-9 || Math.sign(turn) === Math.sign(prev);
-      });
+        return (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
+      }).filter((t) => Math.abs(t) >= 1e-9);
+      const convex = turns.every((t) => Math.sign(t) === Math.sign(turns[0]));
       return {
         band: (g, band) => g.poly((convex ? pathBand(pts, band)
           : band > BAND_INSET.base ? [pts[0], pts[0], pts[0]] : pts).flat()),

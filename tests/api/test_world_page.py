@@ -4734,7 +4734,8 @@ def _hand_webs(points):
     """The webs between the fingers: the hand outline's reflex vertices, each
     with its two neighbours (the fingertip corners either side of a notch)."""
     n = len(points)
-    area = sum(ax * by - bx * ay for (ax, ay), (bx, by) in zip(points, points[1:] + points[:1]))
+    edges = zip(points, points[1:] + points[:1])
+    area = sum(ax * by - bx * ay for (ax, ay), (bx, by) in edges)
     webs = []
     for i in range(n):
         (ax, ay), (bx, by), (cx, cy) = points[i - 1], points[i], points[(i + 1) % n]
@@ -5353,9 +5354,10 @@ def test_the_near_sleeve_carries_folds_inside_its_outline():
         f"{len(lips)} lip(s) for {len(creases)} crease(s): a fold is the pair"
     )
     assert (_luma(human["hem"]) < _luma(human["fold"]) < _luma(human["sweater"])
-            < _luma(human["foldLip"])), "fold values are not hem < crease < sweater < lip"
+            < _luma(human["foldLip"])), "fold values: not hem < crease < sweater < lip"
     for gid in hosts:
-        sleeve = next(i for i, d in on_arm if d["gid"] == gid and d["fill"] == human["sweater"])
+        sleeve = next(i for i, d in on_arm
+                      if d["gid"] == gid and d["fill"] == human["sweater"])
         assert all(i > sleeve for i, d in creases + lips if d["gid"] == gid), (
             "a fold is painted before its sleeve, so the sleeve covers it"
         )
@@ -5370,7 +5372,7 @@ def test_the_near_sleeve_carries_folds_inside_its_outline():
                 f"fold point {pt} is within a unit of (or past) its sleeve's edge"
             )
         thick = pts[3][1] - pts[0][1]
-        assert thick >= 1.6, f"a fold {thick:.2f} units thick is under one keyline block"
+        assert thick >= 1.6, f"a fold {thick:.2f} units thick: under a keyline block"
     for _, d in creases:
         (x0, y0), (x1, y1) = d["points"][0], d["points"][1]
         slopes.add(round((y1 - y0) / (x1 - x0), 2))
