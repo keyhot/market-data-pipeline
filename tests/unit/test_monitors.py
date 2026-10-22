@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.templating import world_modules
 from world.monitors import (
     BODY_CELLS,
     CELL,
@@ -134,8 +135,15 @@ def test_the_rules_survive_the_trip_through_json():
 
 
 def _served_page() -> tuple[str, dict]:
-    """The `/world` page as served, and the `monitor_rules` it carries."""
-    body = TestClient(app).get("/world").text
+    """The `/world` page as served plus every module it loads (#42: the rule
+    functions live under /static/world/ now), and the `monitor_rules` it
+    carries."""
+    client = TestClient(app)
+    body = client.get("/world").text
+    for name in world_modules():
+        response = client.get(f"/static/world/{name}")
+        assert response.status_code == 200, f"/static/world/{name} not served"
+        body += response.text
     block = re.search(
         r'<script type="application/json" id="world-config">(.*?)</script>',
         body,

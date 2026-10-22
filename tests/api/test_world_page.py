@@ -3,6 +3,7 @@ silently break a 24/7 browser source: substitution, the same-origin rule
 for the renderer (KI-045), the bounded boot retry, and the textContent-only
 rule that keeps event payloads from becoming markup."""
 
+from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 import dataclasses
 import hashlib
 import json
@@ -30,13 +31,13 @@ def test_world_page_renders():
 
 
 def test_no_unsubstituted_placeholders_remain():
-    body = client.get("/world").text
+    body = _world_source()
     assert "__SYMBOLS__" not in body
     assert not re.search(r"__[A-Z_]+__", body)
 
 
 def test_watchlist_symbols_are_embedded():
-    body = client.get("/world").text
+    body = _world_source()
     assert "BTCUSDT" in body
 
 
@@ -47,7 +48,7 @@ def test_renderer_is_served_same_origin_and_still_version_pinned():
     `PIXI` undefined and put the "renderer unavailable" card on air for two
     hours. The version stays pinned — it moved from a URL into a filename.
     """
-    body = client.get("/world").text
+    body = _world_source()
     assert "/static/pixi-8.19.0.min.js" in body
     assert "unpkg.com" not in body
     # SRI is for third-party bytes; same-origin it can only white-frame the
@@ -72,7 +73,7 @@ def test_the_retry_cap_cannot_be_defeated():
        comparison, so a junk value would slip past the cap and then increment
        to NaN forever.
     """
-    body = client.get("/world").text
+    body = _world_source()
     # The reset happens once construction is done, not the moment PIXI answers.
     assert body.index("startAmbient();") < body.index("bootSucceeded();")
     assert body.index("bootSucceeded();") < body.index("subscribe()")
@@ -83,30 +84,30 @@ def test_the_retry_cap_cannot_be_defeated():
 def test_a_failed_boot_retries_instead_of_latching():
     """The fallback used to be terminal: painted once, blank until a human
     refreshed the browser source. Unattended surfaces must self-heal."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "retryBoot" in body
     assert "boot_retry" in body
 
 
 def test_page_uses_textcontent_not_innerhtml():
-    body = client.get("/world").text
+    body = _world_source()
     assert "innerHTML" not in body
 
 
 def test_page_consumes_state_and_sse_endpoints():
-    body = client.get("/world").text
+    body = _world_source()
     assert "/world/state" in body
     assert "/stream/world/events" in body
 
 
 def test_shared_theme_vars_are_injected():
-    body = client.get("/world").text
+    body = _world_source()
     assert "--bg: #131722" in body        # css_variables() reached the page
     assert '"calm": "#4a90d9"' in body     # MOOD_COLORS superset (pressure mood)
 
 
 def test_newcomer_banner_is_present():
-    body = client.get("/world").text
+    body = _world_source()
     assert "trades live, and the world remembers when it's wrong" in body
 
 
@@ -114,7 +115,7 @@ def test_live_event_swell_keys_on_tier():
     # The swell must fire on live SSE events, not just the initial paint: react()
     # scales the nudge by the event's tier. Pin the hook so a refactor can't
     # silently flatten the room back to a constant nudge.
-    body = client.get("/world").text
+    body = _world_source()
     assert "tierOf(event.event_type, event.severity)" in body
 
 
@@ -125,7 +126,7 @@ def test_commentary_renders_as_on_screen_speech():
     """TTS is a deferred ops step, so `commentary_spoken` is currently invisible
     to a viewer — the personalities don't exist on screen at all. The SSE path
     must route those events to a bubble, not just to the room's nudge."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "commentary_spoken" in body
     assert "speak(" in body or "renderBubble(" in body
 
@@ -133,7 +134,7 @@ def test_commentary_renders_as_on_screen_speech():
 def test_speech_bubbles_use_the_shared_character_palette():
     from world.visuals import CHARACTER_COLORS
 
-    body = client.get("/world").text
+    body = _world_source()
     assert "__CHARACTER_COLORS_JSON__" not in body     # substituted
     for hex_colour in CHARACTER_COLORS.values():
         assert hex_colour in body
@@ -142,7 +143,7 @@ def test_speech_bubbles_use_the_shared_character_palette():
 def test_speech_bubble_text_is_set_as_textcontent():
     """Commentary payloads are data and reach the page over SSE; innerHTML
     would make a crafted payload markup on a 24/7 public stream."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "innerHTML" not in body
     assert "textContent" in body
 
@@ -154,19 +155,19 @@ def test_now_band_is_present_and_always_on():
     """A newcomer arriving during a calm stretch sees no events at all. The
     band is the answer: price, the model's record, and a one-word mood, on
     screen permanently rather than only when something fires."""
-    body = client.get("/world").text
+    body = _world_source()
     assert 'id="nowband"' in body
     assert "renderNowBand(" in body
 
 
 def test_now_band_reads_prices_and_accuracy_from_state():
-    body = client.get("/world").text
+    body = _world_source()
     assert "state.prices" in body
     assert "accuracy" in body
 
 
 def test_now_band_has_no_placeholder_or_markup_leak():
-    body = client.get("/world").text
+    body = _world_source()
     assert not re.search(r"__[A-Z_]+__", body)
     assert "innerHTML" not in body
 
@@ -178,7 +179,7 @@ def test_ambient_runs_every_frame_not_only_on_events():
     """A 55-minute calm stretch used to be a near-frozen frame — the room only
     moved when an event fired. The ambient loop rides the PIXI ticker so calm
     reads alive-but-quiet."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "app.ticker.add(" in body
     assert "startAmbient(" in body
 
@@ -187,7 +188,7 @@ def test_ambient_amplitude_is_driven_by_market_state():
     """Motion has to be *data*, not decoration: pressure sets the colour
     temperature and agitation sets the drift, so what a viewer sees moving is
     the market moving."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "pressure" in body and "agitation" in body
 
 
@@ -202,7 +203,7 @@ def test_every_registry_animation_is_implemented_by_the_renderer():
     stream nobody is watching at 3am."""
     from world.reactions import ANIMATIONS
 
-    body = client.get("/world").text
+    body = _world_source()
     missing = sorted(a for a in ANIMATIONS if not re.search(rf"\b{a}:\s*\(c", body))
     assert missing == [], f"animations with no renderer implementation: {missing}"
 
@@ -212,7 +213,7 @@ def test_every_registry_mood_has_a_face():
     stare, and the fallback should be a deliberate choice, not an accident."""
     from world.reactions import MOODS
 
-    body = client.get("/world").text
+    body = _world_source()
     missing = sorted(m for m in MOODS if not re.search(rf"\b{m}:\s*\{{", body))
     assert missing == [], f"moods with no face: {missing}"
 
@@ -221,14 +222,14 @@ def test_reaction_registry_is_injected_rather_than_reinvented():
     """The canvas must not keep its own copy of what an event means — drift
     between the room and the overlays is exactly what world/visuals.py exists
     to prevent."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "__REACTIONS_JSON__" not in body
     assert '"signal_resolved"' in body and '"model_losing_streak"' in body
     assert "reactionFor(" in body
 
 
 def test_characters_have_a_face_not_just_a_tinted_circle():
-    body = client.get("/world").text
+    body = _world_source()
     for part in ("eyeL", "eyeR", "mouth", "browL", "setExpression("):
         assert part in body, part
 
@@ -237,7 +238,7 @@ def test_every_offered_style_has_a_body_builder():
     """The styles list is what the gallery renders and what ?style= accepts —
     an entry with no builder would silently fall back and quietly misrepresent
     the option being evaluated."""
-    body = client.get("/world").text
+    body = _world_source()
     styles = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
     names = re.findall(r'"([a-z]+)"', styles)
     assert len(names) >= 3, names
@@ -249,14 +250,14 @@ def test_limbless_bodies_still_have_a_gesture():
     """These bodies are market glyphs, not anatomy, so the arm-driven
     animations (shrug/wave/cheer) need something else to move — otherwise
     three of the sixteen would render as nothing at all."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "function gesture(" in body
     assert "accents" in body
 
 
 def test_prototype_gallery_is_available_for_evaluation():
     """B1 ships options, not a final look — the gallery is the human-eval gate."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "drawGallery(" in body
     assert "gallery" in body and "STYLES" in body
 
@@ -266,7 +267,7 @@ def test_model_and_trader_are_cast_with_different_bodies():
     the trader is a person. Casting them both from one style would throw that
     contrast away — and it is the contrast that lets a newcomer tell which of
     the two just reacted, before reading a single label."""
-    body = client.get("/world").text
+    body = _world_source()
     cast = re.search(r"const CAST = \{(.*?)\}", body, re.S).group(1)
     assigned = dict(re.findall(r'(\w+):\s*"(\w+)"', cast))
     assert assigned == {"MODEL": "bars", "TRADER": "figure"}, assigned
@@ -290,7 +291,7 @@ def test_the_figures_arms_read_apart_from_its_torso():
     feature any more, which is why it was replaced rather than kept as a
     second assertion alongside the real one.
     """
-    body = client.get("/world").text
+    body = _world_source()
     assert "function lightenTint(" in body
     assert "shadeFactor" in body
 
@@ -299,7 +300,7 @@ def test_every_style_declares_which_face_it_wears():
     """A machine and a person shouldn't wear the same face — that's half of
     what makes MODEL and TRADER tell apart. A style missing from the registry
     would silently inherit a face rather than be given one."""
-    body = client.get("/world").text
+    body = _world_source()
     listed = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
     styles = re.findall(r'"([a-z]+)"', listed)
     kinds = dict(re.findall(r"(\w+): \"(machine|human)\"", body))
@@ -312,7 +313,7 @@ def test_the_cast_is_scaled_by_its_layer_not_by_each_character():
     pulse, sleep, turn), so a per-character base scale gets clobbered the first
     time one fires. The layer carries it; the gallery, which lays itself out,
     puts it back."""
-    body = client.get("/world").text
+    body = _world_source()
     layout = re.search(
         r"function positionCharacters\(\) \{(.*?)\n    \}", body, re.S
     ).group(1)
@@ -333,7 +334,7 @@ def test_a_character_does_not_sink_into_the_background():
     """
     from world.visuals import MOOD_COLORS, SILHOUETTE_MIN_CONTRAST, body_contrast
 
-    body = client.get("/world").text
+    body = _world_source()
     assert "const BODY_TINT = WORLD_CONFIG.body_tints;" in body, (
         "the page does not read the tint table"
     )
@@ -399,7 +400,7 @@ def test_an_accent_gestures_by_kind_rather_than_all_of_them_rotating():
     every mode a body asks for is one the dispatcher can serve, and that they
     are not all the same mode.
     """
-    body = client.get("/world").text
+    body = _world_source()
     assert "const GESTURE = {" in body
     declared = set(re.findall(r"(\w+): \(", _js_block(body, "const GESTURE = {")))
     assert {"swing", "pump", "shift"} <= declared, declared
@@ -422,7 +423,7 @@ def test_how_far_a_head_may_sink_is_declared_per_body():
     drop into is a property of the body: the figure's head already overlaps its
     chest at rest, so the shared distance buried a third of it and read blobby
     rather than dejected. Every body has to say."""
-    body = client.get("/world").text
+    body = _world_source()
     listed = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
     styles = set(re.findall(r'"([a-z]+)"', listed))
     declared = re.search(r"const HEAD_TRAVEL = \{(.*?)\}", body, re.S).group(1)
@@ -441,7 +442,7 @@ def test_every_body_declares_its_own_contact_patch():
     candle cluster's five splayed bars; since increment 11 it is the machine's
     two legs, which plant 48 units apart against the figure's 38.
     """
-    body = client.get("/world").text
+    body = _world_source()
     listed = re.search(r"const STYLES = \[(.*?)\]", body, re.S).group(1)
     styles = set(re.findall(r'"([a-z]+)"', listed))
     declared = re.search(r"const SHADOW_WIDTH = \{(.*?)\}", body, re.S).group(1)
@@ -455,7 +456,7 @@ def test_a_shadow_is_a_sibling_of_its_body_not_a_child_of_it():
     a leaning body would drag its shadow off the floor, which is the exact
     opposite of grounding. It lives on its own layer *inside* `layers.chars`,
     so it still gets CAST_SCALE and the same coordinate space for free."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "layers.chars.addChild(layers.shadows)" in body, (
         "shadows are not inside the cast layer, so they lose CAST_SCALE"
     )
@@ -480,7 +481,7 @@ def test_hiding_a_character_also_hides_its_shadow():
     behind — the animation sheet rendered two of them hanging in mid-air where
     MODEL and TRADER had been. That is the cost of the sibling layout, and the
     fix is that visibility is a property of the character, not the container."""
-    body = client.get("/world").text
+    body = _world_source()
     helper = re.search(
         r"function setCharacterVisible\(char, visible\) \{(.*?)\n    \}", body, re.S
     ).group(1)
@@ -495,7 +496,7 @@ def test_the_cast_does_not_breathe_on_one_clock():
     two puppets — the same failure the blink seed already avoids. Both the
     offset and the period come off the per-character RNG, so they never drift
     into step either."""
-    body = client.get("/world").text
+    body = _world_source()
     advance = re.search(
         r"function advanceCharacters\(dt\) \{(.*?)\n    \}", body, re.S
     ).group(1)
@@ -516,7 +517,7 @@ def test_only_named_animations_get_the_out_of_range_curves():
     into a scale, and a big enough negative drives it through zero, which is
     the bug `turn` already shipped once. So they are applied per animation,
     never as a blanket substitution for the symmetric bump."""
-    body = client.get("/world").text
+    body = _world_source()
     anim = re.search(r"\n    const ANIM = \{(.*?)\n    \};", body, re.S).group(1)
     users = set(re.findall(r"(\w+):\s*\([^)]*\) => \{[^\n]*EASE\.(\w+)", anim))
     assert {("jolt", "snap"), ("hop", "anticipate"), ("slump", "settle")} == users, (
@@ -531,7 +532,7 @@ def test_the_animation_sheet_loops_every_animation_through_the_real_player():
     and flicker all sit at or near zero displacement at whatever phase you'd
     think to freeze. A sheet with its own player would be showing an animation
     nobody ships, so it drives `advanceCharacters` instead."""
-    body = client.get("/world").text
+    body = _world_source()
     sheet = re.search(
         r"function drawAnimationSheet\(\) \{(.*?)\n    \}", body, re.S
     ).group(1)
@@ -553,7 +554,7 @@ def test_the_tier_scale_is_injected_rather_than_reinvented():
     from world.state import GENERIC_TIER_CUTS, tier_cuts
 
     for path in ("/world", "/overlay/events"):
-        body = client.get(path).text
+        body = _world_source(path) if path == "/world" else client.get(path).text
         assert "__TIER_CUTS_JSON__" not in body, path
         assert "severity >= 8" not in body, f"{path} still keeps its own scale"
         if path == "/world":
@@ -578,7 +579,7 @@ def test_registry_lookups_carry_no_default_to_hide_a_gap_behind():
     were never safety nets; they were the branch that would swallow a broken
     invariant and render a wrong-but-plausible character instead of failing.
     That is precisely the shape of the `HEADLINES` bug and of KI-019."""
-    body = client.get("/world").text
+    body = _world_source()
     guarded = {
         "FACE[mood]": r"return FACE\[mood\]\s*(\?\?|\|\|)",
         "FACE_KIND[style]": r"FACE_KIND\[style\]\s*(\?\?|\|\|)",
@@ -606,7 +607,7 @@ def test_the_tier_function_is_injected_not_written_out_per_page():
     from world.state import severity_tier, tier_of_js
 
     for path in ("/world", "/overlay/events"):
-        body = client.get(path).text
+        body = _world_source(path) if path == "/world" else client.get(path).text
         assert body.count("function tierOf") == 1, path
         assert "__TIER_OF_JS__" not in body, f"{path} never got the injection"
         if path == "/overlay/events":
@@ -634,7 +635,7 @@ def test_room_lighting_comes_from_the_shared_ramp():
     is the server's own `severity_tier` as it arrives in `/world/state`."""
     from world.visuals import room_light
 
-    body = client.get("/world").text
+    body = _world_source()
     assert "__ROOM_LIGHT_JSON__" not in body
     assert "const ROOM_LIGHT = WORLD_CONFIG.room_light;" in body
     injected = _served_config(body)["room_light"]
@@ -658,7 +659,7 @@ def test_characters_have_idle_behaviour_between_events():
     """A calm stretch is most of the airtime and it looked like two statues
     sharing a 2px bob. Blink, glance and weight-shift run only on the branch
     where no reaction is playing, so idle life can never fight an animation."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "function idleTick(" in body
     actions = re.search(r"const IDLE_ACTIONS = \{(.*?)\n    \};", body, re.S).group(1)
     for action in ("blink:", "glance:", "shift:"):
@@ -673,7 +674,7 @@ def test_idle_timing_is_seeded_rather_than_ad_hoc_randomness():
     """The eval gate for calm is one quiet frame compared against another, and
     unseeded idle drift makes two calm frames incomparable. The director
     already treats RNG as a thing you inject; so does the room."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "function rng32(" in body
     idle = re.search(
         r"function idleTick\(char, dt\) \{(.*?)\n    \}", body, re.S
@@ -687,7 +688,7 @@ def test_the_observer_glances_without_claiming_to_have_acted():
     stays dormant until its own events exist, so giving it a reaction to an
     event it had no part in would be inventing activity, which is the one thing
     this room must never do. It looks. It does not act."""
-    body = client.get("/world").text
+    body = _world_source()
     react = re.search(r"function react\(event\) \{(.*?)\n    \}", body, re.S).group(1)
     assert "lookAt(" in react
     look = re.search(
@@ -702,7 +703,7 @@ def test_the_floor_is_laid_out_with_the_characters_not_only_at_boot():
     """The renderer follows the window and `positionCharacters` runs on every
     draw, so a floor drawn once at boot drifts off its inhabitants and they end
     up standing through it — which is exactly what a resize produced."""
-    body = client.get("/world").text
+    body = _world_source()
     layout = re.search(
         r"function positionCharacters\(\) \{(.*?)\n    \}", body, re.S
     ).group(1)
@@ -717,7 +718,7 @@ def test_the_wall_is_a_native_gradient_but_the_vignette_cannot_be():
     canvas version: max delta 255/255, mean 51.5). The linear wall has no such
     pre-fill and ported pixel-for-pixel (max delta 1/255). Someone will
     reasonably try to finish the job; this is the test that stops them."""
-    body = client.get("/world").text
+    body = _world_source()
     layout = re.search(r"function layoutRoom\(\) \{(.*?)\n    \}", body, re.S).group(1)
     assert "PIXI.FillGradient" in layout, "the wall stopped using the native gradient"
     assert 'type: "radial"' not in layout, (
@@ -733,7 +734,7 @@ def test_gallery_fits_every_style_on_one_screen():
     """At a fixed row pitch the fifth style lands below the canvas — and an
     option nobody can see is an option nobody evaluates, which is the whole job
     of the gate."""
-    body = client.get("/world").text
+    body = _world_source()
     gallery = re.search(
         r"function drawGallery\(\) \{(.*?)\n    \}", body, re.S
     ).group(1)
@@ -748,15 +749,25 @@ def test_gallery_fits_every_style_on_one_screen():
 # can assert — the choreography itself is graded by looking at it, which is
 # what `?swell=1` exists for.
 
-def _world_source():
-    return client.get("/world").text
+def _world_source(path="/world", via=None):
+    """The served page plus every module it loads (#42), in evaluation order:
+    one text, as the page was one file before the split. Each module is
+    fetched from /static/world/ and must be served, so a content check here
+    also proves the browser can load what it checks."""
+    via = via or client
+    parts = [via.get(path).text]
+    for name in world_modules():
+        response = via.get(f"/static/world/{name}")
+        assert response.status_code == 200, f"/static/world/{name} not served"
+        parts.append(response.text)
+    return "".join(parts)
 
 
 def _served_config(body: str | None = None) -> dict:
     """The page's one JSON config block (#41), parsed - what `const NAME =
     WORLD_CONFIG.key;` resolves to. Tests that used to regex a literal out of
     the served page read the value here instead."""
-    body = body if body is not None else client.get("/world").text
+    body = body if body is not None else _world_source()
     found = re.search(
         r'<script type="application/json" id="world-config">(.*?)</script>',
         body,
@@ -870,7 +881,7 @@ def test_the_page_reports_that_it_is_still_drawing():
     posting interval could drift off 15s, the same honest counter posted less
     often, which just as quietly breaks STALE_AFTER=45.0's "three missed
     beats" meaning. The isolated heartbeat window below pins both."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "/world/heartbeat" in body
     assert "framesDrawn++" in body
     ticker = body.split("app.ticker.add(")[1][:800]
@@ -899,7 +910,7 @@ def test_the_monitors_rules_are_injected_rather_than_written_into_the_page():
 
     # #41: the numbers ride in the config block; the three functions that read
     # them are page code, run against world/monitors.py by test_monitors.py.
-    body = client.get("/world").text
+    body = _world_source()
     assert _served_config(body)["monitor_rules"] == monitor_rules()
     assert "const MONITOR_RULES = WORLD_CONFIG.monitor_rules;" in body
 
@@ -1320,7 +1331,7 @@ def test_the_cast_payload_reaches_the_page_substituted():
     boot path - the KI-045 shape, and the reason a placeholder gets its own
     check (a dev server that re-reads templates but not `api/main.py` renders
     exactly this)."""
-    body = TestClient(app).get("/world").text
+    body = _world_source(via=TestClient(app))
     assert "__CAST_JSON__" not in body, "placeholder left unreplaced"
 
     assert "const PAINTED_CAST = WORLD_CONFIG.painted_cast;" in body
@@ -1647,16 +1658,21 @@ def test_the_rendered_page_is_valid_javascript():
     time self-inflicted. `drawPlate`'s fallback cannot save it either, because
     a syntax error means no code runs at all.
     """
-    scripts = re.findall(r"<script>(.*?)</script>", _world_source(), re.S)
-    assert scripts, "the page has no inline script to check"
-
+    # #42: the script is ES modules now; each is checked as a module (the
+    # package.json makes node parse them as the browser does, strict ESM).
+    page = client.get("/world").text
+    assert not re.findall(r"<script>(.*?)</script>", page, re.S), "inline script is back"
+    modules = world_modules()
+    assert modules, "the page has no module to check"
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "world.js"
-        path.write_text("\n".join(scripts))
-        result = subprocess.run(
-            [NODE, "--check", str(path)], capture_output=True, text=True, timeout=30
-        )
-    assert result.returncode == 0, result.stderr
+        (Path(tmp) / "package.json").write_text('{"type": "module"}')
+        for name in modules:
+            path = Path(tmp) / name
+            path.write_text((WORLD_MODULE_DIR / name).read_text())
+            result = subprocess.run(
+                [NODE, "--check", str(path)], capture_output=True, text=True, timeout=30
+            )
+            assert result.returncode == 0, f"{name}: {result.stderr}"
 
 
 # --- Task 6: the pixel grid — one drawing rule the whole cast obeys ---------
@@ -1666,7 +1682,7 @@ def test_the_cast_is_drawn_on_a_pixel_grid():
     """The pixel look comes from drawing rules, not from sprite sheets - the
     tested animation layer (reactions, breathing, the B7 glance, bubbles)
     survives precisely because we did not replace it with PNGs."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "function snap(" in body
     assert "roundPixels" in body
     assert "scaleMode" in body
@@ -1707,7 +1723,7 @@ def test_cell_derives_from_the_plate_and_falls_back_to_a_literal():
     top-level script scope, not inside `boot()`, so every cast helper can
     reach it.
     """
-    body = client.get("/world").text
+    body = _world_source()
     cell_line = _js_const(body, "CELL")
     assert "PLATE.cell" in cell_line
     assert "|| 4" in cell_line
@@ -2177,7 +2193,7 @@ def _js_range(source: str, start: str, end_marker: str) -> str:
 
 
 def test_the_trader_has_a_seated_rig():
-    body = client.get("/world").text
+    body = _world_source()
     assert "function seatedRig(" in body
     assert '"seated"' in body
 
@@ -6998,7 +7014,7 @@ def test_the_glow_is_additive_and_never_tints_the_plate():
     this checks the function that actually sets it now, not the one that
     merely mentions "additive" in a comment.
     """
-    body = client.get("/world").text
+    body = _world_source()
     assert "function buildGlows(" in body
     build = _js_block(body, "function buildGlows(")
     assert re.search(r'\.blendMode\s*=\s*["\']add["\']', build), (
@@ -7550,7 +7566,7 @@ def test_candles_are_polled_not_streamed():
     """KI-013: eight browser sources share one Chromium network stack with a
     6-connections-per-origin limit. A second SSE stream on this page is how the
     room went blank for a week."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "/bars/" in body
     candles = body.split("function pollBars(")[1][:1500]
     assert "EventSource" not in candles
@@ -7559,7 +7575,7 @@ def test_candles_are_polled_not_streamed():
 def test_an_empty_or_undrawable_screen_renders_dark_glass():
     """Never an empty axis, never a flat line at zero: the plate's own painted
     dark glass is the honest rendering of 'no data'."""
-    body = client.get("/world").text
+    body = _world_source()
     draw = body.split("function drawCandles(")[1][:2000]
     assert "isDrawable(screen)" in draw
     # The rule is injected, not restated: one definition, per KI-019.
@@ -7573,7 +7589,7 @@ def test_stale_bars_dim_instead_of_posing_as_the_present():
     calls the rule, so they passed on a page that restated the threshold
     inline - the second copy of a rule that KI-019 is named after. Pin the
     CALL, and pin that the page does not re-derive it."""
-    body = client.get("/world").text
+    body = _world_source()
     draw = body.split("function drawCandles(")[1][:2000]
     assert "staleAlpha(" in draw
     assert "function staleAlpha(" in body
@@ -8010,7 +8026,7 @@ def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure
 
 
 def test_the_gallery_keeps_the_room_it_is_judged_against():
-    page = client.get("/world?gallery=1").text
+    page = _world_source("/world?gallery=1")
     body = _js_block(page, "function drawGallery(")
     # The specimens must stand in the room by default. This is KI-051's root
     # cause: the tool used to judge the cast deleted the picture.
@@ -8020,7 +8036,7 @@ def test_the_gallery_keeps_the_room_it_is_judged_against():
 
 def test_the_gallery_hides_the_live_monitors():
     # Observed 2026-09-01: live candles drew straight over the specimens.
-    body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
+    body = _js_block(_world_source("/world?gallery=1"), "function drawGallery(")
     assert "applyEvalLayers()" in body and _eval_roles()["monitors"] == "content"
 
 
@@ -8030,13 +8046,13 @@ def test_the_gallery_hides_the_rooms_own_nameplates():
     # characters `setCharacterVisible` hides here — left visible, "MODEL"/
     # "TRADER" drew straight over whichever grid cell happened to land on
     # that spot. Same failure shape, same fix, as the monitors sibling above.
-    body = _js_block(client.get("/world?gallery=1").text, "function drawGallery(")
+    body = _js_block(_world_source("/world?gallery=1"), "function drawGallery(")
     assert "applyEvalLayers()" in body and _eval_roles()["nameplates"] == "content"
 
 
 def test_the_animation_sheet_keeps_the_room_too():
     body = _js_block(
-        client.get("/world?anims=1").text, "function drawAnimationSheet("
+        _world_source("/world?anims=1"), "function drawAnimationSheet("
     )
     assert "layers.plate.visible = false" not in body
     assert "applyEvalLayers()" in body and _eval_roles()["plate"] == "scenery"
@@ -8046,14 +8062,14 @@ def test_the_animation_sheet_hides_the_rooms_own_nameplates():
     # Sibling of the gallery's own check above - the same static-content leak
     # observed on this ticket's `?anims=1` screenshot.
     body = _js_block(
-        client.get("/world?anims=1").text, "function drawAnimationSheet("
+        _world_source("/world?anims=1"), "function drawAnimationSheet("
     )
     assert "applyEvalLayers()" in body and _eval_roles()["nameplates"] == "content"
 
 
 def test_the_page_reports_that_it_has_drawn():
     # scripts/shoot.py polls this instead of guessing a duration.
-    assert "window.__worldDrawn = true" in client.get("/world").text
+    assert "window.__worldDrawn = true" in _world_source()
 
 
 def test_void_mode_is_reachable_from_drawgallery_and_drawanimationsheet():
@@ -8343,7 +8359,7 @@ def test_the_animation_layer_is_untouched():
     out of the rendered page and digested, so a single character moved inside
     `ANIM` fails here rather than in a screenshot three tasks later.
     """
-    page = client.get("/world").text
+    page = _world_source()
     for opening, (digest, size) in PROTECTED_BLOCKS.items():
         block = _js_block(page, opening)
         actual = hashlib.sha256(block.encode()).hexdigest()
@@ -9737,7 +9753,7 @@ def test_the_room_no_longer_floats_a_symbol_or_mood_label_at_a_fixed_offset():
     the gallery and animation-sheet eval surfaces (`?gallery=1`/`?anims=1`),
     where labelling a specimen by mood is legitimate diagnostic use and
     never goes on air - only the ROOM's own writes into it are gone."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "label(data.mood" not in body
     assert "label(symbol," not in body
     assert "model.moodTag.text =" not in body
@@ -9750,7 +9766,7 @@ def test_the_room_no_longer_floats_a_symbol_or_mood_label_at_a_fixed_offset():
 
 
 def test_the_history_line_sits_on_the_bottom_band():
-    body = client.get("/world").text
+    body = _world_source()
     draw_fn = _js_block(body, "function draw(")
     assert "TEXT_PLACEMENTS.history" in draw_fn
     # Was `app.screen.height - 86`, which is why it ran across the tubes.
@@ -9767,7 +9783,7 @@ def test_the_banner_is_bound_to_its_placement_not_only_its_bar_height():
     is the new half: the READABLE line inside that bar binds to
     `TEXT_PLACEMENTS.banner` directly, the same rule every canvas label now
     follows."""
-    body = client.get("/world").text
+    body = _world_source()
     assert "TEXT_PLACEMENTS.banner" in body
     assert "banner.style.paddingLeft" in body
     assert "banner.style.paddingTop" in body
@@ -9894,7 +9910,7 @@ def test_the_banner_is_padded_from_inside_its_surface_not_from_the_canvas():
     top-pinned bar by 1133/669px instead of drawing the line there.
 
     Runs the page's own binding, with `document` and the placement stubbed."""
-    body = client.get("/world").text
+    body = _world_source()
     block = re.search(
         r'const banner = document\.getElementById\("banner"\);'
         r".*?banner\.style\.fontSize[^\n]*\n\s*\}",
@@ -9926,7 +9942,7 @@ def test_the_banner_is_padded_from_inside_its_surface_not_from_the_canvas():
 
 @needs_node
 def test_placedLabel_positions_and_sizes_a_label_from_its_placement_alone():
-    body = client.get("/world").text
+    body = _world_source()
     driver = _text_driver(body) + """
     const drawn = placedLabel({ x: 12, y: 34, size: 16 }, "HELLO", 0);
     const missing = placedLabel(null, "HELLO", 0);
@@ -9972,7 +9988,7 @@ def test_placedLabel_trusts_its_placement_so_the_manifest_check_is_the_real_guar
     assert floating_text(poisoned) == ["history"]
 
     resolved = json.loads(as_json(poisoned))["history"]
-    body = client.get("/world").text
+    body = _world_source()
     driver = _text_driver(body) + f"""
     const drawn = placedLabel({json.dumps(resolved)}, "HISTORY", 0);
     console.log(JSON.stringify({{ x: drawn.x, y: drawn.y }}));
@@ -9999,7 +10015,7 @@ def test_no_room_label_the_page_actually_draws_overflows_its_own_box():
     from world.text_layout import glyph_overflow
 
     placements = _text_placements()
-    body = client.get("/world").text
+    body = _world_source()
     driver = _js_block(body, "function historyLine(") + """
     const h = {
       total_events: 12345,
@@ -10420,7 +10436,7 @@ def test_the_body_tint_fallback_clears_the_silhouette_floor():
     """
     from world import visuals
 
-    body = client.get("/world").text
+    body = _world_source()
     assert "const NEUTRAL_TINT = WORLD_CONFIG.neutral_tint;" in body
     assert _served_config(body)["neutral_tint"] == int(
         visuals.neutral_body_tint()[1:], 16
@@ -10436,7 +10452,7 @@ def test_the_template_states_no_colour_of_its_own():
     output. KI-060 was exactly that — `PALETTE['neutral']` copied into the page
     as `0x787b86`, correct as an identity colour and wrong as a body tint,
     with nothing to keep the copy honest."""
-    source = TEMPLATE.read_text()
+    source = world_page_source()
     assert "const NEUTRAL_TINT = WORLD_CONFIG.neutral_tint;" in source
     assert "const NEUTRAL = WORLD_CONFIG.neutral_color;" in source
     assert "0x787b86" not in source, (

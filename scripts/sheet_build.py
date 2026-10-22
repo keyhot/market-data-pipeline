@@ -32,8 +32,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from api.templating import world_page_source  # noqa: E402
 from tools.measure_chair import measure_plate_chair  # noqa: E402
 
+# world.html plus its ES modules (#42), read as the one text the page was.
 PAGE = ROOT / "api" / "templates" / "world.html"
 TESTS = ROOT / "tests" / "api" / "test_world_page.py"
 SKELETON = ROOT / "tests" / "fixtures" / "char-redesign" / "skeleton_ref.json"
@@ -119,7 +121,7 @@ def build() -> str:
     from world import light, plate, visuals
 
     helpers = _test_helpers()
-    source = PAGE.read_text()
+    source = world_page_source()
 
     manifest = plate.load_manifest()
     if manifest is None:

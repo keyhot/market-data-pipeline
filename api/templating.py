@@ -5,12 +5,50 @@ Moved verbatim from `api/main.py`. `_TEMPLATES_DIR` is anchored at `api/`
 """
 
 import json
+import re
 from pathlib import Path
 
 from world import visuals
 from world.state import GENERIC_TIER_CUTS, tier_cuts, tier_of_js
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# /world's script is native ES modules served from /static/world/ (#42); the
+# page loads only the entry, `main.js`, and the browser follows its imports.
+WORLD_MODULE_DIR = Path(__file__).parent / "static" / "world"
+_MODULE_IMPORT = re.compile(r'^import\s+(?:\{[^}]*\}\s*from\s+)?"\./([\w-]+\.js)";', re.M)
+
+
+def world_modules() -> list[str]:
+    """/world's modules in the order the browser evaluates them: depth-first,
+    post-order over the import graph from `main.js` (a module already being
+    visited is a cycle and is skipped, as ES module evaluation skips it)."""
+    order: list[str] = []
+    seen: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        for dep in _MODULE_IMPORT.findall((WORLD_MODULE_DIR / name).read_text()):
+            visit(dep)
+        order.append(name)
+
+    visit("main.js")
+    return order
+
+
+def world_page_source(page: str | None = None) -> str:
+    """`world.html` followed by its modules in evaluation order: the page's
+    whole source as one text, as it was one file before #42. The source checks
+    and `scripts/sheet_build.py` read this, so none of them needs to know which
+    module holds a given declaration. `page` stands in for the template with an
+    already-rendered page (a test's served /world)."""
+    if page is None:
+        page = (_TEMPLATES_DIR / "world.html").read_text()
+    return page + "".join(
+        (WORLD_MODULE_DIR / name).read_text() for name in world_modules()
+    )
 
 
 # The shared visual identity (world/visuals.py) reaches every page from one

@@ -13,6 +13,7 @@ pin the seam from both ends: what the server emits, what the page reads, and
 that the two key sets are the same set.
 """
 
+from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 import json
 import re
 import shutil
@@ -100,7 +101,7 @@ def _config_text(body: str) -> str:
 
 
 def _served_config(body: str | None = None) -> dict:
-    return json.loads(_config_text(body if body is not None else client.get("/world").text))
+    return json.loads(_config_text(body if body is not None else world_page_source(page=client.get("/world").text)))
 
 
 def _function_text(source: str, name: str) -> str:
@@ -125,17 +126,19 @@ def _node(script: str, stdin: str | None = None):
 
 
 def test_the_page_carries_exactly_one_json_config_block():
-    body = client.get("/world").text
+    body = world_page_source(page=client.get("/world").text)
     _config_text(body)  # asserts one block, with the right id
     block = body.index('id="world-config"')
     # An inline script runs while the document is still being parsed, so a block
     # placed after it would be `null` to `getElementById`.
     assert block < body.index("<script src="), "the config must precede every script"
-    assert block < body.index("<script>"), "the config must precede the inline script"
+    assert block < body.index('<script type="module" src="/static/world/main.js">'), (
+        "the config must precede the page's module script"
+    )
 
 
 def test_the_page_parses_the_block_once_and_no_old_token_is_left():
-    source = TEMPLATE.read_text()
+    source = world_page_source()
     assert source.count('JSON.parse(document.getElementById("world-config").textContent)') == 1
     assert len(re.findall(r"\bconst WORLD_CONFIG\b", source)) == 1
     tokens = set(re.findall(r"__[A-Z_]+__", source))
@@ -143,12 +146,12 @@ def test_the_page_parses_the_block_once_and_no_old_token_is_left():
         "the template grew (or kept) a text placeholder; the only two allowed "
         f"are the CSS theme block and the config block's own slot: {sorted(tokens)}"
     )
-    body = client.get("/world").text
+    body = world_page_source(page=client.get("/world").text)
     assert not re.search(r"__[A-Z_]+__", body), "a placeholder reached the served page"
 
 
 def test_keys_the_server_emits_are_the_keys_the_page_reads():
-    source = TEMPLATE.read_text()
+    source = world_page_source()
     assert "WORLD_CONFIG[" not in source, "bracket access hides a key from this test"
     read = set(re.findall(r"\bWORLD_CONFIG\.(\w+)", source))
     emitted = set(_served_config())
@@ -157,7 +160,7 @@ def test_keys_the_server_emits_are_the_keys_the_page_reads():
 
 
 def test_every_page_const_reads_its_own_config_key():
-    source = TEMPLATE.read_text()
+    source = world_page_source()
     for const, key in PAGE_CONSTS.items():
         assert re.search(rf"^\s*const {const} = WORLD_CONFIG\.{key};$", source, re.M), (
             f"`const {const}` no longer reads WORLD_CONFIG.{key} on a line of its own"
@@ -251,11 +254,11 @@ HOSTILE = {
 
 def _hostile_body(monkeypatch) -> str:
     monkeypatch.setattr(visuals, "CHARACTER_COLORS", HOSTILE)
-    return client.get("/world").text
+    return world_page_source(page=client.get("/world").text)
 
 
 def test_a_hostile_value_cannot_break_out_of_the_block(monkeypatch):
-    clean = client.get("/world").text
+    clean = world_page_source(page=client.get("/world").text)
     body = _hostile_body(monkeypatch)
     text = _config_text(body)
     # The three characters that matter in a script context are never raw.
@@ -272,7 +275,7 @@ def test_a_value_that_looks_like_a_token_survives_substitution(monkeypatch):
     substituted LAST, so a value spelling a real token is data, not a slot."""
     hostile = {"__THEME_VARS__": "__WORLD_CONFIG__", "x": "__TIER_OF_JS__"}
     monkeypatch.setattr(visuals, "CHARACTER_COLORS", hostile)
-    config = _served_config(client.get("/world").text)
+    config = _served_config(world_page_source(page=client.get("/world").text))
     assert config["character_colors"] == hostile
 
 
@@ -300,7 +303,7 @@ def test_the_pages_const_lines_resolve_to_the_config_through_json_parse(
     """Runs the page's own `const X = WORLD_CONFIG.y;` lines against the served
     block through a `document` stub, so the whole path - element text,
     JSON.parse, the const - is exercised rather than read off the source."""
-    body = _hostile_body(monkeypatch) if hostile else client.get("/world").text
+    body = _hostile_body(monkeypatch) if hostile else world_page_source(page=client.get("/world").text)
     lines = [
         line.strip()
         for line in body.splitlines()
@@ -338,7 +341,7 @@ def test_the_pages_const_lines_resolve_to_the_config_through_json_parse(
 
 
 def test_world_has_one_tier_function_and_it_is_page_code():
-    body = client.get("/world").text
+    body = world_page_source(page=client.get("/world").text)
     assert body.count("function tierOf") == 1
     assert "const TIER_CUTS = WORLD_CONFIG.tier_cuts;" in body
     overlay = client.get("/overlay/events").text
@@ -347,7 +350,7 @@ def test_world_has_one_tier_function_and_it_is_page_code():
 
 @needs_node
 def test_the_pages_tier_function_agrees_with_the_server_rule():
-    body = client.get("/world").text
+    body = world_page_source(page=client.get("/world").text)
     config = _served_config(body)
     probes = []
     for rule in [*tier_cuts(), "an_unlisted_rule"]:

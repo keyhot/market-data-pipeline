@@ -23,6 +23,11 @@ Cases:
                                        window the retry cap used to be reset
                                        in; before the fix it looped forever.
   junk       ?boot_retry=abc        -> stops immediately, never reloads
+  modblock   a nested world module
+             503s (#42)             -> 5 retries, then stops. retryBoot lives
+                                       in the modules, so a graph that never
+                                       loads is retried by the page's inline
+                                       boot fallback instead.
 
 The happy path is deliberately NOT a case here. Headless Chrome hangs on this
 page's SSE and dumps zero bytes once boot succeeds and subscribe() runs — the
@@ -82,6 +87,8 @@ def run_case(name, case, start=""):
                     return self._send(503)
                 if case == "latethrow":
                     return self._send(200, LATE_THROW_JS, "text/javascript")
+            if case == "modblock" and self.path.startswith("/static/world/scene.js"):
+                return self._send(503)
             if self.path.startswith("/static/"):
                 data = urllib.request.urlopen(API + self.path).read()
                 return self._send(200, data, "text/javascript")
@@ -135,6 +142,7 @@ CASES = {
     "block": ("block", ""),
     "latethrow": ("latethrow", ""),
     "junk": ("block", "?boot_retry=abc"),
+    "modblock": ("modblock", ""),
 }
 
 if __name__ == "__main__":

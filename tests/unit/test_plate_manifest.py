@@ -8,6 +8,7 @@ them go further and check the manifest against the PNG itself: numbers measured
 off an image drift the moment the image is replaced, and a candle drawn 6px off
 the painted glass is not something a schema check can see.
 """
+from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 import dataclasses
 import json
 import math
@@ -504,7 +505,7 @@ def test_the_seated_rig_fits_inside_the_manifest_seat():
     # Grading the coordinate that no longer renders is grading nothing.
     anchor_x = manifest.cast["trader"]["sit_anchor"]["x"]
     seat = manifest.cast["trader"]["seat"]
-    source = WORLD_TEMPLATE.read_text()
+    source = world_page_source()
 
     driver = (
         # The real manifest, not `null`: `CAST_SCALE` reads `cast.scale` now,
@@ -1092,7 +1093,7 @@ def test_the_cap_and_base_ellipses_are_snapped_to_the_stripes_and_translucent():
     column — and a cap fill carrying its own alpha would now make it LESS
     opaque than the column, so that is what fails.
     """
-    source = WORLD_TEMPLATE.read_text()
+    source = world_page_source()
     manifest = load_manifest()
     for tube in manifest.tubes:
         driver = _pillar_ellipse_driver(source, manifest.as_dict(), tube["symbol"])
@@ -1136,7 +1137,7 @@ def test_the_caps_offset_from_the_painted_bores_centre_is_pinned():
     `geo.baseY - geo.height + 3` moves BTC's measured offset from -4.5px to
     -7.5px, which fails the pin.
     """
-    source = WORLD_TEMPLATE.read_text()
+    source = world_page_source()
     manifest = load_manifest()
     # Pinned 2026-09-10 (review round 2): each tube's painted bore centre
     # minus the cap's drawn centre, in px. Not a formula - the art and the
