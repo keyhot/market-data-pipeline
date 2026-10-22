@@ -101,9 +101,17 @@ const fallbackEl = new Proxy({}, {
   get: (t, k) => k in t ? t[k] : fake,
   set: (t, k, v) => { t[k] = v; return true; },
 });
+// #banner-syms is recorded too, so a test can read the words config.js
+// actually wrote into the banner (KI-053), not only that it ran.
+const bannerSymsEl = new Proxy({}, {
+  get: (t, k) => k in t ? t[k] : fake,
+  set: (t, k, v) => { t[k] = v; return true; },
+});
+globalThis.__bannerSyms = bannerSymsEl;
 const element = (id) => id === "world-config"
   ? { textContent: JSON.stringify(CONFIG) }
-  : id === "fallback" ? fallbackEl : fake;
+  : id === "fallback" ? fallbackEl
+  : id === "banner-syms" ? bannerSymsEl : fake;
 globalThis.document = new Proxy({}, {
   get: (t, k) => k === "getElementById" ? element : fake,
 });

@@ -116,8 +116,13 @@ def test_shared_theme_vars_are_injected():
 
 
 def test_newcomer_banner_is_present():
+    """KI-053 (#25): the premise names what a stranger can SEE - the robot,
+    and that it predicts - in plain words. The old line ("a model trades live,
+    and the world remembers when it's wrong") spoke the project's own
+    vocabulary and was not understood; it must not come back."""
     body = _world_source()
-    assert "trades live, and the world remembers when it's wrong" in body
+    assert "the robot is an AI predicting their next move" in " ".join(body.split())
+    assert "the world remembers when it's wrong" not in body
 
 
 def test_live_event_swell_keys_on_tier():
@@ -11257,3 +11262,66 @@ def test_a_mood_blind_part_is_found_below_its_accent():
         console.log(JSON.stringify(moodBlindParts([arm, joint])));
     """
     assert _run_node(driver) == ["accents[0].children[0]"]
+
+
+# --- KI-053 (#25): the banner is the one answer to "what am I looking at?" ---
+#
+# Sprint 15's newcomer could not say what the room is, with a banner already
+# on screen whose whole job was to tell her: 15px, neutral grey, insider words.
+# The fix promotes that ONE sanctioned line (no new text object in the room):
+# plain names for the markets, the visible robot named as the AI, foreground
+# colour, a headline size, and never a second line over the monitors.
+
+
+def test_the_banner_prefix_names_the_markets_in_plain_words():
+    from api.routers.world import _banner_prefix
+
+    assert _banner_prefix(["BTCUSDT", "ETHUSDT"]) == "Bitcoin & Ethereum, live"
+    # A watchlist symbol with no name still gets named - by its ticker.
+    assert _banner_prefix(["SOLUSDT"]) == "SOL, live"
+    assert _banner_prefix(["BTCUSDT", "ETHUSDT", "SOLUSDT"]) == (
+        "Bitcoin, Ethereum & SOL, live"
+    )
+    assert _banner_prefix([]) == "Live"
+
+
+def test_the_served_config_carries_the_banner_prefix():
+    from api.routers.world import _banner_prefix
+
+    config = served_config()
+    assert config["banner_prefix"] == _banner_prefix(config["symbols"])
+
+
+@needs_node
+def test_the_page_writes_the_servers_banner_prefix_not_its_own():
+    """config.js must draw the words the glyph-fit check measured. Mutation:
+    restoring the old `SYMBOLS.map(...).join(" · ")` writes "BTC · ETH — "."""
+    written = run_world(
+        'await W("config.js"); '
+        "console.log(JSON.stringify(globalThis.__bannerSyms.textContent));"
+    )
+    assert written == "Bitcoin & Ethereum, live — "
+
+
+def test_the_banner_headline_fits_one_line_inside_the_top_band():
+    """Readable at stream resolution, on its surface, on one line. At 720p the
+    1920 frame is scaled by 2/3, so 24px is the smallest size that still lands
+    at 16px on a viewer's screen (the old 15px landed at 10px). The placement
+    must stay inside `bands.top` (the monitors start below it), and the full
+    served sentence must fit its box (`_plate_warnings` is empty)."""
+    from api.routers.world import _plate_warnings
+
+    manifest = load_manifest()
+    banner = next(p for p in manifest.text if p["id"] == "banner")
+    assert banner["size"] >= 24
+    assert banner["y"] + banner["h"] <= manifest.bands["top"]
+    assert _plate_warnings(manifest, ["BTCUSDT", "ETHUSDT"]) == []
+
+
+def test_the_banner_premise_is_foreground_and_never_wraps():
+    page = _world_source()
+    banner = re.search(r"#banner\s*\{([^}]*)\}", page).group(1)
+    tag = re.search(r"#banner \.tag\s*\{([^}]*)\}", page).group(1)
+    assert "var(--fg)" in tag and "var(--neutral)" not in tag
+    # A wrapped second line would hang over the ETH monitor's top edge.
+    assert "white-space: nowrap" in banner
