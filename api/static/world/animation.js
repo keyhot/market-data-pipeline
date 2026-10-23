@@ -529,18 +529,16 @@ import { HAND_OUTLINE } from "./cast.js";
         // The hand, traced off `ref-trader.png` and converted through the one
         // unit this redesign uses. The hand is STRAIGHT — it carries on the
         // forearm's line, fingers pointing where the arm points — so `along`
-        // is heel to fingertip down the bone, `across` the span of four
-        // fingers side by side, `finger` how far a separation cuts back from
-        // the tips, `gap` a separation's own width, `corner` the rounding.
+        // is heel to fingertip down the bone and `across` the palm's span;
+        // `HAND_OUTLINE` (cast.js) is the shape, these the box it is placed by.
         //
         // Until 2026-09-23 the hand hung off the wrist at a right angle with
         // its fingers aimed at the floor, which over the knee read as a claw.
         // The numbers survived the turn with their axes swapped: 20 along,
-        // split 8 palm / 12 finger (the prong rule, increment 12), and 16
-        // across because the CELL forces it — four fingers want separations
-        // at 4, 8 and 12 and nothing else is a whole cell. Measurements beside
-        // HAND_ALONG_U in tests/api/test_world_page.py.
-        // Since Sprint 17 #7 the fingers are notches in `HAND_OUTLINE`, splayed.
+        // split 8 palm / 12 finger (the prong rule, increment 12; the webs sit
+        // at y 8), and 16 across. Since Sprint 17 #7 the fingers are the
+        // outline's own notches, splayed, not separations cut into a slab.
+        // Measurements beside HAND_ALONG_U in tests/api/test_world_page.py.
         hand: { along: 20, across: 16 },
       };
       // FOLDS ON THE SLEEVE (Sprint 17 #4). Matte left each garment two
@@ -553,19 +551,39 @@ import { HAND_OUTLINE } from "./cast.js";
       // the bone, spanning `k` of the sleeve's width there, its two ends
       // `tilt` units apart along the bone. Tilts alternate so the creases
       // never read as stripes, and each is clear of the outline (k < 1), so
-      // none notches the silhouette. Both are thicker than one keyline block
-      // (2 frame px = 1.6 units at CAST_SCALE 1.25): thinner, the filter's
-      // one-texel-per-block sampling drops whole rows of them.
-      const FOLD = { crease: 2.5, lip: 2,
-                     upper: [[0.42, 0.55, 3], [0.66, 0.6, -2.5]],
-                     fore: [[0.16, 0.6, -3], [0.4, 0.55, 2.5], [0.62, 0.5, -2]] };
+      // none notches the silhouette. Both are thicker, measured along the
+      // bone, than one keyline block (2 frame px = 1.6 units at CAST_SCALE
+      // 1.25): thinner, the filter's one-texel-per-block sampling drops whole
+      // rows of them.
+      //
+      // WAVY (the user's review of #4): straight strips half the sleeve wide
+      // read as short dashes at 1:1. Each fold now spans most of the sleeve
+      // and its crest line bends in one gentle S of `wave` units either side
+      // of the straight line between its ends — more than a keyline block, or
+      // the filter straightens it (1.25 was shot and read as a dash) —
+      // sampled at `steps` segments. The S is offset
+      // ALONG the bone, never along its normal, so the crease and its lip stay
+      // flush and neither can fold over itself on the bend. Concave, so
+      // `litPath` bands each on its hull, cut back to the strip.
+      const FOLD = { crease: 2.5, lip: 2, wave: 2, steps: 12,
+                     upper: [[0.42, 0.8, 2.5], [0.68, 0.8, -2.5]],
+                     fore: [[0.14, 0.8, -2.5], [0.4, 0.78, 2.5], [0.66, 0.76, -2.5]] };
       const sleeveFolds = (g, w0, w1, folds) => {
         // `limbOutline`'s axis: x = w0/2, from y = w0/2 down `boneLength`.
         const c = w0 / 2, len = g.boneLength;
         for (const [t, k, tilt] of folds) {
           const half = (k * (w0 + (w1 - w0) * t)) / 2;
-          const strip = (top, th) => [[c - half, top - tilt / 2], [c + half, top + tilt / 2],
-                                      [c + half, top + tilt / 2 + th], [c - half, top - tilt / 2 + th]];
+          const crest = (top) => Array.from({ length: FOLD.steps + 1 }, (_, i) => {
+            const s = i / FOLD.steps;
+            return [c - half + 2 * half * s,
+                    top + tilt * (s - 0.5) + FOLD.wave * Math.sin(2 * Math.PI * s)];
+          });
+          // The crest left to right, then the same line `th` further down the
+          // bone right to left: a strip of even thickness along the bone.
+          const strip = (top, th) => {
+            const edge = crest(top);
+            return [...edge, ...edge.map(([x, y]) => [x, y + th]).reverse()];
+          };
           const y = c + t * len;
           paint(g, litPath(strip(y - FOLD.lip, FOLD.lip)), HUMAN.foldLip, undefined, clothInner);
           paint(g, litPath(strip(y, FOLD.crease)), HUMAN.fold, undefined, clothInner);
@@ -647,21 +665,15 @@ import { HAND_OUTLINE } from "./cast.js";
         // while the extra below is the edge of a hand spreading on the thigh.
         const handX = floorOnPlusX ? 0 : ARM.width[1] - H.across;
         const handY = fore.boneLength + ARM.width[1] / 2 - 2;
-        // The corner may not round away more than the shadow between two
-        // fingers. `litRect` rounds all four corners, the fingertip pair
-        // included, so a radius bigger than a gap withdraws more of the outer
-        // fingers from the SILHOUETTE than a whole separation does — and the
-        // silhouette is where the eye counts digits. This carried `CELL` (4)
-        // against a 1.5-unit gap and the outer two fingers rounded away into a
-        // dome, which is half of why the hand read as a mitten.
         // The OUTLINE, not a rect (increment 18 — "the palm looks like a
         // square"). The heel is the forearm's own width where it leaves the
         // sleeve, and the hand flares toward the FLOOR side only (the edge
         // spreading on the thigh; the back of the hand carries on the line
-        // of the wrist). The tips end on a shallow arc, middle fingers
-        // longest: the stagger this grid refused a rect can be drawn as an
-        // outline, because a path's vertices do not snap — only its origin
-        // does, so the whole-CELL separations below still register.
+        // of the wrist). The fingers fan apart and their tips stagger, middle
+        // fingers longest (Sprint 17 #7): a path's vertices do not snap, only
+        // its origin does, so an outline can draw what the CELL grid refused a
+        // rect. Concave, so `litPath` bands its convex hull and cuts each band
+        // back to the outline, and the hand keeps its light patch by the cuff.
         const handOutline = HAND_OUTLINE.map(([x, y]) =>
           [floorOnPlusX ? x : H.across - x, y]);
         // THE CONTACT SHADOW (2026-09-24): the arm's own silhouette — sleeve

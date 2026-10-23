@@ -1082,6 +1082,8 @@ def _shading_prelude(source: str) -> str:
         + _js_block(source, "const litPath = ") + "\n"
         + _js_block(source, "function insideConvex(") + "\n"
         + _js_block(source, "function pathBand(") + "\n"
+        + _js_block(source, "function convexHull(") + "\n"
+        + _js_block(source, "function clipToConvex(") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
         + _js_block(source, "function rimStyle(") + "\n"
         + _js_block(source, "function paint(") + "\n"
@@ -4704,18 +4706,20 @@ def _outline_depth_at(pts, x: float) -> float:
 
 
 def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]:
-    """The one skin volume on a forearm, the separations, and the tip cuts.
+    """The one skin volume on a forearm, plus any crease volumes on it split
+    into thin separations and blunt tip cuts.
+
+    Since Sprint 17 #7 the fingers are the outline's own notches and the page
+    paints no crease on the hand, so both lists are empty today. They are kept
+    so a crease painted back onto the hand (the pre-#7 separations, or the
+    blunt tip cuts `test_nothing_blunt_is_painted_at_the_fingertips` forbids)
+    is still found and graded.
 
     Identified by fill rather than by draw order: order is how `paint` stacks
     them and a test that encoded it would pass a hand whose creases had been
-    painted UNDER the slab and were invisible.
-
-    Separations and tip cuts share `HUMAN.crease` — they are the same shadow —
-    so they are split by SHAPE: a separation runs the length of a finger and is
-    gap-thin, a tip cut is a blunt block that shortens one. Keying that on the
-    aspect ratio -- long axis against short, whichever way the hand lies --
-    states the difference the eye reads; keying it on the order the loop
-    happens to paint them in, or on which axis is long, would not.
+    painted UNDER the slab and were invisible. Separations and tip cuts share
+    `HUMAN.crease`, so they are split by SHAPE (aspect ratio, whichever way
+    the hand lies), not by the order they happen to be painted in.
     """
     palette = emitted["HUMAN"]
     on_fore = [d for d in emitted["drawn"] if d["gid"] == arm["foreGid"]]
@@ -4929,7 +4933,7 @@ def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
         capsule = _bone_capsule(emitted["drawn"], arm["foreGid"], emitted["HUMAN"])
         assert slab and capsule, (
             f"arm {index} has no hand to check; see "
-            "test_the_hand_is_a_slab_with_three_finger_separations"
+            "test_the_hand_is_one_slab_with_four_splayed_fingers"
         )
         sx, _sy, sw, _sh = slab["snapped"]
         cx, _cy, cw, _ch = capsule["snapped"]
@@ -5290,13 +5294,13 @@ def test_the_sleeve_laps_over_the_wrist_as_a_cuff():
             f"arm {index}: the cuff bows only {cuff - wrist_line:.2f} past the "
             "wrist -- a flat end, the slab edge again"
         )
-        # Half a CELL of palm must show between the cuff and the first finger
-        # separation. (The near hand's origin snaps 1.5 units back up the
+        # Half a CELL of palm must show between the cuff and the first web
+        # between two fingers. (The near hand's origin snaps 1.5 units back up the
         # bone, so its cuff covers 6 of 8 palm units -- shot, and it reads as
         # a hand leaving a sleeve. The line that matters is the fingers.)
         assert cuff <= first_finger - 2, (
             f"arm {index}: the cuff reaches y={cuff:.2f}, within 2 units of the "
-            f"finger separations at {first_finger:.2f} (heel {heel:.2f}); the "
+            f"finger webs at {first_finger:.2f} (heel {heel:.2f}); the "
             f"hand ({along} long) is swallowed by its sleeve"
         )
 
@@ -5331,7 +5335,8 @@ def test_the_near_sleeve_carries_folds_inside_its_outline():
     increment-17 barcode), each thicker than one keyline block (2 frame px =
     1.6 units at CAST_SCALE 1.25, or the filter drops rows of it), painted
     after the sleeve (under it, a fold is invisible), and the values ordered
-    hem < crease < sweater < lip.
+    hem < crease < sweater < lip. Since the user's review, each crease is
+    also long (most of the sleeve) and wavy (an S off its chord).
     """
     emitted = _run_node(_rig_bone_driver(_world_source()))
     human, drawn = emitted["HUMAN"], emitted["drawn"]
@@ -5371,11 +5376,31 @@ def test_the_near_sleeve_carries_folds_inside_its_outline():
             assert _inside_convex(outline, *pt) and _edge_margin(outline, pt) >= 1.0, (
                 f"fold point {pt} is within a unit of (or past) its sleeve's edge"
             )
-        thick = pts[3][1] - pts[0][1]
-        assert thick >= 1.6, f"a fold {thick:.2f} units thick: under a keyline block"
+        assert len(pts) % 2 == 0 and len(pts) >= 4, f"a fold of {len(pts)} points"
+        # A strip: its crest left to right, then its underside right to left,
+        # each underside point straight down the bone from its crest point.
+        crest, under = pts[: len(pts) // 2], pts[len(pts) // 2 :][::-1]
+        for (cx, cy), (ux, uy) in zip(crest, under):
+            assert abs(ux - cx) < 1e-6, "a fold's underside is not under its crest"
+            assert uy - cy >= 1.6, f"a fold {uy - cy:.2f} units thick: under a keyline block"
+    # The user's review of #4: "make them wavier". Straight dashes half the
+    # sleeve wide read as short strokes at 1:1; each crease now runs most of
+    # the way across (end to end longer than the 8.0 units the longest
+    # straight one measured) and bends in an S, at least a unit (1.25 px,
+    # most of a keyline block) either side of the straight line between its
+    # ends.
     for _, d in creases:
-        (x0, y0), (x1, y1) = d["points"][0], d["points"][1]
+        crest = d["points"][: len(d["points"]) // 2]
+        (x0, y0), (x1, y1) = crest[0], crest[-1]
         slopes.add(round((y1 - y0) / (x1 - x0), 2))
+        assert math.hypot(x1 - x0, y1 - y0) >= 8.25, (
+            f"a crease {math.hypot(x1 - x0, y1 - y0):.1f} units end to end: a short dash"
+        )
+        off = [(y - y0) - (y1 - y0) * (x - x0) / (x1 - x0) for x, y in crest]
+        assert max(off) >= 1.0 and min(off) <= -1.0, (
+            f"a crease bends {min(off):.2f}..{max(off):.2f} units off its chord: "
+            "straight, not a wavy S"
+        )
     assert len(slopes) > 1, f"every crease runs at slope {slopes}: stripes, not folds"
 
 
@@ -5408,7 +5433,7 @@ def test_nothing_blunt_is_painted_at_the_fingertips():
         slab, seps, blunt = _hand_parts(emitted, arm)
         assert slab, (
             f"arm {index} has no hand to check; see "
-            "test_the_hand_is_a_slab_with_three_finger_separations"
+            "test_the_hand_is_one_slab_with_four_splayed_fingers"
         )
         assert not blunt, (
             f"arm {index} paints {len(blunt)} blunt crease volume(s) on its "
@@ -10748,8 +10773,10 @@ def test_both_shoes_sit_between_the_floor_and_the_jeans():
 
 @needs_node
 def test_no_path_band_leaves_its_outline():
-    """Every `litPath` outline the page paints is CONVEX, and every band
-    `paint` draws inside it stays inside it.
+    """Every `litPath` outline graded here is CONVEX, and every band `paint`
+    draws inside it stays inside it. (The concave ones, the splayed hand and
+    the wavy sleeve folds, are banded on their hull and cut back; the hand is
+    graded in `test_the_splayed_hand_keeps_its_light_patch`.)
 
     Increment 18 drew the face and fringe as outlines rather than rects
     ("natural, without blocks"). A band is the outline shrunk about its
@@ -10763,8 +10790,8 @@ def test_no_path_band_leaves_its_outline():
     P = _profile_head_run()["P"]
     # Each outline with the two ways the page places it: the head mirrors
     # about x = 0 by `side`. The hand is not here since Sprint 17 #7: its
-    # splayed fingers make it concave on purpose, and `litPath` paints a
-    # concave outline flat (no band to leave it).
+    # splayed fingers make it concave on purpose, so its bands are graded by
+    # area in `test_the_splayed_hand_keeps_its_light_patch`.
     placements = {
         "face": [[[s * x, y] for x, y in P["face"]] for s in (-1, 1)],
         "fringe": [[[s * x, y] for x, y in P["fringe"]] for s in (-1, 1)],
@@ -10821,6 +10848,129 @@ def test_no_path_band_leaves_its_outline():
                         f"facing {side:+d}, a band of the {name} leaves its "
                         f"outline at ({px}, {py})"
                     )
+
+
+def _inside_concave(pts, px, py) -> bool:
+    """Is (px, py) inside the simple polygon `pts`, convex or not (even-odd)?
+    The concave counterpart of `_inside_convex`, for outlines with notches."""
+    inside = False
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        if (ay > py) != (by > py) and px < ax + (bx - ax) * (py - ay) / (by - ay):
+            inside = not inside
+    return inside
+
+
+def _outline_distance(pts, px, py) -> float:
+    """How far (px, py) is from the nearest point of the closed outline `pts`."""
+    best = math.inf
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+        t = 0.0 if span < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / span))
+        best = min(best, math.hypot(px - ax - t * dx, py - ay - t * dy))
+    return best
+
+
+def _shoelace(pts) -> float:
+    """The area `pts` encloses. A zero-width seam traced out and back adds 0."""
+    edges = zip(pts, pts[1:] + pts[:1])
+    return abs(sum(ax * by - bx * ay for (ax, ay), (bx, by) in edges)) / 2
+
+
+# The share of the hand's area its LIT band must cover. The convex hand
+# before Sprint 17 #7 measured 0.26 under the same `litPath`; the splayed hand,
+# banded on its hull and cut back to its outline, measures 0.29. The flat
+# painting #7 first shipped measured 0 (its lit band was a zero-area triangle).
+HAND_LIT_SHARE_MIN = 0.15
+
+
+@needs_node
+def test_the_splayed_hand_keeps_its_light_patch():
+    """The splayed hand is lit like every other volume: a lit patch toward
+    the lamp, inside a base band, inside the whole hand, none of it out
+    through a notch between two fingers.
+
+    Sprint 17 #7 splayed the fingers, which makes `HAND_OUTLINE` concave, and
+    `litPath` then painted a concave outline flat: shade and base bands were
+    the outline, the lit band was empty. The lighter patch near the cuff went
+    and the user asked for it back. Banding a concave outline the convex way
+    (shrink about the centroid) leaks through the notches, so the page bands
+    the outline's convex hull and cuts each band back to the outline.
+
+    Graded on both ways `seatedRig` places the hand, and by AREA rather than
+    by vertex: a band over a notch can have every vertex on the hand and
+    still paint the gap between two fingers, so each band is sampled on a
+    grid and every sample inside it must be on the hand.
+    """
+    source = _world_source()
+    hand = json.loads(_js_const(source, "HAND_OUTLINE").split("=", 1)[1].strip().rstrip(";"))
+    assert _hand_webs(hand), "the hand is convex: this test grades a concave outline"
+    across = max(x for x, _ in hand)
+    for label, placed in (("flare on +x", hand), ("flare on -x", [[across - x, y] for x, y in hand])):
+        driver = _geometry_driver(
+            source,
+            f"const PTS = {json.dumps(placed)};\n"
+            + """
+            const bands = [];
+            const g = { poly(flat) { bands.push(flat); return this; },
+                        fill() { return this; }, stroke() { return this; } };
+            const vol = litPath(PTS);
+            for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+              vol.band(g, band);
+            }
+            console.log(JSON.stringify({ bands, key: KEY_AXIS }));
+            """,
+        )
+        emitted = _run_node(driver)
+        outline = [tuple(p) for p in placed]
+        polys = [list(zip(f[0::2], f[1::2])) for f in emitted["bands"]]
+        assert len(polys) == 3, f"{label}: {len(polys)} band(s)"
+        whole = _shoelace(outline)
+        shade, base, lit = (_shoelace(p) for p in polys)
+        assert abs(shade - whole) <= 0.02 * whole, (
+            f"{label}: the shade band covers {shade:.1f} of the hand's {whole:.1f}"
+        )
+        assert lit >= HAND_LIT_SHARE_MIN * whole, (
+            f"{label}: the lit band covers {lit / whole:.1%} of the hand (needs "
+            f"{HAND_LIT_SHARE_MIN:.0%}): the hand is painted flat, no light patch"
+        )
+        assert shade > base > lit, f"{label}: band areas {shade:.1f}/{base:.1f}/{lit:.1f}"
+        step = 0.25
+        lit_samples = []
+        for name, poly in zip(("shade", "base", "lit"), polys):
+            xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+            for i in range(int((max(ys) - min(ys)) / step) + 1):
+                py = min(ys) + (i + 0.5) * step
+                for j in range(int((max(xs) - min(xs)) / step) + 1):
+                    px = min(xs) + (j + 0.5) * step
+                    if not _inside_concave(poly, px, py):
+                        continue
+                    assert (_inside_concave(outline, px, py)
+                            or _outline_distance(outline, px, py) <= 1 / 64), (
+                        f"{label}: the {name} band paints ({px:.2f}, {py:.2f}), "
+                        "off the hand (through a notch?)"
+                    )
+                    if name == "lit":
+                        lit_samples.append((px, py))
+        # Toward the lamp: the lit patch's centre sits on the lamp's side of
+        # the hand's (the band slides along -KEY_AXIS, as on a convex path).
+        kx, ky = emitted["key"]
+        x_lo, y_lo = min(x for x, _ in outline), min(y for _, y in outline)
+        x_hi, y_hi = max(x for x, _ in outline), max(y for _, y in outline)
+        hand_samples = [
+            (x_lo + (i + 0.5) * step, y_lo + (j + 0.5) * step)
+            for i in range(int((x_hi - x_lo) / step) + 1)
+            for j in range(int((y_hi - y_lo) / step) + 1)
+            if _inside_concave(outline, x_lo + (i + 0.5) * step, y_lo + (j + 0.5) * step)
+        ]
+        hx = sum(x for x, _ in hand_samples) / len(hand_samples)
+        hy = sum(y for _, y in hand_samples) / len(hand_samples)
+        lx = sum(x for x, _ in lit_samples) / len(lit_samples)
+        ly = sum(y for _, y in lit_samples) / len(lit_samples)
+        assert (lx - hx) * -kx + (ly - hy) * -ky > 0.5, (
+            f"{label}: the lit patch centre ({lx:.1f}, {ly:.1f}) is not toward the "
+            f"lamp (KEY_AXIS {kx:.2f}, {ky:.2f}) from the hand's ({hx:.1f}, {hy:.1f})"
+        )
 
 
 @needs_node
