@@ -7973,7 +7973,6 @@ def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure
 
 @needs_node
 def test_the_gallery_keeps_the_room_it_is_judged_against():
-    _world_source("/world?gallery=1")
     body = function_source("boot.js", "drawGallery")
     # The specimens must stand in the room by default. This is KI-051's root
     # cause: the tool used to judge the cast deleted the picture.
@@ -9676,7 +9675,7 @@ def _text_placements():
     return json.loads(as_json(load_manifest()))
 
 
-def _text_driver(body: str) -> str:
+def _text_driver() -> str:
     """`label`/`placedLabel`, run for real against a stub `PIXI.Text` that
     records what it was given rather than rendering anything - the same
     "real arithmetic, stubbed renderer" shape `_layout_driver` already uses
@@ -9739,7 +9738,7 @@ def test_the_banner_is_bound_to_its_placement_not_only_its_bar_height():
     assert "banner.style.paddingTop" in body
 
 
-def _nowband_driver(source: str, state: str) -> str:
+def _nowband_driver(state: str) -> str:
     """`renderNowBand` against a stub DOM - the page's own strip builder, run.
 
     Only `document`, `SYMBOLS` and `MOOD_COLOR` are stubbed; the cells and
@@ -9793,7 +9792,6 @@ def test_the_now_band_publishes_the_traders_open_trades_and_pnl():
     beside the model's record, which is where a newcomer already looks."""
     emitted = _run_node(
         _nowband_driver(
-            _world_source(),
             '{ prices: { BTCUSDT: 118432.5 }, symbols: {},'
             ' model: { accuracy: { wins: 3, losses: 5, hit_rate: 0.375,'
             ' window: 8 } },'
@@ -9817,7 +9815,6 @@ def test_the_now_band_says_dash_when_no_sidecar_is_running():
     absent slot silently un-publishes the premise again."""
     emitted = _run_node(
         _nowband_driver(
-            _world_source(),
             "{ prices: {}, symbols: {}, model: {}, trader: null }",
         )
     )
@@ -9892,8 +9889,7 @@ def test_the_banner_is_padded_from_inside_its_surface_not_from_the_canvas():
 
 @needs_node
 def test_placedLabel_positions_and_sizes_a_label_from_its_placement_alone():
-    body = _world_source()
-    driver = _text_driver(body) + """
+    driver = _text_driver() + """
     const drawn = placedLabel({ x: 12, y: 34, size: 16 }, "HELLO", 0);
     const missing = placedLabel(null, "HELLO", 0);
     console.log(JSON.stringify({
@@ -9938,8 +9934,7 @@ def test_placedLabel_trusts_its_placement_so_the_manifest_check_is_the_real_guar
     assert floating_text(poisoned) == ["history"]
 
     resolved = json.loads(as_json(poisoned))["history"]
-    body = _world_source()
-    driver = _text_driver(body) + f"""
+    driver = _text_driver() + f"""
     const drawn = placedLabel({json.dumps(resolved)}, "HISTORY", 0);
     console.log(JSON.stringify({{ x: drawn.x, y: drawn.y }}));
     """
