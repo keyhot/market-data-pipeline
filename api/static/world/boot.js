@@ -423,4 +423,4 @@ import { react, refresh, subscribe } from "./main.js";
       return label(text, placement.x, placement.y, placement.size, tint);
     }
 
-export { app, layers, model, trader, retryBoot, boot, label, placedLabel };
+export { app, layers, model, trader, retryBoot, boot, label, placedLabel, drawAnimationSheet, drawGallery, applyEvalLayers };

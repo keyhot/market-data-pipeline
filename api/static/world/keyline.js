@@ -208,4 +208,4 @@ void main() {
       }
     }
 
-export { keylineFilter };
+export { keylineFilter, keylineProves, rimAmount, rimFromLight };

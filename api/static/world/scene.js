@@ -188,4 +188,4 @@ import { renderNowBand } from "./hud.js";
       return parts.join(" · ");         /* set via .text: payloads are data */
     }
 
-export { cast, advanceCharacters, reactionFor, positionCharacters, draw };
+export { cast, advanceCharacters, reactionFor, positionCharacters, draw, aimAtCharts, historyLine };

@@ -431,4 +431,4 @@ import { seatedRig, rng32 } from "./animation.js";
       }
     }
 
-export { character, gesture, restAccents, setExpression, drawEyes, GESTURE };
+export { character, gesture, restAccents, setExpression, drawEyes, GESTURE, lightenTint, machineEyes, machineFace, applyMood };

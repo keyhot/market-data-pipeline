@@ -129,4 +129,4 @@ import { MOOD_COLOR } from "./palette.js";
       }, BUBBLE_HOLD_MS);
     }
 
-export { renderNowBand, speak };
+export { renderNowBand, speak, bandCell, formatPrice };

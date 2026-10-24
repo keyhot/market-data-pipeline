@@ -796,4 +796,5 @@ export {
   mixHex, shade, rampLevel, KEY_AXIS, BAND_INSET, CONTACT, SHADOW_THROW, paint,
   repaint,
   moodBlindParts, litRect, litCircle, litColumn, litPath, moodFill, moodRim,
+  bandExtent, bandInside, circleBand, clipToConvex, contactLight, convexHull, insideConvex, keyAxis, moodTint, mulHex, pathBand, rimStroke, rimStrokeCircle, rimStyle, slideToKey,
 };
