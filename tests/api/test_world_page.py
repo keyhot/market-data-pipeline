@@ -11139,13 +11139,16 @@ def test_every_stage_layer_has_an_eval_role():
     assert set(roles.values()) <= {"scenery", "content", "stage"}
 
 
+@needs_node
 def test_both_eval_gates_classify_through_the_one_rule():
-    source = _world_source()
-    for gate in ("function drawGallery(", "function drawAnimationSheet("):
-        body = _code(_js_block(source, gate))
-        assert "applyEvalLayers()" in body, f"{gate} does not apply the layer roles"
+    for gate in ("drawGallery", "drawAnimationSheet"):
+        body = _code(function_source("boot.js", gate))
+        assert "applyEvalLayers()" in body, (
+            f"function {gate}( does not apply the layer roles"
+        )
         assert not re.search(r"layers\.\w+\.visible\s*=", body), (
-            f"{gate} still sets a layer's visibility by hand, beside the rule"
+            f"function {gate}( still sets a layer's visibility by hand, "
+            "beside the rule"
         )
 
 
