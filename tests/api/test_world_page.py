@@ -1190,6 +1190,7 @@ def _eval_roles() -> dict:
     return json.loads(re.sub(r"(\w+):", r'"\1":', literal.strip().rstrip(";")))
 
 
+@needs_node
 def test_preview_modes_keep_the_room_and_plate_in_lockstep():
     """`?gallery=1` (drawGallery) and the cast sheet (drawAnimationSheet) both
     toggle layers.room and layers.plate together, on the same VOID_MODE flag —
@@ -1205,14 +1206,13 @@ def test_preview_modes_keep_the_room_and_plate_in_lockstep():
     `_js_block` slices each function separately so the two assertions are
     provably about two different regions.
     """
-    body = _world_source()
 
     # KI-064: both gates now apply ONE classification (`applyEvalLayers`,
     # graded by `test_both_eval_gates_classify_through_the_one_rule`), so
     # lockstep is the room and the plate holding the same role in it.
-    gallery = _js_block(body, "function drawGallery(")
+    gallery = function_source("boot.js", "drawGallery")
     assert "STYLES.forEach" in gallery, "not actually the gallery body"
-    sheet = _js_block(body, "function drawAnimationSheet(")
+    sheet = function_source("boot.js", "drawAnimationSheet")
     assert "sample.loopAnim" in sheet, "not actually the animation-sheet body"
     roles = _eval_roles()
     assert roles["room"] == roles["plate"] == "scenery", (
@@ -1487,11 +1487,12 @@ def test_without_a_plate_the_pillars_march_off_toward_the_corner_as_before():
     assert first["boreRy"] == pytest.approx(54 * 0.13)
 
 
+@needs_node
 def test_the_cast_is_placed_from_its_anchor_every_frame():
     """`character()` sets a y once; `positionCharacters()` overwrites x AND y
     on every draw and is therefore the only placement that survives. The plan
     pointed this ticket at `character()`, where the write is dead."""
-    block = _js_block(_world_source(), "function positionCharacters()")
+    block = function_source("scene.js", "positionCharacters")
     assert 'anchorFor("model")' in block
     assert 'anchorFor("trader")' in block
     assert "app.screen.width * 0.32" not in block, (
@@ -1536,9 +1537,10 @@ def test_the_banner_sits_on_the_quiet_strip_the_plate_left_for_it():
     )
 
 
+@needs_node
 def test_the_painted_band_is_what_the_banner_is_actually_set_to():
     """The value above is only worth having if drawPlate applies it."""
-    block = _js_block(_world_source(), "async function drawPlate(")
+    block = function_source("room.js", "drawPlate")
     assert "bannerMinHeight()" in block
     assert 'banner.style.minHeight = bandHeight + "px"' in block
 
@@ -1636,11 +1638,11 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
           stage: new FakeContainer(), screen: { width: 1920, height: 960 },
         };
         """
-        + _js_block(source, "function gradientSprite(")
+        + function_source("room.js", "gradientSprite")
         + "\n"
-        + _js_block(source, "function layoutRoom(")
+        + function_source("room.js", "layoutRoom")
         + "\n"
-        + _js_block(source, "function drawProceduralRoom(")
+        + function_source("room.js", "drawProceduralRoom")
         + "\n"
         + _js_block(source, "function glowShapes(")
         + "\n"
@@ -1655,9 +1657,9 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         # before `buildGlows` ever ran, which this test caught as a glow
         # count of 0 — the same "a driver that throws is an absent test"
         # shape as KI-085, found here by the suite instead of by a sprint.
-        + _js_block(source, "function drawForeground(")
+        + function_source("room.js", "drawForeground")
         + "\n"
-        + _js_block(source, "async function drawPlate(")
+        + function_source("room.js", "drawPlate")
         + "\n"
         + """
         drawPlate().then(() => {
@@ -1756,6 +1758,7 @@ def test_animation_displacement_is_snapped_too():
     )
 
 
+@needs_node
 def test_cell_derives_from_the_plate_and_falls_back_to_a_literal():
     """`snap`/`CELL` are the interface Tasks 7, 8 and 12 build on top of
     (`drawCandles`, `applyGlow`, the seated trader). `world/monitors.py`
@@ -1769,36 +1772,39 @@ def test_cell_derives_from_the_plate_and_falls_back_to_a_literal():
     cell_line = _js_const(body, "CELL")
     assert "PLATE.cell" in cell_line
     assert "|| 4" in cell_line
-    boot = _js_block(body, "async function boot()")
+    boot = function_source("boot.js", "boot")
     assert "const CELL" not in boot
     assert "function snap(" not in boot
 
 
+@needs_node
 def test_the_renderer_disables_antialiasing_globally():
     """Step 3: `antialias` is a single global PixiJS renderer setting, so
     turning it off also changes the procedural fallback room - the on-air
     surface whenever the plate fails to load (KI-045/KI-047). Deliberate,
     not a side effect: pinned here so a revert reads as a revert.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
     assert "antialias: false" in boot
     assert "antialias: true" not in boot
 
 
+@needs_node
 def test_chars_and_props_layers_get_round_pixels():
     """`roundPixels` is what stops PixiJS compositing the cast and the props
     layer at sub-pixel offsets - the plate and the vignette stay off this
     list on purpose, they are painted art and a soft falloff, not the grid.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
     assert "layers.chars.roundPixels = true;" in boot
     assert "layers.props.roundPixels = true;" in boot
 
 
+@needs_node
 def test_the_pillar_fill_is_a_stack_of_blocks_not_a_smooth_rect():
     """Step 3b, decided 2026-08-25 from the reference image: the tube fill is
     a column of discrete cells, not a single smooth `roundRect`."""
-    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    draw_pillars = function_source("room.js", "drawPillars")
     assert (
         "roundRect(geo.x, geo.baseY - geo.height, geo.width, geo.height"
         not in draw_pillars
@@ -1807,6 +1813,7 @@ def test_the_pillar_fill_is_a_stack_of_blocks_not_a_smooth_rect():
     assert "CELL" in draw_pillars and "snap(" in draw_pillars
 
 
+@needs_node
 def test_the_tube_fill_is_capped_with_an_ellipse():
     """KI-055: the tubes are painted cylinders seen slightly from above, so
     the surface of whatever fills them is an ellipse - a `roundRect` cap is
@@ -1814,7 +1821,7 @@ def test_the_tube_fill_is_capped_with_an_ellipse():
     field, see test_a_pillar_is_drawn_inside_the_tube_the_plate_painted) is
     what stands in for the guessed constant a comment-only check could not
     tell apart from the real fix."""
-    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    draw_pillars = function_source("room.js", "drawPillars")
     assert "roundRect(geo.x - 4" not in draw_pillars, (
         "the cap is still a flat roundRect"
     )
@@ -1822,6 +1829,7 @@ def test_the_tube_fill_is_capped_with_an_ellipse():
     assert "geo.boreRy" in draw_pillars, "the cap's squash must be the measured one"
 
 
+@needs_node
 def test_the_tube_fill_has_a_base_ellipse_too():
     """Review round 2, mutation M-B: the brief's Step 4 required the tube's
     BASE - its own floor, always visible under the fill - to get the same
@@ -1830,13 +1838,14 @@ def test_the_tube_fill_has_a_base_ellipse_too():
     `test_the_tube_fill_is_capped_with_an_ellipse` above is satisfied by
     either ellipse alone, so it cannot tell one from two. `drawPillars` must
     draw exactly two ellipses per tube."""
-    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    draw_pillars = function_source("room.js", "drawPillars")
     assert draw_pillars.count("ellipse(") == 2, (
         "drawPillars must draw exactly two ellipses per tube - the cap AND "
         "the base"
     )
 
 
+@needs_node
 def test_drawPillars_reads_the_ramp_through_rampLevel_not_raw():
     """Review round 2, mutation M-C: swapping `rampLevel("lit")` for the
     banned raw `LIGHT.ramp.lit` inside `drawPillars` left 20 tests green.
@@ -1847,7 +1856,7 @@ def test_drawPillars_reads_the_ramp_through_rampLevel_not_raw():
     per-poll draw cycle instead of at top level. Scoped to `drawPillars`'s
     own source slice, not the whole file, because the rule's comment block
     legitimately mentions `LIGHT.ramp.lit` in prose."""
-    draw_pillars = _js_block(_world_source(), "function drawPillars(")
+    draw_pillars = function_source("room.js", "drawPillars")
     assert "LIGHT.ramp" not in draw_pillars, (
         "drawPillars reads LIGHT.ramp directly instead of through rampLevel()"
     )
@@ -1857,10 +1866,11 @@ def test_drawPillars_reads_the_ramp_through_rampLevel_not_raw():
     )
 
 
+@needs_node
 def test_the_stacked_cell_fill_survives():
     # Deliberate from Sprint 15 (C1 Step 3b): the cells are the texture that
     # makes the fill read as volume. This ticket is the cap only.
-    assert "CELL" in _js_block(_world_source(), "function drawPillars(")
+    assert "CELL" in function_source("room.js", "drawPillars")
 
 
 _PILLAR_LIGHT_JS = '''

@@ -532,4 +532,5 @@ export {
   vignette, ROOM_LIGHT, plateReady, drawPlate, layoutRoom, anchorFor,
   sitAnchorFor, occludeBehindSeat, drawPillars, CAST_FRACTIONS, bannerMinHeight,
   tubeFor, pillarGeometry,
+  drawForeground, drawProceduralRoom, gradientSprite,
 };
