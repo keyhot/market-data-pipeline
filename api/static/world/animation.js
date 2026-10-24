@@ -541,54 +541,6 @@ import { HAND_OUTLINE } from "./cast.js";
         // Measurements beside HAND_ALONG_U in tests/api/test_world_page.py.
         hand: { along: 20, across: 16 },
       };
-      // FOLDS ON THE SLEEVE (Sprint 17 #4). Matte left each garment two
-      // tones and the reference has folds. They go on the SLEEVE because the
-      // near arm composites in front of the chest: folds painted on the torso
-      // rendered with no visible change (the shelved attempt, review dir
-      // `mdp-s17-chars-review/04_*`). Each is a crease with a lip on its
-      // elbow side, in the bone's own frame, so it rides every gesture and
-      // shrug with the sleeve. `[t, k, tilt]`: centred `t` of the way down
-      // the bone, spanning `k` of the sleeve's width there, its two ends
-      // `tilt` units apart along the bone. Tilts alternate so the creases
-      // never read as stripes, and each is clear of the outline (k < 1), so
-      // none notches the silhouette. Both are thicker, measured along the
-      // bone, than one keyline block (2 frame px = 1.6 units at CAST_SCALE
-      // 1.25): thinner, the filter's one-texel-per-block sampling drops whole
-      // rows of them.
-      //
-      // WAVY (the user's review of #4): straight strips half the sleeve wide
-      // read as short dashes at 1:1. Each fold now spans most of the sleeve
-      // and its crest line bends in one gentle S of `wave` units either side
-      // of the straight line between its ends — more than a keyline block, or
-      // the filter straightens it (1.25 was shot and read as a dash) —
-      // sampled at `steps` segments. The S is offset
-      // ALONG the bone, never along its normal, so the crease and its lip stay
-      // flush and neither can fold over itself on the bend. Concave, so
-      // `litPath` bands each on its hull, cut back to the strip.
-      const FOLD = { crease: 2.5, lip: 2, wave: 2, steps: 12,
-                     upper: [[0.42, 0.8, 2.5], [0.68, 0.8, -2.5]],
-                     fore: [[0.14, 0.8, -2.5], [0.4, 0.78, 2.5], [0.66, 0.76, -2.5]] };
-      const sleeveFolds = (g, w0, w1, folds) => {
-        // `limbOutline`'s axis: x = w0/2, from y = w0/2 down `boneLength`.
-        const c = w0 / 2, len = g.boneLength;
-        for (const [t, k, tilt] of folds) {
-          const half = (k * (w0 + (w1 - w0) * t)) / 2;
-          const crest = (top) => Array.from({ length: FOLD.steps + 1 }, (_, i) => {
-            const s = i / FOLD.steps;
-            return [c - half + 2 * half * s,
-                    top + tilt * (s - 0.5) + FOLD.wave * Math.sin(2 * Math.PI * s)];
-          });
-          // The crest left to right, then the same line `th` further down the
-          // bone right to left: a strip of even thickness along the bone.
-          const strip = (top, th) => {
-            const edge = crest(top);
-            return [...edge, ...edge.map(([x, y]) => [x, y + th]).reverse()];
-          };
-          const y = c + t * len;
-          paint(g, litPath(strip(y - FOLD.lip, FOLD.lip)), HUMAN.foldLip, undefined, clothInner);
-          paint(g, litPath(strip(y, FOLD.crease)), HUMAN.fold, undefined, clothInner);
-        }
-      };
       for (const side of [-1, 1]) {
         // x ±16, and the two halves of that number are the KI-084 fix.
         //
@@ -618,7 +570,6 @@ import { HAND_OUTLINE } from "./cast.js";
                             [side * ARM.fore[1][0], ARM.fore[1][1], ARM.fore[1][2]]);
         const arm = boneGfx(root, elbow, ARM.width[0], HUMAN.sweater, cloth,
                             { end: ARM.width[1] });
-        sleeveFolds(arm, ARM.width[0], ARM.width[1], FOLD.upper);
         // `inner`, for the reason the shin is: the forearm is the MIDDLE
         // bone of its chain. An upper arm, a forearm and a hand is the same
         // three links a thigh, a shin and a shoe are, and only the ends make
@@ -691,9 +642,6 @@ import { HAND_OUTLINE } from "./cast.js";
               HUMAN.skin, undefined, { keepFill: true, shadowed: true });
         // The sleeve, now that the hand is under it (see `ARM.cuff`).
         paint(fore, litPath(fore.outline), HUMAN.sweater, undefined, clothInner);
-        // Its folds, over it (see `FOLD`); the elbow crook's are on this bone
-        // because the forearm composites over the end of the upper arm.
-        sleeveFolds(fore, ARM.width[1], ARM.wrist, FOLD.fore);
         // THE FINGERS ARE THE OUTLINE'S OWN NOTCHES (Sprint 17 #7). Until then
         // they were three crease-coloured rects cut into a convex slab, the
         // tips ending on one flat arc; at 1:1 the keyline's light rim ran

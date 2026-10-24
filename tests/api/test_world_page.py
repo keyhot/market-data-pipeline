@@ -5305,105 +5305,6 @@ def test_the_sleeve_laps_over_the_wrist_as_a_cuff():
         )
 
 
-def _edge_margin(pts, pt) -> float:
-    """How far `pt` sits inside the convex polygon `pts`: its distance to the
-    nearest edge line. Meaningful only for a point already inside."""
-    px, py = pt
-    best = math.inf
-    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
-        length = math.hypot(bx - ax, by - ay)
-        if length < 1e-9:
-            continue
-        best = min(best, abs((bx - ax) * (py - ay) - (by - ay) * (px - ax)) / length)
-    return best
-
-
-@needs_node
-def test_the_near_sleeve_carries_folds_inside_its_outline():
-    """Sprint 17 #4: the near sleeve carries folds, inside its own outline.
-
-    Matte (increment 15) left each garment two tones, and the reference has
-    folds. The first attempt put them on the torso and rendered with NO
-    visible change: the near arm composites in front of the chest. So they
-    are on the sleeve, upper arm and forearm both, painted over it.
-
-    Each fold is a crease with a lighter lip beside it, the dark/light pair
-    the figure's edge already wears (keyline outside, rim inside). Graded:
-    at least three creases across the two bones of the near arm, one lip per
-    crease, every point at least a unit inside its bone's outline (a fold that
-    reaches the edge notches the silhouette), creases not all parallel (the
-    increment-17 barcode), each thicker than one keyline block (2 frame px =
-    1.6 units at CAST_SCALE 1.25, or the filter drops rows of it), painted
-    after the sleeve (under it, a fold is invisible), and the values ordered
-    hem < crease < sweater < lip. Since the user's review, each crease is
-    also long (most of the sleeve) and wavy (an S off its chord).
-    """
-    emitted = _run_node(_rig_bone_driver(_world_source()))
-    human, drawn = emitted["HUMAN"], emitted["drawn"]
-    near = [a for a in emitted["arms"] if a["depth"] == "near"]
-    assert len(near) == 1, f"{len(near)} near arm(s)"
-    arm = near[0]
-    hosts = {arm["gid"]: arm["outline"], arm["foreGid"]: arm["foreOutline"]}
-    assert all(hosts.values()), "the near arm's bones carry no outline"
-    on_arm = [(i, d) for i, d in enumerate(drawn) if d["gid"] in hosts]
-    creases = [(i, d) for i, d in on_arm if d["fill"] == human.get("fold")]
-    lips = [(i, d) for i, d in on_arm if d["fill"] == human.get("foldLip")]
-    assert len(creases) >= 3, (
-        f"{len(creases)} fold(s) on the near sleeve: it is two-tone, the "
-        "matte read #4 exists to fix"
-    )
-    assert {d["gid"] for _, d in creases} == set(hosts), (
-        "the folds sit on only one bone of the near arm"
-    )
-    assert len(lips) == len(creases), (
-        f"{len(lips)} lip(s) for {len(creases)} crease(s): a fold is the pair"
-    )
-    assert (_luma(human["hem"]) < _luma(human["fold"]) < _luma(human["sweater"])
-            < _luma(human["foldLip"])), "fold values: not hem < crease < sweater < lip"
-    for gid in hosts:
-        sleeve = next(i for i, d in on_arm
-                      if d["gid"] == gid and d["fill"] == human["sweater"])
-        assert all(i > sleeve for i, d in creases + lips if d["gid"] == gid), (
-            "a fold is painted before its sleeve, so the sleeve covers it"
-        )
-    slopes = set()
-    for _, d in creases + lips:
-        outline, pts = hosts[d["gid"]], d["points"]
-        assert d["opts"].get("keepFill") and d["opts"].get("noRim"), (
-            "a fold is not an interior keepFill volume"
-        )
-        for pt in pts:
-            assert _inside_convex(outline, *pt) and _edge_margin(outline, pt) >= 1.0, (
-                f"fold point {pt} is within a unit of (or past) its sleeve's edge"
-            )
-        assert len(pts) % 2 == 0 and len(pts) >= 4, f"a fold of {len(pts)} points"
-        # A strip: its crest left to right, then its underside right to left,
-        # each underside point straight down the bone from its crest point.
-        crest, under = pts[: len(pts) // 2], pts[len(pts) // 2 :][::-1]
-        for (cx, cy), (ux, uy) in zip(crest, under):
-            assert abs(ux - cx) < 1e-6, "a fold's underside is not under its crest"
-            assert uy - cy >= 1.6, f"a fold {uy - cy:.2f} units thick: under a keyline block"
-    # The user's review of #4: "make them wavier". Straight dashes half the
-    # sleeve wide read as short strokes at 1:1; each crease now runs most of
-    # the way across (end to end longer than the 8.0 units the longest
-    # straight one measured) and bends in an S, at least a unit (1.25 px,
-    # most of a keyline block) either side of the straight line between its
-    # ends.
-    for _, d in creases:
-        crest = d["points"][: len(d["points"]) // 2]
-        (x0, y0), (x1, y1) = crest[0], crest[-1]
-        slopes.add(round((y1 - y0) / (x1 - x0), 2))
-        assert math.hypot(x1 - x0, y1 - y0) >= 8.25, (
-            f"a crease {math.hypot(x1 - x0, y1 - y0):.1f} units end to end: a short dash"
-        )
-        off = [(y - y0) - (y1 - y0) * (x - x0) / (x1 - x0) for x, y in crest]
-        assert max(off) >= 1.0 and min(off) <= -1.0, (
-            f"a crease bends {min(off):.2f}..{max(off):.2f} units off its chord: "
-            "straight, not a wavy S"
-        )
-    assert len(slopes) > 1, f"every crease runs at slope {slopes}: stripes, not folds"
-
-
 @needs_node
 def test_nothing_blunt_is_painted_at_the_fingertips():
     """The fingertips end on one flat line, and that is CLOSED, not pending.
@@ -10774,9 +10675,9 @@ def test_both_shoes_sit_between_the_floor_and_the_jeans():
 @needs_node
 def test_no_path_band_leaves_its_outline():
     """Every `litPath` outline graded here is CONVEX, and every band `paint`
-    draws inside it stays inside it. (The concave ones, the splayed hand and
-    the wavy sleeve folds, are banded on their hull and cut back; the hand is
-    graded in `test_the_splayed_hand_keeps_its_light_patch`.)
+    draws inside it stays inside it. (The concave one, the splayed hand, is
+    banded on its hull and cut back; it is graded in
+    `test_the_splayed_hand_keeps_its_light_patch`.)
 
     Increment 18 drew the face and fringe as outlines rather than rects
     ("natural, without blocks"). A band is the outline shrunk about its

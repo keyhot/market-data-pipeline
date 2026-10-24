@@ -623,9 +623,9 @@ import { snap } from "./tiers.js";
     // the whole story, because "every vertex inside" is the whole containment
     // check. A concave band would poke out through the concavity it was
     // shrunk past (the corner leak `bandInside` exists to stop on a rect), so
-    // a CONCAVE outline (the splayed hand, Sprint 17 #7; a wavy sleeve fold,
-    // #4) is banded on its convex hull and each band is then cut back to the
-    // outline (`clipToConvex`): inside it by construction, notches included.
+    // a CONCAVE outline (the splayed hand, Sprint 17 #7) is banded on its
+    // convex hull and each band is then cut back to the outline
+    // (`clipToConvex`): inside it by construction, notches included.
     // The concave details of a profile (nose, lips, the ear's C) are still
     // flat features, never paths.
     //
