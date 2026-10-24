@@ -137,4 +137,4 @@ import { plateReady } from "./room.js";
       }
     }
 
-export { buildMonitorGraphics, BARS_POLL_MS, pollBars };
+export { buildMonitorGraphics, BARS_POLL_MS, pollBars, barsThatFit, drawCandles, isDrawable, staleAlpha };

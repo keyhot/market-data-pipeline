@@ -1644,13 +1644,13 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         + "\n"
         + function_source("room.js", "drawProceduralRoom")
         + "\n"
-        + _js_block(source, "function glowShapes(")
+        + function_source("ambient.js", "glowShapes")
         + "\n"
-        + _js_block(source, "function glowLightTexture(")
+        + function_source("ambient.js", "glowLightTexture")
         + "\n"
-        + _js_block(source, "function buildGlows(")
+        + function_source("ambient.js", "buildGlows")
         + "\n"
-        + _js_block(source, "function buildMonitorGraphics(")
+        + function_source("monitors.js", "buildMonitorGraphics")
         + "\n"
         # `drawPlate` calls this on its success path, so the driver has to
         # carry it. Leaving it out made `drawPlate` die on a ReferenceError
@@ -6947,6 +6947,7 @@ def test_the_name_trader_surface_does_not_intersect_the_seated_rig():
 # (Finding 2) — see `buildGlows`/`applyGlow` in api/templates/world.html.
 
 
+@needs_node
 def test_the_glow_is_additive_and_never_tints_the_plate():
     """Tinting a pixel-art texture turns the amber desk lamp teal, and the
     lamp is exactly the detail that makes the room feel inhabited.
@@ -6961,13 +6962,13 @@ def test_the_glow_is_additive_and_never_tints_the_plate():
     """
     body = _world_source()
     assert "function buildGlows(" in body
-    build = _js_block(body, "function buildGlows(")
+    build = function_source("ambient.js", "buildGlows")
     assert re.search(r'\.blendMode\s*=\s*["\']add["\']', build), (
         "buildGlows must set PIXI's additive blend mode, not just "
         "mention the word 'additive' — a bare substring check can't fail here"
     )
     assert ".tint" not in build, "the glow must brighten with alpha, not tint"
-    apply_glow = _js_block(body, "function applyGlow(")
+    apply_glow = function_source("ambient.js", "applyGlow")
     assert ".tint" not in apply_glow
     assert "layers.plate.tint" not in body
 
@@ -7004,6 +7005,7 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
                       "layers.foreground", "layers.nameplates"], order
 
 
+@needs_node
 def test_the_ambient_vignette_is_guarded_for_the_plate_path():
     """`vignette` (the Container) only exists on the procedural path —
     `drawProceduralRoom` is the only place that builds one; `drawPlate`'s
@@ -7015,7 +7017,7 @@ def test_the_ambient_vignette_is_guarded_for_the_plate_path():
     much per-frame state (dt, ambient, drift, mixChannel) to usefully
     re-run standalone.
     """
-    ambient = _js_block(_world_source(), "function startAmbient()")
+    ambient = function_source("ambient.js", "startAmbient")
     assert "if (!plateReady)" in ambient
     guard = _js_block(
         ambient[ambient.index("if (!plateReady)"):], "if (!plateReady)"
@@ -7042,12 +7044,11 @@ def test_the_glow_builds_its_graphics_once_not_inside_the_ticker():
     the glow's own `Graphics` now follow it: allocated once in `drawPlate`'s
     success path (`buildGlows`), mutated (only `.alpha`) inside the ticker.
     """
-    body = _world_source()
     draw_plate = function_source("room.js", "drawPlate")
     assert "buildGlows();" in draw_plate, (
         "buildGlows must be called once, when the plate becomes ready"
     )
-    ambient_fn = _js_block(body, "function startAmbient()")
+    ambient_fn = function_source("ambient.js", "startAmbient")
     ticker = _js_block(ambient_fn, "app.ticker.add(")
     assert "new PIXI.Graphics()" not in ticker, (
         "a Graphics allocation inside the per-frame ticker rebuilds "
@@ -7059,7 +7060,7 @@ def test_the_glow_builds_its_graphics_once_not_inside_the_ticker():
     assert "new PIXI.Sprite(" not in ticker, (
         "a glow Sprite allocated inside the per-frame ticker"
     )
-    apply_glow = _js_block(body, "function applyGlow(")
+    apply_glow = function_source("ambient.js", "applyGlow")
     assert "new PIXI.Sprite(" not in apply_glow
     assert "new PIXI.Graphics()" not in apply_glow, (
         "applyGlow must only mutate .alpha on the pre-built glows"
@@ -7220,13 +7221,13 @@ def _glow_driver(*, plate_ready: bool) -> str:
         + _js_const(source, "GLOW_SPREAD")
         + "\n"
         + "let glowTexture = null;\n"
-        + _js_block(source, "function glowLightTexture(")
+        + function_source("ambient.js", "glowLightTexture")
         + "\n"
-        + _js_block(source, "function glowShapes(")
+        + function_source("ambient.js", "glowShapes")
         + "\n"
-        + _js_block(source, "function buildGlows(")
+        + function_source("ambient.js", "buildGlows")
         + "\n"
-        + _js_block(source, "function applyGlow(")
+        + function_source("ambient.js", "applyGlow")
         + "\n"
     )
 
@@ -7550,8 +7551,7 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
     cost B2 had to walk back on a box that also encodes 1080p. It must be
     built exactly once, from the plate-success path, mirroring
     `buildGlows()`."""
-    body = _world_source()
-    draw = _js_block(body, "function drawCandles(")
+    draw = function_source("monitors.js", "drawCandles")
     assert "new PIXI.Graphics()" not in draw, (
         "drawCandles must reuse a Graphics keyed by screen.id, not build one"
     )
@@ -7561,10 +7561,10 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
         "The mask belongs in buildMonitorGraphics, built once, like `g` "
         "itself"
     )
-    poll = _js_block(body, "async function pollBars(")
+    poll = function_source("monitors.js", "pollBars")
     assert "new PIXI.Graphics()" not in poll
 
-    build = _js_block(body, "function buildMonitorGraphics(")
+    build = function_source("monitors.js", "buildMonitorGraphics")
     assert "new PIXI.Graphics()" in build
     assert "layers.monitors.addChild(" in build, (
         "monitor graphics must land in their OWN layer (layers.monitors), "
@@ -7620,15 +7620,15 @@ def _monitor_driver(*, plate_ready: bool) -> str:
         + "\n"
         + _js_const(source, "MONITOR_RULES")
         + "\n"
-        + _js_block(source, "function barsThatFit(")
+        + function_source("monitors.js", "barsThatFit")
         + "\n"
-        + _js_block(source, "function isDrawable(")
+        + function_source("monitors.js", "isDrawable")
         + "\n"
-        + _js_block(source, "function staleAlpha(")
+        + function_source("monitors.js", "staleAlpha")
         + "\n"
-        + _js_block(source, "function buildMonitorGraphics(")
+        + function_source("monitors.js", "buildMonitorGraphics")
         + "\n"
-        + _js_block(source, "function drawCandles(")
+        + function_source("monitors.js", "drawCandles")
         + "\n"
     )
 
@@ -7790,7 +7790,6 @@ def test_a_screen_with_no_quad_still_gets_a_graphics_but_no_mask():
     a manifest with one quad-less screen and one normal one, and checks both
     still get their candle Graphics (nothing throws, nothing is skipped)
     while only the quad-less one is left unmasked."""
-    source = _world_source()
     driver = (
         "const PLATE = { screens: [\n"
         "  { id: 'no-quad', x: 0, y: 0, w: 200, h: 100, role: 'chart' },\n"
@@ -7806,7 +7805,7 @@ def test_a_screen_with_no_quad_still_gets_a_graphics_but_no_mask():
         "const layers = { monitors: { children: [],\n"
         "  addChild(...items) { this.children.push(...items); } } };\n"
         "const monitorGraphics = {};\n"
-        + _js_block(source, "function buildMonitorGraphics(")
+        + function_source("monitors.js", "buildMonitorGraphics")
         + "\n"
         + "buildMonitorGraphics();\n"
         + "console.log(JSON.stringify({\n"
@@ -7907,7 +7906,7 @@ def test_pollBars_never_fetches_when_there_is_no_plate():
         "function drawCandles() { throw new Error('must not draw'); }\n"
         + _js_const(_world_source(), "BARS_POLL_MS")
         + "\n"
-        + _js_block(_world_source(), "async function pollBars(")
+        + function_source("monitors.js", "pollBars")
         + "\n"
         "pollBars().then(() => console.log(JSON.stringify({ fetchCalls })));\n"
     )
@@ -7954,7 +7953,7 @@ def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure
         "}\n"
         + _js_const(source, "BARS_POLL_MS")
         + "\n"
-        + _js_block(source, "async function pollBars(")
+        + function_source("monitors.js", "pollBars")
         + "\n"
         "pollBars().then(() =>"
         " console.log(JSON.stringify({ fetchUrls, drawnWith })));\n"
@@ -10090,9 +10089,9 @@ def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> 
         + "\n"
         + _js_const(source, "AMBIENT_LIGHT_MIN_ALPHA")
         + "\n"
-        + _js_block(source, "function buildAmbientLights(")
+        + function_source("ambient.js", "buildAmbientLights")
         + "\n"
-        + _js_block(source, "function tickAmbientLights(")
+        + function_source("ambient.js", "tickAmbientLights")
         + "\n"
     )
 
@@ -10245,13 +10244,12 @@ def test_ambient_lights_build_their_graphics_once_not_inside_the_ticker():
     the ticker (`tickAmbientLights`, called from `startAmbient`'s
     `app.ticker.add`) only mutates `.alpha`.
     """
-    body = _world_source()
     draw_plate = function_source("room.js", "drawPlate")
     assert "buildAmbientLights();" in draw_plate, (
         "buildAmbientLights must be called once, when the plate becomes ready"
     )
 
-    ambient_fn = _js_block(body, "function startAmbient()")
+    ambient_fn = function_source("ambient.js", "startAmbient")
     ticker = _js_block(ambient_fn, "app.ticker.add(")
     assert "tickAmbientLights(" in ticker, (
         "the per-frame ticker must actually drive the lights"
@@ -10264,7 +10262,7 @@ def test_ambient_lights_build_their_graphics_once_not_inside_the_ticker():
         "buildAmbientLights must not be called from inside the ticker"
     )
 
-    tick_fn = _js_block(body, "function tickAmbientLights(")
+    tick_fn = function_source("ambient.js", "tickAmbientLights")
     assert "new PIXI.Graphics()" not in tick_fn, (
         "tickAmbientLights must only mutate .alpha on the pre-built lights"
     )
@@ -10457,14 +10455,14 @@ def _keyline_driver(source: str, scenario: str) -> str:
     return (
         "const LIGHT = { warmth: '#f0a848', direction: [-0.55, 0.84] };\n"
         + _js_block(source, "const KEYLINE = {") + ";\n"
-        + _js_block(source, "function rimFromLight(") + "\n"
+        + function_source("keyline.js", "rimFromLight") + "\n"
         + "const RIM = rimFromLight(LIGHT);\n"
-        + _js_block(source, "function rimAmount(") + "\n"
+        + function_source("keyline.js", "rimAmount") + "\n"
         + "const PROBE_GREY = 0x40;\n"
         + "const KEYLINE_FRAGMENT = '';\n"
         + "let keylineCache;\n"
-        + _js_block(source, "function keylineFilter(") + "\n"
-        + _js_block(source, "function keylineProves(") + "\n"
+        + function_source("keyline.js", "keylineFilter") + "\n"
+        + function_source("keyline.js", "keylineProves") + "\n"
         + """
         const window = {};
         const scenario = %s;

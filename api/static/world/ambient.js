@@ -307,4 +307,4 @@ import { swellTick } from "./swell.js";
       }
     }
 
-export { ambient, readAmbient, startAmbient, buildGlows, buildAmbientLights };
+export { ambient, readAmbient, startAmbient, buildGlows, buildAmbientLights, applyGlow, glowLightTexture, glowShapes, tickAmbientLights };
