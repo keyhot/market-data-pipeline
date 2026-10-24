@@ -681,4 +681,5 @@ export {
   MACHINE_HEADS, HAND_OUTLINE, profileHead, chartTarget,
   gazeSide, GAZE_HEAD_SHARE, gazePitch, FACE_KIND, SHADOW_WIDTH, softShadow,
   setCharacterVisible, shadowTick, facesAway, depthOrder,
+  boxHead, mirrorRect,
 };

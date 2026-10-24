@@ -2074,7 +2074,7 @@ def test_animation_displacement_actually_quantises_to_the_grid():
         + _js_block(source, "const EASE = {")
         + ";\n"
         + _js_const(source, "HEAD_TRAVEL")
-        + _js_block(source, "function gesture(")
+        + function_source("character.js", "gesture")
         + "\n"
         + _js_block(source, "const ANIM = {")
         + ";\n"
@@ -2161,7 +2161,7 @@ def test_the_idle_glance_is_snapped_too():
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CAST_SCALE")
-        + _js_block(source, "function setGaze(")
+        + function_source("animation.js", "setGaze")
         + "\n"
         + """
         function run(dx, rot, headShift) {
@@ -2271,9 +2271,8 @@ def test_depth_order_partitions_accents_without_reordering_them():
     one draws over it, and a partition that sorted or reversed would undo
     that silently while every z-order assertion about the body still passed.
     """
-    source = _world_source()
     driver = (
-        _js_block(source, "function depthOrder(")
+        function_source("cast.js", "depthOrder")
         + """
         const accents = [
           { id: "legFar", depth: "far" }, { id: "legNear", depth: "far" },
@@ -2322,7 +2321,7 @@ def test_the_near_limbs_composite_in_front_of_the_torso_and_under_the_labels():
     assert rig_line, "the page no longer composites the body on one addChild line"
     assert outer_line, "the page no longer composites the rig into the container"
     driver = (
-        _js_block(source, "function depthOrder(")
+        function_source("cast.js", "depthOrder")
         + """
         const body = { id: "body" }, head = { id: "head" };
         const nameTag = { id: "nameTag" }, stat = { id: "stat" };
@@ -2575,7 +2574,7 @@ def test_the_sheets_loop_dispatch_is_pose_aware_too():
         function restCharacter() {}
         const ambient = { t: 0 };
         """
-        + _js_block(source, "function shadowTick(")
+        + function_source("cast.js", "shadowTick")
         + "\n"
         + _js_block(source, "function advanceCharacters(")
         + "\n"
@@ -2741,7 +2740,7 @@ def test_seated_animations_actually_move_real_parts():
         const blinkCalls = [];
         function drawEyes(char, arousal) { blinkCalls.push(arousal); }
         """
-        + _js_block(source, "function setBlink(")
+        + function_source("animation.js", "setBlink")
         + "\n"
         + _js_range(
             source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.turn"
@@ -2928,7 +2927,7 @@ def test_a_profile_head_stays_on_its_neck_while_it_looks():
         + _js_const(source, "CELL")
         + function_source("tiers.js", "snap")
         + "\nfunction setBlink() {}\n"
-        + _js_block(source, "function setGaze(")
+        + function_source("animation.js", "setGaze")
         + "\n"
         + _js_block(source, "const IDLE_ACTIONS = {")
         + """;
@@ -2994,7 +2993,7 @@ def test_seated_rest_does_not_touch_the_chair():
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
-        + _js_block(source, "function restAccents(")
+        + function_source("character.js", "restAccents")
         + "\n"
         + """
         const blinkCalls = [];
@@ -3005,9 +3004,9 @@ def test_seated_rest_does_not_touch_the_chair():
           c.eyeL.x = c.eyeR.x = dx; c.head.rotation = rot; c.head.x = headShift;
         }
         """
-        + _js_block(source, "function restCharacter(")
+        + function_source("animation.js", "restCharacter")
         + "\n"
-        + _js_block(source, "function restSeatedCharacter(")
+        + function_source("animation.js", "restSeatedCharacter")
         + "\n"
         + """
         const c = {
@@ -3181,7 +3180,7 @@ def _seated_rig_block(source: str) -> str:
     """`seatedRig` with the hand outline it draws from (increment 18)."""
     return (
         _js_const(source, "HAND_OUTLINE") + "\n"
-        + _js_block(source, "function seatedRig(")
+        + function_source("animation.js", "seatedRig")
     )
 
 def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
@@ -3208,13 +3207,13 @@ def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
         + _js_const(source, "CELL")
         + _js_const(source, "CAST_SCALE")
         + _js_block(source, "const PROFILE_HEAD = {") + ";\n"
-        + _js_block(source, "function mirrorRect(") + "\n"
-        + _js_block(source, "function profileHead(") + "\n"
-        + _js_block(source, "function chartTarget(") + "\n"
-        + _js_block(source, "function gazeSide(") + "\n"
+        + function_source("cast.js", "mirrorRect") + "\n"
+        + function_source("cast.js", "profileHead") + "\n"
+        + function_source("cast.js", "chartTarget") + "\n"
+        + function_source("cast.js", "gazeSide") + "\n"
         + _js_const(source, "GAZE_MAX")
         + _js_const(source, "GAZE_HEAD_SHARE")
-        + _js_block(source, "function gazePitch(") + "\n"
+        + function_source("cast.js", "gazePitch") + "\n"
         + _js_block(source, "function aimAtCharts(") + "\n"
         + f"const SIDE = {int(side)};\n"
         + """
@@ -3259,8 +3258,8 @@ def _aim_run(head_y: float, side: int) -> dict:
         + _js_const(source, "CAST_SCALE")
         + _js_const(source, "GAZE_MAX")
         + _js_const(source, "GAZE_HEAD_SHARE")
-        + _js_block(source, "function chartTarget(") + "\n"
-        + _js_block(source, "function gazePitch(") + "\n"
+        + function_source("cast.js", "chartTarget") + "\n"
+        + function_source("cast.js", "gazePitch") + "\n"
         + _js_block(source, "function aimAtCharts(") + "\n"
         + f"const EYE = {json.dumps(_profile_head_run(side)['head'])};\n"
         + f"""
@@ -3482,7 +3481,7 @@ def test_the_hair_is_matte_whichever_way_the_head_faces():
             elif v["fill"] == palette["skin"]:
                 assert not v["opts"].get("matte"), f"a skin volume {v['geom']} is matte"
         assert any(v["fill"] == palette["hair"] for v in run["volumes"])
-    body = _without_comments(_js_block(_world_source(), "function character("))
+    body = _without_comments(function_source("character.js", "character"))
     facing = re.findall(
         r"paint\(skull, litCircle\([^)]*\), HUMAN\.(\w+),[^;]*?matte: (true|false) \}\);",
         body,
@@ -3667,7 +3666,7 @@ def test_only_the_far_shin_and_shoe_go_behind_the_seat():
     boot = _without_comments(_js_block(source, "async function boot("))
     assert 'occludeBehindSeat("trader", trader.accents);' in boot
     assert "occludeBehindSeat(" not in _without_comments(
-        _js_block(source, "function character(")
+        function_source("character.js", "character")
     )
 
 
@@ -4980,7 +4979,7 @@ def test_the_seated_shrug_lifts_the_forearm_at_the_elbow():
         + "\nfunction setBlink() {}\n"
         + _js_range(source, "const SEATED_ANIMATIONS = {", "SEATED_ANIMATIONS.turn")
         + "\n"
-        + _js_block(source, "function restAccents(")
+        + function_source("character.js", "restAccents")
         + """
         const accents = [];
         seatedRig(new FakeGraphics(), accents);
@@ -5701,10 +5700,10 @@ def _machine_head_driver(source: str) -> str:
     """
     return (
         _machine_body_driver(source, run=False)
-        + _js_block(source, "function lightenTint(") + "\n"
-        + _js_block(source, "function machineFace(") + "\n"
-        + _js_block(source, "function machineEyes(") + "\n"
-        + _js_block(source, "function boxHead(") + "\n"
+        + function_source("character.js", "lightenTint") + "\n"
+        + function_source("character.js", "machineFace") + "\n"
+        + function_source("character.js", "machineEyes") + "\n"
+        + function_source("cast.js", "boxHead") + "\n"
         + _js_block(source, "const MACHINE_HEADS = {") + ";\n"
         + """
         function recorder() {
@@ -6103,7 +6102,7 @@ def test_the_badge_moves_with_the_body_it_is_painted_on():
     )
     assert (emitted["x"], emitted["y"], emitted["r"]) == (4, -4, 0.16)
     assert emitted["text"] == "model v0.2"
-    body = _without_comments(_js_block(source, "function character("))
+    body = _without_comments(function_source("character.js", "character"))
     assert re.search(r'style === "bars" \? modelBadge\(body\)', body), (
         "`character()` never stencils the MODEL's badge"
     )
@@ -6136,7 +6135,7 @@ def test_only_the_model_wears_the_box_head():
     assert emitted["headStyles"] == ["bars"], (
         f"the box head is registered for {emitted['headStyles']}"
     )
-    body = _without_comments(_js_block(_world_source(), "function character("))
+    body = _without_comments(function_source("character.js", "character"))
     assert re.search(r"MACHINE_HEADS\[style\]\(skull, beacon\)", body), (
         "`character()` never builds a registered machine head"
     )

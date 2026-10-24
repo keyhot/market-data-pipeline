@@ -1124,4 +1124,5 @@ import { HAND_OUTLINE } from "./cast.js";
 export {
   ANIM, playAnimation, ANIM_DURATION, seatedRig, SEATED_ANIMATIONS,
   restCharacter, rng32, idleTick, lookAt, watchTick,
+  restSeatedCharacter, setBlink, setGaze,
 };
