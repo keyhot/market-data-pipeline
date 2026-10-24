@@ -2380,8 +2380,7 @@ def test_the_foreground_redraws_the_plate_masked_and_degrades_to_nothing():
     over the cast would paint the entire room over the characters, which is
     the white-frame class of defect (KI-045/047), not a cosmetic one.
     """
-    source = _world_source()
-    block = _js_block(source, "function drawForeground(")
+    block = function_source("room.js", "drawForeground")
     harness = """
         class FakeGraphics {
           addChild(c) { (this.children || (this.children = [])).push(c); return c; }
@@ -2508,6 +2507,7 @@ def test_every_trader_animation_has_a_seated_variant():
         assert has_seated_variant(animation), f"{animation} has no seated variant"
 
 
+@needs_node
 def test_seated_dispatch_replaces_the_standing_table_not_just_names_it():
     """`playAnimation` only records a string (`char.anim = animation`) — the
     per-frame dispatch that actually calls a function lives in
@@ -2516,7 +2516,7 @@ def test_seated_dispatch_replaces_the_standing_table_not_just_names_it():
     `playAnimation`/`restCharacter`, the way the brief's Step 3 describes it,
     would leave every seated animation declared and never once called — the
     same defect class Override 1 warns about, one level up."""
-    block = _js_block(_world_source(), "function advanceCharacters(")
+    block = function_source("scene.js", "advanceCharacters")
     assert re.search(r'pose\s*===\s*"seated"', block), (
         "advanceCharacters never asks which table a character is animating in"
     )
@@ -2586,7 +2586,7 @@ def test_the_sheets_loop_dispatch_is_pose_aware_too():
         """
         + function_source("cast.js", "shadowTick")
         + "\n"
-        + _js_block(source, "function advanceCharacters(")
+        + function_source("scene.js", "advanceCharacters")
         + "\n"
         + """
         const char = {
@@ -2662,9 +2662,9 @@ def test_the_sheet_can_actually_reach_seatedrig():
         """
         + _js_const(source, "EVAL_LAYER_ROLES")
         + "\n"
-        + _js_block(source, "function applyEvalLayers(")
+        + function_source("boot.js", "applyEvalLayers")
         + "\n"
-        + _js_block(source, "function drawAnimationSheet(")
+        + function_source("boot.js", "drawAnimationSheet")
         + "\n"
         + """
         drawAnimationSheet();
@@ -2972,6 +2972,7 @@ def test_a_profile_head_stays_on_its_neck_while_it_looks():
         assert o["hr"] == 0, f"the head spun about its skull, not its neck: {o}"
 
 
+@needs_node
 def test_the_head_rest_is_recorded_once():
     """`positionCharacters` runs on every `draw(state)`, i.e. on every SSE
     update, and by then an animation has usually moved `head.y`. Recording
@@ -2979,7 +2980,7 @@ def test_the_head_rest_is_recorded_once():
     the head random-walks off the neck. It must be recorded only when unset.
     Comments stripped first: the prose explains the very assignment.
     """
-    block = _js_block(_world_source(), "function positionCharacters(")
+    block = function_source("scene.js", "positionCharacters")
     code = "\n".join(line.split("//")[0] for line in block.splitlines())
     assigns = re.findall(r"^.*headBaseY\s*=(?!=).*$", code, re.M)
     assert assigns, "positionCharacters no longer records the head's rest"
@@ -3224,7 +3225,7 @@ def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
         + _js_const(source, "GAZE_MAX")
         + _js_const(source, "GAZE_HEAD_SHARE")
         + function_source("cast.js", "gazePitch") + "\n"
-        + _js_block(source, "function aimAtCharts(") + "\n"
+        + function_source("scene.js", "aimAtCharts") + "\n"
         + f"const SIDE = {int(side)};\n"
         + """
         const volumes = [];
@@ -3270,7 +3271,7 @@ def _aim_run(head_y: float, side: int) -> dict:
         + _js_const(source, "GAZE_HEAD_SHARE")
         + function_source("cast.js", "chartTarget") + "\n"
         + function_source("cast.js", "gazePitch") + "\n"
-        + _js_block(source, "function aimAtCharts(") + "\n"
+        + function_source("scene.js", "aimAtCharts") + "\n"
         + f"const EYE = {json.dumps(_profile_head_run(side)['head'])};\n"
         + f"""
         const char = {{ profile: {{ ...EYE, side: {int(side)} }}, figureScale: {trader["figure_scale"]},
@@ -3672,8 +3673,7 @@ def test_only_the_far_shin_and_shoe_go_behind_the_seat():
     # `character()`, which also builds the animation sheet's seated samples in
     # grid cells nowhere near the chair. Comments stripped, so the prose
     # above the call cannot pass for it.
-    source = _world_source()
-    boot = _without_comments(_js_block(source, "async function boot("))
+    boot = _without_comments(function_source("boot.js", "boot"))
     assert 'occludeBehindSeat("trader", trader.accents);' in boot
     assert "occludeBehindSeat(" not in _without_comments(
         function_source("character.js", "character")
@@ -6121,13 +6121,14 @@ def test_the_badge_moves_with_the_body_it_is_painted_on():
     )
 
 
+@needs_node
 def test_the_room_names_nobody_in_the_air():
     """The MODEL/TRADER nameplates are gone (user, 2026-09-24): the trader's
     sat ~190px from him on the desk front, and the MODEL now wears its own
     name. Neither the manifest nor the page may bring one back."""
     ids = [t["id"] for t in _manifest()["text"]]
     assert not [i for i in ids if i.startswith("name-")], ids
-    boot = _without_comments(_js_block(_world_source(), "async function boot("))
+    boot = _without_comments(function_source("boot.js", "boot"))
     assert "name-trader" not in boot and "name-model" not in boot
 
 
@@ -6971,6 +6972,7 @@ def test_the_glow_is_additive_and_never_tints_the_plate():
     assert "layers.plate.tint" not in body
 
 
+@needs_node
 def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars():
     """Additive light must land on the room but never over the cast's faces
     — so `layers.glow` sits above `layers.room` and below `layers.chars` —
@@ -6987,7 +6989,7 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
     reaction's shake/hop) is as much "text where it is not necessary" as
     hovering in mid-air was.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
     assert "layers.glow = new PIXI.Container();" in boot
     assert "layers.monitors = new PIXI.Container();" in boot
     match = re.search(r"app\.stage\.addChild\(([^)]*)\);", boot)
@@ -7030,6 +7032,7 @@ def test_the_ambient_vignette_is_guarded_for_the_plate_path():
     )
 
 
+@needs_node
 def test_the_glow_builds_its_graphics_once_not_inside_the_ticker():
     """Finding 2 (coordinator, fix round 1): the old `applyGlow` allocated
     `new PIXI.Graphics()` * len(PLATE.glow) every tick — rebuilding geometry
@@ -7040,7 +7043,7 @@ def test_the_glow_builds_its_graphics_once_not_inside_the_ticker():
     success path (`buildGlows`), mutated (only `.alpha`) inside the ticker.
     """
     body = _world_source()
-    draw_plate = _js_block(body, "async function drawPlate(")
+    draw_plate = function_source("room.js", "drawPlate")
     assert "buildGlows();" in draw_plate, (
         "buildGlows must be called once, when the plate becomes ready"
     )
@@ -7540,6 +7543,7 @@ def test_stale_bars_dim_instead_of_posing_as_the_present():
     assert "stale_after_seconds" not in draw, "the threshold is read, not restated"
 
 
+@needs_node
 def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
     """B2's own lesson, restated for this ticket: a `new PIXI.Graphics()`
     inside the per-poll draw function or the poll loop itself is the exact
@@ -7573,7 +7577,7 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
     )
 
     # Built alongside buildGlows(), on the plate SUCCESS path only.
-    draw_plate = _js_block(body, "async function drawPlate(")
+    draw_plate = function_source("room.js", "drawPlate")
     assert "buildMonitorGraphics()" in draw_plate
     failure_path = _js_block(draw_plate[draw_plate.index("catch (") :], "catch (")
     assert "buildMonitorGraphics()" not in failure_path
@@ -7839,7 +7843,6 @@ def test_drawPillars_never_touches_the_monitors_layer():
     consumer from wiping and forgetting to re-append, with a blank monitor on
     air as the failure mode.
     """
-    source = _world_source()
     probe = "{ id: 'probe' }"
     driver = (
         "const SYMBOLS = [];\n"
@@ -7866,7 +7869,7 @@ def test_drawPillars_never_touches_the_monitors_layer():
         "  fill() { return this; }\n"
         "}\n"
         "const PIXI = { Graphics: FakeGraphics };\n"
-        + _js_block(source, "function drawPillars(")
+        + function_source("room.js", "drawPillars")
         + "\n"
         "drawPillars({ symbols: {} });\n"
         "console.log(JSON.stringify({\n"
@@ -7969,45 +7972,46 @@ def test_pollBars_only_polls_chart_screens_with_a_symbol_and_degrades_on_failure
     assert "blank" not in emitted["drawnWith"]
 
 
+@needs_node
 def test_the_gallery_keeps_the_room_it_is_judged_against():
-    page = _world_source("/world?gallery=1")
-    body = _js_block(page, "function drawGallery(")
+    _world_source("/world?gallery=1")
+    body = function_source("boot.js", "drawGallery")
     # The specimens must stand in the room by default. This is KI-051's root
     # cause: the tool used to judge the cast deleted the picture.
     assert "layers.plate.visible = false" not in body
     assert "applyEvalLayers()" in body and _eval_roles()["plate"] == "scenery"
 
 
+@needs_node
 def test_the_gallery_hides_the_live_monitors():
     # Observed 2026-09-01: live candles drew straight over the specimens.
-    body = _js_block(_world_source("/world?gallery=1"), "function drawGallery(")
+    body = function_source("boot.js", "drawGallery")
     assert "applyEvalLayers()" in body and _eval_roles()["monitors"] == "content"
 
 
+@needs_node
 def test_the_gallery_hides_the_rooms_own_nameplates():
     # Observed 2026-09-07 (this ticket's own screenshot): `layers.nameplates`
     # is built once at fixed canvas coordinates, independent of the room
     # characters `setCharacterVisible` hides here — left visible, "MODEL"/
     # "TRADER" drew straight over whichever grid cell happened to land on
     # that spot. Same failure shape, same fix, as the monitors sibling above.
-    body = _js_block(_world_source("/world?gallery=1"), "function drawGallery(")
+    body = function_source("boot.js", "drawGallery")
     assert "applyEvalLayers()" in body and _eval_roles()["nameplates"] == "content"
 
 
+@needs_node
 def test_the_animation_sheet_keeps_the_room_too():
-    body = _js_block(
-        _world_source("/world?anims=1"), "function drawAnimationSheet("
-    )
+    body = function_source("boot.js", "drawAnimationSheet")
     assert "layers.plate.visible = false" not in body
     assert "applyEvalLayers()" in body and _eval_roles()["plate"] == "scenery"
 
 
+@needs_node
 def test_the_animation_sheet_hides_the_rooms_own_nameplates():
     # Sibling of the gallery's own check above - the same static-content leak
     # observed on this ticket's `?anims=1` screenshot.
-    body = _js_block(
-        _world_source("/world?anims=1"), "function drawAnimationSheet("
-    )
+    body = function_source("boot.js", "drawAnimationSheet")
     assert "applyEvalLayers()" in body and _eval_roles()["nameplates"] == "content"
 
 
@@ -8016,6 +8020,7 @@ def test_the_page_reports_that_it_has_drawn():
     assert "window.__worldDrawn = true" in _world_source()
 
 
+@needs_node
 def test_void_mode_is_reachable_from_drawgallery_and_drawanimationsheet():
     """A `const VOID_MODE` declared inside boot() parses fine and passes every
     text-substring test above — VOID_MODE still appears, in the source,
@@ -8029,7 +8034,7 @@ def test_void_mode_is_reachable_from_drawgallery_and_drawanimationsheet():
     boot(), where most of them live) can't reintroduce it silently.
     """
     source = _world_source()
-    boot_body = _js_block(source, "async function boot(")
+    boot_body = function_source("boot.js", "boot")
     assert "VOID_MODE" not in boot_body, (
         "VOID_MODE must not be declared (or read) inside boot() — "
         "drawGallery and drawAnimationSheet are boot()'s siblings, not its "
@@ -8042,6 +8047,7 @@ def test_void_mode_is_reachable_from_drawgallery_and_drawanimationsheet():
     )
 
 
+@needs_node
 def test_the_page_only_claims_drawn_after_each_gates_own_draw_call():
     """`window.__worldDrawn` used to be set once, above all four gates, right
     after the heartbeat interval — true before drawGallery, drawAnimationSheet,
@@ -8057,7 +8063,7 @@ def test_the_page_only_claims_drawn_after_each_gates_own_draw_call():
     about when it goes true — this must fail if the assignment moves back
     above the gate branches, which a plain substring test cannot detect.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
 
     gallery_gate = 'get("gallery") === "1") {'
     anims_gate = 'get("anims")) {'
@@ -8102,7 +8108,7 @@ def test_worlddrawn_is_still_set_when_refresh_throws():
     the flag on a throw and leave shoot.py spinning its full 30s poll on a
     page that is actually fine) fails here.
     """
-    boot = _js_block(_world_source(), "async function boot()")
+    boot = function_source("boot.js", "boot")
     live_start = "try {\n        await refresh();"
     live = boot[boot.index(live_start) : boot.index("subscribe();")]
     driver = (
@@ -8227,6 +8233,7 @@ def test_the_cast_is_shaded_rather_than_flat_filled():
     )
 
 
+@needs_node
 def test_no_body_volume_is_painted_with_the_bare_flat_fill_any_more():
     """The exact construct KI-051 is about. `paint(...)` replaces every
     `roundRect(...).fill(BODY_FILL).stroke(BODY_RIM)` two-tone stamp with
@@ -8247,7 +8254,7 @@ def test_no_body_volume_is_painted_with_the_bare_flat_fill_any_more():
     rig = (
         _js_block(source, "const BODIES = {")
         + _seated_rig_block(source)
-        + _js_block(source, "function character(")
+        + function_source("character.js", "character")
     )
     assert ".fill(BODY_FILL)" not in rig, (
         "a body volume is still using the bare flat fill KI-051 is about"
@@ -8449,7 +8456,7 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     rig = _without_comments(
         _js_block(source, "const BODIES = {")
         + _seated_rig_block(source)
-        + _js_block(source, "function character(")
+        + function_source("character.js", "character")
     )
     rects = re.findall(
         r"litRect\(([-\d.]+), ([-\d.]+), (\w+|[\d.]+), (\w+|[\d.]+), ([\d.]+)\)", rig
@@ -8800,8 +8807,8 @@ def _shadow_driver(source: str, body: str, *, light: dict | None = None,
         + _js_const(source, "SHADOW_THROW")
         + f"const PAINTED_CAST = {json.dumps(_painted_cast(_manifest()))};\n"
         + _js_const(source, "CAST_SCALE")
-        + _js_block(source, "function throwAxis(") + "\n"
-        + (tick if tick is not None else _js_block(source, "function shadowTick("))
+        + function_source("cast.js", "throwAxis") + "\n"
+        + (tick if tick is not None else function_source("cast.js", "shadowTick"))
         + "\n"
         + """
         // A body's whole contact with this function: where it stands, how far
@@ -8905,7 +8912,7 @@ def test_the_contact_shadow_is_thrown_away_from_the_lamp():
 
     # Mutation 0: compare the scaled cast layer with plate pixels, which the
     # first cut of this fix shipped. The trader's throw goes back left.
-    block = _js_block(source, "function shadowTick(")
+    block = function_source("cast.js", "shadowTick")
     unscaled = block.replace(
         "throwAxis(char.container.x * CAST_SCALE, char.baseY * CAST_SCALE)",
         "throwAxis(char.container.x, char.baseY)",
@@ -9015,7 +9022,7 @@ def test_the_shadow_still_touches_the_foot_that_casts_it():
 
     # Mutation: move without growing. The edge check is the only assertion
     # here that can see it.
-    block = _js_block(source, "function shadowTick(")
+    block = function_source("cast.js", "shadowTick")
     mutated = re.sub(r" \+ 2 \* Math\.abs\(throw[XY]\)", "", block)
     assert mutated != block, "the mutation did not change the source"
     broken = _run_node(_shadow_driver(
@@ -9035,7 +9042,7 @@ def test_the_shadow_is_as_dark_and_as_wide_as_the_plate_measured():
     """
     source = _world_source()
     light = _page_light(source)
-    block = _js_block(source, "function shadowTick(")
+    block = function_source("cast.js", "shadowTick")
     assert "0.55" not in block, (
         "shadowTick still carries the hardcoded alpha tuned for the old "
         "dark canvas"
@@ -9080,7 +9087,7 @@ def test_the_shadow_still_spreads_and_fades_as_a_figure_leaves_the_floor():
         f"{down['alpha']:.3f} on the floor - it does not fade"
     )
 
-    block = _js_block(source, "function shadowTick(")
+    block = function_source("cast.js", "shadowTick")
     mutated = block.replace(
         "const lift = Math.max(0, char.baseY - char.container.y);",
         "const lift = 0;",
@@ -9460,7 +9467,7 @@ def _mood_paint_driver(source: str, apply_block: str, repaint_block: str) -> str
         + "\n"
         + function_source("shading.js", "moodRim")
         + "\n"
-        + _js_block(source, "function lightenTint(")
+        + function_source("character.js", "lightenTint")
         + "\n"
         + repaint_block
         + "\n"
@@ -9525,7 +9532,7 @@ def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
 
     source = _world_source()
     light = _served_config(source)["light"]
-    apply_block = _js_block(source, "function applyMood(")
+    apply_block = function_source("character.js", "applyMood")
     repaint_block = function_source("shading.js", "repaint")
     emitted = _run_node(_mood_paint_driver(source, apply_block, repaint_block))
 
@@ -9682,9 +9689,9 @@ def _text_driver(body: str) -> str:
         "  }\n"
         "}\n"
         "const PIXI = { Text: FakeText };\n"
-        + _js_block(body, "function label(")
+        + function_source("boot.js", "label")
         + "\n"
-        + _js_block(body, "function placedLabel(")
+        + function_source("boot.js", "placedLabel")
         + "\n"
     )
 
@@ -9709,9 +9716,9 @@ def test_the_room_no_longer_floats_a_symbol_or_mood_label_at_a_fixed_offset():
     assert "TEXT_PLACEMENTS" in body
 
 
+@needs_node
 def test_the_history_line_sits_on_the_bottom_band():
-    body = _world_source()
-    draw_fn = _js_block(body, "function draw(")
+    draw_fn = function_source("scene.js", "draw")
     assert "TEXT_PLACEMENTS.history" in draw_fn
     # Was `app.screen.height - 86`, which is why it ran across the tubes.
     # A page-wide ban on `app.screen.height` would be over-broad - other
@@ -9766,12 +9773,12 @@ def _nowband_driver(source: str, state: str) -> str:
         const SYMBOLS = ["BTCUSDT", "ETHUSDT"];
         const MOOD_COLOR = {};
         """
-        + _js_block(source, "function formatPrice(")
+        + function_source("hud.js", "formatPrice")
         + "\n"
-        + _js_block(source, "function bandCell(")
+        + function_source("hud.js", "bandCell")
         + "\n"
         + 'const nowband = document.getElementById("nowband");\n'
-        + _js_block(source, "function renderNowBand(")
+        + function_source("hud.js", "renderNowBand")
         + f"\nrenderNowBand({state});\n"
         + "console.log(JSON.stringify({ text: band.textContent }));"
     )
@@ -9959,8 +9966,7 @@ def test_no_room_label_the_page_actually_draws_overflows_its_own_box():
     from world.text_layout import glyph_overflow
 
     placements = _text_placements()
-    body = _world_source()
-    driver = _js_block(body, "function historyLine(") + """
+    driver = function_source("scene.js", "historyLine") + """
     const h = {
       total_events: 12345,
       longest_streak: { bars: 9999 },
@@ -10078,7 +10084,7 @@ def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> 
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
-        + _js_block(source, "function rng32(")
+        + function_source("animation.js", "rng32")
         + "\n"
         + _js_const(source, "AMBIENT_LIGHTS")
         + "\n"
@@ -10227,6 +10233,7 @@ def test_ambient_life_is_guarded_for_the_no_plate_path():
     )
 
 
+@needs_node
 def test_ambient_lights_build_their_graphics_once_not_inside_the_ticker():
     """RULING 3 (controller pre-flight): this file already carries the scar -
     `buildMonitorGraphics`'s own comment records that rebuilding `Graphics`
@@ -10239,7 +10246,7 @@ def test_ambient_lights_build_their_graphics_once_not_inside_the_ticker():
     `app.ticker.add`) only mutates `.alpha`.
     """
     body = _world_source()
-    draw_plate = _js_block(body, "async function drawPlate(")
+    draw_plate = function_source("room.js", "drawPlate")
     assert "buildAmbientLights();" in draw_plate, (
         "buildAmbientLights must be called once, when the plate becomes ready"
     )
@@ -10554,6 +10561,7 @@ def test_a_keyline_that_draws_the_proof_is_worn():
     assert out["attached"] and out["state"] == "on", out
 
 
+@needs_node
 def test_only_the_seated_rig_wears_the_keyline_and_never_its_labels():
     """On `rig`, inside the seated branch; never on `container`.
 
@@ -10561,7 +10569,7 @@ def test_only_the_seated_rig_wears_the_keyline_and_never_its_labels():
     a keyline round type is a sticker. The machine keeps its own rim -- it is
     a glyph -- so the filter is the person's alone.
     """
-    body = _without_comments(_js_block(_world_source(), "function character("))
+    body = _without_comments(function_source("character.js", "character"))
     guard = re.search(
         r'const keyline = container\.pose === "seated" \? keylineFilter\(\) : null;'
         r"\s*if \(keyline\) rig\.filters = \[keyline\];",
@@ -11154,7 +11162,7 @@ def test_the_eval_rule_hides_content_and_refuses_an_unclassified_layer():
             + "\nconst layers = {};\n"
             + "for (const k of Object.keys(EVAL_LAYER_ROLES)) layers[k] = { visible: true };\n"
             + ("layers.brandNew = { visible: true };\n" if extra else "")
-            + _js_block(source, "function applyEvalLayers(")
+            + function_source("boot.js", "applyEvalLayers")
             + """
             let error = null;
             try { applyEvalLayers(); } catch (e) { error = String(e); }
