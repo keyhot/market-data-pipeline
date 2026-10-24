@@ -353,19 +353,6 @@ import { snap } from "./tiers.js";
     // a literal because the suite parses it.
     const HAND_OUTLINE = [[0, 1], [2, 0], [11, 0], [14, 2.6], [16.94, 15.83], [15.99, 17.04], [14.54, 16.52], [11.5, 8], [12.79, 17.87], [11.74, 18.99], [10.34, 18.35], [7.7, 8], [8.19, 18.81], [7.04, 19.83], [5.71, 19.07], [3.9, 8], [3.25, 17.1], [2, 18], [0.75, 17.1], [0, 15.5]];
 
-    // How far down (+y) the outline reaches at x: the lowest crossing of the
-    // vertical line through x. -Infinity where x misses the outline.
-    function outlineDepthAt(pts, x) {
-      let depth = -Infinity;
-      for (let i = 0; i < pts.length; i++) {
-        const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
-        if (x < Math.min(ax, bx) || x > Math.max(ax, bx)) continue;
-        const y = ax === bx ? Math.max(ay, by) : ay + (by - ay) * (x - ax) / (bx - ax);
-        depth = Math.max(depth, y);
-      }
-      return depth;
-    }
-
     const PROFILE_HEAD = {
       // The cranium: hair, back of the head and the crown. Painted first.
       skull: [-4, -8, 18],
@@ -691,7 +678,7 @@ import { snap } from "./tiers.js";
 
 export {
   REACTIONS, STYLES, CAST, GROUND, CAST_SCALE, styleFor, faceFor, BODIES,
-  MACHINE_HEADS, HAND_OUTLINE, outlineDepthAt, profileHead, chartTarget,
+  MACHINE_HEADS, HAND_OUTLINE, profileHead, chartTarget,
   gazeSide, GAZE_HEAD_SHARE, gazePitch, FACE_KIND, SHADOW_WIDTH, softShadow,
   setCharacterVisible, shadowTick, facesAway, depthOrder,
 };

@@ -3181,7 +3181,6 @@ def _seated_rig_block(source: str) -> str:
     """`seatedRig` with the hand outline it draws from (increment 18)."""
     return (
         _js_const(source, "HAND_OUTLINE") + "\n"
-        + _js_block(source, "function outlineDepthAt(") + "\n"
         + _js_block(source, "function seatedRig(")
     )
 
@@ -4693,18 +4692,6 @@ SEPARATION_ASPECT = 2.0
 CELL_U = 4
 
 
-def _outline_depth_at(pts, x: float) -> float:
-    """The lowest (largest-y) crossing of the vertical line through `x` with
-    the polygon `pts`. The test-side twin of the page's `outlineDepthAt`."""
-    depth = -math.inf
-    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
-        if not min(ax, bx) - 1e-9 <= x <= max(ax, bx) + 1e-9:
-            continue
-        y = max(ay, by) if ax == bx else ay + (by - ay) * (x - ax) / (bx - ax)
-        depth = max(depth, y)
-    return depth
-
-
 def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]:
     """The one skin volume on a forearm, plus any crease volumes on it split
     into thin separations and blunt tip cuts.
@@ -4929,7 +4916,7 @@ def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, seps, _blunt = _hand_parts(emitted, arm)
+        slab, _seps, _blunt = _hand_parts(emitted, arm)
         capsule = _bone_capsule(emitted["drawn"], arm["foreGid"], emitted["HUMAN"])
         assert slab and capsule, (
             f"arm {index} has no hand to check; see "
@@ -5331,7 +5318,7 @@ def test_nothing_blunt_is_painted_at_the_fingertips():
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, seps, blunt = _hand_parts(emitted, arm)
+        slab, _seps, blunt = _hand_parts(emitted, arm)
         assert slab, (
             f"arm {index} has no hand to check; see "
             "test_the_hand_is_one_slab_with_four_splayed_fingers"
