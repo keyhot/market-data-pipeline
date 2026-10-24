@@ -1082,6 +1082,8 @@ def _shading_prelude(source: str) -> str:
         + _js_block(source, "const litPath = ") + "\n"
         + _js_block(source, "function insideConvex(") + "\n"
         + _js_block(source, "function pathBand(") + "\n"
+        + _js_block(source, "function convexHull(") + "\n"
+        + _js_block(source, "function clipToConvex(") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
         + _js_block(source, "function rimStyle(") + "\n"
         + _js_block(source, "function paint(") + "\n"
@@ -3179,7 +3181,6 @@ def _seated_rig_block(source: str) -> str:
     """`seatedRig` with the hand outline it draws from (increment 18)."""
     return (
         _js_const(source, "HAND_OUTLINE") + "\n"
-        + _js_block(source, "function outlineDepthAt(") + "\n"
         + _js_block(source, "function seatedRig(")
     )
 
@@ -4691,31 +4692,21 @@ SEPARATION_ASPECT = 2.0
 CELL_U = 4
 
 
-def _outline_depth_at(pts, x: float) -> float:
-    """The lowest (largest-y) crossing of the vertical line through `x` with
-    the polygon `pts`. The test-side twin of the page's `outlineDepthAt`."""
-    depth = -math.inf
-    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
-        if not min(ax, bx) - 1e-9 <= x <= max(ax, bx) + 1e-9:
-            continue
-        y = max(ay, by) if ax == bx else ay + (by - ay) * (x - ax) / (bx - ax)
-        depth = max(depth, y)
-    return depth
-
-
 def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]:
-    """The one skin volume on a forearm, the separations, and the tip cuts.
+    """The one skin volume on a forearm, plus any crease volumes on it split
+    into thin separations and blunt tip cuts.
+
+    Since Sprint 17 #7 the fingers are the outline's own notches and the page
+    paints no crease on the hand, so both lists are empty today. They are kept
+    so a crease painted back onto the hand (the pre-#7 separations, or the
+    blunt tip cuts `test_nothing_blunt_is_painted_at_the_fingertips` forbids)
+    is still found and graded.
 
     Identified by fill rather than by draw order: order is how `paint` stacks
     them and a test that encoded it would pass a hand whose creases had been
-    painted UNDER the slab and were invisible.
-
-    Separations and tip cuts share `HUMAN.crease` — they are the same shadow —
-    so they are split by SHAPE: a separation runs the length of a finger and is
-    gap-thin, a tip cut is a blunt block that shortens one. Keying that on the
-    aspect ratio -- long axis against short, whichever way the hand lies --
-    states the difference the eye reads; keying it on the order the loop
-    happens to paint them in, or on which axis is long, would not.
+    painted UNDER the slab and were invisible. Separations and tip cuts share
+    `HUMAN.crease`, so they are split by SHAPE (aspect ratio, whichever way
+    the hand lies), not by the order they happen to be painted in.
     """
     palette = emitted["HUMAN"]
     on_fore = [d for d in emitted["drawn"] if d["gid"] == arm["foreGid"]]
@@ -4730,128 +4721,94 @@ def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]
     return (slabs[0] if len(slabs) == 1 else None), seps, tips
 
 
+def _hand_webs(points):
+    """The webs between the fingers: the hand outline's reflex vertices, each
+    with its two neighbours (the fingertip corners either side of a notch)."""
+    n = len(points)
+    edges = zip(points, points[1:] + points[:1])
+    area = sum(ax * by - bx * ay for (ax, ay), (bx, by) in edges)
+    webs = []
+    for i in range(n):
+        (ax, ay), (bx, by), (cx, cy) = points[i - 1], points[i], points[(i + 1) % n]
+        if ((bx - ax) * (cy - by) - (by - ay) * (cx - bx)) * area < -1e-9:
+            webs.append((points[i - 1], points[i], points[(i + 1) % n]))
+    return webs
+
+
+def _scan_extent(points, y: float) -> float:
+    """The outline's horizontal extent on the line through `y`."""
+    xs = [ax + (bx - ax) * (y - ay) / (by - ay)
+          for (ax, ay), (bx, by) in zip(points, points[1:] + points[:1])
+          if ay != by and min(ay, by) - 1e-9 <= y <= max(ay, by) + 1e-9]
+    return max(xs) - min(xs)
+
+
+# One keyline block (`KEYLINE.block`, 2 frame px) in rig units at
+# `CAST_SCALE` 1.25. A notch narrower than this can fall between the filter's
+# samples and close: the gap has to be in the ALPHA the filter reads.
+KEYLINE_BLOCK_U = 2 / 1.25
+
+
 @needs_node
-def test_the_hand_is_a_slab_with_three_finger_separations():
-    """Four fingers, so three dark lines cut into the hand's far end.
+def test_the_hand_is_one_slab_with_four_splayed_fingers():
+    """Sprint 17 #7: four fingers, splayed apart by notches in the outline.
 
-    The reference paints a hand as a broad pale slab divided into fingers by
-    near-black shadow (`#262127` sampled between the far hand's fingers,
-    against `#a67265` on the lit slab). The shipped hand was once a single
-    rounded rect with nothing cut into it, which at 1:1 is a mitten on the end
-    of a stick.
+    Re-grades `test_the_hand_is_a_slab_with_three_finger_separations` and
+    `test_the_hands_corner_does_not_dome_over_its_outer_fingers`. Those graded
+    three crease-coloured rects cut into a convex slab, and that hand failed
+    at 1:1: the keyline filter works on the assembled figure's alpha, so its
+    light rim ran unbroken round the tips and no interior line could open
+    them. A mitten with stitching. The dome rule existed because a rounded
+    convex end withdrew the outer fingers from the silhouette; each finger
+    now has its own tip between notches, so that failure has no surface.
 
-    Three separations and not four fingers, deliberately. `paint` draws three
-    banded insets per volume, and four finger-sized volumes would each take a
-    set — the joint-cap failure that made the elbow read as a bolt, repeated
-    four times per hand. One slab keeps the bands at a size that reads as
-    shading, and the fingers are the gaps between what is cut out of it.
-
-    The hand is STRAIGHT: the fingers run down the forearm's own local y, so a
-    separation is long in y and gap-thin in x, and the four fingers sit side by
-    side across x. `test_the_hand_carries_on_the_line_of_the_forearm` grades
-    where along the hand they are cut.
-
-    The separations are FILLS, never `stroke` — `paint` gives a `keepFill`
-    volume no rim precisely because a person is not outlined
-    (`test_a_person_is_not_outlined`), and an outlined hand would undo
-    increment 8 on the one volume that most needs internal detail.
+    Still one skin volume (`paint`'s bands on four finger-sized volumes are
+    the joint cap), and still 20 units heel to tip. Graded: three webs (the
+    outline's reflex vertices), each notch opening AWAY from the wrist and at
+    least a keyline block plus margin wide at the tips, webs at least two
+    blocks apart (a finger the grid can draw), and the splay itself: the tips
+    span at least one block more than the hand at the knuckles. No crease
+    volume is painted on the hand at all.
     """
     emitted = _run_node(_rig_bone_driver(_world_source()))
     arms = emitted["arms"]
     assert len(arms) == 2, f"expected two arms, got {len(arms)}"
-
     for index, arm in enumerate(arms):
-        slab, creases, _tips = _hand_parts(emitted, arm)
-        assert slab, (
-            f"arm {index} has no single skin volume on its forearm: the hand "
-            "is one slab, and the fingers are cut out of it rather than "
-            "painted as separate volumes"
+        slab, creases, tips = _hand_parts(emitted, arm)
+        assert slab, f"arm {index} has no single skin volume on its forearm"
+        assert not creases and not tips, (
+            f"arm {index} still paints crease volumes on its hand"
         )
-        assert len(creases) == 3, (
-            f"arm {index} cuts {len(creases)} separations into its hand; four "
-            "fingers need three, and the reference's hand has four"
+        _sx, sy, _sw, sh = slab["snapped"]
+        assert sh == pytest.approx(HAND_ALONG_U, abs=1.0), (
+            f"arm {index}'s hand is {sh:.1f} heel to tip, not {HAND_ALONG_U}"
         )
-
-        _, _, across, along = slab["snapped"]
-        assert along == pytest.approx(HAND_ALONG_U, abs=1.0), (
-            f"arm {index}'s hand reaches {along:.1f} units past the wrist, "
-            f"heel to fingertip, where the reference traces {HAND_ALONG_U}"
+        pts = slab["points"]
+        webs = _hand_webs(pts)
+        assert len(webs) == 3, (
+            f"arm {index}'s outline has {len(webs)} web(s): four fingers need three"
         )
-        assert across == pytest.approx(HAND_ACROSS_U, abs=1.0), (
-            f"arm {index}'s hand is {across:.1f} units across its four "
-            f"fingers where the grid and the reference agree on {HAND_ACROSS_U}"
+        for before, web, after in webs:
+            for corner in (before, after):
+                assert corner[1] - web[1] >= 0.35 * sh, (
+                    f"arm {index}: a notch at {web} does not open toward the tips"
+                )
+            opening = math.dist(before, after)
+            assert opening >= KEYLINE_BLOCK_U + 0.4, (
+                f"arm {index}: a notch opens {opening:.2f} units at the tips, "
+                f"under a keyline block ({KEYLINE_BLOCK_U:.2f}) plus margin: "
+                "the filter closes it and the fingers weld at 1:1"
+            )
+        xs = sorted(w[1][0] for w in webs)
+        assert min(b - a for a, b in zip(xs, xs[1:])) >= 2 * KEYLINE_BLOCK_U, (
+            f"arm {index}: webs at {xs} leave a finger under two keyline blocks"
         )
-
-        for crease in creases:
-            assert crease["opts"].get("keepFill"), (
-                f"arm {index}: a finger separation is not `keepFill`, so it "
-                "takes the mood as its fill and -- because `paint` keys the "
-                "outline off exactly that flag -- strokes a rim. A crease in "
-                "a hand is shadow, and shadow does not change with the mood."
-            )
-            cx, cy, cw, ch = crease["snapped"]
-            assert cw < ch, (
-                f"arm {index}: a separation is {cw:.1f} across by {ch:.1f} "
-                "along the forearm. The hand is straight, so a finger gap runs "
-                "DOWN the hand with the fingers -- a line across it is the "
-                "old drooping hand's cut, turned a right angle from its fingers"
-            )
-            assert ch == pytest.approx(along * FINGER_DEPTH_FRACTION, abs=1.5), (
-                f"arm {index}: a separation cuts {ch:.1f} units into a "
-                f"{along:.1f}-unit hand. The fingers take a little over half "
-                "of the heel-to-tip length; a cut that reaches further turns "
-                "the hand into a fork"
-            )
-            sx, sy, sw, sh = slab["snapped"]
-            assert sx <= cx and cx + cw <= sx + sw + 1e-9, (
-                f"arm {index}: a separation spans {cx:.1f}..{cx + cw:.1f} "
-                f"across a hand spanning {sx:.1f}..{sx + sw:.1f}: it is cut "
-                "outside the hand it is meant to divide"
-            )
-            assert sy <= cy and cy + ch <= sy + sh + 1e-9, (
-                f"arm {index}: a separation spans {cy:.1f}..{cy + ch:.1f} "
-                f"along a hand spanning {sy:.1f}..{sy + sh:.1f}: it is cut "
-                "outside the hand it is meant to divide"
-            )
-
-        # The separations are authored a whole CELL apart, which is the RULE
-        # rather than its outcome. `snap(v + 4k) == snap(v) + 4k` holds for
-        # every v, so a whole-cell offset survives the snap at any pose; an
-        # offset of 3.9 survives it at THIS one and collapses two separations
-        # into one cell at the next pose someone authors. The evenness check
-        # below cannot see that — it measures the hand the page draws today,
-        # and today's arm happens to round the right way.
-        sx_raw = slab["at"][0]
-        for crease in creases:
-            offset = crease["at"][0] - sx_raw
-            assert offset % CELL_U == pytest.approx(0, abs=1e-9), (
-                f"arm {index}: a separation is authored {offset:.2f} units "
-                f"across a hand, which is not a whole {CELL_U}-unit CELL. "
-                "`litRect` snaps it, and only a whole cell survives that "
-                "unchanged -- at some other arm pose two of these land in the "
-                "same cell and two fingers silently become one."
-            )
-
-        # Four fingers of roughly one width. Measured as the gaps BETWEEN the
-        # separations rather than as their positions, so this states the thing
-        # the eye reads and stays true if the hand is ever re-placed.
-        edges = sorted(c["snapped"][0] for c in creases)
-        gap = creases[0]["snapped"][2]
-        sx, sw = slab["snapped"][0], slab["snapped"][2]
-        fingers = (
-            [edges[0] - sx]
-            + [b - a - gap for a, b in zip(edges, edges[1:])]
-            + [sx + sw - (edges[-1] + gap)]
-        )
-        assert min(fingers) > 0, (
-            f"arm {index}'s fingers measure {[round(f, 1) for f in fingers]}: "
-            "two separations overlap, so a finger has no width at all"
-        )
-        assert max(fingers) <= 2.2 * min(fingers), (
-            f"arm {index}'s fingers measure {[round(f, 1) for f in fingers]} "
-            "units. The reference's four are within a whisker of each other; "
-            "one much wider than the rest reads as a thumb, which a hand seen "
-            "from behind lying on a thigh does not show"
+        knuckles = max(w[1][1] for w in webs)
+        far = [x for x, y in pts if y >= (knuckles + sy + sh) / 2]
+        span, base = max(far) - min(far), _scan_extent(pts, knuckles)
+        assert span >= base + KEYLINE_BLOCK_U, (
+            f"arm {index}: the tips span {span:.2f} against {base:.2f} at the "
+            "knuckles: the fingers are not splayed"
         )
 
 
@@ -4873,10 +4830,11 @@ def test_the_hand_carries_on_the_line_of_the_forearm():
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, seps, _tips = _hand_parts(emitted, arm)
-        assert slab and len(seps) == 3, (
+        slab, _seps, _tips = _hand_parts(emitted, arm)
+        webs = _hand_webs(slab["points"]) if slab else []
+        assert slab and len(webs) == 3, (
             f"arm {index} has no hand to check; see "
-            "test_the_hand_is_a_slab_with_three_finger_separations"
+            "test_the_hand_is_one_slab_with_four_splayed_fingers"
         )
         _sx, sy, sw, sh = slab["snapped"]
         assert sh > sw, (
@@ -4884,23 +4842,15 @@ def test_the_hand_carries_on_the_line_of_the_forearm():
             "forearm: it lies ACROSS the bone, so the fingers point off the "
             "side of the arm instead of carrying on its line"
         )
-        for sep in seps:
-            cx, cy, cw, ch = sep["snapped"]
-            # The hand is an OUTLINE since increment 18, its tips an arc at the
-            # outer corners, so "where the hand ends" is the outline's own
-            # depth across this gap — the shallower of its two edges, or the
-            # cut either stops short of the tip or paints past it.
-            ends = min(_outline_depth_at(slab["points"], cx),
-                       _outline_depth_at(slab["points"], cx + cw))
-            assert cy + ch == pytest.approx(ends, abs=1e-6), (
-                f"arm {index}: a separation ends at {cy + ch:.2f} where the "
-                f"hand ends at {ends:.2f}. A finger gap has to open at the "
-                "fingertips, or the fingers are welded together at the end"
+        for before, web, after in webs:
+            # Since Sprint 17 #7 a finger gap is a notch in the outline: it
+            # has to open AWAY from the wrist, with palm between it and the heel.
+            assert before[1] > web[1] and after[1] > web[1], (
+                f"arm {index}: the notch at {web} opens toward the wrist -- "
+                "the fingers are inside the sleeve and the hand is on backwards"
             )
-            assert cy > sy, (
-                f"arm {index}: a separation starts {cy - sy:.1f} units past "
-                "the heel. The fingers are at the far end of the hand, with "
-                "the palm between them and the wrist"
+            assert web[1] > sy, (
+                f"arm {index}: a web sits at the heel; there is no palm"
             )
 
 
@@ -4923,66 +4873,21 @@ def test_the_fingers_reach_further_than_the_palm_they_hang_from():
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, seps, _tips = _hand_parts(emitted, arm)
-        assert slab and seps, (
+        slab, _seps, _tips = _hand_parts(emitted, arm)
+        webs = _hand_webs(slab["points"]) if slab else []
+        assert slab and webs, (
             f"arm {index} has no hand to check; see "
-            "test_the_hand_is_a_slab_with_three_finger_separations"
+            "test_the_hand_is_one_slab_with_four_splayed_fingers"
         )
-        along = slab["snapped"][3]
-        for sep in seps:
-            finger = sep["snapped"][3]
-            palm = along - finger
+        _sx, sy, _sw, along = slab["snapped"]
+        for _before, web, _after in webs:
+            finger = sy + along - web[1]
+            palm = web[1] - sy
             assert finger > palm, (
                 f"arm {index}: a {along:.1f}-unit hand keeps {palm:.1f} units "
-                f"of palm and cuts only {finger:.1f} units of finger. The "
-                "fingers are shallower than the palm they hang off, so they "
-                "are notches in a dome rather than prongs -- which is exactly "
-                "the mitten this hand was rebuilt to stop being."
-            )
-
-
-@needs_node
-def test_the_hands_corner_does_not_dome_over_its_outer_fingers():
-    """The corner radius is the other half of the mitten, and it is subtle.
-
-    `litRect`'s radius rounds all four corners, including the two at the
-    FINGERTIP end. The arc withdraws the silhouette by up to `r` right where
-    the outermost fingers are, so a radius larger than a separation quietly
-    removes more of an outer finger than a whole gap does -- and it removes it
-    from the silhouette, where the eye reads the digit count. The shipped hand
-    carried `CELL` (4) against a 1.5-unit gap, and its outer two fingers
-    rounded away into the dome.
-
-    Stated against the gap rather than as a literal: both are art, but a
-    corner that eats more than the shadow between two fingers is the
-    condition under which the count stops being readable.
-    """
-    emitted = _run_node(_rig_bone_driver(_world_source()))
-
-    for index, arm in enumerate(emitted["arms"]):
-        slab, seps, _tips = _hand_parts(emitted, arm)
-        assert slab and seps, (
-            f"arm {index} has no hand to check; see "
-            "test_the_hand_is_a_slab_with_three_finger_separations"
-        )
-        gap = min(min(s["snapped"][2:4]) for s in seps)
-        # Since increment 18 the hand is an outline, and the rule is stated on
-        # the thing the radius stood for: how much shorter the OUTER fingers
-        # come out than the longest one, measured at each outer finger's
-        # middle. A little is a hand's natural arc; more than a gap is a dome.
-        edges = sorted(s["snapped"][0] for s in seps)
-        sx, sw = slab["snapped"][0], slab["snapped"][2]
-        outer = [(sx + edges[0]) / 2, (edges[-1] + gap + sx + sw) / 2]
-        pts = slab["points"]
-        longest = max(y for _, y in pts)
-        for mid in outer:
-            short = longest - _outline_depth_at(pts, mid)
-            assert short <= gap + 1e-9, (
-                f"arm {index}: the outer finger at {mid:.1f} ends {short:.1f} "
-                f"units short of the longest against a {gap:.1f}-unit "
-                "separation. The tips round away more of the outer fingers "
-                "than the shadow between two fingers does, so the hand ends "
-                "in a dome and the count is lost."
+                f"of palm and only {finger:.1f} units of finger. The fingers "
+                "are shallower than the palm they hang off, so they are "
+                "notches in a dome rather than prongs -- the mitten again."
             )
 
 
@@ -5011,11 +4916,11 @@ def test_the_palm_does_not_swell_out_of_the_back_of_the_wrist():
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, seps, _blunt = _hand_parts(emitted, arm)
+        slab, _seps, _blunt = _hand_parts(emitted, arm)
         capsule = _bone_capsule(emitted["drawn"], arm["foreGid"], emitted["HUMAN"])
-        assert slab and seps and capsule, (
+        assert slab and capsule, (
             f"arm {index} has no hand to check; see "
-            "test_the_hand_is_a_slab_with_three_finger_separations"
+            "test_the_hand_is_one_slab_with_four_splayed_fingers"
         )
         sx, _sy, sw, _sh = slab["snapped"]
         cx, _cy, cw, _ch = capsule["snapped"]
@@ -5355,14 +5260,14 @@ def test_the_sleeve_laps_over_the_wrist_as_a_cuff():
         order = [d["fill"] for d in on_fore]
         hand = next(d for d in on_fore if d["fill"] == palette["skin"])
         sleeve = _bone_capsule(drawn, arm["foreGid"], palette)
-        seps = [d for d in on_fore if d["fill"] == palette["crease"]]
         assert order.index(palette["sweater"]) > order.index(palette["skin"]), (
             f"arm {index}: the sleeve is painted before the hand, so the hand "
             "lies over it and the wrist is the palm's straight heel edge"
         )
         heel = min(y for _, y in hand["points"])
         cuff = max(y for _, y in sleeve["points"])
-        first_finger = min(d["snapped"][1] for d in seps)
+        # The fingers start at the webs (Sprint 17 #7: notches, not creases).
+        first_finger = min(web[1] for _, web, _ in _hand_webs(hand["points"]))
         overlap = cuff - heel
         assert overlap >= 1, (
             f"arm {index}: the cuff ends {overlap:.2f} units past the heel -- "
@@ -5376,13 +5281,13 @@ def test_the_sleeve_laps_over_the_wrist_as_a_cuff():
             f"arm {index}: the cuff bows only {cuff - wrist_line:.2f} past the "
             "wrist -- a flat end, the slab edge again"
         )
-        # Half a CELL of palm must show between the cuff and the first finger
-        # separation. (The near hand's origin snaps 1.5 units back up the
+        # Half a CELL of palm must show between the cuff and the first web
+        # between two fingers. (The near hand's origin snaps 1.5 units back up the
         # bone, so its cuff covers 6 of 8 palm units -- shot, and it reads as
         # a hand leaving a sleeve. The line that matters is the fingers.)
         assert cuff <= first_finger - 2, (
             f"arm {index}: the cuff reaches y={cuff:.2f}, within 2 units of the "
-            f"finger separations at {first_finger:.2f} (heel {heel:.2f}); the "
+            f"finger webs at {first_finger:.2f} (heel {heel:.2f}); the "
             f"hand ({along} long) is swallowed by its sleeve"
         )
 
@@ -5413,10 +5318,10 @@ def test_nothing_blunt_is_painted_at_the_fingertips():
     emitted = _run_node(_rig_bone_driver(_world_source()))
 
     for index, arm in enumerate(emitted["arms"]):
-        slab, seps, blunt = _hand_parts(emitted, arm)
-        assert slab and seps, (
+        slab, _seps, blunt = _hand_parts(emitted, arm)
+        assert slab, (
             f"arm {index} has no hand to check; see "
-            "test_the_hand_is_a_slab_with_three_finger_separations"
+            "test_the_hand_is_one_slab_with_four_splayed_fingers"
         )
         assert not blunt, (
             f"arm {index} paints {len(blunt)} blunt crease volume(s) on its "
@@ -10756,8 +10661,10 @@ def test_both_shoes_sit_between_the_floor_and_the_jeans():
 
 @needs_node
 def test_no_path_band_leaves_its_outline():
-    """Every `litPath` outline the page paints is CONVEX, and every band
-    `paint` draws inside it stays inside it.
+    """Every `litPath` outline graded here is CONVEX, and every band `paint`
+    draws inside it stays inside it. (The concave one, the splayed hand, is
+    banded on its hull and cut back; it is graded in
+    `test_the_splayed_hand_keeps_its_light_patch`.)
 
     Increment 18 drew the face and fringe as outlines rather than rects
     ("natural, without blocks"). A band is the outline shrunk about its
@@ -10769,15 +10676,13 @@ def test_no_path_band_leaves_its_outline():
     """
     source = _world_source()
     P = _profile_head_run()["P"]
-    hand = json.loads(_js_const(source, "HAND_OUTLINE").split("=", 1)[1].strip().rstrip(";"))
-    across = max(x for x, _ in hand)
     # Each outline with the two ways the page places it: the head mirrors
-    # about x = 0 by `side`, the hand about its own width by which side of
-    # the forearm faces the floor (`seatedRig`).
+    # about x = 0 by `side`. The hand is not here since Sprint 17 #7: its
+    # splayed fingers make it concave on purpose, so its bands are graded by
+    # area in `test_the_splayed_hand_keeps_its_light_patch`.
     placements = {
         "face": [[[s * x, y] for x, y in P["face"]] for s in (-1, 1)],
         "fringe": [[[s * x, y] for x, y in P["fringe"]] for s in (-1, 1)],
-        "hand": [[[x, y] for x, y in hand], [[across - x, y] for x, y in hand]],
         # The torso (increment 19) mirrors with the chair's facing.
         "torso": [[[s * x, y] for x, y in _torso_outline()] for s in (-1, 1)],
         # The neck (2026-09-25) is a path now, not a rounded rect, and it
@@ -10831,6 +10736,129 @@ def test_no_path_band_leaves_its_outline():
                         f"facing {side:+d}, a band of the {name} leaves its "
                         f"outline at ({px}, {py})"
                     )
+
+
+def _inside_concave(pts, px, py) -> bool:
+    """Is (px, py) inside the simple polygon `pts`, convex or not (even-odd)?
+    The concave counterpart of `_inside_convex`, for outlines with notches."""
+    inside = False
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        if (ay > py) != (by > py) and px < ax + (bx - ax) * (py - ay) / (by - ay):
+            inside = not inside
+    return inside
+
+
+def _outline_distance(pts, px, py) -> float:
+    """How far (px, py) is from the nearest point of the closed outline `pts`."""
+    best = math.inf
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+        t = 0.0 if span < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / span))
+        best = min(best, math.hypot(px - ax - t * dx, py - ay - t * dy))
+    return best
+
+
+def _shoelace(pts) -> float:
+    """The area `pts` encloses. A zero-width seam traced out and back adds 0."""
+    edges = zip(pts, pts[1:] + pts[:1])
+    return abs(sum(ax * by - bx * ay for (ax, ay), (bx, by) in edges)) / 2
+
+
+# The share of the hand's area its LIT band must cover. The convex hand
+# before Sprint 17 #7 measured 0.26 under the same `litPath`; the splayed hand,
+# banded on its hull and cut back to its outline, measures 0.29. The flat
+# painting #7 first shipped measured 0 (its lit band was a zero-area triangle).
+HAND_LIT_SHARE_MIN = 0.15
+
+
+@needs_node
+def test_the_splayed_hand_keeps_its_light_patch():
+    """The splayed hand is lit like every other volume: a lit patch toward
+    the lamp, inside a base band, inside the whole hand, none of it out
+    through a notch between two fingers.
+
+    Sprint 17 #7 splayed the fingers, which makes `HAND_OUTLINE` concave, and
+    `litPath` then painted a concave outline flat: shade and base bands were
+    the outline, the lit band was empty. The lighter patch near the cuff went
+    and the user asked for it back. Banding a concave outline the convex way
+    (shrink about the centroid) leaks through the notches, so the page bands
+    the outline's convex hull and cuts each band back to the outline.
+
+    Graded on both ways `seatedRig` places the hand, and by AREA rather than
+    by vertex: a band over a notch can have every vertex on the hand and
+    still paint the gap between two fingers, so each band is sampled on a
+    grid and every sample inside it must be on the hand.
+    """
+    source = _world_source()
+    hand = json.loads(_js_const(source, "HAND_OUTLINE").split("=", 1)[1].strip().rstrip(";"))
+    assert _hand_webs(hand), "the hand is convex: this test grades a concave outline"
+    across = max(x for x, _ in hand)
+    for label, placed in (("flare on +x", hand), ("flare on -x", [[across - x, y] for x, y in hand])):
+        driver = _geometry_driver(
+            source,
+            f"const PTS = {json.dumps(placed)};\n"
+            + """
+            const bands = [];
+            const g = { poly(flat) { bands.push(flat); return this; },
+                        fill() { return this; }, stroke() { return this; } };
+            const vol = litPath(PTS);
+            for (const band of [BAND_INSET.shade, BAND_INSET.base, BAND_INSET.lit]) {
+              vol.band(g, band);
+            }
+            console.log(JSON.stringify({ bands, key: KEY_AXIS }));
+            """,
+        )
+        emitted = _run_node(driver)
+        outline = [tuple(p) for p in placed]
+        polys = [list(zip(f[0::2], f[1::2])) for f in emitted["bands"]]
+        assert len(polys) == 3, f"{label}: {len(polys)} band(s)"
+        whole = _shoelace(outline)
+        shade, base, lit = (_shoelace(p) for p in polys)
+        assert abs(shade - whole) <= 0.02 * whole, (
+            f"{label}: the shade band covers {shade:.1f} of the hand's {whole:.1f}"
+        )
+        assert lit >= HAND_LIT_SHARE_MIN * whole, (
+            f"{label}: the lit band covers {lit / whole:.1%} of the hand (needs "
+            f"{HAND_LIT_SHARE_MIN:.0%}): the hand is painted flat, no light patch"
+        )
+        assert shade > base > lit, f"{label}: band areas {shade:.1f}/{base:.1f}/{lit:.1f}"
+        step = 0.25
+        lit_samples = []
+        for name, poly in zip(("shade", "base", "lit"), polys):
+            xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+            for i in range(int((max(ys) - min(ys)) / step) + 1):
+                py = min(ys) + (i + 0.5) * step
+                for j in range(int((max(xs) - min(xs)) / step) + 1):
+                    px = min(xs) + (j + 0.5) * step
+                    if not _inside_concave(poly, px, py):
+                        continue
+                    assert (_inside_concave(outline, px, py)
+                            or _outline_distance(outline, px, py) <= 1 / 64), (
+                        f"{label}: the {name} band paints ({px:.2f}, {py:.2f}), "
+                        "off the hand (through a notch?)"
+                    )
+                    if name == "lit":
+                        lit_samples.append((px, py))
+        # Toward the lamp: the lit patch's centre sits on the lamp's side of
+        # the hand's (the band slides along -KEY_AXIS, as on a convex path).
+        kx, ky = emitted["key"]
+        x_lo, y_lo = min(x for x, _ in outline), min(y for _, y in outline)
+        x_hi, y_hi = max(x for x, _ in outline), max(y for _, y in outline)
+        hand_samples = [
+            (x_lo + (i + 0.5) * step, y_lo + (j + 0.5) * step)
+            for i in range(int((x_hi - x_lo) / step) + 1)
+            for j in range(int((y_hi - y_lo) / step) + 1)
+            if _inside_concave(outline, x_lo + (i + 0.5) * step, y_lo + (j + 0.5) * step)
+        ]
+        hx = sum(x for x, _ in hand_samples) / len(hand_samples)
+        hy = sum(y for _, y in hand_samples) / len(hand_samples)
+        lx = sum(x for x, _ in lit_samples) / len(lit_samples)
+        ly = sum(y for _, y in lit_samples) / len(lit_samples)
+        assert (lx - hx) * -kx + (ly - hy) * -ky > 0.5, (
+            f"{label}: the lit patch centre ({lx:.1f}, {ly:.1f}) is not toward the "
+            f"lamp (KEY_AXIS {kx:.2f}, {ky:.2f}) from the hand's ({hx:.1f}, {hy:.1f})"
+        )
 
 
 @needs_node

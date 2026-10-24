@@ -9,7 +9,7 @@ import { LIGHT } from "./config.js";
 import { HUMAN } from "./palette.js";
 import { mixHex, paint, litRect, litPath } from "./shading.js";
 import { CELL, snap } from "./tiers.js";
-import { HAND_OUTLINE, outlineDepthAt } from "./cast.js";
+import { HAND_OUTLINE } from "./cast.js";
 
     // How far `slump` may drop a head, per body. It isn't a style choice: it's
     // how much room the body leaves. The figure's head already overlaps its
@@ -529,18 +529,17 @@ import { HAND_OUTLINE, outlineDepthAt } from "./cast.js";
         // The hand, traced off `ref-trader.png` and converted through the one
         // unit this redesign uses. The hand is STRAIGHT — it carries on the
         // forearm's line, fingers pointing where the arm points — so `along`
-        // is heel to fingertip down the bone, `across` the span of four
-        // fingers side by side, `finger` how far a separation cuts back from
-        // the tips, `gap` a separation's own width, `corner` the rounding.
+        // is heel to fingertip down the bone and `across` the palm's span;
+        // `HAND_OUTLINE` (cast.js) is the shape, these the box it is placed by.
         //
         // Until 2026-09-23 the hand hung off the wrist at a right angle with
         // its fingers aimed at the floor, which over the knee read as a claw.
         // The numbers survived the turn with their axes swapped: 20 along,
-        // split 8 palm / 12 finger (the prong rule, increment 12), and 16
-        // across because the CELL forces it — four fingers want separations
-        // at 4, 8 and 12 and nothing else is a whole cell. Measurements beside
-        // HAND_ALONG_U in tests/api/test_world_page.py.
-        hand: { along: 20, across: 16, finger: 12, gap: 2, corner: 2 },
+        // split 8 palm / 12 finger (the prong rule, increment 12; the webs sit
+        // at y 8), and 16 across. Since Sprint 17 #7 the fingers are the
+        // outline's own notches, splayed, not separations cut into a slab.
+        // Measurements beside HAND_ALONG_U in tests/api/test_world_page.py.
+        hand: { along: 20, across: 16 },
       };
       for (const side of [-1, 1]) {
         // x ±16, and the two halves of that number are the KI-084 fix.
@@ -617,21 +616,15 @@ import { HAND_OUTLINE, outlineDepthAt } from "./cast.js";
         // while the extra below is the edge of a hand spreading on the thigh.
         const handX = floorOnPlusX ? 0 : ARM.width[1] - H.across;
         const handY = fore.boneLength + ARM.width[1] / 2 - 2;
-        // The corner may not round away more than the shadow between two
-        // fingers. `litRect` rounds all four corners, the fingertip pair
-        // included, so a radius bigger than a gap withdraws more of the outer
-        // fingers from the SILHOUETTE than a whole separation does — and the
-        // silhouette is where the eye counts digits. This carried `CELL` (4)
-        // against a 1.5-unit gap and the outer two fingers rounded away into a
-        // dome, which is half of why the hand read as a mitten.
         // The OUTLINE, not a rect (increment 18 — "the palm looks like a
         // square"). The heel is the forearm's own width where it leaves the
         // sleeve, and the hand flares toward the FLOOR side only (the edge
         // spreading on the thigh; the back of the hand carries on the line
-        // of the wrist). The tips end on a shallow arc, middle fingers
-        // longest: the stagger this grid refused a rect can be drawn as an
-        // outline, because a path's vertices do not snap — only its origin
-        // does, so the whole-CELL separations below still register.
+        // of the wrist). The fingers fan apart and their tips stagger, middle
+        // fingers longest (Sprint 17 #7): a path's vertices do not snap, only
+        // its origin does, so an outline can draw what the CELL grid refused a
+        // rect. Concave, so `litPath` bands its convex hull and cuts each band
+        // back to the outline, and the hand keeps its light patch by the cuff.
         const handOutline = HAND_OUTLINE.map(([x, y]) =>
           [floorOnPlusX ? x : H.across - x, y]);
         // THE CONTACT SHADOW (2026-09-24): the arm's own silhouette — sleeve
@@ -649,50 +642,14 @@ import { HAND_OUTLINE, outlineDepthAt } from "./cast.js";
               HUMAN.skin, undefined, { keepFill: true, shadowed: true });
         // The sleeve, now that the hand is under it (see `ARM.cuff`).
         paint(fore, litPath(fore.outline), HUMAN.sweater, undefined, clothInner);
-        // Four fingers, cut as three dark lines rather than painted as four
-        // volumes. `paint` gives every volume three banded insets, and on a
-        // finger-sized shape those come out as a dark ring round a pale core —
-        // the joint cap that turned the elbow into a bolt, which would happen
-        // here eight times over. One slab keeps the bands reading as shading.
-        //
-        // A crease is shadow, so it takes no lamp band: `shade` mixes an
-        // absolute 0.3 toward `LIGHT.warmth` on the lit rung, and a crease
-        // lifted toward the lamp reads as a scratch ON the hand instead of a
-        // gap BETWEEN two fingers. Same reasoning as `shod`, same shape.
-        const creased = { keepFill: true, matte: true };
-        // Offsets are whole CELLs on purpose, and this is the whole reason the
-        // hand is 16 units across. `litRect` snaps both coordinates, and only a
-        // whole number of cells survives that: `snap(v + 4k) === snap(v) + 4k`,
-        // while three separations authored 3.9 apart can land two to a cell and
-        // merge two fingers into one. Nothing in the drawn output would say so.
-        // Each is cut back from the fingertips, so the palm stays whole at the
-        // wrist end.
-        //
-        // Each one ends where the outline does at its own x, so a cut near an
-        // outer finger — where the corner has begun to turn — never paints
-        // shadow on the room past the hand, and still opens the gap.
-        const fingerY = handY + H.along - H.finger;
-        for (let i = 1; i <= 3; i++) {
-          const x0 = i * CELL, x1 = x0 + H.gap;
-          const tip = Math.min(outlineDepthAt(handOutline, x0), outlineDepthAt(handOutline, x1));
-          paint(fore, litRect(handX + x0, fingerY,
-                              H.gap, tip - (H.along - H.finger), H.gap / 2),
-                HUMAN.crease, undefined, creased);
-        }
-        // THE FINGERTIPS END ON ONE FLAT LINE, and that is a closed question
-        // rather than an oversight. The reference staggers its four tips by one
-        // to three pixels; this grid cannot. A cut's x snaps to the CELL like
-        // every other coordinate, so the smallest step available is 4 units —
-        // about two finger widths at the scale this is seen.
-        //
-        // It was built and shot rather than reasoned away. Shortening the outer
-        // two fingers with a crease-coloured block at the tip is the JOINT CAP
-        // a third time: a 4x4 volume takes `paint`'s three banded insets and
-        // comes out a dark square WITH STRUCTURE, so the outer fingers read as
-        // stubs wearing caps and the count drops from four to "three and some
-        // debris". It is also load-bearing on whatever happens to be behind the
-        // hand — invisible against the dark room, an object against the chair —
-        // and a silhouette may not depend on its backdrop. A/B in the vault.
+        // THE FINGERS ARE THE OUTLINE'S OWN NOTCHES (Sprint 17 #7). Until then
+        // they were three crease-coloured rects cut into a convex slab, the
+        // tips ending on one flat arc; at 1:1 the keyline's light rim ran
+        // unbroken round that arc and the hand read as a mitten with stitching.
+        // `HAND_OUTLINE` now splays four fingers apart with real gaps at the
+        // tips, so the keyline itself draws between them, and the contact
+        // shadow above (the same outline, shifted) shows dark in the gaps
+        // where the hand lies on the thigh.
         // The forearm becomes a CHILD of the upper arm, which is the only
         // arrangement where a shoulder swing carries the whole limb. `gesture`
         // and `cheer` write `armNear.rotation`/`armFar.rotation`; a forearm

@@ -613,17 +613,21 @@ import { snap } from "./tiers.js";
       };
     };
 
-    // A CONVEX outline, for the parts of a person a rect cannot draw without
+    // An OUTLINE, for the parts of a person a rect cannot draw without
     // reading as a block: the face, the swept fringe, the hand (increment
     // 18 — "make him look natural without blocks and squares").
     //
     // The same rule as the other two, not a third one: each band is the
     // outline shrunk about its centroid by `circleBand`'s fraction and slid
-    // toward the lamp as far as it stays inside. Convex because that is what
-    // makes "every vertex inside" the whole containment check — a concave
-    // band pokes out through the concavity it was shrunk past, which is the
-    // corner leak `bandInside` exists to stop on a rect. The concave details
-    // of a profile (nose, lips, the ear's C) are flat features, never paths.
+    // toward the lamp as far as it stays inside. On a CONVEX outline that is
+    // the whole story, because "every vertex inside" is the whole containment
+    // check. A concave band would poke out through the concavity it was
+    // shrunk past (the corner leak `bandInside` exists to stop on a rect), so
+    // a CONCAVE outline (the splayed hand, Sprint 17 #7) is banded on its
+    // convex hull and each band is then cut back to the outline
+    // (`clipToConvex`): inside it by construction, notches included.
+    // The concave details of a profile (nose, lips, the ear's C) are still
+    // flat features, never paths.
     //
     // `points` are relative to an origin that snaps like `litRect`'s, so a
     // path on a limb keeps the whole-CELL registration of the rects cut into
@@ -631,8 +635,20 @@ import { snap } from "./tiers.js";
     const litPath = (points, ox = 0, oy = 0) => {
       const x0 = snap(ox), y0 = snap(oy);
       const pts = points.map(([px, py]) => [x0 + px, y0 + py]);
+      // Convex when every turn that is not collinear goes the same way. A
+      // concave outline was briefly painted FLAT here (base rung, lit band
+      // empty), which cost the splayed hand its light patch by the cuff; it
+      // now takes its hull's bands, cut back to its own outline.
+      const turns = pts.map((_, i) => {
+        const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
+        const [cx, cy] = pts[(i + 2) % pts.length];
+        return (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
+      }).filter((t) => Math.abs(t) >= 1e-9);
+      const convex = turns.every((t) => Math.sign(t) === Math.sign(turns[0]));
+      const hull = convex ? pts : convexHull(pts);
       return {
-        band: (g, band) => g.poly(pathBand(pts, band).flat()),
+        band: (g, band) => g.poly((convex ? pathBand(pts, band)
+          : clipToConvex(pts, pathBand(hull, band))).flat()),
         rim: (g, style) => g.poly(pts.flat()).stroke(style || BODY_RIM_SHADED),
       };
     };
@@ -666,6 +682,58 @@ import { snap } from "./tiers.js";
         if (fits(mid)) lo = mid; else hi = mid;
       }
       return shrunk.map(([px, py]) => [quant(px - KEY_AXIS[0] * lo), quant(py - KEY_AXIS[1] * lo)]);
+    }
+
+    // The convex hull of `pts` (Andrew's monotone chain). Its winding does
+    // not matter: `pathBand` and `clipToConvex` take either.
+    function convexHull(pts) {
+      const sorted = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const chain = (list) => {
+        const h = [];
+        for (const p of list) {
+          while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop();
+          h.push(p);
+        }
+        h.pop();
+        return h;
+      };
+      return [...chain(sorted), ...chain([...sorted].reverse())];
+    }
+
+    // `subject` cut down to the CONVEX polygon `clip`, either winding
+    // (Sutherland-Hodgman). The subject may be concave, and the result never
+    // leaves it, so a band built on a concave outline's hull and cut back by
+    // this cannot paint a notch. Where the cut leaves the subject in pieces,
+    // they come back joined by zero-width seams along the clip's edge,
+    // which fill nothing. Quantised like every other band vertex.
+    function clipToConvex(subject, clip) {
+      const area = clip.reduce((a, [ax, ay], i) => {
+        const [bx, by] = clip[(i + 1) % clip.length];
+        return a + ax * by - bx * ay;
+      }, 0);
+      const side = Math.sign(area) || 1;
+      let out = subject;
+      for (let i = 0; i < clip.length && out.length; i++) {
+        const [ax, ay] = clip[i], [bx, by] = clip[(i + 1) % clip.length];
+        if (Math.abs(bx - ax) + Math.abs(by - ay) < 1e-9) continue;
+        const at = ([px, py]) => side * ((bx - ax) * (py - ay) - (by - ay) * (px - ax));
+        const input = out;
+        out = [];
+        for (let j = 0; j < input.length; j++) {
+          const p = input[j], q = input[(j + 1) % input.length];
+          const dp = at(p), dq = at(q);
+          if (dp >= -1e-9) out.push(p);
+          if ((dp >= -1e-9) !== (dq >= -1e-9)) {
+            const t = dp / (dp - dq);
+            out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+          }
+        }
+      }
+      // Nothing left (a clip off the subject): the empty band the flat
+      // rule used, one point three times.
+      if (out.length < 3) return [subject[0], subject[0], subject[0]];
+      return out.map(([px, py]) => [quant(px), quant(py)]);
     }
 
     // The rim, kept at the volume's true (un-inset) silhouette so it still
