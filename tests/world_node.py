@@ -237,12 +237,28 @@ def run_world(body: str, *, config=None, plate_loads=True, timeout: int = 60):
     )
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=1)
+def _function_sources() -> dict[str, dict[str, str]]:
+    """`Function.prototype.toString` of every exported function of every
+    module, from ONE node run (a run per name would boot the module graph
+    once per lookup)."""
+    return run_world(
+        "const out = {};"
+        f"for (const m of {json.dumps(list(world_modules()))}) {{"
+        "  const ns = await W(m); out[m] = {};"
+        "  for (const [k, v] of Object.entries(ns)) {"
+        '    if (typeof v === "function") out[m][k] = v.toString();'
+        "  }"
+        "}"
+        "console.log(JSON.stringify(out));"
+    )
+
+
 def function_source(module: str, name: str) -> str:
     """One exported function's own source text, as the engine reports it
     (`Function.prototype.toString`) after importing the real module. Lets a
     test read what a function does without brace-matching the page text."""
-    return run_world(
-        f'const ns = need(await W("{module}"), "{name}");'
-        f"console.log(JSON.stringify(ns.{name}.toString()));"
-    )
+    sources = _function_sources().get(module)
+    assert sources is not None, f"no such world module: {module}"
+    assert name in sources, f"{module} has no exported function {name}"
+    return sources[name]

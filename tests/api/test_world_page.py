@@ -1064,31 +1064,31 @@ def _shading_prelude(source: str) -> str:
     the page that actually ships.
     """
     return (
-        _js_block(source, "function mixHex(") + "\n"
-        + _js_block(source, "function shade(") + "\n"
-        + _js_block(source, "function rampLevel(") + "\n"
-        + _js_block(source, "function keyAxis(") + "\n"
+        function_source("shading.js", "mixHex") + "\n"
+        + function_source("shading.js", "shade") + "\n"
+        + function_source("shading.js", "rampLevel") + "\n"
+        + function_source("shading.js", "keyAxis") + "\n"
         + _js_const(source, "KEY_AXIS")
         + _js_const(source, "BAND_INSET")
         + _js_const(source, "BAND_MAX")
-        + _js_block(source, "function circleBand(") + "\n"
-        + _js_block(source, "function bandExtent(") + "\n"
-        + _js_block(source, "function bandInside(") + "\n"
-        + _js_block(source, "function slideToKey(") + "\n"
+        + function_source("shading.js", "circleBand") + "\n"
+        + function_source("shading.js", "bandExtent") + "\n"
+        + function_source("shading.js", "bandInside") + "\n"
+        + function_source("shading.js", "slideToKey") + "\n"
         + _js_const(source, "quant")
         + _js_const(source, "MIN_BAND")
-        + _js_block(source, "const litRect = ") + "\n"
-        + _js_block(source, "const litCircle = ") + "\n"
-        + _js_block(source, "const litPath = ") + "\n"
-        + _js_block(source, "function insideConvex(") + "\n"
-        + _js_block(source, "function pathBand(") + "\n"
-        + _js_block(source, "function convexHull(") + "\n"
-        + _js_block(source, "function clipToConvex(") + "\n"
+        + ("const litRect = " + function_source("shading.js", "litRect")) + "\n"
+        + ("const litCircle = " + function_source("shading.js", "litCircle")) + "\n"
+        + ("const litPath = " + function_source("shading.js", "litPath")) + "\n"
+        + function_source("shading.js", "insideConvex") + "\n"
+        + function_source("shading.js", "pathBand") + "\n"
+        + function_source("shading.js", "convexHull") + "\n"
+        + function_source("shading.js", "clipToConvex") + "\n"
         + _js_const(source, "BODY_RIM_SHADED")
-        + _js_block(source, "function rimStyle(") + "\n"
-        + _js_block(source, "function paint(") + "\n"
-        + _js_block(source, "function rimStroke(") + "\n"
-        + _js_block(source, "function rimStrokeCircle(") + "\n"
+        + function_source("shading.js", "rimStyle") + "\n"
+        + function_source("shading.js", "paint") + "\n"
+        + function_source("shading.js", "rimStroke") + "\n"
+        + function_source("shading.js", "rimStrokeCircle") + "\n"
         # The character redesign: `seatedRig` and the human head paint their
         # volumes in authored colours (hair/skin/sweater/jeans/shoes) rather
         # than in `BODY_FILL`, so the palette is now as much a prerequisite for
@@ -1582,7 +1582,7 @@ def test_a_throwing_builder_degrades_to_a_clean_procedural_room():
         + _js_const(source, "GROUND")
         + _js_const(source, "CELL")
         + _js_const(source, "GLOW_COLOR")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "GLOW_SPREAD")
         + "let glows = [];\n"
@@ -2068,7 +2068,7 @@ def test_animation_displacement_actually_quantises_to_the_grid():
     driver = (
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + _js_block(source, "const EASE = {")
@@ -2158,7 +2158,7 @@ def test_the_idle_glance_is_snapped_too():
     driver = (
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + _js_block(source, "function setGaze(")
@@ -2552,7 +2552,7 @@ def test_the_sheets_loop_dispatch_is_pose_aware_too():
     source = _world_source()
     driver = (
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -2730,7 +2730,7 @@ def test_seated_animations_actually_move_real_parts():
     driver = (
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + _js_block(source, "const EASE = {")
@@ -2835,7 +2835,7 @@ def test_the_neck_holds_its_length_through_a_breath():
     driver = (
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CAST_SCALE")
         + _js_block(source, "const EASE = {")
@@ -2883,7 +2883,7 @@ def test_a_seated_breath_is_one_pixel_and_only_up():
     driver = (
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_block(source, "const EASE = {")
         + ";\n"
@@ -2926,7 +2926,7 @@ def test_a_profile_head_stays_on_its_neck_while_it_looks():
     driver = (
         "const PLATE = null;\n"
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\nfunction setBlink() {}\n"
         + _js_block(source, "function setGaze(")
         + "\n"
@@ -2990,7 +2990,7 @@ def test_seated_rest_does_not_touch_the_chair():
     source = _world_source()
     driver = (
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -3099,7 +3099,7 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
         }
         const PIXI = { Graphics: FakeGraphics };
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -3201,10 +3201,10 @@ def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
         + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
         + _js_const(source, "LIGHT")
         + _js_block(source, "const HUMAN = {") + ";\n"
-        + _js_block(source, "function mixHex(") + "\n"
-        + _js_block(source, "function shade(") + "\n"
-        + _js_block(source, "function rampLevel(") + "\n"
-        + _js_block(source, "function snap(") + "\n"
+        + function_source("shading.js", "mixHex") + "\n"
+        + function_source("shading.js", "shade") + "\n"
+        + function_source("shading.js", "rampLevel") + "\n"
+        + function_source("tiers.js", "snap") + "\n"
         + _js_const(source, "CELL")
         + _js_const(source, "CAST_SCALE")
         + _js_block(source, "const PROFILE_HEAD = {") + ";\n"
@@ -3557,7 +3557,7 @@ def _seated_rig_run() -> dict:
         # The far leg mixes its jeans toward ambient; that is the only piece of
         # the shading chain this driver needs, because the stubs below replace
         # `litRect`/`litCircle`/`paint` wholesale.
-        + _js_block(source, "function mixHex(")
+        + function_source("shading.js", "mixHex")
         + "\n"
         + """
         class FakeGraphics {
@@ -3588,7 +3588,7 @@ def _seated_rig_run() -> dict:
                        host: g, radius: volume.radius, pts: volume.pts || null });
         }
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -3953,7 +3953,7 @@ def _rig_bone_driver(source: str) -> str:
         + _js_const(source, "LIGHT")
         + _js_block(source, "const HUMAN = {")
         + ";\n"
-        + _js_block(source, "function mixHex(")
+        + function_source("shading.js", "mixHex")
         + "\n"
         + """
         let nextId = 0;
@@ -4004,7 +4004,7 @@ def _rig_bone_driver(source: str) -> str:
           });
         }
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -4198,7 +4198,7 @@ def test_a_person_is_not_outlined():
         + "const BODY_RIM = { width: 1.5, color: 0xffffff, alignment: 1 };\n"
         + _js_const(source, "LIGHT")
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _shading_prelude(source)
         + """
@@ -4289,10 +4289,10 @@ def test_a_matte_volume_takes_no_lamp_band_even_after_a_mood_change():
         + "const BODY_RIM = { width: 1.5, color: 0xffffff, alignment: 1 };\n"
         + _js_const(source, "LIGHT")
         + _js_const(source, "CELL")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function repaint(")
+        + function_source("shading.js", "repaint")
         + "\n"
         + """
         // Every band is a `fill`; the rim is the one `stroke`. Recording the
@@ -4457,9 +4457,9 @@ def test_the_hand_in_the_lap_sits_in_shadow_but_stays_skin():
         + "const BODY_FILL = 0x8899aa;\n"
         + "const BODY_RIM = { width: 1.5, color: 0xffffff, alignment: 1 };\n"
         + _js_const(source, "LIGHT") + _js_const(source, "CELL")
-        + _js_block(source, "function snap(") + "\n"
+        + function_source("tiers.js", "snap") + "\n"
         + _shading_prelude(source)
-        + _js_block(source, "function repaint(") + "\n"
+        + function_source("shading.js", "repaint") + "\n"
         + """
         let fills = [];
         class FakeGraphics {
@@ -4517,7 +4517,7 @@ def test_the_seated_arms_bend_at_an_elbow():
         + _js_const(source, "LIGHT")
         + _js_block(source, "const HUMAN = {")
         + ";\n"
-        + _js_block(source, "function mixHex(")
+        + function_source("shading.js", "mixHex")
         + "\n"
         + """
         class FakeGraphics {
@@ -4547,7 +4547,7 @@ def test_the_seated_arms_bend_at_an_elbow():
           (g.drawn || (g.drawn = [])).push({ rect: volume.rect, fill });
         }
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -5369,7 +5369,7 @@ def _machine_body_driver(source: str, run: bool = True) -> str:
         + _js_const(source, "LIGHT")
         + _js_block(source, "const MACHINE = {")
         + ";\n"
-        + _js_block(source, "function mixHex(")
+        + function_source("shading.js", "mixHex")
         + "\n"
         + """
         let nextId = 0;
@@ -5415,7 +5415,7 @@ def _machine_body_driver(source: str, run: bool = True) -> str:
           });
         }
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -6090,7 +6090,7 @@ def test_the_badge_moves_with_the_body_it_is_painted_on():
         const PIXI = { Container: Node, Text: class extends Node {
           constructor(o) { super(); this.text = o.text; this.style = o.style; } } };
         """
-        + _js_block(source, "function modelBadge(") + "\n"
+        + function_source("palette.js", "modelBadge") + "\n"
         + """
         const body = new Node();
         const badge = modelBadge(body);
@@ -6171,7 +6171,7 @@ def test_the_two_thighs_read_as_two_legs_not_one_mass():
         + _js_const(source, "LIGHT")
         + _js_block(source, "const HUMAN = {")
         + ";\n"
-        + _js_block(source, "function mixHex(")
+        + function_source("shading.js", "mixHex")
         + "\n"
         + """
         class FakeGraphics {
@@ -6190,7 +6190,7 @@ def test_the_two_thighs_read_as_two_legs_not_one_mass():
         const litPath = () => ({ band: (g) => g, rim: (g) => g });
         function paint(g, volume, fill, rim, opts) {}
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -6239,9 +6239,8 @@ def test_a_mood_change_reaches_a_limb_parented_to_another_limb():
     limb, half a sleeve would keep the previous mood's colour. It shows up
     only on a mood change, which is the kind of seam that ships.
     """
-    source = _world_source()
     driver = (
-        _js_block(source, "function mixHex(")
+        function_source("shading.js", "mixHex")
         + "\n"
         + """
         const painted = [];
@@ -6251,7 +6250,7 @@ def test_a_mood_change_reaches_a_limb_parented_to_another_limb():
           painted.push({ g: g.name, fill });
         }
         """
-        + _js_block(source, "function repaint(")
+        + function_source("shading.js", "repaint")
         + "\n"
         + """
         const parent = { name: "upper", clear() {}, children: [] };
@@ -6320,7 +6319,7 @@ def test_the_seated_figure_points_where_the_painted_cushion_points():
         const fakeGfx = { roundRect() { return this; }, circle() { return this; }, poly() { return this; },
                            fill() { return this; }, stroke() { return this; } };
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -6492,7 +6491,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
           stroke() { return this; },
         };
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -6611,7 +6610,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
           stroke() { return this; },
         };
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -6719,7 +6718,7 @@ def test_every_seated_leg_bone_carries_its_own_angle_and_opts_out_of_gestures():
           fill() { return this; }, stroke() { return this; },
         };
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -6813,7 +6812,7 @@ def _seated_rig_bounds():
         const skullCalls = [];
         const fakeSkull = makeRecorder(skullCalls);
         """
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -7198,7 +7197,7 @@ def _glow_driver(*, plate_ready: bool) -> str:
         "  removeChildren() { this.children = []; },\n"
         "  addChild(c) { this.children.push(c); } } };\n"
         "let glows = [];\n"
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -7602,7 +7601,7 @@ def _monitor_driver(*, plate_ready: bool) -> str:
         "  removeChildren() { this.children = []; },\n"
         "  addChild(...items) { this.children.push(...items); } } };\n"
         "const monitorGraphics = {};\n"
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -8170,12 +8169,12 @@ def test_the_cast_is_shaded_rather_than_flat_filled():
         base, light["ambient"], min(1, abs(light["ramp"]["shade"]))
     )
 
-    shade_block = _js_block(source, "function shade(")
+    shade_block = function_source("shading.js", "shade")
 
     def run(block):
         driver = (
             _js_const(source, "LIGHT")
-            + _js_block(source, "function mixHex(")
+            + function_source("shading.js", "mixHex")
             + "\n"
             + block
             + "\n"
@@ -8327,7 +8326,7 @@ def _geometry_driver(source: str, body: str) -> str:
         "const PLATE = null;\nconst PAINTED_CAST = null;\n"
         + "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
         + _js_const(source, "LIGHT")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -8730,7 +8729,7 @@ def test_a_light_without_a_ramp_degrades_instead_of_blanking_the_page():
         + "{ width: 1.5, color: 0xffffff, alignment: 1 };\n"
         + stripped
         + "\n"
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -8784,9 +8783,9 @@ def _shadow_driver(source: str, body: str, *, light: dict | None = None,
     return (
         (f"const LIGHT = {json.dumps(light)};\n" if light is not None
          else _js_const(source, "LIGHT"))
-        + _js_block(source, "function keyAxis(") + "\n"
+        + function_source("shading.js", "keyAxis") + "\n"
         + _js_const(source, "KEY_AXIS")
-        + _js_block(source, "function contactLight(") + "\n"
+        + function_source("shading.js", "contactLight") + "\n"
         + _js_const(source, "CONTACT")
         + _js_const(source, "SHADOW_ASPECT")
         + _js_const(source, "SHADOW_THROW")
@@ -9236,13 +9235,13 @@ def _mood_fill_driver(source: str, mood_fill: str, emit: str) -> str:
         + _js_const(source, "BODY_TINT")
         + _js_const(source, "BODY_FILL")
         + _js_const(source, "BODY_RIM")
-        + _js_block(source, "function mulHex(")
+        + function_source("shading.js", "mulHex")
         + "\n"
-        + _js_block(source, "function moodTint(")
+        + function_source("shading.js", "moodTint")
         + "\n"
         + mood_fill
         + "\n"
-        + _js_block(source, "function moodRim(")
+        + function_source("shading.js", "moodRim")
         + "\n"
         + emit
     )
@@ -9267,7 +9266,7 @@ def test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_multiplier():
     )
 
     source = _world_source()
-    mood_fill = _js_block(source, "function moodFill(")
+    mood_fill = function_source("shading.js", "moodFill")
     emit = (
         "const out = {};\n"
         "for (const mood of Object.keys(BODY_TINT)) {\n"
@@ -9335,7 +9334,7 @@ def test_a_mood_resolves_to_the_colour_the_room_lights_not_to_a_multiplier():
     # Mutation 2: read the raw identity palette instead of the lifted one.
     # This is KI-028 itself, reverted: `MOOD_COLORS` is the palette BEFORE the
     # contrast lift, so bodies sink back into the room.
-    mood_tint = _js_block(source, "function moodTint(")
+    mood_tint = function_source("shading.js", "moodTint")
     reverted = mood_tint.replace("BODY_TINT[mood]", "MOOD_COLOR[mood]")
     assert reverted != mood_tint, "the palette mutation did not change the source"
     sunk = _run_node(
@@ -9391,7 +9390,7 @@ def test_every_mood_the_cast_can_wear_resolves_to_a_body_colour():
         f"{sorted(face_moods - set(table) - {'neutral'})}"
     )
 
-    mood_fill = _js_block(source, "function moodFill(")
+    mood_fill = function_source("shading.js", "moodFill")
     emit = (
         f"const moods = {json.dumps(sorted(face_moods))};\n"
         "const out = {};\n"
@@ -9412,7 +9411,7 @@ def test_every_mood_the_cast_can_wear_resolves_to_a_body_colour():
 
     # Mutation: remove the fallback. `neutral` has no table entry, so it is the
     # mood that proves the fallback is real rather than decorative.
-    mood_tint = _js_block(source, "function moodTint(")
+    mood_tint = function_source("shading.js", "moodTint")
     unguarded = mood_tint.replace(": NEUTRAL_TINT", ": NaN")
     assert unguarded != mood_tint, "the fallback mutation did not change the source"
     broken = _run_node(
@@ -9440,17 +9439,17 @@ def _mood_paint_driver(source: str, apply_block: str, repaint_block: str) -> str
         + _js_const(source, "BODY_FILL")
         + _js_const(source, "BODY_RIM")
         + _js_const(source, "LIGHT")
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + _shading_prelude(source)
-        + _js_block(source, "function mulHex(")
+        + function_source("shading.js", "mulHex")
         + "\n"
-        + _js_block(source, "function moodTint(")
+        + function_source("shading.js", "moodTint")
         + "\n"
-        + _js_block(source, "function moodFill(")
+        + function_source("shading.js", "moodFill")
         + "\n"
-        + _js_block(source, "function moodRim(")
+        + function_source("shading.js", "moodRim")
         + "\n"
         + _js_block(source, "function lightenTint(")
         + "\n"
@@ -9518,7 +9517,7 @@ def test_a_mood_change_repaints_the_bands_instead_of_tinting_the_figure():
     source = _world_source()
     light = _served_config(source)["light"]
     apply_block = _js_block(source, "function applyMood(")
-    repaint_block = _js_block(source, "function repaint(")
+    repaint_block = function_source("shading.js", "repaint")
     emitted = _run_node(_mood_paint_driver(source, apply_block, repaint_block))
 
     base = _rgb(BODY_BASE_FILL)
@@ -10066,7 +10065,7 @@ def _ambient_lights_driver(*, plate_ready: bool, lights: list | None = None) -> 
         "const layers = { plate: { children: [],\n"
         "  addChild(c) { this.children.push(c); } } };\n"
         "let ambientLightSprites = [];\n"
-        + _js_block(source, "function snap(")
+        + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
         + "\n"
@@ -10614,9 +10613,9 @@ def test_both_shoes_sit_between_the_floor_and_the_jeans():
     rendered = _run_node(
         "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
         + _js_const(source, "LIGHT")
-        + _js_block(source, "function mixHex(") + "\n"
-        + _js_block(source, "function shade(") + "\n"
-        + _js_block(source, "function rampLevel(") + "\n"
+        + function_source("shading.js", "mixHex") + "\n"
+        + function_source("shading.js", "shade") + "\n"
+        + function_source("shading.js", "rampLevel") + "\n"
         + f"console.log(JSON.stringify({json.dumps(shoes)}.map((c) => shade(c, rampLevel('base')))));"
     )
     far, near = measure_floor_band()
@@ -11187,7 +11186,7 @@ def _mood_blind_driver(source: str, bodies_block: str) -> str:
         + _js_const(source, "LIGHT")
         + _js_block(source, "const HUMAN = {") + ";\n"
         + _js_block(source, "const MACHINE = {") + ";\n"
-        + _js_block(source, "function mixHex(") + "\n"
+        + function_source("shading.js", "mixHex") + "\n"
         + """
         class FakeGraphics {
           constructor() {
@@ -11213,12 +11212,12 @@ def _mood_blind_driver(source: str, bodies_block: str) -> str:
           g.context.instructions.push("fill");
         }
         """
-        + _js_block(source, "function snap(") + "\n"
+        + function_source("tiers.js", "snap") + "\n"
         + _js_const(source, "CELL") + "\n"
         + _js_const(source, "CAST_SCALE") + "\n"
         + bodies_block + ";\n"
         + _seated_rig_block(source) + "\n"
-        + _js_block(source, "function moodBlindParts(") + "\n"
+        + function_source("shading.js", "moodBlindParts") + "\n"
         + """
         const out = {};
         for (const style of Object.keys(BODIES)) {
@@ -11279,8 +11278,7 @@ def test_a_mood_blind_part_is_found_below_its_accent():
     """`repaint` descends an accent's children (the seated forearm is a child
     of its upper arm), so the check must too — and must pass over a
     Graphics that drew nothing, which is a joint, not a part."""
-    source = _world_source()
-    driver = _js_block(source, "function moodBlindParts(") + """
+    driver = function_source("shading.js", "moodBlindParts") + """
         const g = (drew, volumes, children) => ({
           context: { instructions: drew ? ["fill"] : [] },
           volumes, children,
