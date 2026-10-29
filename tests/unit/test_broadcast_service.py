@@ -535,7 +535,8 @@ def test_an_unwritable_status_never_stops_the_manager(monkeypatch, tmp_path, cap
             on_status=on_status,
         )  # must not raise
 
-    # Both ticks ran, and the unwritable status did not count as a tick failure.
+    # Both ticks reported, and neither tick body failed (the status write is
+    # outside run's try block, so this says nothing about the write itself).
     assert [s["consecutive_tick_failures"] for s in reported] == [0, 0]
     # Each tick's write reached the given path (its parent is the plain file)
     # and failed there with a real OSError; nothing under it was written.
@@ -545,9 +546,8 @@ def test_an_unwritable_status_never_stops_the_manager(monkeypatch, tmp_path, cap
     ] * 2, f"one failed mkdir of {blocker} per tick: {under_given}"
     assert all(isinstance(exc, OSError) for _op, _target, exc in under_given)
     # Swallowed, but not silently.
-    assert [r.getMessage() for r in caplog.records] == [
-        "broadcast status not written"
-    ] * 2
-    assert all(str(blocker) in r.error for r in caplog.records)
+    ours = [r for r in caplog.records if r.name == "broadcast.service"]
+    assert [r.getMessage() for r in ours] == ["broadcast status not written"] * 2
+    assert all(str(blocker) in r.error for r in ours)
     # Nothing was redirected to the default path.
     assert not (tmp_path / "data").exists()

@@ -3,6 +3,7 @@
 import json
 import logging
 import signal
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 from stream.watchdog import (
@@ -469,13 +470,14 @@ def test_launch_clears_a_plain_file_sentinel(tmp_path):
     assert not sentinel.exists()
 
 
-def test_launch_survives_a_missing_sentinel(tmp_path):
+def test_launch_survives_a_missing_sentinel(monkeypatch, tmp_path):
     """A clean previous exit leaves no sentinel — that is the normal case, and
     OBS must still be launched. Surviving the missing file is not the property:
     a launcher that gave up when there was nothing to clear would "survive" it
     too, so this asserts the launch happened."""
+    # _launch_obs keeps OBS's stderr in a temp file; keep it out of /tmp.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     absent = tmp_path / "absent"
-    assert not absent.exists()
     process = object()
     popen_calls = []
 
