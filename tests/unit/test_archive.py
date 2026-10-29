@@ -5,6 +5,8 @@ import pytest
 from model.archive import (
     DEPTH_FEATURES,
     METRICS_FEATURES,
+    DEPTH_MAX_AGE,
+    METRICS_MAX_AGE,
     METRICS_STEP,
     asof,
     check_stamp_convention,
@@ -135,6 +137,40 @@ def test_a_row_older_than_the_max_age_at_the_close_is_nan_not_carried():
     frame = _one_column(["2024-12-31 23:50"])
     got = asof(frame, frame.index, _grid(1), pd.Timedelta("15min"))
     assert np.isnan(got["v"].iloc[0])
+
+
+def _one_metrics_row(stamp="2025-01-01 00:00"):
+    index = pd.DatetimeIndex([pd.Timestamp(stamp, tz="UTC")])
+    return pd.DataFrame({"oi": 1e4, "top_ratio": 1.5, "global_ratio": 1.2,
+                         "taker_ratio": 0.9}, index=index)
+
+
+def _bars_opening_at(*stamps):
+    return pd.DatetimeIndex([pd.Timestamp(s, tz="UTC") for s in stamps])
+
+
+def test_a_metrics_row_is_carried_for_exactly_15_minutes_at_the_close_and_no_longer():
+    """KI-096: METRICS_MAX_AGE feeds the as-of join. A row stamped 00:00 (no
+    delay) is 15 min old at the 00:15 close and 16 min old at the 00:16 close;
+    a window widened to a day carries it, one narrowed by a minute drops it."""
+    assert METRICS_MAX_AGE == pd.Timedelta(minutes=15)
+    bars = _bars_opening_at("2025-01-01 00:00", "2025-01-01 00:01")
+    got = metrics_features(_one_metrics_row(), bars, pd.Timedelta(0))["top_ls"]
+    assert got.iloc[0] == pytest.approx(np.log(1.5))
+    assert np.isnan(got.iloc[1])
+
+
+def test_a_depth_snapshot_is_carried_for_exactly_10_minutes_at_the_close_and_no_longer():
+    """KI-096: DEPTH_MAX_AGE, same boundary. A snapshot at 00:05 is 10 min old
+    at the 00:15 close and 11 min old at the 00:16 close."""
+    assert DEPTH_MAX_AGE == pd.Timedelta(minutes=10)
+    index = _bars_opening_at("2025-01-01 00:05")
+    depth = pd.DataFrame({"bid1": 3.0, "ask1": 1.0, "bid2": 7.0, "ask2": 3.0},
+                         index=index)
+    bars = _bars_opening_at("2025-01-01 00:00", "2025-01-01 00:01")
+    got = depth_features(depth, bars)["depth_imb_1"]
+    assert got.iloc[0] == pytest.approx(0.5)
+    assert np.isnan(got.iloc[1])
 
 
 def test_the_5min_delay_hides_the_row_stamped_at_the_close():
