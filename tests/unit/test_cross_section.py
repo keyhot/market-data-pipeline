@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import model.cross_section as cross_section
 from model.cross_section import (
     block_bootstrap_ci,
     bridge_market_wide_gaps,
@@ -272,6 +273,43 @@ def test_walk_forward_scores_do_not_see_targets_from_the_month_they_score():
         stop = R + pd.offsets.MonthBegin(1)
         span = (base.index >= R) & (base.index < stop)
         pd.testing.assert_frame_equal(base[span], again[span])
+
+
+@pytest.mark.parametrize("bad", [
+    pytest.param(lambda p, call: np.full(p, np.nan), id="all-nan"),
+    pytest.param(lambda p, call: np.r_[np.nan, np.ones(p - 1)], id="first-nan"),
+    pytest.param(lambda p, call: np.r_[np.ones(p - 1), np.nan], id="last-nan"),
+    pytest.param(lambda p, call: np.r_[np.inf, np.ones(p - 1)], id="inf"),
+    pytest.param(lambda p, call: np.r_[np.ones(p - 1), -np.inf], id="neg-inf"),
+    pytest.param(lambda p, call: np.full(p, np.nan if call == 0 else 1.0),
+                 id="only-the-first-refit"),
+])
+def test_a_non_finite_ridge_beta_fails_loud_instead_of_flattening_the_book(
+        bad, monkeypatch):
+    """KI-101: under pandas>=3 `stack()` keeps NaN, `fit_ridge` returns NaN and
+    every score is NaN -- a flat book and a silent FALSIFIED. The guard is on
+    beta itself, so it is tested through `fit_ridge`, not a NaN feature column
+    (which pandas<3 drops before the fit and so never reaches it). Any
+    coefficient, either infinity, and any single refit month must trip it."""
+    close, qv = _panel(240, 30)
+    elig = eligibility(qv, qv, warmup=31, liquidity_window=5, top_n=30)
+    feats = daily_features(close, pd.DataFrame(0.0, index=close.index,
+                                               columns=close.columns))
+    target = forward_returns(close)
+    start, end = pd.Timestamp("2021-05-01", tz="UTC"), pd.Timestamp("2021-06-15", tz="UTC")
+    kwargs = dict(features=feats, target=target, eligible=elig, start=start,
+                  end=end, min_train_days=60)
+    assert np.isfinite(walk_forward_scores(**kwargs).to_numpy()[elig.to_numpy()]).any()
+
+    calls = []
+
+    def broken_fit(X, y, lam=1.0):
+        calls.append(1)
+        return bad(X.shape[1], len(calls) - 1)
+
+    monkeypatch.setattr(cross_section, "fit_ridge", broken_fit)
+    with pytest.raises(AssertionError, match="beta"):
+        walk_forward_scores(**kwargs)
 
 
 def test_cs_rank_is_neutral_for_missing_values_and_blank_outside_the_universe():
