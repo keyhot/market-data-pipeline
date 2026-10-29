@@ -30,6 +30,7 @@ REPO = TESTS.parent
 OPT_IN = "MDP_TEST_DATABASE_URL"
 LIVE_URL = "postgresql://market_data:market_data@localhost:5432/market_data"
 TEST_URL = "postgresql://tester:hunter2@localhost:55432/mdp_test_ki106"
+_NAME_QUERY = "SELECT pg_catalog.current_database()"
 
 
 class _FakeConnection:
@@ -108,6 +109,7 @@ def test_the_skip_reason_names_the_opt_in_variable():
         "MDP_TEST_X",
         "xmdp_test_a",
         "mdp_test_",
+        "mdp_test_other",  # a test name, but not the one the URL names
     ],
 )
 def test_a_database_that_is_not_a_test_database_is_refused_before_any_write(reported):
@@ -122,7 +124,7 @@ def test_a_database_that_is_not_a_test_database_is_refused_before_any_write(repo
     assert "mdp_test_" in message
     # The only thing the guard ever sends is the name query, on a connection
     # it closes again.
-    assert server.statements == ["SELECT current_database()"]
+    assert server.statements == [_NAME_QUERY]
     assert all(conn.closed for conn in server.connections)
     assert "hunter2" not in message
 
@@ -135,6 +137,10 @@ def test_a_database_that_is_not_a_test_database_is_refused_before_any_write(repo
         "postgresql://u:hunter2@localhost:55432,localhost:5432/mdp_test_x",
         "postgresql://u:hunter2@localhost:55432,localhost:55433/mdp_test_x",
         "postgresql://u:hunter2@localhost:abc/mdp_test_x",
+        "postgresql://u:hunter2@localhost:70968/mdp_test_x",
+        "postgresql://u:hunter2@localhost:0/mdp_test_x",
+        "postgresql://u:hunter2@localhost:55432/mdp_test_x?hostaddr=127.0.0.1,10.0.0.1",
+        "postgresql://u:hunter2@localhost:55432/mdp_test_x?service=prod",
         "host=localhost port=5432 dbname=mdp_test_x user=u password=hunter2",
         "host=localhost dbname=mdp_test_x user=u password=hunter2",
         LIVE_URL,
@@ -223,7 +229,7 @@ def test_a_test_database_off_port_5432_is_accepted_and_described(
         port,
         dbname,
     )
-    assert server.statements == ["SELECT current_database()"]
+    assert server.statements == [_NAME_QUERY]
     assert server.connections[0].closed
     # The probe is bounded: a black-holed host must not hang the run.
     assert server.calls[0][1].get("connect_timeout")
@@ -240,7 +246,10 @@ def test_a_test_database_off_port_5432_is_accepted_and_described(
     [
         ("postgresql://u:p@localhost:55432/mdp_test_x", True),
         ("host=127.0.0.1 port=55432 dbname=mdp_test_x", True),
+        # By design the gate is about the port; names are the session check's.
+        ("postgresql://u:p@localhost:55432/market_data", True),
         ("postgresql://u:p@localhost:5432/market_data", False),
+        ("postgresql://u:p@localhost:55432/x?service=prod", False),
         ("postgresql://u:p@localhost/market_data", False),
         ("host=localhost dbname=x", False),
         ("postgresql://u:p@a:55432,b:5432/x", False),
@@ -256,27 +265,48 @@ def test_the_gate_lets_only_an_explicit_non_5432_port_through(conninfo, allowed)
             db_guard.check_conninfo(conninfo)
 
 
+def test_the_gate_reads_host_and_port_keywords_too():
+    with pytest.raises(db_guard.GuardRefusal):
+        db_guard.check_conninfo(TEST_URL, port=5432)
+    with pytest.raises(db_guard.GuardRefusal):
+        db_guard.check_conninfo("host=h", port="5432")
+    with pytest.raises(db_guard.GuardRefusal):
+        db_guard.check_conninfo("host=h", hostaddr="127.0.0.1,10.0.0.1", port=55432)
+    db_guard.check_conninfo("host=h", port=55432)
+    db_guard.check_conninfo("host=h port=5432", port=55432)  # the keyword wins
+
+
 def test_the_gate_stops_every_psycopg_entry_point_before_the_real_connect(
     monkeypatch,
 ):
+    from storage import db
+
     reached = []
 
     def spy(conninfo="", *args, **kwargs):
         reached.append(conninfo)
         return "connection"
 
+    # Shaped like the real thing: psycopg.Connection.connect is a classmethod.
     monkeypatch.setattr(psycopg, "connect", spy)
-    monkeypatch.setattr(psycopg.Connection, "connect", staticmethod(spy))
+    monkeypatch.setattr(
+        psycopg.Connection,
+        "connect",
+        classmethod(lambda cls, conninfo="", *a, **k: spy(conninfo, *a, **k)),
+    )
+    monkeypatch.setattr(db, "ConnectionPool", spy)
     db_guard.install_connection_gate(monkeypatch)
 
-    for entry in (psycopg.connect, psycopg.Connection.connect):
+    for entry in (psycopg.connect, psycopg.Connection.connect, db.ConnectionPool):
         with pytest.raises(db_guard.GuardRefusal):
             entry(LIVE_URL, connect_timeout=2)
         with pytest.raises(db_guard.GuardRefusal):
             entry(conninfo="host=localhost dbname=x")
         assert entry(TEST_URL) == "connection"
+    with pytest.raises(db_guard.GuardRefusal):
+        db.ConnectionPool(TEST_URL, kwargs={"port": 5432})  # the pool's own kwargs
 
-    assert reached == [TEST_URL, TEST_URL]
+    assert reached == [TEST_URL] * 3
 
 
 def test_the_default_url_is_pinned_away_from_5432(monkeypatch):
@@ -352,7 +382,7 @@ def test_the_import_time_scan_sees_what_it_is_meant_to_see():
 
 
 def test_no_integration_module_connects_at_collection():
-    modules = sorted((TESTS / "integration").glob("*.py"))
+    modules = sorted((TESTS / "integration").rglob("*.py"))
     assert modules, "tests/integration has no modules — the scan is broken"
     offenders = {
         path.name: found
@@ -362,6 +392,45 @@ def test_no_integration_module_connects_at_collection():
     assert offenders == {}, (
         "these integration modules connect while pytest is collecting, before "
         f"any opt-in is consulted: {offenders}"
+    )
+
+
+def broad_fixtures(source):
+    """Fixtures wider than function scope: they would run before the
+    function-scoped autouse guard in tests/integration/conftest.py."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for deco in node.decorator_list:
+            if isinstance(deco, ast.Call):
+                for kw in deco.keywords:
+                    value = kw.value
+                    is_function = (
+                        isinstance(value, ast.Constant) and value.value == "function"
+                    )
+                    if kw.arg == "scope" and not is_function:
+                        found.append((node.name, ast.unparse(value)))
+    return found
+
+
+def test_the_broad_fixture_scan_sees_what_it_is_meant_to_see():
+    assert broad_fixtures("@pytest.fixture(scope='session')\ndef f(): ...") == [
+        ("f", "'session'")
+    ]
+    assert broad_fixtures("@pytest.fixture(scope='function')\ndef f(): ...") == []
+    assert broad_fixtures("@pytest.fixture\ndef f(): ...") == []
+
+
+def test_integration_modules_define_no_fixture_wider_than_a_function():
+    offenders = {
+        path.name: found
+        for path in sorted((TESTS / "integration").rglob("test_*.py"))
+        if (found := broad_fixtures(path.read_text()))
+    }
+    assert offenders == {}, (
+        "a module/class/session fixture in tests/integration would run before "
+        f"the per-test guard has pinned the URL: {offenders}"
     )
 
 
@@ -376,7 +445,33 @@ import psycopg
 _LOG = os.environ["MDP_GUARD_ATTEMPT_LOG"]
 
 
+class _FakeServer:
+    """What the guard's `SELECT pg_catalog.current_database()` talks to."""
+
+    def __init__(self, name):
+        self._name = name
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        assert sql == "SELECT pg_catalog.current_database()", sql
+        return self
+
+    def fetchone(self):
+        return (self._name,)
+
+
 def _blocked(*args, **kwargs):
+    fake = os.environ.get("MDP_GUARD_FAKE_DB")
+    conninfo = args[0] if args else kwargs.get("conninfo", "")
+    if fake and kwargs.get("autocommit") is True and (
+        conninfo == os.environ.get("MDP_TEST_DATABASE_URL")
+    ):
+        return _FakeServer(fake)
     with open(_LOG, "a") as fh:
         fh.write("connect attempted\\n")
     raise RuntimeError("blocked: the guard's end-to-end test allows no connection")
@@ -416,10 +511,41 @@ def test_offline_but_reaches_for_the_database():
         pass  # swallowed, like api/routers/world.py swallows enrichment errors
 '''
 
+_SAMPLE_PINNED = '''
+import os
+
+import psycopg
+import pytest
+
+import db_guard
+from storage import db
+
+
+def test_the_guard_pinned_everything():
+    url = os.environ["MDP_TEST_DATABASE_URL"]
+    assert os.environ["DATABASE_URL"] == url
+    assert db._DEFAULT_DATABASE_URL == url
+    assert db._pool is None
+    live = "postgresql://u@localhost:5432/market_data"
+    for entry in (psycopg.connect, psycopg.Connection.connect, db.ConnectionPool):
+        with pytest.raises(db_guard.GuardRefusal):
+            entry(live)
+'''
+
+_SAMPLE_COLLECTION = '''
+from storage.db import ping
+
+UP = ping()  # a module-level probe, the shape the audit found three times
+
+
+def test_never_reached():
+    assert UP is False
+'''
+
 _SCRUBBED = ("DATABASE_URL", OPT_IN, "POSTGRES_DISPOSABLE", "DEPLOY_ROLE")
 
 
-def _scratch_run(tmp_path, opt_in):
+def _scratch_run(tmp_path, opt_in, sample=None, fake_db=None):
     """Run pytest on a copy of the real conftest files plus a sample module.
 
     Returns (completed process, text of the attempt log)."""
@@ -429,7 +555,7 @@ def _scratch_run(tmp_path, opt_in):
     shutil.copy(TESTS / "conftest.py", project / "tests")
     shutil.copy(TESTS / "db_guard.py", project / "tests")
     shutil.copy(TESTS / "integration" / "conftest.py", integration)
-    (integration / "test_sample.py").write_text(_SAMPLE)
+    (integration / "test_sample.py").write_text(sample or _SAMPLE)
     (tmp_path / "guard_blocker.py").write_text(_BLOCKER)
     log = tmp_path / "attempts.log"
     env = {
@@ -441,6 +567,8 @@ def _scratch_run(tmp_path, opt_in):
     env["MDP_GUARD_ATTEMPT_LOG"] = str(log)
     if opt_in is not None:
         env[OPT_IN] = opt_in
+    if fake_db is not None:
+        env["MDP_GUARD_FAKE_DB"] = fake_db
     result = subprocess.run(
         [
             sys.executable, "-m", "pytest", "-p", "guard_blocker",
@@ -484,3 +612,44 @@ def test_end_to_end_the_opt_in_on_port_5432_aborts_the_run_before_any_connection
     assert result.returncode == 4, output
     assert OPT_IN in output and "5432" in output, output
     assert "hunter2" not in output, output
+
+
+def test_end_to_end_a_server_reporting_a_non_test_name_aborts_the_run(tmp_path):
+    result, attempts = _scratch_run(
+        tmp_path,
+        opt_in="postgresql://u:hunter2@127.0.0.1:55999/mdp_test_x",
+        sample=_SAMPLE_PINNED,
+        fake_db="market_data",
+    )
+    output = result.stdout + result.stderr
+
+    assert attempts == "", output
+    assert result.returncode == 4, output
+    assert "'market_data'" in output and "not a test database" in output, output
+    assert "passed" not in output, output
+
+
+def test_end_to_end_a_verified_database_is_announced_and_everything_is_pinned(
+    tmp_path,
+):
+    result, attempts = _scratch_run(
+        tmp_path,
+        opt_in="postgresql://u:hunter2@127.0.0.1:55999/mdp_test_x",
+        sample=_SAMPLE_PINNED,
+        fake_db="mdp_test_x",
+    )
+    output = result.stdout + result.stderr
+
+    assert attempts == "", output
+    assert "'mdp_test_x'" in output and "127.0.0.1:55999" in output, output
+    assert "hunter2" not in output, output
+    assert "1 passed" in output and result.returncode == 0, output
+
+
+def test_end_to_end_a_module_that_connects_at_import_aborts_collection(tmp_path):
+    result, attempts = _scratch_run(tmp_path, opt_in=None, sample=_SAMPLE_COLLECTION)
+    output = result.stdout + result.stderr
+
+    assert attempts == "", output  # refused by the guard, never reaching the recorder
+    assert result.returncode == 4, output
+    assert "while pytest was collecting" in output, output

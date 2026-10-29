@@ -317,7 +317,8 @@ def test_signal_resolution_round_trip():
     real_unresolved = postgres_store.get_unresolved_signals
 
     def only_test_symbols(*args, **kwargs):
-        queue = real_unresolved(*args, **kwargs)
+        # No LIMIT 500 window that foreign rows could fill ahead of ours.
+        queue = real_unresolved(limit=1_000_000)
         return [s for s in queue if s["symbol"] in _TEST_SYMBOLS]
 
     signal_ts = datetime(2026, 1, 5, tzinfo=timezone.utc)
