@@ -9,6 +9,7 @@ routers; none of them imports this one.
 """
 
 import asyncio
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,6 +30,21 @@ from ingestion.binance_ws import (
 from scheduler.service import scheduler_enabled
 from scheduler.watchlist import load_watchlist
 from schemas.responses import ApiResponse
+from storage.migrations import check_migration_ledger
+
+
+def _run_ledger_check() -> None:
+    """KI-091: log what the migration ledger says; never raise, never block boot.
+
+    It only reads, and `check_migration_ledger` already catches its own
+    failures — the try/except is for the call itself, because a thread that
+    dies with a traceback would be the one new way this startup could be
+    noisy. Looked up through this module's globals so tests can replace it.
+    """
+    try:
+        check_migration_ledger()
+    except Exception:
+        logger.warning("Migration ledger check failed", exc_info=True)
 
 
 @asynccontextmanager
@@ -41,6 +57,12 @@ async def lifespan(app: FastAPI):
         if symbols:
             ingester = BinanceKlineIngester(symbols)
             ws_task = asyncio.create_task(ingester.run())
+    # Off the startup path: an unreachable database costs its connect timeout,
+    # and the app must not wait for that to start serving. Daemon, so a slow
+    # probe cannot hold shutdown either.
+    threading.Thread(
+        target=_run_ledger_check, name="migration-ledger-check", daemon=True
+    ).start()
     yield
     if ws_task is not None:
         ws_task.cancel()
