@@ -10,6 +10,11 @@ cache. 2026 is never fetched and never read.
     poetry run python scripts/archive_report.py --fetch            # rerunnable
     poetry run python scripts/archive_report.py --symbol BTCUSDT --control-only
     poetry run python scripts/archive_report.py --symbol BTCUSDT   # the arms
+
+KI-092: the metrics arm's delay is per stamp-convention year by default and
+writes `archive_<symbol>_metrics_ki092` (a declared diagnostic, vault
+`Docs/ki-092-regime-delay-declaration.md`); `--legacy-delay` restores the
+frozen run's one whole-sample delay and its result name.
 """
 
 import argparse
@@ -34,6 +39,7 @@ from model.archive import (  # noqa: E402
     DEPTH_FEATURES,
     METRICS_FEATURES,
     check_stamp_convention,
+    combine_days,
     depth_features,
     leaked_control,
     metrics_features,
@@ -116,8 +122,7 @@ def fetch() -> None:
         for symbol in SYMBOLS:
             paths = [p for p in (_zip_path(dataset, symbol, d) for d in days)
                      if p.exists()]
-            frame = pd.concat(parse[dataset](_read_zip(p)) for p in paths)
-            frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+            frame = combine_days(parse[dataset](_read_zip(p)) for p in paths)
             frame.to_csv(_cache(dataset, symbol), index_label="stamp")
             print(f"  cached {len(frame):,} {dataset} rows -> "
                   f"{_cache(dataset, symbol)}", flush=True)
@@ -156,14 +161,30 @@ def _walk_forward(arms: dict, y: pd.Series, forward: pd.Series,
     return pd.concat(chunks)
 
 
-def collect(symbol: str, arm: str, control_only: bool) -> tuple[pd.DataFrame, dict]:
+def metrics_delay(info: dict, legacy: bool):
+    """KI-092: each stamp-convention year's own delay by default; `legacy`
+    restores the frozen E12 run's one whole-sample delay."""
+    info["delay_mode"] = "legacy" if legacy else "per_year"
+    return info["delay"] if legacy else info["delays"]
+
+
+def _result_name(symbol: str, arm: str, info: dict) -> str:
+    """The frozen E12 record keeps its name; a per-year-delay run (KI-092) is
+    a declared diagnostic and writes beside it, never over it."""
+    suffix = "_ki092" if info.get("delay_mode") == "per_year" else ""
+    return f"archive_{symbol}_{arm}{suffix}"
+
+
+def collect(symbol: str, arm: str, control_only: bool,
+            legacy_delay: bool = False) -> tuple[pd.DataFrame, dict]:
     bars = _perp_bars(symbol)
     close = _normalize(bars)["close"]
     info: dict = {}
     if arm == "metrics":
         metrics = _load("metrics", symbol)
         info = check_stamp_convention(metrics, close)  # before any AUC
-        feats = metrics_features(metrics, close.index, info["delay"])
+        feats = metrics_features(metrics, close.index,
+                                 metrics_delay(info, legacy_delay))
     else:
         feats = depth_features(_load("bookDepth", symbol), close.index)
     names, control_col, years = ARMS[arm]
@@ -195,14 +216,22 @@ def report(symbol: str, arm: str, oos: pd.DataFrame, info: dict) -> dict:
     if "delay" in info:
         print(f"  stamp convention: corr(taker, bar return) close-row "
               f"{info['corr_close_row']:+.3f} vs open-row "
-              f"{info['corr_open_row']:+.3f} -> delay {info['delay']}")
+              f"{info['corr_open_row']:+.3f} -> whole-sample delay {info['delay']}")
+        for year, (c, o) in info.get("by_year", {}).items():
+            print(f"    {year}: close-row {c:+.3f} open-row {o:+.3f} -> "
+                  f"delay {info['delays'][year]}")
+        print(f"  delay used: {info.get('delay_mode', 'legacy')}")
     print(f"  positive control ΔAUC {control:+.4f} "
           f"(must exceed +{CONTROL_MIN_DELTA})")
+    name = _result_name(symbol, arm, info)
+    inputs = {"symbol": symbol, "arm": arm, "rows": len(oos),
+              "row_share": info["row_share"]}
+    if info.get("delay_mode") == "per_year":
+        inputs["delays"] = {str(y): str(d) for y, d in info["delays"].items()}
     if arm not in oos:
         write_result(
-            f"archive_{symbol}_{arm}",
-            inputs={"symbol": symbol, "arm": arm, "rows": len(oos),
-                   "row_share": info["row_share"]},
+            name,
+            inputs=inputs,
             parameters={"control_min_delta": CONTROL_MIN_DELTA},
             statistic={"control_delta_auc": control},
             ci=None,
@@ -229,9 +258,8 @@ def report(symbol: str, arm: str, oos: pd.DataFrame, info: dict) -> dict:
                verdict="VOID" if not valid else ("PASS" if passed else "FAIL"))
     print(f"  symbol verdict: {out['verdict']}")
     write_result(
-        f"archive_{symbol}_{arm}",
-        inputs={"symbol": symbol, "arm": arm, "rows": len(oos),
-               "row_share": info["row_share"]},
+        name,
+        inputs=inputs,
         parameters={"control_min_delta": CONTROL_MIN_DELTA,
                     "min_gross_bps": MIN_GROSS_BPS,
                     "min_row_share": MIN_ROW_SHARE},
@@ -250,13 +278,17 @@ def main() -> None:
     parser.add_argument("--fetch", action="store_true")
     parser.add_argument("--control-only", action="store_true",
                         help="score base and the leaked control, never the arm")
+    parser.add_argument("--legacy-delay", action="store_true",
+                        help="the frozen E12 run's one whole-sample metrics "
+                             "delay (KI-092), under its original result name")
     args = parser.parse_args()
     if args.fetch:
         fetch()
     if args.symbol:
         for arm in args.arm or tuple(ARMS):
             report(args.symbol, arm,
-                   *collect(args.symbol, arm, args.control_only))
+                   *collect(args.symbol, arm, args.control_only,
+                            args.legacy_delay))
 
 
 if __name__ == "__main__":
