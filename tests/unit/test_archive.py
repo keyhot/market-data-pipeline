@@ -328,6 +328,17 @@ def test_the_as_run_window_is_the_bars_own_on_both_sides_of_a_stamp_flip():
     assert window[seam][0] == pytest.approx(-2)
 
 
+def test_a_fallback_row_after_the_seam_windows_only_periods_ending_after_it():
+    """With the 00:10 row missing, the bar closing 00:15 falls back to the
+    00:05 row. Its taker window is the periods ENDING in (23:55, 00:10] --
+    the 2024 rows 00:00 and 00:05 -- not the stamps in (23:50, 00:05], which
+    would pull in the 2023 period ending 23:55 (agy review, verified)."""
+    metrics = _flipped_archive().drop(_SEAM + 2 * METRICS_STEP)
+    feats = metrics_features(metrics, pd.DatetimeIndex([_SEAM], tz="UTC"), _FLIP)
+    assert feats.top_ls.iloc[0] / _UNIT == pytest.approx(2)  # the 00:05 row
+    assert feats.taker_ls.iloc[0] / _UNIT == pytest.approx(1.5)
+
+
 @pytest.mark.parametrize("delay", [pd.Timedelta(0), METRICS_STEP])
 def test_a_year_map_that_agrees_everywhere_is_exactly_the_scalar_delay(delay):
     metrics = _metrics(n_rows=4000, start="2023-12-25")

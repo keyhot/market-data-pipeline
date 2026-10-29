@@ -152,12 +152,11 @@ def metrics_features(metrics: pd.DataFrame, bars: pd.DatetimeIndex,
     5 min when they start it — see `check_stamp_convention`). `delay` is one
     Timedelta for the whole sample (the frozen E12 run), or a {year: delay}
     map (`check_stamp_convention`'s "delays"; KI-092), applied per row by its
-    stamp's year (`row_delays`). A map whose years all agree on d gives
-    exactly the scalar d."""
+    stamp's year (`row_delays`; a year missing from the map gets 5 min). A
+    map that gives every row's year the same d is exactly the scalar d."""
     cols = ["oi", "top_ratio", "global_ratio", "taker_ratio"]
     valid = metrics[cols][(metrics[cols] > 0).all(axis=1)]  # 0 OI rows exist
     logs = np.log(valid)
-    logs["taker_15"] = logs["taker_ratio"].rolling("15min").mean()
     if isinstance(delay, Mapping):
         available = logs.index + row_delays(logs.index, delay)
     else:
@@ -165,6 +164,11 @@ def metrics_features(metrics: pd.DataFrame, bars: pd.DatetimeIndex,
     if not available.is_monotonic_increasing:  # asof's searchsorted needs it
         raise ValueError("metrics availability times run backwards across a "
                          "delay change; the as-of join would mis-pick rows")
+    # The taker window rolls on availability, which is each row's period END
+    # in both regimes, so a window never mixes the two stamp conventions;
+    # under one scalar delay it is the same window as rolling on the stamps.
+    taker = pd.Series(logs["taker_ratio"].to_numpy(), index=available)
+    logs["taker_15"] = taker.rolling("15min").mean().to_numpy()
     joined = asof(logs, available, bars, METRICS_MAX_AGE)
     oi = joined["oi"]
     feats = pd.DataFrame(index=bars)
