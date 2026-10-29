@@ -133,6 +133,15 @@ def test_a_row_one_step_after_the_bar_close_is_not_seen_by_that_bar():
     assert got["v"].iloc[0] == 1.0
 
 
+def test_a_bar_that_closes_before_the_first_row_exists_sees_nothing_not_the_first_row():
+    """A bar closing before any row is available gets NaN. Without the
+    `seen` guard the clamped position picks row 0, whose age is negative and so
+    passes the max-age test -- the future leaks into the head of the series."""
+    frame = _one_column(["2025-01-01 00:20"])
+    got = asof(frame, frame.index, _grid(1), pd.Timedelta("15min"))
+    assert np.isnan(got["v"].iloc[0])      # bar 00:00 closes at 00:15, row is at 00:20
+
+
 def test_a_row_older_than_the_max_age_at_the_close_is_nan_not_carried():
     frame = _one_column(["2024-12-31 23:50"])
     got = asof(frame, frame.index, _grid(1), pd.Timedelta("15min"))
