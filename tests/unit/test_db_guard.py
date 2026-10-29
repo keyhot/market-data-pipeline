@@ -272,6 +272,12 @@ def test_the_gate_reads_host_and_port_keywords_too():
         db_guard.check_conninfo("host=h", port="5432")
     with pytest.raises(db_guard.GuardRefusal):
         db_guard.check_conninfo("host=h", hostaddr="127.0.0.1,10.0.0.1", port=55432)
+    with pytest.raises(db_guard.GuardRefusal):
+        db_guard.check_conninfo(TEST_URL, service="prod")
+    with pytest.raises(db_guard.GuardRefusal):
+        db_guard.check_conninfo("port=55432")  # libpq would fill the host in
+    with pytest.raises(db_guard.GuardRefusal):
+        db_guard.check_conninfo(port=55432)
     db_guard.check_conninfo("host=h", port=55432)
     db_guard.check_conninfo("host=h port=5432", port=55432)  # the keyword wins
 
@@ -307,6 +313,17 @@ def test_the_gate_stops_every_psycopg_entry_point_before_the_real_connect(
         db.ConnectionPool(TEST_URL, kwargs={"port": 5432})  # the pool's own kwargs
 
     assert reached == [TEST_URL] * 3
+
+
+def test_ambient_libpq_routing_variables_are_scrubbed(monkeypatch):
+    for name in db_guard.ROUTING_ENV:
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("PGPASSWORD", "kept")
+
+    db_guard.scrub_routing_env(monkeypatch)
+
+    assert not [name for name in db_guard.ROUTING_ENV if name in os.environ]
+    assert os.environ["PGPASSWORD"] == "kept"
 
 
 def test_the_default_url_is_pinned_away_from_5432(monkeypatch):
@@ -400,16 +417,17 @@ def broad_fixtures(source):
     function-scoped autouse guard in tests/integration/conftest.py."""
     found = []
     for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.FunctionDef):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for deco in node.decorator_list:
             if isinstance(deco, ast.Call):
-                for kw in deco.keywords:
-                    value = kw.value
+                scopes = [kw.value for kw in deco.keywords if kw.arg == "scope"]
+                scopes += deco.args[:1]  # scope is also the first positional
+                for value in scopes:
                     is_function = (
                         isinstance(value, ast.Constant) and value.value == "function"
                     )
-                    if kw.arg == "scope" and not is_function:
+                    if not is_function:
                         found.append((node.name, ast.unparse(value)))
     return found
 
@@ -417,6 +435,12 @@ def broad_fixtures(source):
 def test_the_broad_fixture_scan_sees_what_it_is_meant_to_see():
     assert broad_fixtures("@pytest.fixture(scope='session')\ndef f(): ...") == [
         ("f", "'session'")
+    ]
+    assert broad_fixtures("@pytest.fixture('module')\ndef f(): ...") == [
+        ("f", "'module'")
+    ]
+    assert broad_fixtures("@pytest.fixture(scope='class')\nasync def f(): ...") == [
+        ("f", "'class'")
     ]
     assert broad_fixtures("@pytest.fixture(scope='function')\ndef f(): ...") == []
     assert broad_fixtures("@pytest.fixture\ndef f(): ...") == []

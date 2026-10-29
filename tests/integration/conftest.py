@@ -82,6 +82,7 @@ def pytest_collection_finish(session):
     # the session, then confirm what the server calls this database.
     gate = pytest.MonkeyPatch()
     _verified["gate"] = gate
+    db_guard.scrub_routing_env(gate)
     try:
         db_guard.install_connection_gate(gate)
         target = db_guard.check_opt_in(os.environ)

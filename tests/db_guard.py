@@ -187,6 +187,13 @@ def check_conninfo(conninfo: str = "", **kwargs) -> None:
     for key in ("host", "hostaddr", "port", "dbname", "service"):
         if kwargs.get(key) is not None:
             params[key] = str(kwargs[key])
+    if params.get("service"):
+        raise GuardRefusal(
+            "a test connection uses a libpq service entry, which can supply a "
+            "host the guard cannot see; spell out host, port and dbname"
+        )
+    if not (str(params.get("host") or "") + str(params.get("hostaddr") or "")).strip():
+        raise GuardRefusal("a test connection names no host; name it explicitly")
     _port_of(params, "a test connection")
 
 
@@ -217,6 +224,24 @@ def install_connection_gate(monkeypatch) -> None:
         psycopg.Connection, "connect", staticmethod(gated_class_connect)
     )
     monkeypatch.setattr(db, "ConnectionPool", gated_pool)
+
+
+# libpq fills any parameter the URL leaves out from these.
+ROUTING_ENV = (
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGDATABASE",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+)
+
+
+def scrub_routing_env(monkeypatch) -> None:
+    """The URL is explicit about where it goes; ambient libpq settings may not
+    redirect it (PGHOSTADDR in particular outranks host)."""
+    for name in ROUTING_ENV:
+        monkeypatch.delenv(name, raising=False)
 
 
 def pin_default_url(monkeypatch, url: str) -> None:
