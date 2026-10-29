@@ -277,6 +277,10 @@ def walk_forward_scores(features: dict[str, pd.DataFrame], target: pd.DataFrame,
             continue
         mask = days_level < refit
         beta = fit_ridge(stacked[mask].to_numpy(), y_all[mask].to_numpy(), lam)
+        # KI-101: pandas<3 `stack()` drops NaN rows, so beta is finite today; under
+        # pandas 3 it would be NaN, every score NaN, the book flat and E13 a
+        # silent FALSIFIED. Fail loud instead.
+        assert np.isfinite(beta).all(), f"non-finite ridge beta at refit {refit:%Y-%m-%d}"
         stop = refits[i + 1] if i + 1 < len(refits) else end + DAY
         span = (days_level >= refit) & (days_level < stop) & (days_level <= end)
         block = stacked[span]
