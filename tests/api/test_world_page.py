@@ -15,6 +15,7 @@ from world_node import (
     world_driver,
 )
 import dataclasses
+import functools
 import hashlib
 import json
 import math
@@ -1113,6 +1114,30 @@ def _catch_clause(draw_plate: str) -> str:
     assert clause.count("{") + 1 == clause.count("}"), clause
     assert re.search(r"\}\s*\}\s*$", clause), "drawPlate no longer ends in its catch"
     return clause
+
+
+_TICKER_JS = """
+await boot();
+const { app } = need(await W("boot.js"), "app");
+const { startAmbient } = need(await W("ambient.js"), "startAmbient");
+const added = [];
+app.ticker = { add(fn) { added.push(fn); } };
+startAmbient();
+console.log(JSON.stringify(added.map((fn) => fn.toString())));
+"""
+
+
+@functools.lru_cache(maxsize=1)
+def _ambient_ticker_source() -> str:
+    """The per-frame callback `startAmbient` hands to `app.ticker.add`, as the
+    engine reports its text (`Function.prototype.toString`): the real
+    `startAmbient` run under node against a ticker that keeps what it is given.
+    Exactly one callback, so a second per-frame callback added to
+    `startAmbient` must be looked at here rather than slip past the
+    allocation checks below."""
+    added = run_world(_TICKER_JS)
+    assert len(added) == 1, f"startAmbient registered {len(added)} tickers"
+    return added[0]
 
 
 @needs_node
@@ -2250,25 +2275,51 @@ def test_the_arm_aliases_are_wired_from_the_real_accents_array():
     `armFar` already present (deliberately - Override 1 is about the
     animation table, not this wiring), which never exercises this specific
     assignment. Caught by hand-mutation: deleting it left every other test
-    in this file green (`character()` is never run end-to-end without a real
-    PIXI/app), so it gets its own.
+    in this file green (the animation tests hand-build their characters), so
+    it gets its own. Since #42 the real `character()` runs under the node
+    harness, so this drives it instead of lifting the `if` block out of its
+    text.
     """
-    source = _world_source()
-    driver = (
-        "const container = { pose: \"seated\" };\n"
-        "const accents = [{ id: 'near' }, { id: 'far' }];\n"
-        "const char = {};\n"
-        + _js_block(source, 'if (container.pose === "seated") {')
-        + "\n"
-        + """
+    # The real `character("TRADER")`, run under node (#42 harness) with
+    # PIXI parts that are DISTINCT objects: under the default stubs every
+    # `new PIXI.Graphics()` is the same catch-all, so `accents[0]` and
+    # `accents[1]` would be one object and a swapped or off-by-one alias would
+    # pass. Each part carries a `uid`; unknown members stay catch-alls.
+    emitted = _run_node(world_driver(
+        """
+        await boot();
+        const { character } = need(await W("character.js"), "character");
+        let uid = 0;
+        class Part {
+          constructor() {
+            return new Proxy({ uid: ++uid }, {
+              get: (t, k) => (k in t ? t[k] : fake),
+              set: (t, k, v) => { t[k] = v; return true; },
+            });
+          }
+        }
+        setPixi({ Graphics: Part, Container: Part });
+        const char = character("TRADER");
+        const standing = character("MODEL");
         console.log(JSON.stringify({
-          armNear: char.armNear && char.armNear.id,
-          armFar: char.armFar && char.armFar.id,
+          pose: char.container.pose,
+          standingAliased: "armNear" in standing || "armFar" in standing,
+          accents: char.accents.map((a) => a.uid),
+          armNear: char.armNear && char.armNear.uid,
+          armFar: char.armFar && char.armFar.uid,
         }));
         """
-    )
-    emitted = _run_node(driver)
-    assert emitted == {"armNear": "near", "armFar": "far"}
+    ))
+    # Preconditions first, so the identities below cannot hold by accident.
+    assert emitted["pose"] == "seated"
+    assert len(emitted["accents"]) >= 2
+    assert emitted["accents"][0] != emitted["accents"][1]
+    assert emitted["armNear"] == emitted["accents"][0]
+    assert emitted["armFar"] == emitted["accents"][1]
+    # The alias is the seated rig's alone: a standing body's `accents` are not
+    # arms, and naming two of them `armNear`/`armFar` would hand the seated
+    # animations something to swing on a figure that has no such limbs.
+    assert emitted["standingAliased"] is False
 
 
 @needs_node
@@ -7005,6 +7056,45 @@ def test_the_glow_layer_sits_above_the_room_and_below_monitors_props_and_chars()
                       "layers.foreground", "layers.nameplates"], order
 
 
+_VIGNETTE_TICK_JS = """
+await boot();
+const { app } = need(await W("boot.js"), "app");
+const { startAmbient, ambient } = need(
+  await W("ambient.js"), "startAmbient", "ambient");
+const room = need(await W("room.js"), "drawProceduralRoom", "plateReady");
+const added = [];
+app.ticker = { add(fn) { added.push(fn); } };
+startAmbient();
+if (added.length !== 1) throw new Error("expected one ticker: " + added.length);
+// Under the default stubs the procedural room's vignette is the shared
+// catch-all, which swallows every write. Draw the room once more with a
+// container that keeps its properties; `room.vignette` is a live binding, so
+// the ticker (which imports it) sees the new one.
+class Recorder {
+  constructor() {
+    return new Proxy({}, {
+      get: (t, k) => (k in t ? t[k] : fake),
+      set: (t, k, v) => { t[k] = v; return true; },
+    });
+  }
+}
+if (!room.plateReady) {
+  setPixi({ Container: Recorder });
+  room.drawProceduralRoom();
+}
+let threw = null;
+try { added[0]({ deltaMS: 16 }); } catch (e) { threw = String(e); }
+console.log(JSON.stringify({
+  plateReady: room.plateReady,
+  vignetteBuilt: room.vignette !== undefined,
+  threw,
+  alpha: room.vignette && typeof room.vignette.alpha === "number"
+    ? room.vignette.alpha : null,
+  eased: ambient.light.vignette,
+}));
+"""
+
+
 @needs_node
 def test_the_ambient_vignette_is_guarded_for_the_plate_path():
     """`vignette` (the Container) only exists on the procedural path —
@@ -7012,23 +7102,27 @@ def test_the_ambient_vignette_is_guarded_for_the_plate_path():
     success path never does. Setting `vignette.alpha` unconditionally inside
     the per-frame ticker throws the moment a plate loads, since the ticker
     runs every frame regardless of which room got drawn — this was the
-    crash hiding at the brief's stale `world.html:357`. Pinned as an
-    ordering/guard check, not a node run: the ticker closure captures too
-    much per-frame state (dt, ambient, drift, mixChannel) to usefully
-    re-run standalone.
+    crash hiding at the brief's stale `world.html:357`. Graded by running
+    the page's own ticker callback under node on both paths: with a plate
+    the vignette does not exist and a tick must not throw; on the procedural
+    room a tick writes the eased vignette alpha onto it. (This used to slice
+    the guard's source text; the callback is now captured from the real
+    `startAmbient`, one tick being cheap against the faked PIXI.)
     """
     ambient = function_source("ambient.js", "startAmbient")
     assert "if (!plateReady)" in ambient
-    guard = _js_block(
-        ambient[ambient.index("if (!plateReady)"):], "if (!plateReady)"
+    plate = _run_node(world_driver(_VIGNETTE_TICK_JS))
+    assert plate["plateReady"] is True and plate["vignetteBuilt"] is False
+    assert plate["threw"] is None, (
+        "the per-frame ticker touches the vignette on the plate path, "
+        f"where there is none: {plate['threw']}"
     )
-    assert "vignette.alpha" in guard, (
-        "vignette.alpha must be set only inside the !plateReady guard"
-    )
-    assert "vignette.alpha" not in ambient.replace(guard, "", 1), (
-        "vignette.alpha is also set OUTSIDE the guard — still crashes on the "
-        "plate path"
-    )
+    procedural = _run_node(world_driver(_VIGNETTE_TICK_JS, plate_loads=False))
+    assert procedural["plateReady"] is False and procedural["vignetteBuilt"] is True
+    assert procedural["threw"] is None, procedural["threw"]
+    assert procedural["alpha"] is not None and (
+        procedural["alpha"] == procedural["eased"]
+    ), "on the procedural room the ticker must set vignette.alpha to the eased light"
     assert ambient.index("if (!plateReady)") < ambient.index(
         "applyGlow(ambient.light.lift)"
     )
@@ -7048,8 +7142,7 @@ def test_the_glow_builds_its_graphics_once_not_inside_the_ticker():
     assert "buildGlows();" in draw_plate, (
         "buildGlows must be called once, when the plate becomes ready"
     )
-    ambient_fn = function_source("ambient.js", "startAmbient")
-    ticker = _js_block(ambient_fn, "app.ticker.add(")
+    ticker = _ambient_ticker_source()
     assert "new PIXI.Graphics()" not in ticker, (
         "a Graphics allocation inside the per-frame ticker rebuilds "
         "geometry ~60x/sec"
@@ -7579,7 +7672,7 @@ def test_the_monitor_graphics_are_built_once_not_per_poll_or_per_tick():
     # Built alongside buildGlows(), on the plate SUCCESS path only.
     draw_plate = function_source("room.js", "drawPlate")
     assert "buildMonitorGraphics()" in draw_plate
-    failure_path = _js_block(draw_plate[draw_plate.index("catch (") :], "catch (")
+    failure_path = _catch_clause(draw_plate)
     assert "buildMonitorGraphics()" not in failure_path
 
 
@@ -8310,11 +8403,18 @@ def test_the_animation_layer_is_untouched():
     """
     page = _world_source()
     for opening, (digest, size) in PROTECTED_BLOCKS.items():
-        block = _js_block(page, opening)
+        # The table already pins each block's length, so the block is the
+        # `size` bytes from its opening: equal to the baseline exactly when
+        # the brace-matched block is (a balanced baseline matches its own
+        # brace, so the window ends where the match would), and nothing is
+        # parsed here.
+        start = page.index(opening)
+        block = page[start : start + size]
         actual = hashlib.sha256(block.encode()).hexdigest()
         assert (actual, len(block)) == (digest, size), (
             f"{opening!r} is no longer byte-identical to its Sprint 16 "
-            f"baseline ({len(block)}B/{actual[:16]} vs {size}B/{digest[:16]}) "
+            f"baseline (the {size}B from its opening hash to "
+            f"{actual[:16]}, not {digest[:16]}) "
             "- this sprint's Global Constraint says the animation layer does "
             "not move"
         )
@@ -10244,8 +10344,7 @@ def test_ambient_lights_build_their_graphics_once_not_inside_the_ticker():
         "buildAmbientLights must be called once, when the plate becomes ready"
     )
 
-    ambient_fn = function_source("ambient.js", "startAmbient")
-    ticker = _js_block(ambient_fn, "app.ticker.add(")
+    ticker = _ambient_ticker_source()
     assert "tickAmbientLights(" in ticker, (
         "the per-frame ticker must actually drive the lights"
     )
