@@ -306,8 +306,19 @@ def test_signal_resolution_round_trip():
     """Full accountability loop against real Postgres: signal → realized
     bar → resolver → outcome + signal_resolved world event."""
     from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
 
     from world.resolver import resolve_pending
+
+    # resolve_pending works through get_unresolved_signals(), which has no
+    # symbol filter (oldest first, LIMIT 500): unscoped, it would resolve and
+    # append world_events for any due signal of any symbol in the database
+    # (KI-106). Scope its queue to the symbols this module cleans up.
+    real_unresolved = postgres_store.get_unresolved_signals
+
+    def only_test_symbols(*args, **kwargs):
+        queue = real_unresolved(*args, **kwargs)
+        return [s for s in queue if s["symbol"] in _TEST_SYMBOLS]
 
     signal_ts = datetime(2026, 1, 5, tzinfo=timezone.utc)
     postgres_store.upsert_price_bars(BARS_SYMBOL, "1d", _bars())
@@ -325,7 +336,8 @@ def test_signal_resolution_round_trip():
         ]
     )
 
-    resolutions = resolve_pending(now=signal_ts + timedelta(days=2))
+    with patch("world.resolver.get_unresolved_signals", only_test_symbols):
+        resolutions = resolve_pending(now=signal_ts + timedelta(days=2))
 
     ours = [r for r in resolutions if r["symbol"] == BARS_SYMBOL]
     assert len(ours) == 1
@@ -338,7 +350,8 @@ def test_signal_resolution_round_trip():
     assert len(events) == 1
 
     # idempotence: a second run resolves nothing new for this symbol
-    again = resolve_pending(now=signal_ts + timedelta(days=2))
+    with patch("world.resolver.get_unresolved_signals", only_test_symbols):
+        again = resolve_pending(now=signal_ts + timedelta(days=2))
     assert [r for r in again if r["symbol"] == BARS_SYMBOL] == []
 
 
