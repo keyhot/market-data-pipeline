@@ -10871,6 +10871,57 @@ def test_the_splayed_hand_keeps_its_light_patch():
 
 
 @needs_node
+def test_a_clip_that_applies_no_edge_leaves_the_empty_band():
+    """`clipToConvex` cuts the subject by one half-plane per clip edge and
+    skips an edge shorter than 1e-9. When EVERY edge is skipped (a clip of
+    coincident points, or no clip at all) nothing was cut, and it returned
+    `subject` itself, quantised, as if that were the band: the whole concave
+    outline painted as a band no clip had approved. Sprint 18 #50. It is
+    latent (`litPath` only reaches it with a hull band, which is never
+    degenerate for the hand), so this pins the function, not a render.
+
+    "Nothing left" has one spelling here, the subject's first vertex three
+    times (a zero-area triangle that fills nothing, what the flat rule
+    painted), and a clip that applied no edge must say it the same way. The
+    controls keep the fix honest from the other side: an applied clip still
+    cuts, and a degenerate edge among real ones is skipped, not fatal.
+    """
+    got = run_world(
+        'const { clipToConvex } = need(await W("shading.js"), "clipToConvex");'
+        # A concave L whose first vertex is not the origin, so an empty band
+        # of zeros (or of nothing) cannot pass for [s0, s0, s0].
+        "const L = [[2, 3], [6, 3], [6, 4], [3, 4], [3, 7], [2, 7]];"
+        "const out = {"
+        "  L,"
+        "  empty: clipToConvex(L, []),"
+        "  point: clipToConvex(L, [[4, 5]]),"
+        "  coincident: clipToConvex(L, [[4, 5], [4, 5], [4, 5]]),"
+        # Every edge under the 1e-9 test, though no two points are equal.
+        "  near: clipToConvex(L, [[4, 5], [4 + 1e-10, 5], [4, 5 + 1e-10]]),"
+        "  off: clipToConvex(L, [[20, 20], [30, 20], [30, 30], [20, 30]]),"
+        "  covering: clipToConvex(L, [[0, 0], [10, 0], [10, 10], [0, 10]]),"
+        "  coveringCw: clipToConvex(L, [[0, 10], [10, 10], [10, 0], [0, 0]]),"
+        "  cut: clipToConvex(L, [[0, 0], [4, 0], [4, 10], [0, 10]]),"
+        # The same cut with one skipped edge among the applied ones.
+        "  cutWithSkipped: clipToConvex(L, [[0, 0], [0, 0], [4, 0], [4, 10], [0, 10]]),"
+        "};"
+        "console.log(JSON.stringify(out));"
+    )
+    s0 = got["L"][0]
+    nothing = [s0, s0, s0]
+    for case in ("empty", "point", "coincident", "near", "off"):
+        assert got[case] == nothing, (
+            f"{case}: {got[case]} - a clip that applied no edge (or left "
+            f"nothing) is the empty band {nothing}, never the subject"
+        )
+    assert got["covering"] == got["L"], got["covering"]
+    assert got["coveringCw"] == got["L"], got["coveringCw"]
+    cut = [[2, 3], [4, 3], [4, 4], [3, 4], [3, 7], [2, 7]]
+    assert got["cut"] == cut, got["cut"]
+    assert got["cutWithSkipped"] == cut, got["cutWithSkipped"]
+
+
+@needs_node
 def test_the_profile_face_is_in_thirds():
     """Hairline to brow, brow to nose base, nose base to chin: three roughly
     equal thirds, and the eye within a few units of halfway down the head.
