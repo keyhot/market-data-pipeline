@@ -74,6 +74,9 @@ class TestMissingMigrations:
     def test_a_list_of_applied_versions_works_as_well_as_a_set(self):
         assert missing_migrations(["009"], ["009", "012"]) == ["012"]
 
+    def test_a_non_ascii_digit_version_does_not_break_the_ordering(self):
+        assert missing_migrations(set(), ["013", "\u00b2"]) == ["\u00b2", "013"]
+
     def test_nothing_on_disk_is_nothing_missing(self):
         assert missing_migrations({"009"}, []) == []
 
@@ -103,6 +106,13 @@ class TestOnDiskVersions:
         ):
             (tmp_path / name).write_text("-- x")
         assert on_disk_versions(tmp_path) == ["013"]
+
+    def test_a_directory_or_a_non_ascii_digit_name_is_not_a_migration(self, tmp_path):
+        (tmp_path / "migrate_013.sql").mkdir()
+        (tmp_path / "migrate_\u00b2.sql").write_text("-- x")
+        (tmp_path / "migrate_\u0661\u0663.sql").write_text("-- x")
+        (tmp_path / "migrate_014.sql").write_text("-- x")
+        assert on_disk_versions(tmp_path) == ["014"]
 
     def test_a_missing_directory_is_no_migrations(self, tmp_path):
         assert on_disk_versions(tmp_path / "nope") == []
@@ -153,7 +163,8 @@ class TestInitSql:
         )
         assert match, "db/init.sql must record the versions it includes"
         recorded = re.findall(r"'(\d+)'", match.group(1))
-        assert sorted(recorded) == on_disk_versions()
+        assert len(recorded) == len(set(recorded)), "a version recorded twice"
+        assert set(recorded) == set(on_disk_versions())
 
     def test_recording_is_idempotent(self):
         assert re.search(
@@ -272,6 +283,17 @@ class TestConnectReadOnly:
         assert seen["connect_timeout"] == db._ROLE_PROBE_TIMEOUT_SECONDS
         # The same socket bounds as every other connection in the module.
         assert seen["keepalives"] == 1
+
+    def test_a_sub_second_bound_is_not_zero_which_libpq_reads_as_no_limit(
+        self, monkeypatch
+    ):
+        seen: dict = {}
+        monkeypatch.setattr(
+            db.psycopg, "connect", lambda url, **kw: seen.update(kw) or object()
+        )
+        db.connect_read_only("postgresql://x/y", timeout_seconds=0.4)
+        assert seen["connect_timeout"] == 1
+        assert "statement_timeout=400" in seen["options"]
 
 
 # --- the startup check -------------------------------------------------------
@@ -414,6 +436,17 @@ class TestCheckMigrationLedger:
         assert check_migration_ledger(_migrations_dir(tmp_path, "009")) == []
         assert _warnings(ledger_logs) == []
 
+    def test_a_blank_database_url_is_no_database(
+        self, monkeypatch, tmp_path, ledger_logs
+    ):
+        monkeypatch.setenv("DATABASE_URL", "   ")
+
+        def never(url=None):
+            raise AssertionError("a blank URL would connect to the local default")
+
+        monkeypatch.setattr(migrations, "read_applied_versions", never)
+        assert check_migration_ledger(_migrations_dir(tmp_path, "009")) == []
+
     def test_reads_the_database_it_was_configured_with(
         self, monkeypatch, tmp_path, ledger_logs
     ):
@@ -464,6 +497,15 @@ def test_startup_carries_on_when_the_check_blows_up(monkeypatch):
     monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
     monkeypatch.setenv("WS_INGEST_ENABLED", "0")
 
+    escaped = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: escaped.append(args))
+
     with TestClient(main.app) as client:
         assert ran.wait(timeout=5)
+        # `ran` is set before the raise: wait for the thread itself, then ask
+        # whether the exception got out of it.
+        for thread in threading.enumerate():
+            if thread.name == "migration-ledger-check":
+                thread.join(timeout=5)
         assert client.get("/openapi.json").status_code == 200
+    assert escaped == [], "the exception escaped the startup thread"

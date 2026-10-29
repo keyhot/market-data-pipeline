@@ -35,12 +35,14 @@ import storage.db as db
 logger = logging.getLogger(__name__)
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-_MIGRATION_FILE = re.compile(r"migrate_(\d+)\.sql")
+_MIGRATION_FILE = re.compile(r"migrate_([0-9]+)\.sql")
 
 
 def _version_key(version: str) -> tuple[int, str]:
     # 9 < 20 < 100, whatever the zero-padding; ties (009 vs 9) stay stable.
-    return (int(version), version) if version.isdigit() else (-1, version)
+    if version.isascii() and version.isdigit():
+        return (int(version), version)
+    return (-1, version)
 
 
 def on_disk_versions(scripts_dir: Path | None = None) -> list[str]:
@@ -51,7 +53,7 @@ def on_disk_versions(scripts_dir: Path | None = None) -> list[str]:
     versions = {
         match.group(1)
         for path in directory.iterdir()
-        if (match := _MIGRATION_FILE.fullmatch(path.name))
+        if path.is_file() and (match := _MIGRATION_FILE.fullmatch(path.name))
     }
     return sorted(versions, key=_version_key)
 
@@ -103,7 +105,7 @@ def check_migration_ledger(scripts_dir: Path | None = None) -> list[str]:
     default URL is localhost:5432, which on the streaming box is the live
     database, and an offline run has none to check.
     """
-    url = os.environ.get(db.DATABASE_URL_ENV)
+    url = (os.environ.get(db.DATABASE_URL_ENV) or "").strip()
     if not url:
         return []
     try:

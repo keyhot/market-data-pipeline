@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import threading
 
@@ -118,7 +119,7 @@ def connect_read_only(
     bound_ms = max(1, int(timeout_seconds * 1000))
     return psycopg.connect(
         url,
-        connect_timeout=timeout_seconds,
+        connect_timeout=max(1, math.ceil(timeout_seconds)),
         options=f"{_READ_ONLY_OPTIONS} -c statement_timeout={bound_ms}",
         **_SOCKET_BOUNDS,
     )

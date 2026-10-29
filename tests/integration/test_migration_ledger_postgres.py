@@ -43,14 +43,10 @@ _INIT_SQL = Path(__file__).resolve().parents[2] / "db" / "init.sql"
 def _disposable() -> bool:
     # The flag is read before any connection is made: no probe of a database
     # nobody said was disposable.
-    if os.environ.get("POSTGRES_DISPOSABLE") != "1" or not _URL:
-        return False
-    try:
-        with psycopg.connect(_URL, connect_timeout=2) as conn:
-            conn.execute("SELECT 1")
-    except Exception:
-        return False
-    return True
+    # Opted in means opted in: no connection is made here, so a service
+    # container that is down fails the tests that need it (at their fixture)
+    # instead of skipping the whole module green.
+    return os.environ.get("POSTGRES_DISPOSABLE") == "1" and bool(_URL)
 
 
 pytestmark = pytest.mark.skipif(
@@ -64,21 +60,20 @@ pytestmark = pytest.mark.skipif(
 def ledger_db(monkeypatch):
     """A fresh database built from db/init.sql — what a new volume gets."""
     name = f"mdp_ledger_{uuid.uuid4().hex[:12]}"
-    admin = psycopg.connect(_URL, autocommit=True)
-    admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = make_conninfo(_URL, dbname=name)
-    try:
-        with psycopg.connect(url, autocommit=True) as conn:
-            conn.execute(_INIT_SQL.read_text())
-        monkeypatch.setenv("DATABASE_URL", url)
-        yield url
-    finally:
-        admin.execute(
-            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-                sql.Identifier(name)
+    with psycopg.connect(_URL, autocommit=True) as admin:
+        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        try:
+            with psycopg.connect(url, autocommit=True) as conn:
+                conn.execute(_INIT_SQL.read_text())
+            monkeypatch.setenv("DATABASE_URL", url)
+            yield url
+        finally:
+            admin.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                    sql.Identifier(name)
+                )
             )
-        )
-        admin.close()
 
 
 def _execute(url: str, statement: str):
