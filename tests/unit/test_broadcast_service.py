@@ -4,7 +4,10 @@ network, no OAuth, no clock, no OBS — and the cardinal rule is that nothing
 the YouTube API does can take the stream down.
 """
 
+import inspect
+import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -468,16 +471,83 @@ def test_failing_ticks_are_counted_and_a_good_tick_resets_them():
     assert seen == [1, 2, 0]
 
 
-def test_an_unwritable_status_never_stops_the_manager(monkeypatch, tmp_path):
-    # Cardinal rule: nothing about alerting can take the stream down.
+def test_an_unwritable_status_never_stops_the_manager(monkeypatch, tmp_path, caplog):
+    """Cardinal rule: nothing about alerting can take the stream down.
+
+    `write_status` swallows every exception, so "did not raise" holds whatever
+    the code does: a renamed env var (the write goes to the default path) or a
+    `run` that returns before its first `on_status` both read green. What can
+    fail is what the code *did*, so this watches it: both ticks reported, each
+    write failed with an OSError at the given path, the failure was logged,
+    and nothing was written to the default path. With the path under a plain
+    file, the step that raises is the parent-directory `mkdir`; the file
+    write itself is never reached."""
     blocker = tmp_path / "a-file"
     blocker.write_text("")
-    monkeypatch.setenv("BROADCAST_STATUS_PATH", str(blocker / "status.json"))
-    service.run(
-        fetch_yt_state=lambda state: {"broadcast": None, "stream": None},
-        obs_probe=lambda: True,
-        apply_actions=lambda actions, state, now: None,
-        config=CFG,
-        sleep_seconds=0,
-        max_ticks=2,
-    )  # must not raise
+    status_path = blocker / "status.json"
+    monkeypatch.setenv("BROADCAST_STATUS_PATH", str(status_path))
+    # The default path is relative: from tmp_path a write that ignores the env
+    # var lands in tmp_path/data, never in the repo's data/.
+    monkeypatch.chdir(tmp_path)
+
+    # The file operations write_status makes, recorded as (operation, target,
+    # error). Each wraps the real call, so the OSError is the real one.
+    fs_calls = []
+
+    def watch(name):
+        real = getattr(Path, name)
+
+        def spy(self, *args, **kwargs):
+            try:
+                result = real(self, *args, **kwargs)
+            except OSError as exc:
+                fs_calls.append((name, self, exc))
+                raise
+            fs_calls.append((name, self, None))
+            return result
+
+        monkeypatch.setattr(Path, name, spy)
+
+    for name in ("mkdir", "write_text", "replace"):
+        watch(name)
+
+    # `run` binds on_status=write_status when it is defined, so the default
+    # cannot be spied on from outside; pass a spy that calls through instead,
+    # and check separately that the default is the real writer.
+    assert (
+        inspect.signature(service.run).parameters["on_status"].default
+        is service.write_status
+    )
+    reported = []
+
+    def on_status(**status):
+        reported.append(status)
+        service.write_status(**status)
+
+    with caplog.at_level(logging.WARNING, logger="broadcast.service"):
+        service.run(
+            fetch_yt_state=lambda state: {"broadcast": None, "stream": None},
+            obs_probe=lambda: True,
+            apply_actions=lambda actions, state, now: None,
+            config=CFG,
+            sleep_seconds=0,
+            max_ticks=2,
+            on_status=on_status,
+        )  # must not raise
+
+    # Both ticks ran, and the unwritable status did not count as a tick failure.
+    assert [s["consecutive_tick_failures"] for s in reported] == [0, 0]
+    # Each tick's write reached the given path (its parent is the plain file)
+    # and failed there with a real OSError; nothing under it was written.
+    under_given = [c for c in fs_calls if blocker in (c[1], *c[1].parents)]
+    assert [(op, target) for op, target, _exc in under_given] == [
+        ("mkdir", blocker)
+    ] * 2, f"one failed mkdir of {blocker} per tick: {under_given}"
+    assert all(isinstance(exc, OSError) for _op, _target, exc in under_given)
+    # Swallowed, but not silently.
+    assert [r.getMessage() for r in caplog.records] == [
+        "broadcast status not written"
+    ] * 2
+    assert all(str(blocker) in r.error for r in caplog.records)
+    # Nothing was redirected to the default path.
+    assert not (tmp_path / "data").exists()

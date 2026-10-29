@@ -470,13 +470,29 @@ def test_launch_clears_a_plain_file_sentinel(tmp_path):
 
 
 def test_launch_survives_a_missing_sentinel(tmp_path):
-    """A clean previous exit leaves no sentinel — that is the normal case."""
-    _launch_obs(
-        ["obs"],
-        popen=lambda command, **kw: object(),
+    """A clean previous exit leaves no sentinel — that is the normal case, and
+    OBS must still be launched. Surviving the missing file is not the property:
+    a launcher that gave up when there was nothing to clear would "survive" it
+    too, so this asserts the launch happened."""
+    absent = tmp_path / "absent"
+    assert not absent.exists()
+    process = object()
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append(command)
+        return process
+
+    launched = _launch_obs(
+        ["obs", "--startstreaming"],
+        popen=fake_popen,
         read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0"},
-        sentinel_path=str(tmp_path / "absent"),
+        sentinel_path=str(absent),
     )
+    assert popen_calls == [["obs", "--startstreaming"]], (
+        "OBS is launched once, with the command, though there was no sentinel"
+    )
+    assert launched.process is process, "the caller gets a handle on that process"
 
 
 def test_obs_command_suppresses_startup_dialogs():
