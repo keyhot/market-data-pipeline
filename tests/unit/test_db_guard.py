@@ -21,10 +21,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import db_guard
 import psycopg
 import pytest
-
-import db_guard
 
 TESTS = Path(__file__).resolve().parents[1]
 REPO = TESTS.parent
@@ -102,7 +101,14 @@ def test_the_skip_reason_names_the_opt_in_variable():
 
 @pytest.mark.parametrize(
     "reported",
-    ["market_data", "postgres", "mdp_testing", "MDP_TEST_X", "xmdp_test_a", "mdp_test_"],
+    [
+        "market_data",
+        "postgres",
+        "mdp_testing",
+        "MDP_TEST_X",
+        "xmdp_test_a",
+        "mdp_test_",
+    ],
 )
 def test_a_database_that_is_not_a_test_database_is_refused_before_any_write(reported):
     server = _Server(reported)

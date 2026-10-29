@@ -1,16 +1,16 @@
-"""Integration tests against the docker-compose Postgres.
+"""Integration tests against a throwaway Postgres (KI-106).
 
-Auto-skipped when the database is unreachable so the suite stays green
-without Docker (and in CI until the service-container ticket lands).
+They write: the autouse fixture below DELETEs, and most tests insert. So they
+run only when MDP_TEST_DATABASE_URL names a mdp_test_* database off port 5432
+(tests/integration/conftest.py checks that before the first statement and
+skips everything otherwise); nothing here connects at import.
 """
 
 import pandas as pd
 import pytest
 
 from storage import postgres_store
-from storage.db import get_pool, ping
-
-pytestmark = pytest.mark.skipif(not ping(), reason="Postgres unavailable")
+from storage.db import get_pool
 
 BARS_SYMBOL = "ZZTEST"
 BACKFILL_SYMBOL = "ZZBF"

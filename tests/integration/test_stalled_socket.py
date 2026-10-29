@@ -8,7 +8,8 @@ here indefinitely (measured past 15s); it must now answer inside its budget
 and say the database is not connected.
 
 Reads only, no locks and no writes, so unlike test_health_budget.py this is
-safe against whatever database the environment points at.
+safe against any database; it still runs only against the throwaway one
+MDP_TEST_DATABASE_URL names (tests/integration/conftest.py, KI-106).
 """
 
 import socket
@@ -21,9 +22,7 @@ from fastapi.testclient import TestClient
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from storage import db
-from storage.db import get_pool, ping
-
-pytestmark = pytest.mark.skipif(not ping(), reason="Postgres unavailable")
+from storage.db import get_pool
 
 _BUDGET = 1.0
 _SLACK = 0.75
