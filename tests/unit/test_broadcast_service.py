@@ -341,21 +341,55 @@ def test_run_stops_creating_while_obs_is_not_streaming():
     assert applied == []
 
 
-def test_run_survives_a_failing_obs_probe():
+def test_run_survives_a_failing_obs_probe(caplog):
     """stream_ctl raises when OBS is down; that's the normal state during a
-    watchdog restart, not a reason for the manager to die."""
+    watchdog restart, not a reason for the manager to die.
+
+    "Did not raise" holds whatever `run` does: a probe call that was dropped
+    (`obs_streaming = False`) and a failure swallowed without being counted or
+    logged both return normally. What can fail is what the code *did*, so this
+    watches it: the probe was called, its failure stopped the tick before the
+    YouTube fetch and the applier, the tick was reported as failed, and the
+    failure was logged. `on_status` is a spy, so nothing is written to the
+    status file."""
+    probe_calls = []
+    fetched = []
+    applied = []
+    reported = []
 
     def broken_probe():
+        probe_calls.append(1)
         raise RuntimeError("obs unreachable")
 
-    service.run(
-        fetch_yt_state=lambda state: {"broadcast": None, "stream": None},
-        obs_probe=broken_probe,
-        apply_actions=lambda actions, state, now: None,
-        config=CFG,
-        sleep_seconds=0,
-        max_ticks=1,
-    )  # must not raise
+    def fetch(state):
+        fetched.append(state)
+        return {"broadcast": None, "stream": None}
+
+    def on_status(**status):
+        reported.append(status)
+
+    with caplog.at_level(logging.WARNING, logger="broadcast.service"):
+        service.run(
+            fetch_yt_state=fetch,
+            obs_probe=broken_probe,
+            apply_actions=lambda actions, state, now: applied.append(actions),
+            config=CFG,
+            sleep_seconds=0,
+            max_ticks=1,
+            on_status=on_status,
+        )  # must not raise
+
+    assert len(probe_calls) == 1, "the OBS probe is called once per tick"
+    # The probe is first in the tick's try block: its failure ends the tick
+    # before anything reaches YouTube or the applier.
+    assert fetched == []
+    assert applied == []
+    # Counted: the tick was reported, as one consecutive failure.
+    assert [s["consecutive_tick_failures"] for s in reported] == [1]
+    # Swallowed, but not silently: one warning, carrying the probe's error.
+    ours = [r for r in caplog.records if r.name == "broadcast.service"]
+    assert [r.getMessage() for r in ours] == ["broadcast_tick_failed"]
+    assert ours[0].error == "obs unreachable"
 
 
 def test_state_persists_across_ticks_so_backoff_holds():
