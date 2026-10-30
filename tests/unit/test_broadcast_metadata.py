@@ -70,7 +70,7 @@ def test_youtube_rejects_angle_brackets_so_none_are_emitted():
 def test_a_missing_key_raises_rather_than_defaults():
     # A confident wrong figure in a public title is worse than a skipped
     # refresh, which the runner retries.
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match=r"^'losses'$"):
         build_description({"wins": 1})
 
 

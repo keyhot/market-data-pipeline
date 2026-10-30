@@ -271,7 +271,7 @@ def test_dq_test_raises_on_rank_deficiency():
     X = np.zeros((20, 9))
     X[:, 0] = 1.0  # only the constant column is non-degenerate -> rank 1
     hit = np.random.default_rng(1).normal(size=20)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"rank\(X\)=1 < q=9"):
         dq_test(X, hit, 0.2)
 
 
