@@ -4,6 +4,7 @@ class — a populated .env on the streaming box would otherwise email the user
 on every test run)."""
 
 import json
+import logging
 import smtplib
 from datetime import datetime, timedelta, timezone
 
@@ -28,10 +29,11 @@ def test_the_suite_refuses_real_smtp():
         smtplib.SMTP_SSL("smtp.gmail.com", 465)
 
 
-def test_credentials_in_the_environment_still_send_nothing(monkeypatch):
+def test_credentials_in_the_environment_still_send_nothing(monkeypatch, caplog):
     # The real sender is the default; the guard is what stops it here.
     monkeypatch.setenv("ALERT_SMTP_USER", "someone@example.com")
     monkeypatch.setenv("ALERT_SMTP_PASSWORD", "app-password")
+    caplog.set_level(logging.ERROR, logger="scripts.ops_alert")
     for i in range(3):
         ops_alert.run_once(
             observe=_observe_failing, now=NOW + timedelta(minutes=5 * i)
@@ -40,6 +42,16 @@ def test_credentials_in_the_environment_still_send_nothing(monkeypatch):
     # contained; the state proves the alert was NOT recorded as delivered.
     state = json.loads(ops_alert.state_path().read_text())
     assert state["checks"]["world"]["firing"] is False
+    assert state.get("undelivered_since")
+    # And it was the suite's mail guard that stopped the send: the real sender
+    # read the credentials, reached smtplib.SMTP and was refused. `firing`
+    # alone cannot tell that from a config error, a crash before SMTP or a real
+    # SMTP that merely fails offline, all of which also leave it False.
+    failures = [
+        r.getMessage() for r in caplog.records if "alert NOT delivered" in r.getMessage()
+    ]
+    assert failures
+    assert all("RuntimeError: the test suite sends no mail" in m for m in failures)
 
 
 def test_a_failed_delivery_is_retried_next_tick():
