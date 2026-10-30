@@ -1232,10 +1232,16 @@ def test_a_refresh_that_never_happened_does_not_burn_the_one_attempt(monkeypatch
 
 
 def test_the_next_tick_retries_a_refresh_that_failed(monkeypatch):
-    """End to end: decide, fail, retry once — and still only once at a time."""
+    """End to end: decide, fail, retry once — and still only once at a time.
+
+    `record_stream_event` is stubbed with a spy. Unstubbed, the real `record`
+    action reached the suite's DB refusal, which `world/stream_events.py`
+    swallows (the cooldown check fails open, the append is spooled), so a drop
+    recorded a second time by the retry left no trace the test could see."""
     from stream import watchdog as wd
 
     attempts = []
+    recorded = []
 
     def flaky(client, name):
         attempts.append(name)
@@ -1244,21 +1250,32 @@ def test_the_next_tick_retries_a_refresh_that_failed(monkeypatch):
 
     monkeypatch.setattr(wd.stream_ctl, "make_client", lambda *a, **k: "client")
     monkeypatch.setattr(wd.stream_ctl, "refresh_browser_source", flaky)
+    monkeypatch.setattr(
+        wd, "record_stream_event", lambda kind, payload: recorded.append(kind)
+    )
 
     config = WatchdogConfig(renderer_failures_before_drop=1)
     state = WatchdogState(streaming=True)
     _s, actions = tick(_blank_probe(), state, config, now=10.0)
     wd.execute_actions(actions, config, state)
+    assert attempts == ["world-room"]
+    assert recorded == ["stream_dropped"]
 
     _s, retry = tick(_blank_probe(), state, config, now=40.0)
     assert ("refresh_source", "world-room") in retry
     # ... and the drop is not recorded a second time by the retry.
     assert _actions_of(retry, "record") == []
     wd.execute_actions(retry, config, state)
+    assert attempts == ["world-room", "world-room"]
+    assert recorded == ["stream_dropped"], (
+        "the drop was recorded again by the retry"
+    )
 
     _s, third = tick(_blank_probe(), state, config, now=70.0)
     assert ("refresh_source", "world-room") not in third
+    wd.execute_actions(third, config, state)
     assert attempts == ["world-room", "world-room"]
+    assert recorded == ["stream_dropped"]
 
 
 def test_a_permanently_failing_refresh_stops_being_retried():
@@ -1297,34 +1314,64 @@ def test_a_permanently_failing_refresh_stops_being_retried():
     assert state.renderer_refresh_attempts == 2
 
 
-def test_end_to_end_a_permanently_failing_press_stops_hammering(monkeypatch):
+def test_end_to_end_a_permanently_failing_press_stops_hammering(
+    monkeypatch, caplog
+):
     """The shape the review actually found, through the real dispatch seam:
     a press that ALWAYS throws must stop being attempted rather than
     building a new websocket client and logging an exception every 30s for
-    the whole outage."""
+    the whole outage.
+
+    Counted at every step the hammering has: the offers `tick` makes, the
+    presses, the clients built and the failures logged. `record_stream_event`
+    is stubbed with a spy; unstubbed, the real `record` action reached the
+    suite's DB refusal, which `world/stream_events.py` swallows, and the
+    outage's record went unseen."""
     from stream import watchdog as wd
 
     attempts = []
+    clients = []
+    recorded = []
 
     def always_fails(client, name):
         attempts.append(name)
         raise OSError("obs-websocket went away")
 
-    monkeypatch.setattr(wd.stream_ctl, "make_client", lambda *a, **k: "client")
+    def make_client(*a, **k):
+        clients.append(1)
+        return "client"
+
+    monkeypatch.setattr(wd.stream_ctl, "make_client", make_client)
     monkeypatch.setattr(wd.stream_ctl, "refresh_browser_source", always_fails)
+    monkeypatch.setattr(
+        wd, "record_stream_event", lambda kind, payload: recorded.append(kind)
+    )
 
     config = WatchdogConfig(
         renderer_failures_before_drop=1, max_renderer_refresh_attempts=2
     )
     state = WatchdogState(streaming=True)
 
-    for now in (10.0, 40.0, 70.0, 100.0, 130.0):
-        _s, actions = tick(_blank_probe(), state, config, now=now)
-        wd.execute_actions(actions, config, state)
+    offered = []
+    with caplog.at_level(logging.ERROR, logger=wd.logger.name):
+        for now in (10.0, 40.0, 70.0, 100.0, 130.0):
+            _s, actions = tick(_blank_probe(), state, config, now=now)
+            offered.append(("refresh_source", "world-room") in actions)
+            wd.execute_actions(actions, config, state)
 
+    assert offered == [True, True, False, False, False], (
+        "the press kept being offered past max_renderer_refresh_attempts"
+    )
     assert len(attempts) == 2, (
         "the press kept being retried past max_renderer_refresh_attempts"
     )
+    assert len(clients) == 2, "a websocket client was built for a press never made"
+    failures = [
+        r for r in caplog.records if r.getMessage() == "Browser source refresh failed"
+    ]
+    assert len(failures) == 2
+    # Capped is not silent: the outage itself is still recorded, once.
+    assert recorded == ["stream_dropped"]
 
 
 def _scene_spec(name, url):
