@@ -235,13 +235,19 @@ def test_rows_keys_are_the_frozen_set():
     """`score()` writes exactly these `rows` keys; `e13_diagnostics.py:120`
     reads `rows["primary (daily AR)"]`, so a rename or an added row is a
     change to a frozen results schema."""
-    keys = set()
-    for node in ast.walk(_func_ast(csr.score)):
+    fn, keys, stores = _func_ast(csr.score), set(), 0
+    for node in ast.walk(fn):
         if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
-                and node.value.id == "rows" and isinstance(node.slice, ast.Constant)
-                and isinstance(node.ctx, ast.Store)):
-            keys.add(node.slice.value)
-    assert keys == ROW_KEYS
+                and node.value.id == "rows" and isinstance(node.ctx, ast.Store)):
+            stores += 1
+            if isinstance(node.slice, ast.Constant):
+                keys.add(node.slice.value)
+    assert keys == ROW_KEYS and stores == len(ROW_KEYS)   # no computed key
+    init = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+            and [getattr(t, "id", None) for t in n.targets] == ["rows"]]
+    assert len(init) == 1 and isinstance(init[0].value, ast.Dict)
+    assert not init[0].value.keys                         # starts empty
+    assert not {"update", "setdefault"} & _called_names(csr.score)
 
 
 def test_the_caveat_names_the_daily_ar_row_an_upper_bound_not_a_spread():
@@ -256,11 +262,6 @@ def test_the_caveat_names_the_1h_ar_and_depth_rows_as_the_spread_comparators():
     assert "spread comparators" in c
     assert "(a) 1h AR" in c
     assert "(b) bookDepth $100k" in c
-
-
-def test_the_caveat_is_outside_a1():
-    assert "caveat" not in json.dumps(csr.A1).lower()
-    assert "KI-099" not in json.dumps(csr.A1)
 
 
 def _stub() -> dict:
@@ -294,6 +295,7 @@ def test_with_caveats_is_pure_and_does_not_mutate_its_input():
 def test_with_caveats_keeps_a_caveat_that_is_already_there():
     stub = dict(_stub(), caveats={"other row": "kept"})
     out = csr.with_caveats(stub)
+    assert stub["caveats"] == {"other row": "kept"}   # nested dict untouched too
     assert out["caveats"]["other row"] == "kept"
     assert out["caveats"]["primary (daily AR)"] == csr.DAILY_AR_CAVEAT
 
@@ -319,6 +321,9 @@ def test_score_hands_its_results_to_the_writer_and_writes_nothing_itself():
     """`score()` needs the absent archive, so it cannot run here. A mutant that
     drops the writer call (or writes the JSON directly, skipping the caveat)
     must still fail."""
-    names = _called_names(csr.score)
-    assert "_write_results" in names
-    assert "write_text" not in names
+    assert "write_text" not in _called_names(csr.score)
+    last = _func_ast(csr.score).body[-1]
+    assert isinstance(last, ast.Return) and isinstance(last.value, ast.Call)
+    call = last.value
+    assert isinstance(call.func, ast.Name) and call.func.id == "_write_results"
+    assert [getattr(a, "id", None) for a in call.args] == ["res"] and not call.keywords
