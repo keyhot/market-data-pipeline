@@ -167,7 +167,7 @@ _BODIES = {
     # name: (seed files under data/, test body, expected exit code, expected text)
     "clean": ({}, "pass", 0, None),
     "create": ({}, 'DATA.mkdir(); (DATA / "leak.csv").write_text("x")', 1, "leak.csv"),
-    # Collection runs before any fixture: only a snapshot taken at session start sees this.
+    # Collection runs before any fixture: only a session-start snapshot sees it.
     "import_time": (
         {},
         "pass",

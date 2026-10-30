@@ -6,7 +6,8 @@ to `<checkout>/data`, wrote fake CSV snapshots there, and `save_csv` then pruned
 to five files per prefix -- deleting real snapshots in a checkout that had them.
 Nothing failed, because nothing watched. tests/conftest.py now redirects the data
 root to a tmp dir for every test AND runs `assert_tree_unchanged` over the real
-`data/` from session start to session end, so the next test to write there fails the run.
+`data/` from session start to session end, so the next test to write there
+fails the run.
 
 Pure functions, no pytest state, so tests/unit/test_data_guard.py can pin them.
 """
