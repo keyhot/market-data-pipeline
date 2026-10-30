@@ -1,5 +1,6 @@
 # tests/conftest.py
 import pytest
+from data_guard import REPO_DATA_DIR, assert_tree_unchanged, snapshot_tree
 
 
 @pytest.fixture(autouse=True)
@@ -75,3 +76,46 @@ def no_database_outside_integration(request, monkeypatch, tmp_path):
     monkeypatch.setattr(db.psycopg, "connect", _refuse_database)
     for var, name in _SPOOLS.items():
         monkeypatch.setenv(var, str(tmp_path / name))
+
+
+_DATA_BEFORE = pytest.StashKey()
+
+
+def pytest_sessionstart(session):
+    """Snapshot the checkout's data/ before collection, so a write at import time
+    or in a module-level statement (collection runs before any fixture) is
+    compared too. A fixture alone would take its snapshot after collection."""
+    session.config.stash[_DATA_BEFORE] = snapshot_tree(REPO_DATA_DIR)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def repo_data_dir_untouched(request):
+    """Fail the run if any test created, modified or deleted anything under the
+    checkout's data/ (Sprint 19 draft KI "tests write into data/raw"): three
+    API tests wrote fake CSV snapshots into the user's real data/raw, and
+    save_csv's retention pruning could delete real ones with the same prefix.
+    The snapshot is taken at session start and compared after the last test, so
+    a data/ that does not exist yet is fine (the leak is then the directory).
+    The redirect below is what keeps this green; this is what makes the next
+    leak -- a module-scoped fixture, a subprocess, a new writer -- loud."""
+    stash = request.config.stash
+    before = stash.get(_DATA_BEFORE, None)
+    if before is None:  # sessionstart did not reach this conftest
+        before = stash[_DATA_BEFORE] = snapshot_tree(REPO_DATA_DIR)
+    yield
+    assert_tree_unchanged(REPO_DATA_DIR, before)
+
+
+@pytest.fixture(autouse=True)
+def data_root_in_tmp(monkeypatch, tmp_path):
+    """Every writer that resolves a path through storage.naming (raw_data_path,
+    raw_event_path, raw_news_path: the ticker, events and news endpoints, the
+    scheduler jobs, the news store) writes under a per-test tmp dir, never the
+    checkout's data/. csv_write_enabled() still defaults on, so the endpoint
+    tests exercise the real save_csv, including its pruning, in the tmp dir.
+    The path functions read the module global at call time, so one patch covers
+    all three. Not exempted for tests/integration: nothing there needs the
+    checkout's data/ either."""
+    import storage.naming as naming
+
+    monkeypatch.setattr(naming, "_DATA_ROOT", tmp_path / "data")
