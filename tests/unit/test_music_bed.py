@@ -1,6 +1,7 @@
 """The runner's seam to OBS, with a fake client — the settings it sends are the
 difference between a music bed and one track on repeat."""
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,11 @@ from music.player import BedState
 from scripts import music_bed
 
 T0 = datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc)
+
+# The real `publish`, taken at import time. The autouse `_no_db` fixture below
+# replaces `music_bed.publish` with a no-op for every test in this file, so a
+# test that wants the real function has to put this back.
+_REAL_PUBLISH = music_bed.publish
 
 
 class FakeResp:
@@ -131,13 +137,36 @@ def test_a_mixer_failure_does_not_stop_the_music(monkeypatch):
     assert client.settings, "the file was still set"
 
 
-def test_a_publish_failure_is_swallowed(monkeypatch):
-    """A Postgres blip should cost the credit line, not the music. `publish`
-    reaches the DB itself, so this asserts on the real function, not the stub."""
+def test_a_publish_failure_is_swallowed(monkeypatch, caplog):
+    """A Postgres blip should cost the credit line, not the music.
+
+    The autouse `_no_db` fixture swaps `music_bed.publish` for a no-op, so the
+    test restores the real one. Not raising proves nothing on its own (a
+    `publish` that never reaches the store also does not raise), so the stub
+    records the call and the test asserts the real `publish` made it with this
+    track's file and start time, and then logged the failure it swallowed."""
     import storage.postgres_store as store
 
+    calls = []
+
     def boom(**kwargs):
+        calls.append(kwargs)
         raise RuntimeError("postgres is down")
 
     monkeypatch.setattr(store, "set_now_playing", boom)
-    music_bed.publish(_track(), T0)  # must not raise
+    monkeypatch.setattr(music_bed, "publish", _REAL_PUBLISH)
+    track = _track()
+
+    with caplog.at_level(logging.WARNING, logger=music_bed.logger.name):
+        music_bed.publish(track, T0)  # must not raise
+
+    assert len(calls) == 1, "publish must reach the store exactly once"
+    assert calls[0]["track_file"] == track.file
+    assert calls[0]["started_at"] == T0
+    # Only this module's records: the swallowed error is the one thing it logs.
+    records = [r for r in caplog.records if r.name == music_bed.logger.name]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].getMessage() == "could not publish now-playing"
+    assert records[0].track == track.file
+    assert records[0].error == "postgres is down"
