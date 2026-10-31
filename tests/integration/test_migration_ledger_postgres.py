@@ -36,7 +36,7 @@ from storage.migrations import (
     read_applied_versions,
 )
 
-_URL = os.environ.get("DATABASE_URL", "")
+_URL = os.environ.get("MDP_TEST_DATABASE_URL", "")
 _INIT_SQL = Path(__file__).resolve().parents[2] / "db" / "init.sql"
 
 
@@ -51,7 +51,7 @@ def _disposable() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _disposable(),
-    reason="set POSTGRES_DISPOSABLE=1 and DATABASE_URL to a disposable "
+    reason="set POSTGRES_DISPOSABLE=1 and MDP_TEST_DATABASE_URL to a disposable "
     "Postgres (it creates and drops its own databases)",
 )
 
@@ -59,7 +59,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def ledger_db(monkeypatch):
     """A fresh database built from db/init.sql — what a new volume gets."""
-    name = f"mdp_ledger_{uuid.uuid4().hex[:12]}"
+    name = f"mdp_test_ledger_{uuid.uuid4().hex[:12]}"
     url = make_conninfo(_URL, dbname=name)
     with psycopg.connect(_URL, autocommit=True) as admin:
         admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
