@@ -122,13 +122,48 @@ def test_backfill_paginates_the_whole_gap_and_excludes_forming_candle(
 
 
 @patch("ingestion.binance_ws.write_price_bars")
-def test_backfill_noop_when_postgres_disabled(mock_write, monkeypatch):
+@patch("ingestion.binance_ws.latest_bar_timestamp")
+def test_backfill_noop_when_postgres_disabled(mock_latest, mock_write, monkeypatch):
+    """The write gate must return before backfill_gaps reads the database or asks
+    the exchange for anything. Everything past the gate is armed: a stale last
+    bar, a provider that would return closed klines, a write that would count.
+    So a deleted, inverted or late gate is red here instead of being hidden by
+    the conftest's refused database and the per-symbol `except`."""
     monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "0")
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    current_minute_ms = (now_ms // 60_000) * 60_000
+    last_ms = current_minute_ms - 5 * 60_000  # a gap of a few closed minutes
+    mock_latest.return_value = datetime.fromtimestamp(last_ms / 1000, tz=timezone.utc)
 
-    ingester = BinanceKlineIngester(["BTCUSDT"])
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = []
+
+        def _closed_klines(self):
+            return [
+                [t, "1", "2", "0.5", "1.5", "10", 0, 0, 0, 0, 0, 0]
+                for t in range(last_ms + 60_000, current_minute_ms, 60_000)
+            ]
+
+        def get_klines(self, ticker_symbol, interval, limit=1000, start_ms=None):
+            self.calls.append(("get_klines", ticker_symbol))
+            return self._closed_klines()
+
+        def get_klines_paginated(
+            self, ticker_symbol, interval, start_ms, end_ms, sleep_seconds=0.25
+        ):
+            self.calls.append(("get_klines_paginated", ticker_symbol))
+            return self._closed_klines()
+
+    provider = RecordingProvider()
+    ingester = BinanceKlineIngester(["BTCUSDT"], provider=provider)
+
     ingester.backfill_gaps()
 
     assert mock_write.call_count == 0
+    assert provider.calls == []  # the exchange was never asked
+    assert mock_latest.call_count == 0  # nor the database
+    assert ingester.bars_written == 0
 
 
 def test_crypto_watchlist_symbols_filters_and_dedupes():
