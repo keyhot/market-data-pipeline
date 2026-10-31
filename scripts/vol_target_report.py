@@ -149,6 +149,11 @@ def _run_branch_a0(months: int, seeds, reps: int, max_workers: int | None) -> di
     }
 
 
+def _require_allowlisted(statistic, allowlist, stage: str) -> None:
+    if not (set(statistic.keys()) <= allowlist):
+        raise AssertionError(f"{stage} statistic keys outside the allowlist: {set(statistic) - allowlist}")
+
+
 def run_stage_a0(seeds=None, reps: int = A0_BOOT_REPS, results_dir=None,
                  max_workers: int | None = None):
     """Runs the clean branch's A0 first; only runs the fallback's A0 if
@@ -178,9 +183,7 @@ def run_stage_a0(seeds=None, reps: int = A0_BOOT_REPS, results_dir=None,
         "a0_mde": chosen["mde"],
         "branch": branch,
     }
-    assert set(statistic.keys()) <= A0_ALLOWLIST, (
-        f"stage A0 statistic keys outside the allowlist: {set(statistic) - A0_ALLOWLIST}"
-    )
+    _require_allowlisted(statistic, A0_ALLOWLIST, "stage A0")
 
     verdict = branch  # "clean" | "contaminated" | "VOID_UNDERPOWERED"
 
@@ -447,9 +450,7 @@ def run_stage_a(archive_root: Path, symbols=SYMBOLS, results_dir=None):
                             for s, v in a6_by_symbol.items()},
         "branch": branch,
     }
-    assert set(statistic.keys()) <= STAGE_A_ALLOWLIST, (
-        f"stage A statistic keys outside the allowlist: {set(statistic) - STAGE_A_ALLOWLIST}"
-    )
+    _require_allowlisted(statistic, STAGE_A_ALLOWLIST, "stage A")
 
     valid, failing = stage_a_valid(checks)
     verdict = "VALID" if valid else "VOID"
@@ -606,7 +607,8 @@ def run_stage_b(archive_root: Path, symbols=SYMBOLS, results_dir=None,
 
     b_first, b_last, _ = _branch_window(branch)
     symbols = tuple(symbols)
-    assert len(symbols) == 2, "score_pair scores exactly one pair"
+    if not (len(symbols) == 2):
+        raise AssertionError("score_pair scores exactly one pair")
     label_to_symbol = dict(zip(("a", "b"), symbols))
 
     closes = {s: load_close_b(archive_root, s, branch) for s in symbols}
@@ -639,9 +641,7 @@ def run_stage_b(archive_root: Path, symbols=SYMBOLS, results_dir=None,
         )
 
     statistic = {"branch": branch, "per_symbol": per_symbol}
-    assert set(statistic.keys()) <= STAGE_B_ALLOWLIST, (
-        f"stage B statistic keys outside the allowlist: {set(statistic) - STAGE_B_ALLOWLIST}"
-    )
+    _require_allowlisted(statistic, STAGE_B_ALLOWLIST, "stage B")
 
     verdict = result["overall"]  # bare "PASS" | "SPLIT" | "FAIL" -- stage C's gate reads this
 

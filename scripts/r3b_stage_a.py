@@ -36,11 +36,15 @@ PLACEBO_DRAWS = 300
 MIN_DEV_FILLS = 100
 
 
+def _require_dev_window(b) -> None:
+    if not (b.index.min() >= pd.Timestamp(DEV[0], tz="UTC") and b.index.max() < pd.Timestamp(DEV[1], tz="UTC")):
+        raise AssertionError(f"bars outside the development year [{DEV[0]}, {DEV[1]})")
+
 def load(sym):
     # Local cache written by scripts/r3b_a0_report.py (gitignored), never external input.
     b = pd.read_pickle(CACHE / f"{sym}_dev.pkl")
     b = wc.slice_window(b, *DEV)
-    assert b.index.min() >= pd.Timestamp(DEV[0], tz="UTC") and b.index.max() < pd.Timestamp(DEV[1], tz="UTC")
+    _require_dev_window(b)
     return b
 
 

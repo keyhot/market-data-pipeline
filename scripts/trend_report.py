@@ -278,6 +278,11 @@ def _a5_validity(perp_month_closes, events_by_symbol):
     return valid_months, missing_boundary
 
 
+def _require_allowlisted(statistic, allowlist, stage: str) -> None:
+    if not (set(statistic.keys()) <= allowlist):
+        raise AssertionError(f"{stage} statistic keys outside the allowlist: {set(statistic) - allowlist}")
+
+
 def run_stage_a(archive_root: Path, results_dir=None):
     (spot_daily, perp_daily, perp_month_closes, events_by_symbol,
      funding_daily, price_ret, r_tilde) = _load_all(archive_root, "A")
@@ -318,8 +323,7 @@ def run_stage_a(archive_root: Path, results_dir=None):
     checks["a5_months"] = a5_valid_months == len(HOLD_INDEX)
     checks["a5_boundary"] = all(v <= 1 for v in a5_missing_boundary.values())
 
-    assert set(statistic.keys()) <= STAGE_A_ALLOWLIST, \
-        f"stage A statistic keys outside the allowlist: {set(statistic) - STAGE_A_ALLOWLIST}"
+    _require_allowlisted(statistic, STAGE_A_ALLOWLIST, "stage A")
 
     valid, failing = stage_a_valid(checks)
     verdict = "VALID" if valid else "VOID"

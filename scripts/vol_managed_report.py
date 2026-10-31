@@ -190,6 +190,11 @@ def _a5_validity(close: pd.Series, r: pd.Series) -> int:
     return valid
 
 
+def _require_allowlisted(statistic, allowlist, stage: str) -> None:
+    if not (set(statistic.keys()) <= allowlist):
+        raise AssertionError(f"{stage} statistic keys outside the allowlist: {set(statistic) - allowlist}")
+
+
 def run_stage_a(archive_root: Path, symbols=SYMBOLS, results_dir=None):
     inputs = {"symbols": list(symbols), "source": "binance spot 1d klines"}
     checks: dict[str, bool] = {}
@@ -232,9 +237,7 @@ def run_stage_a(archive_root: Path, symbols=SYMBOLS, results_dir=None):
         "a4_mismatches": a4_by_symbol,
         "a5_valid_months": a5_by_symbol,
     }
-    assert set(statistic.keys()) <= STAGE_A_ALLOWLIST, (
-        f"stage A statistic keys outside the allowlist: {set(statistic) - STAGE_A_ALLOWLIST}"
-    )
+    _require_allowlisted(statistic, STAGE_A_ALLOWLIST, "stage A")
 
     valid, failing = stage_a_valid(checks)
     verdict = "VALID" if valid else "VOID"

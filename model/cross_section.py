@@ -254,6 +254,11 @@ def fit_ridge(X: np.ndarray, y: np.ndarray, lam: float = 1.0) -> np.ndarray:
     return np.linalg.solve(X.T @ X + lam * np.eye(p), X.T @ y)
 
 
+def _require_finite_beta(beta, refit) -> None:
+    if not (np.isfinite(beta).all()):
+        raise AssertionError(f"non-finite ridge beta at refit {refit:%Y-%m-%d}")
+
+
 def walk_forward_scores(features: dict[str, pd.DataFrame], target: pd.DataFrame,
                         eligible: pd.DataFrame, start: pd.Timestamp,
                         end: pd.Timestamp, lam: float = 1.0,
@@ -280,7 +285,7 @@ def walk_forward_scores(features: dict[str, pd.DataFrame], target: pd.DataFrame,
         # KI-101: pandas<3 `stack()` drops NaN rows, so beta is finite today; under
         # pandas 3 it would be NaN, every score NaN, the book flat and E13 a
         # silent FALSIFIED. Fail loud instead.
-        assert np.isfinite(beta).all(), f"non-finite ridge beta at refit {refit:%Y-%m-%d}"
+        _require_finite_beta(beta, refit)
         stop = refits[i + 1] if i + 1 < len(refits) else end + DAY
         span = (days_level >= refit) & (days_level < stop) & (days_level <= end)
         block = stacked[span]

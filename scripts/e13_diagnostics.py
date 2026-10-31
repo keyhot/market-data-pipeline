@@ -88,12 +88,17 @@ def daily_ic(a: pd.DataFrame, r: pd.DataFrame, spearman: bool) -> pd.Series:
 
 # ------------------------------------------------------------------ build --
 
+def _refuse_holdout_panels(panels) -> None:
+    """The holdout wall. A raise, not an assert: `python -O` strips asserts."""
+    for name, p in panels:
+        if not (p.index.max() < HOLDOUT):
+            raise AssertionError(f"{name} panel reaches the 2026 holdout")
+
 def build() -> dict:
     close, high, low, vol = (R._load(f) for f in ("close", "high", "low", "volume"))
     fund_raw = R._load("funding_daily")
-    for name, p in (("close", close), ("high", high), ("low", low),
-                    ("volume", vol), ("funding_daily", fund_raw)):
-        assert p.index.max() < HOLDOUT, f"{name} panel reaches the 2026 holdout"
+    _refuse_holdout_panels((("close", close), ("high", high), ("low", low),
+                            ("volume", vol), ("funding_daily", fund_raw)))
     elig = R._universe()
     fund = fund_raw.reindex(index=close.index, columns=close.columns).fillna(0.0)
     oi = R._load("oi_close").reindex(index=close.index, columns=close.columns)
@@ -107,6 +112,10 @@ def build() -> dict:
                 fwd=fwd, ffund=ffund, slip=slip, feats=feats, scores=scores, w=w,
                 start=start, fee=R.A1["fee_per_side"])
 
+
+def _require_reproduction(got: dict, want: dict) -> None:
+    if not (got == want):
+        raise AssertionError(f"rebuild does not reproduce stage B:\n got {got}\nwant {want}")
 
 def reproduce(c: dict) -> dict:
     """Stop unless this rebuild IS the stage B book."""
@@ -125,7 +134,7 @@ def reproduce(c: dict) -> dict:
     want["rank_ic"] = ref["rank_ic"]
     got["beta"] = R._last_beta(c["feats"], c["fwd"], c["elig"])
     want["beta"] = ref["coefficients_last_fit"]
-    assert got == want, f"rebuild does not reproduce stage B:\n got {got}\nwant {want}"
+    _require_reproduction(got, want)
     return got
 
 
@@ -143,14 +152,20 @@ def pinned_funding_checks() -> dict:
                                 d + pd.Timedelta(days=2, hours=8)]})        # next hold
     f = forward_funding(funding_by_day(ev, days))
     held_at_d = float(f.loc[d, "L"])
-    assert np.isclose(held_at_d, 0.0010 + 0.0020), held_at_d
+    if not (np.isclose(held_at_d, 0.0010 + 0.0020)):
+        raise AssertionError(held_at_d)
     one = pd.DataFrame({"L": [1.0], "S": [-1.0]}, index=days[:1])
     zero = pd.DataFrame(0.0, index=one.index, columns=one.columns)
     long_pays = portfolio_pnl(one, zero, pd.DataFrame({"L": [0.001], "S": [0.0]}, index=one.index), 0, 0)
     short_recv = portfolio_pnl(one, zero, pd.DataFrame({"L": [0.0], "S": [0.001]}, index=one.index), 0, 0)
-    assert np.isclose(long_pays["funding"].iloc[0], -0.001) and np.isclose(short_recv["funding"].iloc[0], 0.001)
+    if not (np.isclose(long_pays["funding"].iloc[0], -0.001) and np.isclose(short_recv["funding"].iloc[0], 0.001)):
+        raise AssertionError("funding sign: a long on +10bp must pay -0.001 and a short must receive +0.001")
     return {"held_over_(d+1,d+2]_sums": held_at_d, "long_on_+10bp": -0.001, "short_on_+10bp": 0.001}
 
+
+def _refuse_holdout_events(ev: pd.DataFrame) -> None:
+    if not (ev["time"].max() < HOLDOUT):
+        raise AssertionError("a raw funding event reaches the 2026 holdout")
 
 def raw_funding(symbols) -> pd.DataFrame:
     rows = []
@@ -162,7 +177,7 @@ def raw_funding(symbols) -> pd.DataFrame:
                 "rate": t["last_funding_rate"].astype(float),
                 "interval_h": t.get("funding_interval_hours", pd.Series(np.nan, index=t.index))}))
     ev = pd.concat(rows).drop_duplicates(["symbol", "time"]).sort_values(["symbol", "time"])
-    assert ev["time"].max() < HOLDOUT, "a raw funding event reaches the 2026 holdout"
+    _refuse_holdout_events(ev)
     return ev.reset_index(drop=True)
 
 

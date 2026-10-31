@@ -38,6 +38,13 @@ GATING_N = 1081
 MIN_FILLS = 0.5 * GATING_N
 
 
+def _require_verdict_window(b) -> None:
+    if not (b.index.min() >= pd.Timestamp(VERDICT[0], tz="UTC")):
+        raise AssertionError(f"bar index starts before the verdict window {VERDICT[0]}")
+    if not (b.index.max() < pd.Timestamp(VERDICT[1], tz="UTC")):
+        raise AssertionError(f"bar index reaches the verdict window end {VERDICT[1]}")
+
+
 def load_verdict(sym, getter=None, cache: Path | None = CACHE) -> pd.DataFrame:
     p = None if cache is None else cache / f"{sym}_verdict.pkl"
     if p is not None and p.exists():
@@ -52,8 +59,7 @@ def load_verdict(sym, getter=None, cache: Path | None = CACHE) -> pd.DataFrame:
             p.parent.mkdir(parents=True, exist_ok=True)
             b.to_pickle(p)
     b = wc.slice_window(b, *VERDICT)
-    assert b.index.min() >= pd.Timestamp(VERDICT[0], tz="UTC")
-    assert b.index.max() < pd.Timestamp(VERDICT[1], tz="UTC")
+    _require_verdict_window(b)
     return b
 
 
