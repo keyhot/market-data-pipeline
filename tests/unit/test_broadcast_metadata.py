@@ -69,9 +69,11 @@ def test_youtube_rejects_angle_brackets_so_none_are_emitted():
 
 def test_a_missing_key_raises_rather_than_defaults():
     # A confident wrong figure in a public title is worse than a skipped
-    # refresh, which the runner retries.
+    # refresh, which the runner retries. Only "losses" is missing, so the
+    # KeyError can only come from that lookup, whatever order they run in.
+    record = {k: v for k, v in RECORD.items() if k != "losses"}
     with pytest.raises(KeyError, match=r"^'losses'$"):
-        build_description({"wins": 1})
+        build_description(record)
 
 
 def test_the_snippet_keeps_fields_it_does_not_own_and_drops_read_only_ones():
