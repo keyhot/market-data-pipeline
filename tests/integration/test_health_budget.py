@@ -9,12 +9,12 @@ by holding ACCESS EXCLUSIVE on the tables a read touches — connects and
 nothing here (the gate short-circuits), which is why the ticket was missed.
 
 OPT-IN, because of those locks: this module runs only when
-`POSTGRES_DISPOSABLE=1` says the database behind the pool may be locked. With
-no DATABASE_URL the pool falls back to localhost:5432, which on the streaming
-box is the live database, and the dev/prod guard does not help — the locker
-connects outside the pool, and LOCK is permitted in a read-only transaction
-anyway. CI sets the variable for its throwaway service container; locally,
-point DATABASE_URL at a disposable Postgres and set it too.
+`POSTGRES_DISPOSABLE=1` says the database behind the pool may be locked, on top
+of the KI-106 guard (tests/integration/conftest.py), which runs every
+integration test only against the mdp_test_* database off port 5432 that
+MDP_TEST_DATABASE_URL names — the pool never falls back to localhost:5432. The
+dev/prod guard would not have helped here: the locker connects outside the
+pool, and LOCK is permitted in a read-only transaction anyway.
 """
 
 import os
@@ -28,7 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from storage import db, postgres_store
-from storage.db import get_pool, ping
+from storage.db import get_pool
 
 pytestmark = [
     pytest.mark.skipif(
@@ -36,7 +36,6 @@ pytestmark = [
         reason="takes ACCESS EXCLUSIVE locks; set POSTGRES_DISPOSABLE=1 "
         "against a disposable database",
     ),
-    pytest.mark.skipif(not ping(), reason="Postgres unavailable"),
 ]
 
 # A 1s budget for the /health tests: small enough to run fast, and below the

@@ -1,16 +1,16 @@
-"""Integration tests against the docker-compose Postgres.
+"""Integration tests against a throwaway Postgres (KI-106).
 
-Auto-skipped when the database is unreachable so the suite stays green
-without Docker (and in CI until the service-container ticket lands).
+They write: the autouse fixture below DELETEs, and most tests insert. So they
+run only when MDP_TEST_DATABASE_URL names a mdp_test_* database off port 5432
+(tests/integration/conftest.py checks that before the first statement and
+skips everything otherwise); nothing here connects at import.
 """
 
 import pandas as pd
 import pytest
 
 from storage import postgres_store
-from storage.db import get_pool, ping
-
-pytestmark = pytest.mark.skipif(not ping(), reason="Postgres unavailable")
+from storage.db import get_pool
 
 BARS_SYMBOL = "ZZTEST"
 BACKFILL_SYMBOL = "ZZBF"
@@ -306,8 +306,20 @@ def test_signal_resolution_round_trip():
     """Full accountability loop against real Postgres: signal → realized
     bar → resolver → outcome + signal_resolved world event."""
     from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
 
     from world.resolver import resolve_pending
+
+    # resolve_pending works through get_unresolved_signals(), which has no
+    # symbol filter (oldest first, LIMIT 500): unscoped, it would resolve and
+    # append world_events for any due signal of any symbol in the database
+    # (KI-106). Scope its queue to the symbols this module cleans up.
+    real_unresolved = postgres_store.get_unresolved_signals
+
+    def only_test_symbols(*args, **kwargs):
+        # No LIMIT 500 window that foreign rows could fill ahead of ours.
+        queue = real_unresolved(limit=1_000_000)
+        return [s for s in queue if s["symbol"] in _TEST_SYMBOLS]
 
     signal_ts = datetime(2026, 1, 5, tzinfo=timezone.utc)
     postgres_store.upsert_price_bars(BARS_SYMBOL, "1d", _bars())
@@ -325,7 +337,8 @@ def test_signal_resolution_round_trip():
         ]
     )
 
-    resolutions = resolve_pending(now=signal_ts + timedelta(days=2))
+    with patch("world.resolver.get_unresolved_signals", only_test_symbols):
+        resolutions = resolve_pending(now=signal_ts + timedelta(days=2))
 
     ours = [r for r in resolutions if r["symbol"] == BARS_SYMBOL]
     assert len(ours) == 1
@@ -338,7 +351,8 @@ def test_signal_resolution_round_trip():
     assert len(events) == 1
 
     # idempotence: a second run resolves nothing new for this symbol
-    again = resolve_pending(now=signal_ts + timedelta(days=2))
+    with patch("world.resolver.get_unresolved_signals", only_test_symbols):
+        again = resolve_pending(now=signal_ts + timedelta(days=2))
     assert [r for r in again if r["symbol"] == BARS_SYMBOL] == []
 
 

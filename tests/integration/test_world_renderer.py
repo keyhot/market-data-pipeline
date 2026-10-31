@@ -1,15 +1,27 @@
 """End-to-end over the projection chain: events -> state -> endpoint -> page.
-Uses patched storage, so it runs without Postgres like the rest of tests/."""
+Uses patched storage, so it runs without Postgres like the rest of tests/.
+
+Marked no_database (tests/integration/conftest.py, KI-106): every connection is
+refused, and a read that is not patched fails the test even though
+/world/state swallows enrichment errors. /world/state reads the world log,
+model accuracy and the latest price per symbol; all three are patched below."""
 
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
 from world.reactions import attach_reactions
 from world.state import project_state
 
+pytestmark = pytest.mark.no_database
+
 client = TestClient(app)
+
+_ACCURACY = {"window": 50, "resolved": 0, "wins": 0, "losses": 0,
+             "hit_rate": None, "per_symbol": {}}
+_LAST_BAR = [{"close": 123.0}]
 
 
 def _log():
@@ -27,9 +39,15 @@ def _log():
 
 
 def test_events_flow_through_projection_to_endpoint():
-    with patch("api.routers.world.get_world_events", return_value=_log()):
+    with patch("api.routers.world.get_world_events", return_value=_log()), \
+            patch("api.routers.world.get_model_accuracy",
+                  return_value=_ACCURACY) as accuracy, \
+            patch("api.routers.world.get_price_bars",
+                  return_value=_LAST_BAR) as bars:
         data = client.get("/world/state").json()["data"]
 
+    assert accuracy.called and bars.called  # the enrichments were the patched ones
+    assert data["prices"] and set(data["prices"].values()) == {123.0}
     assert data["event_count"] == 3
     assert data["stream"]["state"] == "live"
     assert data["model"]["losses"] == 1
@@ -61,7 +79,8 @@ def test_endpoint_state_matches_the_pure_projection():
     accuracy = {"window": 50, "resolved": 0, "wins": 0, "losses": 0,
                 "hit_rate": None, "per_symbol": {}}
     with patch("api.routers.world.get_world_events", return_value=_log()), \
-            patch("api.routers.world.get_model_accuracy", return_value=accuracy):
+            patch("api.routers.world.get_model_accuracy", return_value=accuracy), \
+            patch("api.routers.world.get_price_bars", return_value=_LAST_BAR):
         served = client.get("/world/state").json()["data"]
     direct = attach_reactions(project_state(_log()))
 

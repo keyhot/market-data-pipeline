@@ -13,13 +13,15 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: market_data
+          POSTGRES_DB: mdp_test_ci
           POSTGRES_USER: market_data
           POSTGRES_PASSWORD: market_data
+        # KI-106: the test guard (tests/db_guard.py) refuses port 5432 and any
+        # database not named mdp_test_*, so the service is published on 55432.
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
-          --health-cmd "pg_isready -U market_data"
+          --health-cmd "pg_isready -U market_data -d mdp_test_ci"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -42,11 +44,48 @@ jobs:
         run: poetry run ruff check .
 
       - name: Apply database schema
-        run: psql -f db/init.sql "postgresql://market_data:market_data@localhost:5432/market_data"
+        run: psql -f db/init.sql "postgresql://market_data:market_data@localhost:55432/mdp_test_ci"
 
       - name: Run tests
         # The service container is throwaway, so the lock-taking integration
         # tests (tests/integration/test_health_budget.py) may run against it.
+        # Integration tests are opt-in (KI-106): the guard reads only
+        # MDP_TEST_DATABASE_URL, never DATABASE_URL or the 5432 default.
         env:
           POSTGRES_DISPOSABLE: "1"
-        run: poetry run pytest -q
+          MDP_TEST_DATABASE_URL: postgresql://market_data:market_data@localhost:55432/mdp_test_ci
+        run: poetry run pytest -q --junitxml=pytest-report.xml
+
+      - name: Fail if integration tests were skipped
+        # Without the opt-in the guard skips every integration test and the run
+        # still goes green. Every test under tests/integration must run in CI.
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          # A module skipped at collection is reported with an empty classname
+          # and the dotted module path as its name; an xfail is reported as a
+          # <skipped type="pytest.xfail"> although the test ran.
+          def ident(c):
+              return c.get("classname") or c.get("name", "")
+
+          cases = [
+              c
+              for c in ET.parse("pytest-report.xml").getroot().iter("testcase")
+              if ident(c).startswith("tests.integration.")
+          ]
+          skipped = [
+              c
+              for c in cases
+              if c.find("skipped") is not None
+              and c.find("skipped").get("type") != "pytest.xfail"
+          ]
+          print(f"tests/integration: {len(cases)} reported, {len(skipped)} skipped")
+          if not cases:
+              sys.exit("no tests/integration results in pytest-report.xml")
+          if skipped:
+              for c in skipped:
+                  print("SKIPPED", ident(c), c.get("name"), file=sys.stderr)
+              sys.exit("integration tests were skipped: check MDP_TEST_DATABASE_URL")
+          PY
