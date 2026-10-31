@@ -139,7 +139,7 @@ def test_stage_b_refuses_without_valid_stage_a(tmp_path):
 
 def test_stage_b_refuses_when_stage_a_is_void(tmp_path):
     _write_stage_a(tmp_path, verdict="VOID")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"stage A verdict is 'VOID', not VALID"):
         rfr.run_stage_b(results_dir=tmp_path)
 
 

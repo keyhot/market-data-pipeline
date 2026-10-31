@@ -128,7 +128,7 @@ def test_cached_predictor_refuses_a_bar_it_has_no_prediction_for():
     index = pd.date_range("2026-01-01", periods=6, freq="1min", tz="UTC")
     X = pd.DataFrame({"f": range(6)}, index=index)
     predict = cached_predictor(pd.Series([0.5] * 4, index=index[:4]))
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match=r"2 test bars have no prediction"):
         predict(X, None, slice(0, 2), slice(3, 6))
 
 
