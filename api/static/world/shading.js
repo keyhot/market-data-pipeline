@@ -714,9 +714,11 @@ import { snap } from "./tiers.js";
       }, 0);
       const side = Math.sign(area) || 1;
       let out = subject;
+      let applied = false;
       for (let i = 0; i < clip.length && out.length; i++) {
         const [ax, ay] = clip[i], [bx, by] = clip[(i + 1) % clip.length];
         if (Math.abs(bx - ax) + Math.abs(by - ay) < 1e-9) continue;
+        applied = true;
         const at = ([px, py]) => side * ((bx - ax) * (py - ay) - (by - ay) * (px - ax));
         const input = out;
         out = [];
@@ -730,9 +732,11 @@ import { snap } from "./tiers.js";
           }
         }
       }
-      // Nothing left (a clip off the subject): the empty band the flat
-      // rule used, one point three times.
-      if (out.length < 3) return [subject[0], subject[0], subject[0]];
+      // Nothing left (a clip off the subject), or nothing cut: every clip
+      // edge was degenerate, or there was no clip, so `out` is still the
+      // subject itself and not a band of it (Sprint 18 #50). The empty band
+      // the flat rule used, one point three times.
+      if (!applied || out.length < 3) return [subject[0], subject[0], subject[0]];
       return out.map(([px, py]) => [quant(px), quant(py)]);
     }
 
