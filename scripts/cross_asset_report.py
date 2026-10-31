@@ -36,7 +36,19 @@ def _bars(symbol: str) -> pd.DataFrame:
     return bars[stamps < "2026-01-01"]  # E6: 2026 is never read
 
 
-def collect(symbol: str) -> pd.DataFrame:
+def fit_params(seed: int | None = None) -> dict:
+    """KI-095: the params every ΔAUC `collect` hands to `lgb.train`. `seed=None`
+    is the very `_PARAMS` object (the default path, byte-identical to before
+    the kwarg existed). A seed is a fresh `{**_PARAMS, "seed": seed}`, so
+    `_PARAMS` itself is never written to and cannot leak into the next call."""
+    return _PARAMS if seed is None else {**_PARAMS, "seed": seed}
+
+
+def collect(symbol: str, seed: int | None = None) -> pd.DataFrame:
+    """Walk-forward OOS predictions for the E7 base and cross arms. `seed=None`
+    fits with `_PARAMS` as it is; a seed refits BOTH arms under it, so
+    `delta_auc_over_seeds(lambda s: collect(symbol, seed=s), seeds)` works with
+    the default arm="cross" (this frame's columns: year, y, base, cross)."""
     own = build_features(_bars(symbol), horizon_bars=HORIZON)
     X_cross, y = with_cross_features(own.X, own.y, _bars(OTHER[symbol]))
     X_base = X_cross[list(own.X.columns)]  # same rows in both arms
@@ -48,7 +60,8 @@ def collect(symbol: str) -> pd.DataFrame:
         row = {"year": year, "y": y.iloc[test].to_numpy()}
         for arm, X in (("base", X_base), ("cross", X_cross)):
             booster = lgb.train(
-                _PARAMS, lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
+                fit_params(seed),
+                lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
                 num_boost_round=_NUM_ROUNDS,
             )
             row[arm] = booster.predict(X.iloc[test])

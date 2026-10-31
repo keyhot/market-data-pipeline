@@ -32,7 +32,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from cross_asset_report import delta_auc_ci, top_quintile_hit  # noqa: E402
+from cross_asset_report import (  # noqa: E402
+    delta_auc_ci, fit_params, top_quintile_hit)
 from live_gate_report import HORIZON, auc  # noqa: E402
 from order_flow_report import top_quintile_gross_bps  # noqa: E402
 from model.archive import (  # noqa: E402
@@ -48,7 +49,7 @@ from model.archive import (  # noqa: E402
     with_archive_features,
 )
 from model.features import _normalize, build_features  # noqa: E402
-from model.train import _NUM_ROUNDS, _PARAMS  # noqa: E402
+from model.train import _NUM_ROUNDS  # noqa: E402
 from report_results import write_result  # noqa: E402
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
@@ -142,7 +143,7 @@ def _perp_bars(symbol: str) -> pd.DataFrame:
 
 
 def _walk_forward(arms: dict, y: pd.Series, forward: pd.Series,
-                  years: tuple) -> pd.DataFrame:
+                  years: tuple, seed: int | None = None) -> pd.DataFrame:
     rows = y.index
     chunks = []
     for year in years:
@@ -152,7 +153,8 @@ def _walk_forward(arms: dict, y: pd.Series, forward: pd.Series,
                "ret": forward.iloc[test].to_numpy()}
         for name, X in arms.items():
             booster = lgb.train(
-                _PARAMS, lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
+                fit_params(seed),
+                lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
                 num_boost_round=_NUM_ROUNDS)
             row[name] = booster.predict(X.iloc[test])
         chunks.append(pd.DataFrame(row, index=rows[test]))
@@ -176,7 +178,13 @@ def _result_name(symbol: str, arm: str, info: dict) -> str:
 
 
 def collect(symbol: str, arm: str, control_only: bool,
-            legacy_delay: bool = False) -> tuple[pd.DataFrame, dict]:
+            legacy_delay: bool = False,
+            seed: int | None = None) -> tuple[pd.DataFrame, dict]:
+    """`seed` as in `cross_asset_report.collect`: None keeps `_PARAMS`; a seed
+    refits every arm (base, control, `arm`) under it. For
+    `delta_auc_over_seeds` read `collect(symbol, arm, False, seed=s)[0]` with
+    arm=<"metrics" | "depth">, the frame's own arm column (the KI-092 re-score
+    reads "metrics"). `control_only` frames have no such column."""
     bars = _perp_bars(symbol)
     close = _normalize(bars)["close"]
     info: dict = {}
@@ -203,7 +211,7 @@ def collect(symbol: str, arm: str, control_only: bool,
     arms = {"base": X_base, "control": X_ctrl}
     if not control_only:
         arms[arm] = X_arm
-    return _walk_forward(arms, y, forward, years), info
+    return _walk_forward(arms, y, forward, years, seed), info
 
 
 def report(symbol: str, arm: str, oos: pd.DataFrame, info: dict) -> dict:

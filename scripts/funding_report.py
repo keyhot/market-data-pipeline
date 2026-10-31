@@ -24,7 +24,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cross_asset_report import _bars, delta_auc_ci, top_quintile_hit  # noqa: E402
+from cross_asset_report import (  # noqa: E402
+    _bars, delta_auc_ci, fit_params, top_quintile_hit)
 from live_gate_report import HORIZON, TEST_YEARS, auc  # noqa: E402
 from order_flow_report import top_quintile_gross_bps  # noqa: E402
 from model.features import _normalize, build_features  # noqa: E402
@@ -36,7 +37,7 @@ from model.funding import (  # noqa: E402
     leaked_control,
     with_funding_features,
 )
-from model.train import _NUM_ROUNDS, _PARAMS  # noqa: E402
+from model.train import _NUM_ROUNDS  # noqa: E402
 from report_results import write_result  # noqa: E402
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "model" / "artifacts"
@@ -107,7 +108,11 @@ def _load(kind: str, symbol: str) -> list[list]:
         return list(csv.reader(fh))
 
 
-def collect(symbol: str) -> tuple[pd.DataFrame, dict, float]:
+def collect(symbol: str,
+            seed: int | None = None) -> tuple[pd.DataFrame, dict, float]:
+    """`seed` as in `cross_asset_report.collect`: None keeps `_PARAMS`; a seed
+    refits all three arms under it. For `delta_auc_over_seeds` read
+    `collect(symbol, seed=s)[0]` with arm="funding"."""
     bars = _bars(symbol)
     close = _normalize(bars)["close"]
     index_close = kline_close(_load("index", symbol))
@@ -135,7 +140,8 @@ def collect(symbol: str) -> tuple[pd.DataFrame, dict, float]:
         for arm, X in (("base", X_base), ("funding", X_arm),
                        ("control", X_ctrl)):
             booster = lgb.train(
-                _PARAMS, lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
+                fit_params(seed),
+                lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
                 num_boost_round=_NUM_ROUNDS,
             )
             row[arm] = booster.predict(X.iloc[test])
