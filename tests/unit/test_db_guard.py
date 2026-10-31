@@ -578,6 +578,7 @@ def _scratch_run(tmp_path, opt_in, sample=None, fake_db=None):
     integration.mkdir(parents=True)
     shutil.copy(TESTS / "conftest.py", project / "tests")
     shutil.copy(TESTS / "db_guard.py", project / "tests")
+    shutil.copy(TESTS / "data_guard.py", project / "tests")
     shutil.copy(TESTS / "integration" / "conftest.py", integration)
     (integration / "test_sample.py").write_text(sample or _SAMPLE)
     (tmp_path / "guard_blocker.py").write_text(_BLOCKER)
