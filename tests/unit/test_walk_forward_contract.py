@@ -27,6 +27,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
+from model.archive import METRICS_STEP, stamp_delays  # noqa: E402
 import archive_report as ar  # noqa: E402
 import cross_asset_report as car  # noqa: E402
 import funding_report as fr  # noqa: E402
@@ -43,6 +44,24 @@ LABEL = 1000  # y(id) = LABEL + id, so a label proves which row it belongs to
 ARM_DROP, CTRL_DROP = {5}, {10}  # a row only the control lacks / only the arm lacks
 TEST_YEARS_ALL = (2022, 2023, 2024, 2025)
 FEATS = ("arm features",)  # anything but a str; a str marks the leaked control
+ZERO = pd.Timedelta(0)
+# Binance flipped the stamp convention at 2024-01-01: the 2022-23 rows END
+# their period (delay 0), the 2024-25 rows START it (5 min).
+STAMP_DELAYS = {2022: ZERO, 2023: ZERO, 2024: METRICS_STEP, 2025: METRICS_STEP}
+
+
+def _stamp_info():
+    """The shape the real `check_stamp_convention` returns since KI-092: the
+    whole-sample "delay" (the conservative 5 min, as the years disagree) AND
+    each year's own verdict in "delays", from "by_year"'s (close-row,
+    open-row) correlations. `collect` and `metrics_delay` write into the dict
+    they get, so every call returns a fresh one."""
+    by_year = {2022: (0.28, -0.01), 2023: (0.27, -0.02),
+               2024: (0.03, 0.25), 2025: (0.04, 0.24)}
+    info = {"corr_close_row": 0.12, "corr_open_row": 0.15, "by_year": by_year,
+            "delay": METRICS_STEP, "delays": stamp_delays(by_year)}
+    assert info["delays"] == STAMP_DELAYS  # the fixture says what it means
+    return info
 
 
 def year_of(i):
@@ -155,7 +174,7 @@ def _run_archive(arm, control_only=False):
         monkeypatch.setattr(ar, "_perp_bars", lambda symbol: _bars())
         monkeypatch.setattr(ar, "_load", lambda dataset, symbol: "RAW")
         monkeypatch.setattr(ar, "check_stamp_convention",
-                            lambda metrics, close: {"delay": 2})
+                            lambda metrics, close: _stamp_info())
         monkeypatch.setattr(ar, "metrics_features", lambda m, idx, delay: FEATS)
         monkeypatch.setattr(ar, "depth_features", lambda d, idx: FEATS)
         monkeypatch.setattr(ar, "leaked_control", lambda feats, close, col: "CTRL")
@@ -294,7 +313,7 @@ def _run_archive_info(monkeypatch, arm):
     monkeypatch.setattr(ar, "_perp_bars", lambda symbol: _bars())
     monkeypatch.setattr(ar, "_load", lambda dataset, symbol: "RAW")
     monkeypatch.setattr(ar, "check_stamp_convention",
-                        lambda metrics, close: {"delay": 2})
+                        lambda metrics, close: _stamp_info())
     monkeypatch.setattr(ar, "metrics_features", lambda m, idx, delay: FEATS)
     monkeypatch.setattr(ar, "depth_features", lambda d, idx: FEATS)
     monkeypatch.setattr(ar, "leaked_control", lambda feats, close, col: "CTRL")
@@ -309,9 +328,11 @@ def test_archive_metrics_arm_checks_the_stamp_convention_and_passes_its_delay(mo
     monkeypatch.setattr(ar, "lgb", _RecordingLgb())
     monkeypatch.setattr(ar, "_perp_bars", lambda symbol: _bars())
     monkeypatch.setattr(ar, "_load", lambda dataset, symbol: f"RAW-{dataset}")
-    monkeypatch.setattr(ar, "check_stamp_convention",
-                        lambda metrics, close: seen.setdefault("m", metrics) and
-                        {"delay": 2, "corr_close_row": 0.1})
+
+    def stamp(metrics, close):
+        seen["m"] = metrics
+        return {**_stamp_info(), "corr_close_row": 0.1}
+    monkeypatch.setattr(ar, "check_stamp_convention", stamp)
     monkeypatch.setattr(ar, "metrics_features",
                         lambda m, idx, delay: seen.update(delay=delay) or FEATS)
     monkeypatch.setattr(ar, "depth_features",
@@ -320,9 +341,13 @@ def test_archive_metrics_arm_checks_the_stamp_convention_and_passes_its_delay(mo
     monkeypatch.setattr(ar, "with_archive_features", _with_features(ARM_DROP, CTRL_DROP))
     monkeypatch.setattr(ar, "build_features", lambda bars, horizon_bars: own)
     _, info = ar.collect("BTCUSDT", "metrics", False)
-    assert seen["m"] == "RAW-metrics" and seen["delay"] == 2
+    assert seen["m"] == "RAW-metrics"
+    # KI-092: the default path hands the metrics features each year's own
+    # delay, not the whole-sample scalar (which is 5 min here)
+    assert seen["delay"] == STAMP_DELAYS
+    assert info["delay_mode"] == "per_year"
     assert seen["col"] == "oi_change_16"
-    assert info["delay"] == 2 and info["corr_close_row"] == 0.1
+    assert info["delay"] == METRICS_STEP and info["corr_close_row"] == 0.1
 
 
 def test_archive_depth_arm_uses_depth_features_and_no_stamp_check(monkeypatch):
