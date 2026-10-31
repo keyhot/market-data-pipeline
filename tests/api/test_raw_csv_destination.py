@@ -20,11 +20,16 @@ client = TestClient(app)
 
 
 @patch("api.routers.market.fetch_ticker_async")
-def test_the_ticker_snapshot_is_written_under_the_tmp_data_root(mock_fetch, tmp_path):
+def test_the_ticker_snapshot_is_written_under_the_tmp_data_root(
+    mock_fetch, tmp_path, monkeypatch
+):
+    # The compose containers set CSV_WRITE_ENABLED=0; pin the default (on).
+    monkeypatch.delenv("CSV_WRITE_ENABLED", raising=False)
     mock_fetch.return_value = pd.DataFrame({"Close": [100, 101]})
 
     response = client.get("/ticker/AAPL/1d")
 
+    assert response.status_code == 200
     path = Path(response.json()["data"]["file_path"])
     assert path.is_relative_to(tmp_path / "data" / "raw" / "tickers")
     assert not path.resolve().is_relative_to(REPO_DATA_DIR.resolve())
@@ -32,11 +37,15 @@ def test_the_ticker_snapshot_is_written_under_the_tmp_data_root(mock_fetch, tmp_
 
 
 @patch("api.routers.market.fetch_events")
-def test_the_events_snapshot_is_written_under_the_tmp_data_root(mock_fetch, tmp_path):
+def test_the_events_snapshot_is_written_under_the_tmp_data_root(
+    mock_fetch, tmp_path, monkeypatch
+):
+    monkeypatch.delenv("CSV_WRITE_ENABLED", raising=False)
     mock_fetch.return_value = pd.DataFrame({"value": [1.0, 2.0]})
 
     response = client.get("/events/AAPL/dividends")
 
+    assert response.status_code == 200
     path = Path(response.json()["data"]["file_path"])
     assert path.is_relative_to(tmp_path / "data" / "raw" / "events")
     assert not path.resolve().is_relative_to(REPO_DATA_DIR.resolve())
