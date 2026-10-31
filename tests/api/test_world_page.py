@@ -4667,32 +4667,17 @@ def test_the_seated_arms_bend_at_an_elbow():
 # to finger about 1:1.4). 20 sits between the two reference hands.
 HAND_ALONG_U = 20.0
 
-# ACROSS is now the span of four fingers side by side, and it is the number the
-# CELL forces: `litRect` snaps both coordinates, only a whole-cell offset
-# survives that snap unchanged (`snap(x + 4k) == snap(x) + 4k`), so three
-# separations can only sit at +4, +8 and +12 -- and a hand narrower than 16
-# leaves the fourth finger a stub. 16 is also inside the reference's range.
-HAND_ACROSS_U = 16.0
-
-# Of the ALONG extent, the fingers take more than the palm -- the prong rule,
-# graded on its own in `test_the_fingers_reach_further_than_the_palm_they_hang_from`.
-FINGER_DEPTH_FRACTION = 0.6
-
-# A separation's own thickness. Four fingers at a 4-unit pitch makes the gap
-# and the finger the same order of size, which is what the reference shows --
-# its gaps measure 3-7 px against fingers of 1-4 px. 2.0 is as wide as the
-# pitch allows while keeping the widest finger inside the evenness bound
-# below: the leading finger has no separation beside it, so it is a whole
-# 4 units against the other three at 4 - gap.
-HAND_GAP_U = 2.0
-
-# A separation is a long thin line running the length of a finger. Anything
-# painted in `HUMAN.crease` that is squarer than this -- in EITHER axis -- is
-# BLUNT: a volume big enough both ways for `paint`'s three insets to read as a
-# dark object rather than as shading, the joint cap this redesign has now hit
-# three times. Told apart by shape, not by orientation or draw order: the hand
-# turned a right angle on 2026-09-23 and a classifier keyed on "wide in x"
-# filed every separation as debris.
+# The aspect rule that tells a thin line from a blunt volume. The fingers are
+# the outline's own notches (Sprint 17 #7) and no crease is painted on the hand
+# any more, so today it classifies nothing; `_hand_parts`
+# still splits any `HUMAN.crease` volume it finds by it, so a separation or tip
+# cut painted back onto the hand lands in the right list. A separation was a
+# long thin line running the length of a finger; a volume squarer than this --
+# in EITHER axis -- was BLUNT: big enough both ways for `paint`'s three insets
+# to read as a dark object rather than as shading, the joint cap that
+# redesign hit three times. Told apart by shape, not by orientation or draw
+# order: the hand turned a right angle on 2026-09-23 and a classifier keyed on
+# "wide in x" filed every separation as debris.
 SEPARATION_ASPECT = 2.0
 # `const CELL = (PLATE && PLATE.cell) || 4`, and the rig runs with no plate in
 # these drivers. Restated here rather than parsed because it is the grid the
@@ -4705,11 +4690,12 @@ def _hand_parts(emitted: dict, arm: dict) -> tuple[dict, list[dict], list[dict]]
     """The one skin volume on a forearm, plus any crease volumes on it split
     into thin separations and blunt tip cuts.
 
-    Since Sprint 17 #7 the fingers are the outline's own notches and the page
-    paints no crease on the hand, so both lists are empty today. They are kept
-    so a crease painted back onto the hand (the pre-#7 separations, or the
-    blunt tip cuts `test_nothing_blunt_is_painted_at_the_fingertips` forbids)
-    is still found and graded.
+    Since Sprint 17 #7 the fingers are the outline's own notches (three webs
+    cut into one skin path) and the page paints no crease on the hand, so both
+    lists are empty today. They are kept so a crease painted back onto the
+    hand (the pre-#7 separations, or the blunt tip cuts) is still found;
+    `test_the_hand_is_one_slab_with_four_splayed_fingers` asserts both lists
+    empty, and the slab is what the geometry tests read.
 
     Identified by fill rather than by draw order: order is how `paint` stacks
     them and a test that encoded it would pass a hand whose creases had been
@@ -5318,26 +5304,77 @@ def test_nothing_blunt_is_painted_at_the_fingertips():
     Worse, it was legible only against the chair and invisible against the
     dark room -- a silhouette that depends on its backdrop.
 
-    So this grades the ABSENCE, which is the only half worth keeping: every
-    crease on this hand is a long thin separation, and nothing blunt is
-    painted at the tips. Written as an aspect rule rather than as a count, so
-    it fails for any future square blob at the fingertips and not just for
-    the two this test was born from.
+    Since Sprint 17 #7 the fingers are the outline's own notches and no crease
+    is painted on the hand. This test used to read the blunt list of
+    `_hand_parts`, which that change left empty by construction, so it could
+    not fail (found in the S17 review, closed in Sprint 18 #51). It now grades
+    the free length of the fingers, from the webs down and one CELL past the
+    tips, directly and by FILL-BLIND geometry: no volume on the forearm reaches
+    into it but the hand itself and the hand's own contact shadow (the
+    outline in the contact colour, shifted sideways). A blunt square at the
+    tips is the failure whatever colour it is painted in, and this fails for
+    any future one. It first insists on having seen the hand there, so an empty
+    set cannot pass it.
     """
     emitted = _run_node(_rig_bone_driver(_world_source()))
+    arms = emitted["arms"]
+    assert len(arms) == 2, f"expected two arms, got {len(arms)}"
 
-    for index, arm in enumerate(emitted["arms"]):
-        slab, _seps, blunt = _hand_parts(emitted, arm)
+    for index, arm in enumerate(arms):
+        slab, _seps, _tips = _hand_parts(emitted, arm)
         assert slab, (
             f"arm {index} has no hand to check; see "
             "test_the_hand_is_one_slab_with_four_splayed_fingers"
         )
-        assert not blunt, (
-            f"arm {index} paints {len(blunt)} blunt crease volume(s) on its "
-            f"hand: {[b['snapped'] for b in blunt]}. Every crease here is a "
-            "finger separation -- long across the hand and gap-thin. A volume "
-            "square enough to take `paint`'s insets as a dark object is the "
-            "joint cap again, and at the fingertips it costs the digit count."
+        webs = _hand_webs(slab["points"])
+        assert len(webs) == 3, f"arm {index}: {len(webs)} web(s), not three"
+        sx, sy, sw, sh = slab["snapped"]
+        # Forearm-local, and one CELL wider than the hand on both sides and
+        # past the tips: a cap stuck on the end of a finger is still at the
+        # fingertips. From the shallowest web down, so every finger's free
+        # length is inside it.
+        zone_x = (sx - CELL_U, sx + sw + CELL_U)
+        zone_y = (min(web[1] for _before, web, _after in webs), sy + sh + CELL_U)
+        assert zone_y[0] < sy + sh, f"arm {index}: no finger length below the webs"
+
+        def in_zone(d):
+            x, y, w, h = d["snapped"]
+            return (x < zone_x[1] and x + w > zone_x[0]
+                    and y < zone_y[1] and y + h > zone_y[0])
+
+        def is_hand_shadow(d):
+            """The hand's outline in the contact colour, moved sideways only."""
+            pts = d.get("points") or []
+            if (d is slab or d["shape"] != "path" or len(pts) != len(slab["points"])
+                    or d["fill"] != emitted["HUMAN"].get("contact")):
+                return False
+            moves = [(p[0] - q[0], p[1] - q[1]) for p, q in zip(pts, slab["points"])]
+            dx, dy = moves[0]
+            return (abs(dx) > 1e-6 and abs(dy) < 1e-6
+                    and all(math.dist(m, moves[0]) < 1e-6 for m in moves))
+
+        in_reach = [
+            d for d in emitted["drawn"]
+            if d["gid"] == arm["foreGid"] and in_zone(d)
+        ]
+        # The set examined is not empty: the zone must see the hand itself.
+        # The contact shadow is graded elsewhere; here there is at most one of
+        # it, and the slab is not its own shadow (a zero shift is refused
+        # above), so a second copy of the outline is `extra`.
+        assert slab in in_reach, f"arm {index}: the zone does not even see the hand"
+        shadows = [d for d in in_reach if is_hand_shadow(d)]
+        assert len(shadows) <= 1, (
+            f"arm {index}: {len(shadows)} sideways copies of the hand outline "
+            "in the contact colour under it, not one contact shadow"
+        )
+        extra = [d for d in in_reach if d is not slab and d not in shadows]
+        assert not extra, (
+            f"arm {index} paints {len(extra)} volume(s) over its fingers besides "
+            f"the hand and its shadow: "
+            f"{[(d['shape'], hex(d['fill']), d['snapped']) for d in extra]}. "
+            "The fingers are the outline's notches. Anything else there that is "
+            "dark and square enough to take `paint`'s insets is the joint cap "
+            "again, and at the fingertips it costs the digit count."
         )
 
 
