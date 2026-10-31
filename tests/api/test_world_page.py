@@ -6525,9 +6525,30 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     unchanged anchor `cast.trader.x`, sat measurably off the seat the ticket
     had just measured (left edge ~5px past the cushion's real left edge,
     ~12px of slack on the right - the reviewer's own trace). This composites
-    the rig at the manifest's own anchor (`positionCharacters` places
-    `container.x` there) and checks BOTH edges against the seat rect, not
-    just their difference.
+    the rig at the anchor the page draws it at and checks BOTH edges against
+    the seat rect, not just their difference.
+
+    **KI-085 remainder A: that anchor is `sit_anchor.x`, not `cast.trader.x`.**
+    `positionCharacters` overwrites the seated trader's `container.x` with
+    `sitAnchorFor`'s hips (`sit_anchor.x`) and only keeps the standing
+    `cast.trader.x` for a plate with no `sit_anchor`. On the shipped plate
+    that is 1373 against the standing 1339, so this test used to grade the
+    rig 34px to the left of where it is drawn - the very substitution the
+    manifest sibling calls "grading nothing". It now reads `sit_anchor.x`,
+    like `test_plate_manifest.py::test_the_seated_rig_fits_inside_the_
+    manifest_seat`. It still reads x only: the 20px y gap between
+    `sit_anchor.y` (702) and `base_y` (682) is graded by the feet test below,
+    not here.
+
+    **KNOWN GAP, found while fixing the anchor and left unfixed on purpose:**
+    this and the manifest sibling scale the rig by CAST_SCALE alone, but the
+    page draws it `figure_scale` (1.6 on the shipped plate) bigger still
+    (`character()` sets `rig.scale.set(figureScale)`; `aimAtCharts` and the
+    feet test both multiply by it). Multiplied in, the right edge lands at
+    screen x=1425, 6px past the cushion's 1419 (the left edge fits). So this
+    grades a figure 1/1.6 the size the page draws; the seat fit at the drawn
+    size is ungraded. Adding the factor here turns the test red and the cure
+    is a geometry or manifest decision, not a test edit: see S21 #71's Log.
 
     The seat itself is read from `PLATE.cast.trader.seat` (the manifest,
     `api/static/world-plate-btc-eth.json`) - review round 1's correction:
@@ -6552,9 +6573,9 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     `test_the_seated_figure_puts_its_feet_on_the_painted_floor` instead, which
     brackets them against the floor the chair's own castors paint.
 
-    Arms are exempt too, and that one is forced rather than chosen: see the
-    proof in `seatedRig` beside `arm.limb`. It is a consequence of KI-084
-    (arms draw behind the torso), and it comes back the moment KI-084 lands.
+    Arms were exempt too, but only while KI-084 had them drawn behind the
+    torso; once it landed `arm.limb` was removed (see the comment beside the
+    arm in `seatedRig`), so the arms are graded here again, with the torso.
     """
     source = _world_source()
     driver = (
@@ -6628,10 +6649,14 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
     )
     emitted = _run_node(driver)
     manifest = _manifest()
-    anchor_x = manifest["cast"]["trader"]["x"]
+    anchor_x = manifest["cast"]["trader"]["sit_anchor"]["x"]
     seat = manifest["cast"]["trader"]["seat"]
-    # `positionCharacters` places `container.x` at the anchor; every local
-    # coordinate `seatedRig` draws is relative to that, scaled by CAST_SCALE.
+    # For a seated pose `positionCharacters` places `container.x` at
+    # `sit_anchor.x`, not at the standing `cast.trader.x`; every local
+    # coordinate `seatedRig` draws is relative to that, scaled by CAST_SCALE
+    # ALONE. The page also draws the rig `figure_scale` bigger
+    # (`character()`: `rig.scale.set(figureScale)`), which is NOT applied here
+    # or in the manifest sibling - see the KNOWN GAP in the docstring.
     left_screen = anchor_x + emitted["lo"] * emitted["castScale"]
     right_screen = anchor_x + emitted["hi"] * emitted["castScale"]
     assert left_screen >= seat["x"], (
@@ -6670,9 +6695,11 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
     so it keeps tracking the art if the plate is repainted.
 
     Anchored at `sit_anchor`, not `cast.trader.x/base_y`: `sitAnchorFor()` is
-    what actually pins the seated rig's origin, and the two differ by 8px --
-    which is a tenth of this bracket's width and exactly the sort of quiet
-    substitution that makes a passing test describe a figure nobody drew.
+    what actually pins the seated rig's origin, and the two differ by 34px in
+    x and 20px in y on the shipped plate (1373/702 against 1339/682) - the y
+    gap alone is about a quarter of this bracket's width, and exactly the
+    sort of quiet substitution that makes a passing test describe a figure
+    nobody drew.
     """
     from tools.measure_chair import measure_floor_band
 
