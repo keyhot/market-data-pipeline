@@ -23,6 +23,16 @@ class FakeProviderEmpty:
         return pd.DataFrame()
 
 
+class FakeProviderNone:
+    def get_events(self, ticker_symbol, event_type):
+        return None
+
+
+class FakeProviderRaisesRaw:
+    def get_events(self, ticker_symbol, event_type):
+        raise RuntimeError("boom")
+
+
 def test_fetch_events_success():
     provider = FakeProviderSuccess()
 
@@ -37,6 +47,30 @@ def test_fetch_events_no_data():
 
     with pytest.raises(NoDataFoundError):
         fetch_events("AAPL", "dividends", provider=provider)
+
+
+def test_fetch_events_provider_returns_none_raises_no_data():
+    # An empty frame also reaches the post-filter check; None only the first guard.
+    provider = FakeProviderNone()
+
+    with pytest.raises(NoDataFoundError) as exc_info:
+        fetch_events("AAPL", "dividends", provider=provider)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.message == "No events found for the given parameters"
+
+
+@pytest.mark.parametrize("start", ["notadate", "2023-01-01"])
+def test_fetch_events_empty_frame_with_start_raises_no_data(start):
+    # The first guard must fire before date handling: an empty frame plus an
+    # invalid start would otherwise give InvalidDateError, and plus a valid
+    # start a TypeError comparing its empty RangeIndex to a Timestamp.
+    provider = FakeProviderEmpty()
+
+    with pytest.raises(NoDataFoundError) as exc_info:
+        fetch_events("AAPL", "dividends", start=start, provider=provider)
+
+    assert exc_info.value.status_code == 404
 
 
 def test_fetch_events_invalid_start_date():
@@ -59,8 +93,23 @@ def test_fetch_events_provider_generic_error(mock_ticker):
     type(mock_instance).dividends = PropertyMock(side_effect=RuntimeError("boom"))
     mock_ticker.return_value = mock_instance
 
-    with pytest.raises(BaseAppException):
+    with pytest.raises(BaseAppException) as exc_info:
         fetch_events("AAPL", "dividends")
+
+    # 503 comes from the provider's own wrap; fetch_events' wrap would give 500.
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.message == "Failed to fetch events: boom"
+
+
+def test_fetch_events_wraps_raw_provider_error():
+    # A provider that does not wrap itself reaches fetch_events' own wrap (500).
+    provider = FakeProviderRaisesRaw()
+
+    with pytest.raises(BaseAppException) as exc_info:
+        fetch_events("AAPL", "dividends", provider=provider)
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.message == "Failed to fetch events: boom"
 
 
 @patch("ingestion.yfinance_provider.yf.Ticker")
