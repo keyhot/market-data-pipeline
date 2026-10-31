@@ -49,3 +49,25 @@ def test_rows_the_other_symbol_lacks_are_dropped_not_filled():
     assert len(X) < len(own.X)
     assert X.index.isin(own.X.index).all()
     assert len(y) == len(X)
+
+
+def test_each_x_column_is_the_other_symbols_feature_at_the_same_timestamp():
+    """KI-096: the join key is the bar's own timestamp. The two symbols start
+    37 bars apart (so a positional join or a one-bar lag cannot line up by
+    luck), and every x_* cell must equal the other symbol's own feature row
+    at the SAME index label -- not the bar before, not the bar after."""
+    own_bars = _bars(n=400, seed=1)
+    other_bars = _bars(n=363, seed=2, start=own_bars.index[37])
+    own = build_features(own_bars, horizon_bars=1)
+    other = build_features(other_bars, horizon_bars=1).X.add_prefix("x_")
+
+    X, y = with_cross_features(own.X, own.y, other_bars)
+
+    x_cols = [c for c in X.columns if c.startswith("x_")]
+    assert x_cols == list(other.columns)
+    assert X.index.equals(own.X.index.intersection(other.index))  # exact-label inner join
+    pd.testing.assert_frame_equal(X[x_cols], other.loc[X.index])
+    pd.testing.assert_series_equal(y, own.y.loc[X.index])
+    # The test has teeth only if neighbouring bars really differ.
+    assert not X[x_cols].equals(other.shift(1).loc[X.index])
+    assert not X[x_cols].equals(other.shift(-1).loc[X.index])

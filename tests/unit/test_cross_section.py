@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import model.cross_section as cross_section
 from model.cross_section import (
     block_bootstrap_ci,
     bridge_market_wide_gaps,
@@ -274,6 +275,43 @@ def test_walk_forward_scores_do_not_see_targets_from_the_month_they_score():
         pd.testing.assert_frame_equal(base[span], again[span])
 
 
+@pytest.mark.parametrize("bad", [
+    pytest.param(lambda p, call: np.full(p, np.nan), id="all-nan"),
+    pytest.param(lambda p, call: np.r_[np.nan, np.ones(p - 1)], id="first-nan"),
+    pytest.param(lambda p, call: np.r_[np.ones(p - 1), np.nan], id="last-nan"),
+    pytest.param(lambda p, call: np.r_[np.inf, np.ones(p - 1)], id="inf"),
+    pytest.param(lambda p, call: np.r_[np.ones(p - 1), -np.inf], id="neg-inf"),
+    pytest.param(lambda p, call: np.full(p, np.nan if call == 0 else 1.0),
+                 id="only-the-first-refit"),
+])
+def test_a_non_finite_ridge_beta_fails_loud_instead_of_flattening_the_book(
+        bad, monkeypatch):
+    """KI-101: under pandas>=3 `stack()` keeps NaN, `fit_ridge` returns NaN and
+    every score is NaN -- a flat book and a silent FALSIFIED. The guard is on
+    beta itself, so it is tested through `fit_ridge`, not a NaN feature column
+    (which pandas<3 drops before the fit and so never reaches it). Any
+    coefficient, either infinity, and any single refit month must trip it."""
+    close, qv = _panel(240, 30)
+    elig = eligibility(qv, qv, warmup=31, liquidity_window=5, top_n=30)
+    feats = daily_features(close, pd.DataFrame(0.0, index=close.index,
+                                               columns=close.columns))
+    target = forward_returns(close)
+    start, end = pd.Timestamp("2021-05-01", tz="UTC"), pd.Timestamp("2021-06-15", tz="UTC")
+    kwargs = dict(features=feats, target=target, eligible=elig, start=start,
+                  end=end, min_train_days=60)
+    assert np.isfinite(walk_forward_scores(**kwargs).to_numpy()[elig.to_numpy()]).any()
+
+    calls = []
+
+    def broken_fit(X, y, lam=1.0):
+        calls.append(1)
+        return bad(X.shape[1], len(calls) - 1)
+
+    monkeypatch.setattr(cross_section, "fit_ridge", broken_fit)
+    with pytest.raises(AssertionError, match="beta"):
+        walk_forward_scores(**kwargs)
+
+
 def test_cs_rank_is_neutral_for_missing_values_and_blank_outside_the_universe():
     days = _days(1)
     p = pd.DataFrame({"A": [1.0], "B": [np.nan], "C": [3.0], "D": [9.0]}, index=days)
@@ -348,6 +386,43 @@ def test_block_bootstrap_ci_brackets_the_mean_and_is_seeded():
     assert lo < m < hi and (lo, hi) == block_bootstrap_ci(x)[1:]
 
 
+def _ar1(n=600, phi=0.8, seed=4):
+    rng = np.random.default_rng(seed)
+    x, e = np.empty(n), rng.normal(0, 0.01, n)
+    x[0] = e[0]
+    for t in range(1, n):
+        x[t] = phi * x[t - 1] + e[t]
+    return x
+
+
+def test_block_bootstrap_ci_default_block_is_10_and_widens_for_autocorrelation():
+    """KI-100 M2: the verdict CI must respect serial correlation. On an AR(1)
+    series (phi 0.8) a block of 1 is the iid bootstrap and understates the
+    width; the default must be the blocked 10, not 1 (or anything else)."""
+    x = _ar1()
+    default = block_bootstrap_ci(x)
+    assert default == block_bootstrap_ci(x, block=10)
+    assert default[0] == pytest.approx(x.mean())
+    iid, blocked = block_bootstrap_ci(x, block=1), block_bootstrap_ci(x, block=10)
+    assert iid[0] == blocked[0]
+    assert (blocked[2] - blocked[1]) > 1.5 * (iid[2] - iid[1])
+    assert default != iid
+
+
+def test_block_bootstrap_ci_is_a_95_percent_interval_and_can_draw_either_end():
+    """KI-100: on iid data (block 1) the 95% half-width is 1.96 s/sqrt(n) (an
+    80% or 90% interval is 35% / 16% narrower); and the first and the last
+    observation are each reachable, so a lone outlier at either end of the
+    series shows up in the upper bound."""
+    x = np.random.default_rng(11).normal(0.0, 0.02, 200)
+    _, lo, hi = block_bootstrap_ci(x, block=1, n=5000)
+    assert (hi - lo) / 2 == pytest.approx(1.96 * x.std(ddof=1) / np.sqrt(len(x)), rel=0.08)
+    for at in (0, -1):
+        spike = np.zeros(100)
+        spike[at] = 1.0
+        assert block_bootstrap_ci(spike, block=10)[2] > 0.0
+
+
 # ------------------------------------------------------------- control ----
 
 def test_leaked_feature_gives_a_large_spread_and_the_random_null_gives_none():
@@ -381,6 +456,75 @@ def test_leaked_feature_gives_a_large_spread_and_the_random_null_gives_none():
     hp = portfolio_pnl(decile_weights(honest), fwd, fund, 0.0, 0.0)
     _, hlo, hhi = block_bootstrap_ci(hp.loc[pnl.index, "gross"])
     assert hlo < 0 < hhi                              # a random walk has no edge
+
+
+# ------------------------------------------------ daily AR (KI-100) -----
+
+def _daily_ar_frame(eta_step, g=0.002, n=70):
+    """One name whose close sits a constant g (log) above the high-low mid
+    while the mid moves by `eta_step[t]` between day t-1 and t. By
+    construction c[t-1]-eta[t-1] = g and c[t-1]-eta[t] = g - step[t], so the
+    AR term on day t is exactly 4*g*(g - step[t]) (day 0 has none)."""
+    eta = np.log(100.0) + np.cumsum(np.r_[0.0, eta_step[1:n]])
+    days = pd.date_range("2023-01-01", periods=n, freq="D", tz="UTC")
+    high = pd.DataFrame({"AUSDT": np.exp(eta + 2 * g)}, days)
+    low = pd.DataFrame({"AUSDT": np.exp(eta - 2 * g)}, days)
+    close = pd.DataFrame({"AUSDT": np.exp(eta + g)}, days)
+    return high, low, close
+
+
+def test_daily_ar_recovers_a_pure_bid_ask_bounce():
+    """Mirror of the hourly test: mid fixed, closes alternate ask/bid, each bar
+    spans the spread. The half-spread comes back exactly (M5: not halved)."""
+    idx = pd.date_range("2023-01-01", periods=60, freq="D", tz="UTC")
+    s = 0.002
+    sign = np.where(np.arange(len(idx)) % 2 == 0, 1, -1)
+    close = pd.DataFrame({"AUSDT": 100 * (1 + sign * s / 2)}, idx)
+    high = pd.DataFrame({"AUSDT": 100 * (1 + s / 2)}, idx)
+    low = pd.DataFrame({"AUSDT": 100 * (1 - s / 2)}, idx)
+    out = slippage_per_side(high, low, close)["AUSDT"]
+    assert out.iloc[15:].sub(s / 2).abs().max() < 2e-5
+    assert out.iloc[:15].isna().all()               # fewer than 15 terms
+
+
+def test_daily_ar_crosses_yesterdays_close_with_todays_eta_not_its_own():
+    """M3: the second factor is c[t-1] - eta[t]. With the mid drifting 0.001 a
+    day and the close 0.002 above it, the half-spread is sqrt(g*(g-step))
+    = 0.001414; using eta[t-1] twice would give g = 0.002, eta[t] twice
+    g - step = 0.001."""
+    g, step = 0.002, 0.001
+    high, low, close = _daily_ar_frame(np.full(70, step), g)
+    out = slippage_per_side(high, low, close)["AUSDT"]
+    assert out.iloc[15:].sub(np.sqrt(g * (g - step))).abs().max() < 1e-9
+
+
+def test_daily_ar_floors_the_window_mean_not_each_day():
+    """M4: terms alternate +4g^2 and -2g^2 (mid still, then up 1.5g), so a
+    30-day window averages g^2 -> half-spread g/2 = 0.001. Flooring each day at
+    zero first would average 2g^2 -> 0.001414. A window whose mean is negative
+    (mid up 2g every day) falls to the 1 bp floor, not to NaN or below."""
+    g = 0.002
+    alternating = np.where(np.arange(70) % 2 == 0, 0.0, 1.5 * g)
+    out = slippage_per_side(*_daily_ar_frame(alternating, g))["AUSDT"]
+    assert out.iloc[30:].sub(g / 2).abs().max() < 1e-9
+
+    out = slippage_per_side(*_daily_ar_frame(np.full(70, 2 * g), g))["AUSDT"]
+    assert (out.iloc[15:] == 0.0001).all()
+
+
+def test_daily_ar_averages_the_trailing_30_days_and_no_more_or_fewer():
+    """The terms are +4g^2 up to day 39 and -4g^2 from day 40 on. The window
+    ending at day t then holds k = min(t-39, 30) negative terms of 30, so its
+    mean is 4g^2 (1 - k/15) and the half-spread g*sqrt(1 - k/15), floored at 1 bp
+    once k reaches 15. A 28- or 29-day window drifts from this ramp at once."""
+    g = 0.002
+    step = np.where(np.arange(70) < 40, 0.0, 2 * g)
+    out = slippage_per_side(*_daily_ar_frame(step, g))["AUSDT"]
+    assert out.iloc[15:40].sub(g).abs().max() < 1e-9
+    for t in range(40, 70):
+        k = min(t - 39, 30)
+        want = max(g * np.sqrt(max(1 - k / 15, 0.0)), 0.0001)
+        assert out.iloc[t] == pytest.approx(want, abs=1e-9), t
 
 
 # ------------------------------------------------ Amendment A1 costs -----
