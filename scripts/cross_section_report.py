@@ -70,6 +70,21 @@ A1 = {
 }
 
 
+# ----------------------------------------- KI-099 label (additive, not A1) --
+# Outside A1 on purpose: A1 and every `rows` key stay as committed. This only
+# says what the primary row's cost is. `model/cross_section.py`'s daily AR term
+# tracks -autocov(r) (corr 0.59-0.95), not the spread; `with_caveats` puts it in
+# the results dict under `caveats`. See vault Docs/known-issues#KI-099.
+DAILY_AR_ROW = "primary (daily AR)"
+DAILY_AR_CAVEAT = (
+    f'The "{DAILY_AR_ROW}" cost is a vol-contaminated upper bound, not a spread '
+    "(KI-099): the daily-bar Abdi-Ranaldo term tracks -autocov(r) and overstates "
+    "BTC/ETH half-spread 10-30x. The spread comparators are the "
+    '"(a) 1h AR" and "(b) bookDepth $100k" rows. Verdict criterion 2 '
+    "(beats the null's p97.5, gross + funding) has no cost term."
+)
+
+
 def _list(prefix: str) -> tuple[list[str], list[str]]:
     """(sub-prefixes, keys) under an S3 prefix, following pagination."""
     dirs, keys, marker = [], [], ""
@@ -344,6 +359,22 @@ def pass_rule(net_ci_low_bps: float, gf: float, null: np.ndarray) -> dict:
            "verdict": "PASS" if (c1 and c2) else "FALSIFIED"}
 
 
+def with_caveats(res: dict) -> dict:
+    """KI-099: `res` plus a `caveats` key that labels the daily-AR row. Pure:
+    reads no archive, leaves `res` and every key in it (`rows` included)
+    unchanged, keeps a `caveats` entry that is already there."""
+    return {**res, "caveats": {**res.get("caveats", {}), DAILY_AR_ROW: DAILY_AR_CAVEAT}}
+
+
+def _write_results(res: dict) -> dict:
+    """Add the KI-099 caveat, write RESULTS, print; return what was written."""
+    res = with_caveats(res)
+    RESULTS.parent.mkdir(parents=True, exist_ok=True)
+    RESULTS.write_text(json.dumps(res, indent=1) + "\n")
+    print(json.dumps(res, indent=1))
+    return res
+
+
 def score(seeds: int = 1000) -> dict:
     """Stage B: the pre-registered rank-ridge, walk-forward from 2021-01,
     reported on 2023-01..2025-12 only. Verdict on the PRIMARY cost (A1)."""
@@ -417,10 +448,7 @@ def score(seeds: int = 1000) -> dict:
     leaked = walk_forward_scores(dict(feats, ret_30=fwd), fwd, elig, start, TEST_END)
     res["leaked_control_test_years"] = _stats(portfolio_pnl(decile_weights(leaked), fwd, ffund, fee, slip).loc[test])
     res["dev_control_2021_22"] = control()
-    RESULTS.parent.mkdir(parents=True, exist_ok=True)
-    RESULTS.write_text(json.dumps(res, indent=1) + "\n")
-    print(json.dumps(res, indent=1))
-    return res
+    return _write_results(res)
 
 
 def _last_beta(feats, fwd, elig) -> dict:
