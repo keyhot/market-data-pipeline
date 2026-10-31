@@ -212,3 +212,21 @@ CREATE TABLE IF NOT EXISTS liquidation_coverage_kraken (
     rows_received INTEGER     NOT NULL,
     PRIMARY KEY (symbol, minute)
 );
+
+-- KI-091: the migration ledger. Which scripts/migrate_NNN.sql a database has,
+-- RECORDING ONLY: nothing applies a migration, and the app only reads this
+-- (storage/migrations.py logs a warning at startup for any migrate_NNN.sql on
+-- disk that is not recorded here, or when this table is absent). This file
+-- carries the net effect of every migration below, so a fresh volume records
+-- them all; a future migration appends its own
+--   INSERT INTO schema_migrations (version) VALUES ('NNN') ON CONFLICT (version) DO NOTHING;
+-- and adds its version to the list here (tests/unit/test_migration_ledger.py
+-- fails until it does). 010 and 011 never existed.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    TEXT        PRIMARY KEY,           -- migrate_NNN.sql -> 'NNN'
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES
+    ('009'), ('012'), ('013'), ('014'), ('015'), ('016'), ('017'), ('018')
+ON CONFLICT (version) DO NOTHING;

@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import threading
 
@@ -101,6 +102,27 @@ def _database_role(url: str) -> str | None:
     if not row or not row[0]:
         return None
     return str(row[0]).strip().lower()
+
+
+def connect_read_only(
+    url: str, timeout_seconds: float = _ROLE_PROBE_TIMEOUT_SECONDS
+) -> psycopg.Connection:
+    """A short-lived connection Postgres itself refuses to write on.
+
+    The guard's own read-only option (`_READ_ONLY_OPTIONS`, the one a dev
+    process gets when the database says it is prod), plus the probe's bounds:
+    a connect that ends at the handshake and a statement that is cancelled
+    after `timeout_seconds`, with the module's socket bounds. For checks that
+    must look at a database without any chance of changing it (the migration
+    ledger, KI-091). Not pooled: the caller closes it (`with` does).
+    """
+    bound_ms = max(1, int(timeout_seconds * 1000))
+    return psycopg.connect(
+        url,
+        connect_timeout=max(1, math.ceil(timeout_seconds)),
+        options=f"{_READ_ONLY_OPTIONS} -c statement_timeout={bound_ms}",
+        **_SOCKET_BOUNDS,
+    )
 
 
 def read_only_required(expected_role: str, database_role: str | None) -> bool:
