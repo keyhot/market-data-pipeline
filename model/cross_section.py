@@ -318,19 +318,54 @@ def decile_weights(scores: pd.DataFrame, frac: float = 0.1,
     return pd.DataFrame(w, index=scores.index, columns=scores.columns)
 
 
+def drifted_weights(weights: pd.DataFrame, fwd_ret: pd.DataFrame) -> pd.DataFrame:
+    """The book yesterday's weights have DRIFTED into by today's rebalance
+    (KI-101; the one definition, also used by `scripts/e13_diagnostics.py`).
+    Row d is w_{d-1} grown by day d-1's own return, `fwd_ret` row d-1 (the
+    return over (d-1, d]; row d's would be the NEXT day), then rescaled per
+    leg so the leg keeps its prior gross: long names by their own
+    w*(1+r)/sum_long(w*(1+r)) * sum_long(w), shorts the same on the short
+    leg. Only the drift BETWEEN names is turnover; a leg's own return is not,
+    because P&L is booked per unit of leg (fractions of one unit per leg). For
+    the decile book (+-1/k, legs of +-1) the rescale is to exactly +-1. A flat
+    row, the first row, or a leg wiped out to zero exposure drifts to 0, so
+    the rebalance trades the whole new book, as the coded path does. NaN
+    weights and returns count as 0, as in `portfolio_pnl`. A whole-book
+    denominator sum(w*(1+r)) is not used: for a dollar-neutral book it is
+    about the day's P&L, not 1."""
+    w = weights.fillna(0.0)
+    grow = 1.0 + fwd_ret.reindex_like(w).fillna(0.0).shift(1).fillna(0.0)
+    held = w.shift(1).fillna(0.0)
+    out = pd.DataFrame(0.0, index=w.index, columns=w.columns)
+    for leg in (held.clip(lower=0), held.clip(upper=0)):
+        grown = leg * grow
+        total = grown.sum(axis=1)
+        scaled = grown.div(total.where(total != 0), axis=0).mul(leg.sum(axis=1), axis=0)
+        out = out + scaled.fillna(0.0)
+    return out
+
+
 def portfolio_pnl(weights: pd.DataFrame, fwd_ret: pd.DataFrame,
                   fwd_funding: pd.DataFrame, fee_per_side: float,
-                  slippage: pd.DataFrame | float) -> pd.DataFrame:
+                  slippage: pd.DataFrame | float, *,
+                  drift: bool = False) -> pd.DataFrame:
     """Per-rebalance P&L of a weight panel (fractions of one unit per leg).
     gross = sum w * r; funding = -sum w * f (a long pays positive funding, a
     short receives it); cost = sum |w_d - w_{d-1}| * (fee + slippage[d]) —
-    only what TRADES pays. net = gross + funding - cost."""
+    only what TRADES pays. net = gross + funding - cost.
+    `drift=True` (KI-101, opt-in; the default is the frozen E13 coding)
+    charges against the weights drifted by yesterday's return,
+    `drifted_weights`, instead of yesterday's raw weights: cost and
+    turnover rise, gross and funding do not change."""
     w = weights.fillna(0.0)
     r = fwd_ret.reindex_like(w).fillna(0.0)
     f = fwd_funding.reindex_like(w).fillna(0.0)
     slip = (slippage.reindex_like(w).fillna(0.0) if isinstance(slippage, pd.DataFrame)
             else pd.DataFrame(slippage, index=w.index, columns=w.columns))
-    traded = (w - w.shift(1).fillna(0.0)).abs()
+    if drift:
+        traded = (w - drifted_weights(w, r)).abs()
+    else:
+        traded = (w - w.shift(1).fillna(0.0)).abs()
     out = pd.DataFrame({
         "gross": (w * r).sum(axis=1),
         "funding": -(w * f).sum(axis=1),

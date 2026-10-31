@@ -19,6 +19,10 @@ alone keeps it, to match the report). Dev (2021-22) and test (2023-25) are
 reported separately. Nothing is fetched; nothing is written except `--out`.
 
     OMP_NUM_THREADS=2 poetry run python scripts/e13_diagnostics.py --out /tmp/e13_diag.json
+
+`--drift-rescore` runs the DECLARED POST-HOC KI-101 diagnostic instead (the
+primary book re-costed against drifted weights, vault
+`Docs/ki-101-drift-rescore-declaration.md`); it edits no frozen verdict.
 """
 
 from __future__ import annotations
@@ -38,8 +42,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import cross_section_report as R  # noqa: E402  (main() is guarded)
 from model.cross_section import (  # noqa: E402
-    block_bootstrap_ci, cs_rank, daily_features, decile_weights, eligibility, forward_funding,
-    forward_returns, funding_by_day, portfolio_pnl, random_null_weights,
+    block_bootstrap_ci, cs_rank, daily_features, decile_weights, drifted_weights, eligibility,
+    forward_funding, forward_returns, funding_by_day, portfolio_pnl, random_null_weights,
     slippage_depth, slippage_per_side, walk_forward_scores,
 )
 
@@ -136,6 +140,25 @@ def reproduce(c: dict) -> dict:
     want["beta"] = ref["coefficients_last_fit"]
     _require_reproduction(got, want)
     return got
+
+
+def drift_rescore(c: dict) -> dict:
+    """DECLARED POST-HOC (KI-101; vault `Docs/ki-101-drift-rescore-declaration`).
+    The primary book, test period, costed as coded and against the weights
+    drifted by yesterday's return (`portfolio_pnl(drift=True)`). Gross and
+    funding cannot move; cost and turnover rise. Same `_stats` as the stage B
+    report. Read-only: the frozen verdict and `e13_stage_b.json` are not edited."""
+    test = slice(R.TEST_START, R.TEST_END)
+    rows = {name: R._stats(portfolio_pnl(c["w"], c["fwd"], c["ffund"], c["fee"], c["slip"],
+                                         drift=drift).loc[test])
+            for name, drift in (("coded", False), ("drift_rebalanced", True))}
+    a, b = rows["coded"], rows["drift_rebalanced"]
+    rows["drift_minus_coded"] = {
+        "cost_bps": round(b["cost_bps"] - a["cost_bps"], 1),
+        "turnover": round(b["turnover"] - a["turnover"], 3),
+        "net_mean_bps": round(b["net_bps"][0] - a["net_bps"][0], 1),
+        "net_ci_low_bps": round(b["net_bps"][1] - a["net_bps"][1], 1)}
+    return rows
 
 
 # ------------------------------------------------------------------ Q2 --
@@ -437,13 +460,7 @@ def q4(c: dict) -> dict:
     nxt_nan = close.shift(-1).isna() & close.notna()
     leaves = ~elig.shift(-1).fillna(False).astype(bool)
     out = {}
-    wl, ws = w.clip(lower=0), w.clip(upper=0)
-    r_prev = fwd.shift(1)
-    dl = wl.shift(1) * (1 + r_prev)
-    dl = dl.div(dl.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
-    ds = ws.shift(1) * (1 + r_prev)
-    ds = -ds.div(ds.sum(axis=1).replace(0, np.nan), axis=0).abs().fillna(0.0)
-    drift_turn = (wl - dl).abs().sum(axis=1) + (ws - ds).abs().sum(axis=1)
+    drift_turn = (w - drifted_weights(w, fwd)).abs().sum(axis=1)   # KI-101: model.cross_section
     coded_turn = (w - w.shift(1).fillna(0.0)).abs().sum(axis=1)
     for per in PERIODS:
         days = span(w.index, per)
@@ -509,13 +526,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--seeds", type=int, default=100, help="vol-matched null seeds (descriptive)")
+    ap.add_argument("--drift-rescore", action="store_true",
+                    help="only the declared post-hoc KI-101 drift re-score (after the reproduction check)")
     a = ap.parse_args()
     c = build()
     res = {"reproduced_stage_b": reproduce(c)}
-    res["Q2_funding"] = q2(c)
-    res["Q1_ic"] = q1(c, a.seeds)
-    res["Q3_slippage"] = q3(c)
-    res["Q4_correctness"] = q4(c)
+    if a.drift_rescore:
+        res["KI101_drift_rescore"] = drift_rescore(c)
+    else:
+        res["Q2_funding"] = q2(c)
+        res["Q1_ic"] = q1(c, a.seeds)
+        res["Q3_slippage"] = q3(c)
+        res["Q4_correctness"] = q4(c)
     text = json.dumps(res, indent=1, default=str)
     if a.out:
         a.out.write_text(text + "\n")
