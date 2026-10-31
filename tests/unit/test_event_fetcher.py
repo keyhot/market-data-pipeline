@@ -57,6 +57,20 @@ def test_fetch_events_provider_returns_none_raises_no_data():
         fetch_events("AAPL", "dividends", provider=provider)
 
     assert exc_info.value.status_code == 404
+    assert exc_info.value.message == "No events found for the given parameters"
+
+
+@pytest.mark.parametrize("start", ["notadate", "2023-01-01"])
+def test_fetch_events_empty_frame_with_start_raises_no_data(start):
+    # The first guard must fire before date handling: an empty frame plus an
+    # invalid start would otherwise give InvalidDateError, and plus a valid
+    # start a TypeError comparing its empty RangeIndex to a Timestamp.
+    provider = FakeProviderEmpty()
+
+    with pytest.raises(NoDataFoundError) as exc_info:
+        fetch_events("AAPL", "dividends", start=start, provider=provider)
+
+    assert exc_info.value.status_code == 404
 
 
 def test_fetch_events_invalid_start_date():
