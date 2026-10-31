@@ -111,3 +111,27 @@ def test_report_persists_result_json(monkeypatch, tmp_path):
     data = json.loads((tmp_path / "archive_ETHUSDT_metrics.json").read_text())
     assert data["verdict"] == "PASS"
     assert data["statistic"]["gross_bps"] == pytest.approx(10.0)
+
+
+def test_a_per_year_delay_run_never_overwrites_the_frozen_result(monkeypatch, tmp_path):
+    """KI-092: the per-regime re-score is a declared diagnostic. It writes
+    its own JSON with the delay map, and leaves the frozen E12 name alone."""
+    _patch(monkeypatch, low=0.01, high=0.02)
+    oos, info = _make_oos(gross_positive=True, control_value=1.0, row_share=1.0)
+    delays = {2023: pd.Timedelta(0), 2024: pd.Timedelta("5min")}
+    assert ar.metrics_delay({"delay": pd.Timedelta("5min"), "delays": delays,
+                             **info}, legacy=False) == delays
+    info.update(delay_mode="per_year", delays=delays)
+    ar.report("BTCUSDT", "metrics", oos, info)
+    assert not (tmp_path / "archive_BTCUSDT_metrics.json").exists()
+    data = json.loads((tmp_path / "archive_BTCUSDT_metrics_ki092.json").read_text())
+    assert data["inputs"]["delays"] == {"2023": "0 days 00:00:00",
+                                        "2024": "0 days 00:05:00"}
+
+
+def test_the_legacy_flag_restores_the_frozen_whole_sample_delay():
+    info = {"delay": pd.Timedelta("5min"),
+            "delays": {2023: pd.Timedelta(0), 2024: pd.Timedelta("5min")}}
+    assert ar.metrics_delay(info, legacy=True) == pd.Timedelta("5min")
+    assert info["delay_mode"] == "legacy"
+    assert ar._result_name("ETHUSDT", "metrics", info) == "archive_ETHUSDT_metrics"

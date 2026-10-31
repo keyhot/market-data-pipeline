@@ -10,12 +10,15 @@ from model.archive import (
     METRICS_STEP,
     asof,
     check_stamp_convention,
+    combine_days,
     depth_features,
     leaked_control,
     metrics_coverage,
     metrics_features,
     parse_depth,
     parse_metrics,
+    row_delays,
+    stamp_delays,
     with_archive_features,
 )
 
@@ -302,7 +305,10 @@ def test_a_convention_that_flips_between_years_gets_the_5min_delay():
                                   pd.concat([c_old, c_new]))
     assert all(info["by_year"][y][0] > info["by_year"][y][1] for y in (2022, 2023))
     assert info["by_year"][2024][0] < info["by_year"][2024][1]
-    assert info["delay"] == METRICS_STEP
+    assert info["delay"] == METRICS_STEP  # the frozen whole-sample scalar
+    # KI-092: each year keeps its own verdict instead
+    assert info["delays"] == {2022: pd.Timedelta(0), 2023: pd.Timedelta(0),
+                              2024: METRICS_STEP}
 
 
 def test_a_zero_open_interest_row_is_skipped_not_logged_to_minus_infinity():
@@ -310,3 +316,115 @@ def test_a_zero_open_interest_row_is_skipped_not_logged_to_minus_infinity():
     metrics.iloc[480, metrics.columns.get_loc("oi")] = 0.0  # bar 159's close
     feats = metrics_features(metrics, _grid(160), pd.Timedelta(0))
     assert np.isfinite(feats.iloc[-1].to_numpy()).all()
+
+
+# --- KI-092: per-regime delay across the 2024 stamp flip --------------------
+
+_SEAM = pd.Timestamp("2024-01-01", tz="UTC")
+_FLIP = {2023: pd.Timedelta(0), 2024: METRICS_STEP}  # A2's real-archive map
+_UNIT = 1e-4  # log value per 5-min step of a row's period END
+
+
+def _day_file(day, stamp_ends_period):
+    """One synthetic daily metrics file. Every column's log encodes the END
+    of the 5-min period the row covers, in steps from the seam."""
+    period_start = pd.date_range(pd.Timestamp(day, tz="UTC"), periods=288,
+                                 freq="5min")
+    stamps = period_start + (METRICS_STEP if stamp_ends_period else pd.Timedelta(0))
+    k = ((period_start + METRICS_STEP - _SEAM) / METRICS_STEP).to_numpy()
+    value = np.exp(k * _UNIT)
+    return pd.DataFrame({"oi": value, "top_ratio": value, "global_ratio": value,
+                         "taker_ratio": value}, index=stamps)
+
+
+def _flipped_archive():
+    """Stamps END their period through 2023, START it from 2024; the 12-31
+    file's last stamp and the 01-01 file's first are both 2024-01-01 00:00."""
+    return combine_days([_day_file("2023-12-30", True),
+                         _day_file("2023-12-31", True),
+                         _day_file("2024-01-01", False),
+                         _day_file("2024-01-02", False)])
+
+
+def test_the_seam_stamp_keeps_the_later_files_row():
+    merged = _flipped_archive()
+    assert merged.index.is_unique and merged.index.is_monotonic_increasing
+    k = np.log(merged.loc[_SEAM, "taker_ratio"]) / _UNIT
+    assert k == pytest.approx(1)  # the 2024 row: period [00:00, 00:05)
+
+
+def test_the_as_run_window_is_the_bars_own_on_both_sides_of_a_stamp_flip():
+    """KI-092. With per-regime delays every bar reads the row whose period
+    ends exactly at its close, and a taker window of exactly its own 15 min,
+    on both sides of the flip. The one bar closing ON the seam lost its true
+    row to the dedup: it is 5 min stale, never early."""
+    bars = pd.date_range("2023-12-30 06:00", "2024-01-02 18:00", freq="15min",
+                         tz="UTC")
+    feats = metrics_features(_flipped_archive(), bars, _FLIP)
+    close = bars + pd.Timedelta("15min")
+    want = ((close - _SEAM) / METRICS_STEP).to_numpy()  # period end = close
+    row = feats.top_ls.to_numpy() / _UNIT
+    window = feats.taker_ls.to_numpy() / _UNIT  # mean period end of the window
+    seam = close == _SEAM
+    assert seam.sum() == 1 and (close < _SEAM).sum() > 50 and (close > _SEAM).sum() > 50
+    assert np.allclose(row[~seam], want[~seam], rtol=0, atol=1e-6)
+    assert np.allclose(window[~seam], want[~seam] - 1, rtol=0, atol=1e-6)
+    assert row[seam][0] == pytest.approx(-1)  # ends 23:55: stale, not early
+    assert window[seam][0] == pytest.approx(-2)
+
+
+def test_a_fallback_row_after_the_seam_windows_only_periods_ending_after_it():
+    """With the 00:10 row missing, the bar closing 00:15 falls back to the
+    00:05 row. Its taker window is the periods ENDING in (23:55, 00:10] --
+    the 2024 rows 00:00 and 00:05 -- not the stamps in (23:50, 00:05], which
+    would pull in the 2023 period ending 23:55 (agy review, verified)."""
+    metrics = _flipped_archive().drop(_SEAM + 2 * METRICS_STEP)
+    feats = metrics_features(metrics, pd.DatetimeIndex([_SEAM], tz="UTC"), _FLIP)
+    assert feats.top_ls.iloc[0] / _UNIT == pytest.approx(2)  # the 00:05 row
+    assert feats.taker_ls.iloc[0] / _UNIT == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize("delay", [pd.Timedelta(0), METRICS_STEP])
+def test_a_year_map_that_agrees_everywhere_is_exactly_the_scalar_delay(delay):
+    metrics = _metrics(n_rows=4000, start="2023-12-25")
+    bars = _grid(1200, start="2023-12-25")
+    assert set(metrics.index.year) == {2023, 2024}
+    scalar = metrics_features(metrics, bars, delay)
+    mapped = metrics_features(metrics, bars, {2023: delay, 2024: delay})
+    assert np.array_equal(scalar.to_numpy(), mapped.to_numpy(), equal_nan=True)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_per_year_delays_never_read_a_row_available_after_the_bar_close(seed):
+    metrics = _metrics(n_rows=4000, seed=seed, start="2023-12-25")
+    bars = _grid(1200, start="2023-12-25")
+    full = metrics_features(metrics, bars, _FLIP)
+    available = metrics.index + row_delays(metrics.index, _FLIP)
+    rng = np.random.default_rng(seed)
+    # bar 671 closes on the seam
+    for t in [670, 671, 672, 673, *rng.integers(100, 1200, 6)]:
+        future = available > bars[t] + pd.Timedelta("15min")
+        scrambled = metrics.copy()
+        scrambled.loc[future] = scrambled.loc[future].to_numpy()[::-1] * 3.7
+        got = metrics_features(scrambled, bars, _FLIP).iloc[t]
+        assert np.allclose(got.to_numpy(), full.iloc[t].to_numpy(), equal_nan=True)
+
+
+def test_each_year_keeps_its_own_verdict_and_a_year_without_one_gets_5min():
+    assert stamp_delays({2023: (0.273, -0.020), 2024: (0.026, 0.255),
+                         2025: (np.nan, np.nan)}) == {
+        2023: pd.Timedelta(0), 2024: METRICS_STEP, 2025: METRICS_STEP}
+    stamps = pd.DatetimeIndex(["2023-12-31 23:55", "2024-01-01 00:00",
+                               "2022-06-01"], tz="UTC")
+    assert list(row_delays(stamps, _FLIP)) == [pd.Timedelta(0), METRICS_STEP,
+                                               METRICS_STEP]
+
+
+def test_availability_that_runs_backwards_is_refused_not_mis_joined():
+    metrics = pd.DataFrame(1.0, columns=["oi", "top_ratio", "global_ratio",
+                                         "taker_ratio"],
+                           index=pd.DatetimeIndex(["2023-12-31 23:58",
+                                                   "2024-01-01 00:01"], tz="UTC"))
+    with pytest.raises(ValueError, match="availability"):
+        metrics_features(metrics, _grid(2, start="2024-01-01"),
+                         {2023: METRICS_STEP, 2024: pd.Timedelta(0)})

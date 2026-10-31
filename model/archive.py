@@ -16,6 +16,7 @@ not exist in any 2023-2025 file (checked 2026-09-28), so ±1% is the finest.
 """
 
 import io
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -66,6 +67,16 @@ def parse_metrics(text: str) -> pd.DataFrame:
     return frame.dropna(how="all")
 
 
+def combine_days(frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
+    """Parsed daily frames, in date order, into one: a stamp that two files
+    both carry keeps the LATER file's row. At Binance's 2024-01-01 stamp flip
+    the 2023-12-31 file's last row (period ENDING 00:00) and the 2024-01-01
+    file's first row (period STARTING 00:00) share that stamp; the 2024 row
+    survives (KI-092, see `row_delays`)."""
+    frame = pd.concat(frames)
+    return frame[~frame.index.duplicated(keep="last")].sort_index()
+
+
 def metrics_coverage(frame: pd.DataFrame) -> pd.DataFrame:
     """Per calendar year: parsed rows, rows with every one of the four
     metrics columns present, and how many rows are missing each column —
@@ -110,16 +121,55 @@ def asof(frame: pd.DataFrame, available_at: pd.DatetimeIndex,
     return pd.DataFrame(picked, index=bars, columns=frame.columns)
 
 
+def stamp_delays(by_year: Mapping[int, tuple]) -> dict[int, pd.Timedelta]:
+    """Each year's own delay from its `check_stamp_convention` verdict: 0 when
+    the close-row correlation beats the open-row one (stamps END their
+    period), else the conservative 5 min (they START it, or the year is
+    ambiguous or NaN). KI-092: the years are NOT collapsed into one delay."""
+    return {int(y): pd.Timedelta(0) if c > o else METRICS_STEP
+            for y, (c, o) in by_year.items()}
+
+
+def row_delays(stamps: pd.DatetimeIndex,
+               delays: Mapping[int, pd.Timedelta]) -> pd.TimedeltaIndex:
+    """Per metrics row, the delay of its stamp's calendar year; a year with
+    no verdict gets the conservative 5 min. A stamp at exactly YYYY-01-01
+    00:00 belongs to the NEW year: at the 2024 flip that is the 2024 file's
+    start-stamped row (`combine_days` keeps it), for which 5 min is exact,
+    and had the 2023 end-stamped row survived, 5 min is stale, never early."""
+    years = stamps.year.to_numpy()
+    out = np.full(len(stamps), METRICS_STEP.value, dtype="int64")
+    for year, delay in delays.items():
+        out[years == year] = pd.Timedelta(delay).value
+    return pd.to_timedelta(out, unit="ns")
+
+
 def metrics_features(metrics: pd.DataFrame, bars: pd.DatetimeIndex,
-                     delay: pd.Timedelta) -> pd.DataFrame:
+                     delay: pd.Timedelta | Mapping[int, pd.Timedelta]
+                     ) -> pd.DataFrame:
     """The nine pre-registered metrics features on the bar grid. A row
-    stamped s is available at s + `delay` (0 when stamps end their period,
-    5 min when they start it — see `check_stamp_convention`)."""
+    stamped s is available at s + its delay (0 when stamps end their period,
+    5 min when they start it — see `check_stamp_convention`). `delay` is one
+    Timedelta for the whole sample (the frozen E12 run), or a {year: delay}
+    map (`check_stamp_convention`'s "delays"; KI-092), applied per row by its
+    stamp's year (`row_delays`; a year missing from the map gets 5 min). A
+    map that gives every row's year the same d is exactly the scalar d."""
     cols = ["oi", "top_ratio", "global_ratio", "taker_ratio"]
     valid = metrics[cols][(metrics[cols] > 0).all(axis=1)]  # 0 OI rows exist
     logs = np.log(valid)
-    logs["taker_15"] = logs["taker_ratio"].rolling("15min").mean()
-    joined = asof(logs, logs.index + delay, bars, METRICS_MAX_AGE)
+    if isinstance(delay, Mapping):
+        available = logs.index + row_delays(logs.index, delay)
+    else:
+        available = logs.index + delay
+    if not available.is_monotonic_increasing:  # asof's searchsorted needs it
+        raise ValueError("metrics availability times run backwards across a "
+                         "delay change; the as-of join would mis-pick rows")
+    # The taker window rolls on availability, which is each row's period END
+    # in both regimes, so a window never mixes the two stamp conventions;
+    # under one scalar delay it is the same window as rolling on the stamps.
+    taker = pd.Series(logs["taker_ratio"].to_numpy(), index=available)
+    logs["taker_15"] = taker.rolling("15min").mean().to_numpy()
+    joined = asof(logs, available, bars, METRICS_MAX_AGE)
     oi = joined["oi"]
     feats = pd.DataFrame(index=bars)
     for k in (1, 4, 16):
@@ -154,7 +204,8 @@ def check_stamp_convention(metrics: pd.DataFrame,
     the period it covers. For each bar (open T, close T + 15m), correlate log
     taker ratio of the row stamped at the bar's CLOSE and at its OPEN with the
     bar's log return. Stamps end their period only if the close row wins;
-    otherwise the conservative 5-min delay applies."""
+    otherwise the conservative 5-min delay applies. "delay" is the frozen
+    whole-sample scalar; "delays" keeps each year's own verdict (KI-092)."""
     ret = np.log(close / close.shift(1))  # bar T's own return (close at T+15m)
     taker = np.log(metrics["taker_ratio"])
     frame = pd.DataFrame({"close_row": taker.reindex(close.index + BAR).to_numpy(),
@@ -170,7 +221,8 @@ def check_stamp_convention(metrics: pd.DataFrame,
     return {"corr_close_row": float(frame.close_row.corr(frame.ret)),
             "corr_open_row": float(frame.open_row.corr(frame.ret)),
             "by_year": by_year,
-            "delay": pd.Timedelta(0) if by_year and ends else METRICS_STEP}
+            "delay": pd.Timedelta(0) if by_year and ends else METRICS_STEP,
+            "delays": stamp_delays(by_year)}
 
 
 def with_archive_features(X: pd.DataFrame, y: pd.Series,
