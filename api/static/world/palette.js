@@ -80,20 +80,9 @@ import { WORLD_CONFIG } from "./config.js";
       // Darker than the jeans it falls on, in their hue.
       // `test_the_forearm_casts_a_contact_shadow_on_the_thigh`.
       contact: 0x22303f,
-      // The shadow between two fingers — the only place on this figure where
-      // one volume has to read as two. Sampled off the reference rather than
-      // picked: its far hand measures `#262127` between the fingers against
-      // `#a67265` on the lit slab above them, a luminance ratio of 0.28. Held
-      // against skin's own lit rung (`#ce975e`, L 0.63) that asks for L 0.18,
-      // which was `#3a2a22`. Warm, not neutral: a crease in a hand is skin
-      // the light did not reach, and a blue-black one reads as a crack.
-      //
-      // That ratio did not survive the frame. The reference's separations are
-      // one or two pixels wide; ours are 2 units x the figure scale, and at
-      // that width a near-black line three times over reads as a BARCODE
-      // stamped on the hand. Lifted to a deep skin shadow — still clearly
-      // darker than the slab, so the four fingers still count (A/B 1:1 and
-      // 4x, `data/visual-qa/char-redesign/inc17-*`).
+      // A deep warm skin shade, not a neutral one: a blue-black line reads as
+      // a crack. Its one use in the drawing code is the profile's mouth line,
+      // `P.mouth` in `cast.js`. Before S17 #7 it shaded finger separations.
       crease:  0x6e4a34,
     };
 
@@ -110,8 +99,8 @@ import { WORLD_CONFIG } from "./config.js";
     // `machineFace` already cuts for the visor — this page's own shipped
     // answer to "what does a hollow in this machine look like", rather than
     // a second opinion about it. Neutral rather than warm, deliberately, and
-    // this is where the machine departs from `HUMAN.crease`: a crease in a
-    // hand is skin the lamp did not reach and has to stay skin-coloured,
+    // this is where the machine departs from `HUMAN.crease`: a crease in
+    // skin is skin the lamp did not reach and has to stay skin-coloured,
     // while a gap between two steel plates is not made of steel.
     //
     // It has to be a LITERAL rather than that call. `repaint` stores a
