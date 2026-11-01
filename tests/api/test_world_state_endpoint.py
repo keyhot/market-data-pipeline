@@ -175,7 +175,9 @@ def _stub_predict_symbols(monkeypatch, *symbols):
 
     tickers = [SimpleNamespace(symbol=s, predict=True) for s in symbols]
     tickers.append(SimpleNamespace(symbol="AAPL", predict=False))
-    monkeypatch.setattr(world, "load_watchlist", lambda: SimpleNamespace(tickers=tickers))
+    monkeypatch.setattr(
+        world, "load_watchlist", lambda: SimpleNamespace(tickers=tickers)
+    )
 
 
 def _price_lookup_down(symbol, interval="1m", limit=1):
