@@ -2,7 +2,8 @@
 
 This page holds the technical detail that used to sit in the top-level
 [README](../README.md). The text below is the previous README, unchanged except for
-relative links and the Testing section, which is corrected to match the current test guard.
+relative links, the Testing section (corrected to match the current test guard) and a
+short section at the end on how the screenshots are made.
 Start with the README if you are new here.
 
 Contents: [what you're looking at](#what-youre-looking-at) |
@@ -244,7 +245,7 @@ the network** — providers, the OBS client, and the store are all injected seam
 tests under `tests/integration/` are opt-in (KI-106). They run only when
 `MDP_TEST_DATABASE_URL` names a throwaway Postgres (database `mdp_test_*`, port other than
 5432) and are skipped otherwise. `DATABASE_URL` and the `localhost:5432` default are never
-used. Two of them also need `POSTGRES_DISPOSABLE=1`. The 856 count above is from the
+used. Some of them also need `POSTGRES_DISPOSABLE=1`. The 856 count above is from the
 previous README; `poetry run pytest --collect-only -q` gives the current number.
 
 > Use `poetry run pytest`, not bare `pytest` — the latter resolves to the Anaconda base

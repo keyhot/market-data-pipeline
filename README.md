@@ -18,20 +18,18 @@ code are the real thing. Made offline with [`tools/readme_shots.py`](tools/readm
 
 ## How it works in 5 steps
 
-1. **Collect prices.** The app pulls one-minute price candles for Bitcoin and Ethereum from
-   Binance, and daily prices for a few stocks from Yahoo Finance. It stores them in a
-   Postgres database.
-2. **Notice what is unusual.** Simple fixed rules watch the candles. They flag big moves,
-   volatility spikes, gaps, streaks and odd trading volume. Each flag is called a *world
-   event*.
-3. **Remember everything.** World events go into one log table, `world_events`. The log is
-   append-only: the code never edits or deletes a row. Wins, losses and outages stay forever.
-4. **Predict, then check.** A LightGBM model guesses whether the price will be higher in 15
-   minutes. Each guess is saved before the answer is known. 15 minutes later a resolver marks
-   it a win or a loss and writes that to the log.
-5. **Show it.** The room page turns the log into the current state: moods, tiers, the
-   model's record. A "director" picks scenes and lines from fixed phrase banks. There is no
-   LLM and no API cost. OBS streams the page.
+1. **Collect prices.** The app saves one-minute Bitcoin and Ethereum prices from Binance and
+   daily stock prices from Yahoo Finance in a Postgres database.
+2. **Spot unusual moves.** Fixed rules flag big moves, volatility spikes, gaps, streaks and
+   odd trading volume. Each flag becomes a *world event*.
+3. **Remember everything.** Events go into a log that is only ever added to, never edited. Wins,
+   losses and outages stay forever.
+4. **Predict, then check.** A machine-learning model (LightGBM) guesses whether the price will
+   be higher in 15 minutes and saves the guess first. Fifteen minutes later the guess is
+   scored as a win or a loss in the log.
+5. **Show it.** The room page draws the current state from the log. A "director" picks scenes
+   and lines from fixed phrase banks (no LLM, no API cost). Streaming software (OBS)
+   broadcasts the page.
 
 ```mermaid
 flowchart LR
