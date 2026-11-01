@@ -49,23 +49,117 @@ def _seeded_panel():
 # Recorded from `portfolio_pnl` as it stood on main (1493521; #54 leaves the
 # function untouched) before this change, with repr() floats.
 _MAIN_FRAME_SLIPPAGE = {
-    "gross": [3.8125944112083615e-05, 0.04309155883172868, 0.08230858564594186, 0.0, -0.006893616378829343, -0.016952803275989685, -0.00747876514455351, -0.003567670641669272],
-    "funding": [-0.00021497919750273857, -3.3844018786568956e-05, -0.00046467134062366024, -0.0, -0.0005282365672908483, -0.0015004865689926482, -0.0004441475260090884, -0.0003043887302520832],
-    "cost": [0.002986131706447983, 0.0037384664943827767, 0.0038531532661937036, 0.0023248874147675912, 0.0030510461422787625, 0.0009043685572343402, 0.0009589743188803087, 0.002460549892485155],
-    "turnover": [4.2, 5.5, 6.1000000000000005, 3.5999999999999996, 4.6000000000000005, 1.4000000000000001, 1.4000000000000001, 3.7],
-    "net": [-0.003162984959838638, 0.03931924831855934, 0.0779907610391245, -0.0023248874147675912, -0.010472899088398954, -0.019357658402216673, -0.008881886989442906, -0.00633260926440651],
+    "gross": [
+        3.8125944112083615e-05,
+        0.04309155883172868,
+        0.08230858564594186,
+        0.0,
+        -0.006893616378829343,
+        -0.016952803275989685,
+        -0.00747876514455351,
+        -0.003567670641669272,
+    ],
+    "funding": [
+        -0.00021497919750273857,
+        -3.3844018786568956e-05,
+        -0.00046467134062366024,
+        -0.0,
+        -0.0005282365672908483,
+        -0.0015004865689926482,
+        -0.0004441475260090884,
+        -0.0003043887302520832,
+    ],
+    "cost": [
+        0.002986131706447983,
+        0.0037384664943827767,
+        0.0038531532661937036,
+        0.0023248874147675912,
+        0.0030510461422787625,
+        0.0009043685572343402,
+        0.0009589743188803087,
+        0.002460549892485155,
+    ],
+    "turnover": [
+        4.2,
+        5.5,
+        6.1000000000000005,
+        3.5999999999999996,
+        4.6000000000000005,
+        1.4000000000000001,
+        1.4000000000000001,
+        3.7,
+    ],
+    "net": [
+        -0.003162984959838638,
+        0.03931924831855934,
+        0.0779907610391245,
+        -0.0023248874147675912,
+        -0.010472899088398954,
+        -0.019357658402216673,
+        -0.008881886989442906,
+        -0.00633260926440651,
+    ],
 }
 _MAIN_SCALAR_SLIPPAGE = {
-    "gross": [3.8125944112083615e-05, 0.04309155883172868, 0.08230858564594186, 0.0, -0.006893616378829343, -0.016952803275989685, -0.00747876514455351, -0.003567670641669272],
-    "funding": [-0.00021497919750273857, -3.3844018786568956e-05, -0.00046467134062366024, -0.0, -0.0005282365672908483, -0.0015004865689926482, -0.0004441475260090884, -0.0003043887302520832],
-    "cost": [0.0025200000000000005, 0.0033000000000000004, 0.00366, 0.0021600000000000005, 0.0027600000000000003, 0.0008400000000000001, 0.0008400000000000001, 0.0022199999999999998],
-    "turnover": [4.2, 5.5, 6.1000000000000005, 3.5999999999999996, 4.6000000000000005, 1.4000000000000001, 1.4000000000000001, 3.7],
-    "net": [-0.0026968532533906556, 0.039757714812942116, 0.07818391430531821, -0.0021600000000000005, -0.01018185294612019, -0.019293289844982332, -0.008762912670562598, -0.006092059371921355],
+    "gross": [
+        3.8125944112083615e-05,
+        0.04309155883172868,
+        0.08230858564594186,
+        0.0,
+        -0.006893616378829343,
+        -0.016952803275989685,
+        -0.00747876514455351,
+        -0.003567670641669272,
+    ],
+    "funding": [
+        -0.00021497919750273857,
+        -3.3844018786568956e-05,
+        -0.00046467134062366024,
+        -0.0,
+        -0.0005282365672908483,
+        -0.0015004865689926482,
+        -0.0004441475260090884,
+        -0.0003043887302520832,
+    ],
+    "cost": [
+        0.0025200000000000005,
+        0.0033000000000000004,
+        0.00366,
+        0.0021600000000000005,
+        0.0027600000000000003,
+        0.0008400000000000001,
+        0.0008400000000000001,
+        0.0022199999999999998,
+    ],
+    "turnover": [
+        4.2,
+        5.5,
+        6.1000000000000005,
+        3.5999999999999996,
+        4.6000000000000005,
+        1.4000000000000001,
+        1.4000000000000001,
+        3.7,
+    ],
+    "net": [
+        -0.0026968532533906556,
+        0.039757714812942116,
+        0.07818391430531821,
+        -0.0021600000000000005,
+        -0.01018185294612019,
+        -0.019293289844982332,
+        -0.008762912670562598,
+        -0.006092059371921355,
+    ],
 }
 
 
 def _assert_bit_identical(out, ref):
-    assert list(out.columns) == list(ref) == ["gross", "funding", "cost", "turnover", "net"]
+    assert (
+        list(out.columns)
+        == list(ref)
+        == ["gross", "funding", "cost", "turnover", "net"]
+    )
     for col, want in ref.items():
         assert out[col].tolist() == want, col          # == on floats: bit-identical
 
@@ -78,8 +172,11 @@ def test_default_output_is_bit_identical_to_the_values_recorded_from_main():
 
 def test_an_explicit_drift_false_is_the_default_and_drift_is_keyword_only():
     w, r, f, slip = _seeded_panel()
-    pd.testing.assert_frame_equal(portfolio_pnl(w, r, f, 0.0005, slip, drift=False),
-                                  portfolio_pnl(w, r, f, 0.0005, slip), check_exact=True)
+    pd.testing.assert_frame_equal(
+        portfolio_pnl(w, r, f, 0.0005, slip, drift=False),
+        portfolio_pnl(w, r, f, 0.0005, slip),
+        check_exact=True,
+    )
     with pytest.raises(TypeError):
         portfolio_pnl(w, r, f, 0.0005, slip, True)
 
@@ -121,8 +218,18 @@ _SLIP = {"A": 0.0001, "B": 0.0002, "C": 0.0004}
 def _hand_panel():
     days, cols = _days(6), list("ABC")
     nan = np.nan
-    w = pd.DataFrame([[.5, .5, -1], [.5, .5, -1], [-.5, 1, -.5], [0, 0, 0], [1, -1, nan],
-                      [.25, -.8, .75]], days, cols)
+    w = pd.DataFrame(
+        [
+            [0.5, 0.5, -1],
+            [0.5, 0.5, -1],
+            [-0.5, 1, -0.5],
+            [0, 0, 0],
+            [1, -1, nan],
+            [0.25, -0.8, 0.75],
+        ],
+        days,
+        cols,
+    )
     r = pd.DataFrame([[.5, 0, .1], [-.2, .1, nan], [.1, -.1, .4], [.05, .05, .05],
                       [-1, .2, 0], [0, 0, 0]], days, cols)
     f = pd.DataFrame([[.001, .002, -.001]] * 6, days, cols)
@@ -139,21 +246,27 @@ def test_drift_turnover_on_the_hand_computed_panel():
     drift = portfolio_pnl(w, r, f, _FEE, slip, drift=True)
     default = portfolio_pnl(w, r, f, _FEE, slip)
     assert drift["turnover"].tolist() == pytest.approx(_HAND_TRADED_DRIFT, abs=1e-12)
-    assert default["turnover"].tolist() == pytest.approx(_HAND_TRADED_DEFAULT, abs=1e-12)
+    assert default["turnover"].tolist() == pytest.approx(
+        _HAND_TRADED_DEFAULT, abs=1e-12
+    )
 
 
 def test_drift_cost_is_charged_per_name_on_the_drifted_trade():
     w, r, f, slip = _hand_panel()
-    fa, fb, fc = (_FEE + _SLIP[c] for c in "ABC")                  # per-name fee + slippage
-    want = [.5 * fa + .5 * fb + 1.0 * fc,                          # d0: the whole book
-            .1 * fa + .1 * fb,                                     # d1: A -> .6, B -> .4 drifted
-            (35 / 38) * fa + (8 / 19) * fb + .5 * fc,              # d2
-            .44 * fa + 1.0 * fb + .56 * fc,                        # d3: flat target
-            1.0 * fa + 1.0 * fb,                                   # d4: yesterday flat; NaN = 0
-            .25 * fa + .2 * fb + .75 * fc]                         # d5: wiped-out leg
+    fa, fb, fc = (_FEE + _SLIP[c] for c in "ABC")  # per-name fee + slippage
+    want = [
+        0.5 * fa + 0.5 * fb + 1.0 * fc,  # d0: the whole book
+        0.1 * fa + 0.1 * fb,  # d1: A -> .6, B -> .4 drifted
+        (35 / 38) * fa + (8 / 19) * fb + 0.5 * fc,  # d2
+        0.44 * fa + 1.0 * fb + 0.56 * fc,  # d3: flat target
+        1.0 * fa + 1.0 * fb,  # d4: yesterday flat; NaN = 0
+        0.25 * fa + 0.2 * fb + 0.75 * fc,
+    ]                         # d5: wiped-out leg
     got = portfolio_pnl(w, r, f, _FEE, slip, drift=True)
     assert got["cost"].tolist() == pytest.approx(want, abs=1e-15)
-    assert (got["net"] - (got["gross"] + got["funding"] - got["cost"])).abs().max() < 1e-15
+    assert (
+        got["net"] - (got["gross"] + got["funding"] - got["cost"])
+    ).abs().max() < 1e-15
 
 
 def test_drift_changes_only_what_trades_not_gross_or_funding():
@@ -161,8 +274,12 @@ def test_drift_changes_only_what_trades_not_gross_or_funding():
     drift = portfolio_pnl(w, r, f, _FEE, slip, drift=True)
     default = portfolio_pnl(w, r, f, _FEE, slip)
     pd.testing.assert_series_equal(drift["gross"], default["gross"], check_exact=True)
-    pd.testing.assert_series_equal(drift["funding"], default["funding"], check_exact=True)
-    assert drift["gross"].iloc[0] == pytest.approx(.5 * .5 + 0 + -1 * .1)   # d0 gross, by hand
+    pd.testing.assert_series_equal(
+        drift["funding"], default["funding"], check_exact=True
+    )
+    assert drift["gross"].iloc[0] == pytest.approx(
+        0.5 * 0.5 + 0 + -1 * 0.1
+    )  # d0 gross, by hand
 
 
 def test_drifted_weights_hand_values():
@@ -171,7 +288,7 @@ def test_drifted_weights_hand_values():
     want = np.array([[0, 0, 0], [.6, .4, -1], [8 / 19, 11 / 19, -1], [-.44, 1.0, -.56],
                      [0, 0, 0], [0, -1, 0]])
     np.testing.assert_allclose(got.to_numpy(), want, atol=1e-15)
-    assert np.isfinite(got.to_numpy()).all()          # the wiped-out leg is 0, not NaN / inf
+    assert np.isfinite(got.to_numpy()).all()  # the wiped-out leg is 0, not NaN / inf
 
 
 def test_a_leg_keeps_its_prior_gross_not_a_forced_one():
@@ -181,7 +298,9 @@ def test_a_leg_keeps_its_prior_gross_not_a_forced_one():
     # grown .375 / .25 -> rescaled to the long leg's prior gross .5: .3 / .2
     np.testing.assert_allclose(drifted_weights(w, r).iloc[1].to_numpy(), [.3, .2, -.5])
     z = pd.DataFrame(0.0, days, w.columns)
-    assert portfolio_pnl(w, r, z, 0, 0, drift=True)["turnover"].iloc[1] == pytest.approx(0.0, abs=1e-15)
+    assert portfolio_pnl(w, r, z, 0, 0, drift=True)["turnover"].iloc[
+        1
+    ] == pytest.approx(0.0, abs=1e-15)
 
 
 def test_drift_uses_the_previous_days_return_never_a_later_one():
@@ -195,9 +314,11 @@ def test_drift_uses_the_previous_days_return_never_a_later_one():
         moved = portfolio_pnl(w, r2, f, _FEE, slip, drift=True)["turnover"]
         np.testing.assert_allclose(moved.iloc[:k + 1], base.iloc[:k + 1], atol=1e-15)
     r3 = r.copy()
-    r3.iloc[1] = [.9, -.5, .3]                     # d2's drift is built from this row
-    assert not np.isclose(portfolio_pnl(w, r3, f, _FEE, slip, drift=True)["turnover"].iloc[2],
-                          base.iloc[2])
+    r3.iloc[1] = [.9, -.5, .3]  # d2's drift is built from this row
+    assert not np.isclose(
+        portfolio_pnl(w, r3, f, _FEE, slip, drift=True)["turnover"].iloc[2],
+        base.iloc[2],
+    )
 
 
 def test_equal_returns_inside_a_leg_drift_nothing_between_names():
@@ -286,11 +407,15 @@ def test_the_drift_rescore_flag_runs_only_the_rescore_after_the_reproduction(
     c = _e13_context()
     calls = []
     monkeypatch.setattr(e13, "build", lambda: c)
-    monkeypatch.setattr(e13, "reproduce", lambda ctx: calls.append("reproduce") or {"ok": 1})
+    monkeypatch.setattr(
+        e13, "reproduce", lambda ctx: calls.append("reproduce") or {"ok": 1}
+    )
     for name in ("q1", "q2", "q3", "q4"):
         monkeypatch.setattr(e13, name, lambda *a, _n=name, **k: calls.append(_n) or {})
     out = tmp_path / "rescore.json"
-    monkeypatch.setattr(sys, "argv", ["e13_diagnostics.py", "--drift-rescore", "--out", str(out)])
+    monkeypatch.setattr(
+        sys, "argv", ["e13_diagnostics.py", "--drift-rescore", "--out", str(out)]
+    )
     e13.main()
     res = json.loads(out.read_text())
     assert calls == ["reproduce"]
@@ -298,13 +423,17 @@ def test_the_drift_rescore_flag_runs_only_the_rescore_after_the_reproduction(
     assert res["KI101_drift_rescore"]["drift_minus_coded"]["turnover"] > 0
 
 
-def test_without_the_flag_the_e13_diagnostics_run_exactly_as_before(monkeypatch, tmp_path):
+def test_without_the_flag_the_e13_diagnostics_run_exactly_as_before(
+    monkeypatch, tmp_path
+):
     calls = []
     monkeypatch.setattr(e13, "build", lambda: {})
     monkeypatch.setattr(e13, "reproduce", lambda ctx: {})
     for name in ("q1", "q2", "q3", "q4"):
         monkeypatch.setattr(e13, name, lambda *a, _n=name, **k: calls.append(_n) or {})
     monkeypatch.setattr(e13, "drift_rescore", lambda ctx: calls.append("drift") or {})
-    monkeypatch.setattr(sys, "argv", ["e13_diagnostics.py", "--out", str(tmp_path / "d.json")])
+    monkeypatch.setattr(
+        sys, "argv", ["e13_diagnostics.py", "--out", str(tmp_path / "d.json")]
+    )
     e13.main()
     assert calls == ["q2", "q1", "q3", "q4"]
