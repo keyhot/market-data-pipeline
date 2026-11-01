@@ -1,287 +1,157 @@
 # Bitcoin Room
 
-A 24/7 livestream where real Bitcoin and Ethereum market data drives a small, persistent
-world. Two inhabitants share a room and watch the candles. When the market moves, the room
-notices. When it doesn't, the room doesn't either — you can leave it on the way you'd leave
-a fireplace on.
+[![CI](https://github.com/keyhot/market-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/keyhot/market-data-pipeline/actions/workflows/ci.yml)
 
-The inhabitant whose job is to predict the market is, right now, losing. Its walk-forward
-backtest returned **−63.3%** against **+18.4%** buy-and-hold, and after costs it loses money.
-That number is published deliberately and is not quietly retuned — it got *worse* when the
-harness's own trade accounting was fixed (KI-001/KI-040, 2026-08-23), and the worse number
-replaced the flattering one. The goal is a model that
-wins; this is version zero, and version zero's record stays in the log forever either way.
+A 24/7 livestream where live Bitcoin and Ethereum prices drive a small pixel-art room, and a
+prediction model has to show its win/loss record in public.
 
-## What you're looking at
+![The room: two candlestick screens, a robot (the MODEL), a person at the desk (the TRADER),
+and a status bar along the bottom](docs/images/hero-room.webp)
 
-A persistent room, rendered in PixiJS, with two inhabitants:
+*Example data. The room page (`/world`) running on made-up prices and events. The art and the
+code are the real thing. Made offline with [`tools/readme_shots.py`](tools/readme_shots.py).*
 
-- **MODEL** — a LightGBM classifier that issues directional calls. Every prediction is
-  written down *before* the outcome is known and resolved afterwards.
-- **TRADER** — an independent freqtrade dry-run sidecar that takes its own positions. It is
-  not an executor of MODEL's calls, so when the two disagree the disagreement is real. It's
-  an opt-in service; when it isn't running, TRADER renders as dormant and the room is still
-  complete.
+> **Honest status.** The model loses money. Its walk-forward backtest returned **-63.3%**
+> while simply holding Bitcoin returned **+18.4%**. That number is published on purpose and
+> was never quietly retuned. The goal is a model that wins. This is version zero, and its
+> record stays in the log either way. See [the numbers explained](docs/README-details.md#reading-the-numbers).
 
-Around them: a candlestick chart, a live signal strip, and a scrolling world-event feed.
+## How it works in 5 steps
 
-The register is a calm baseline that swells when the market does, then decays back. A
-director picks scenes and writes commentary from deterministic phrase banks keyed to event
-severity — **no LLM, no API cost**. The phrases match the events, the events come from the
-data, and the data is real.
+1. **Collect prices.** The app pulls one-minute price candles for Bitcoin and Ethereum from
+   Binance, and daily prices for a few stocks from Yahoo Finance. It stores them in a
+   Postgres database.
+2. **Notice what is unusual.** Simple fixed rules watch the candles. They flag big moves,
+   volatility spikes, gaps, streaks and odd trading volume. Each flag is called a *world
+   event*.
+3. **Remember everything.** World events go into one log table, `world_events`. The log is
+   append-only: the code never edits or deletes a row. Wins, losses and outages stay forever.
+4. **Predict, then check.** A LightGBM model guesses whether the price will be higher in 15
+   minutes. Each guess is saved before the answer is known. 15 minutes later a resolver marks
+   it a win or a loss and writes that to the log.
+5. **Show it.** The room page turns the log into the current state: moods, tiers, the
+   model's record. A "director" picks scenes and lines from fixed phrase banks. There is no
+   LLM and no API cost. OBS streams the page.
 
-## Why the track record is public
-
-Most "AI trading" content is survivorship: the profitable runs get shown and the losing ones
-get quietly retrained into something else. You never see the version that lost, so you can't
-tell whether anything was actually learned.
-
-Here the opposite is enforced structurally. Predictions are recorded before their outcome and
-resolved against realized bars afterwards. Wins and losses both land permanently in
-`world_events`, which is **append-only** — application code never updates or deletes a row
-([`docs/world-memory.md`](docs/world-memory.md)). Nothing resets between streams.
-
-**The goal is a model that makes money.** The append-only log isn't a commitment to keep
-losing — it's what makes getting better mean something. Every version is measured against a
-record that can't be quietly edited afterwards, so when a later model does beat costs, the
-improvement is a verifiable step from a published starting point rather than a claim. And if
-a change makes things worse, that's in the log too.
-
-The room reacts to whatever the record currently says. Right now that means a model in a
-losing stretch, and the world is honest about it.
-
-Downtime is treated the same way. When the stream drops, the watchdog writes the outage
-into the log rather than erasing it — and it distinguishes *degraded* from *down*, so the
-uptime report can't overstate itself.
-
-The first unattended 24-hour soak (2026-08-21 → 08-22) measured **99.96% uptime** — 38
-seconds down — with the public broadcast live for all 86,400 seconds. The report counts
-**6 outages, of which 5 were zero-duration notices**, and **4 ingest reconnects, of which
-1 was the watchdog's own relaunch**. Those two artifacts are named in the report (KI-036,
-KI-035) rather than rounded into a nicer number.
-
-## Architecture
-
-```
-  Binance websocket (1m klines)  +  Yahoo Finance (equities)
-                    │
-                    ▼
-            Postgres  ──►  price_bars, signals, news, corporate events
-                    │
-                    ▼
-            Salience engine        deterministic rules: volatility spikes,
-                    │              gaps, streaks, volume anomalies
-                    ▼
-         world_events (append-only)  ◄── the world's memory
-                    │
-      ┌─────────────┼──────────────────────┬─────────────────────┐
-      ▼             ▼                      ▼                     ▼
-  LightGBM     project_state()         Director            Watchdog
-  prediction   (pure fold)          scene + phrase       outages → events
-      │             │                      │                     │
-      └─► resolver ─┘                      ▼                     │
-          win/loss                  PixiJS room  /world          │
-                                    overlays, charts             │
-                                           │                     │
-                                           ▼                     │
-                                  OBS (driven over websocket) ◄──┘
-                                           │
-                                           ▼
-                                        stream
+```mermaid
+flowchart LR
+    A["Binance and Yahoo Finance<br/>price candles"] --> B[("Postgres<br/>price bars")]
+    B --> C["Salience rules<br/>flag unusual moves"]
+    C --> D[("world_events<br/>append-only log")]
+    B --> E["LightGBM model<br/>guesses 15 min ahead"]
+    E --> F["Signals<br/>saved before the outcome"]
+    F --> G["Resolver<br/>marks win or loss"]
+    G --> D
+    W["Watchdog<br/>records outages"] --> D
+    D --> H["project_state<br/>log folded into current state"]
+    H --> I["Room page /world"]
+    H --> J["Director<br/>scene and phrase"]
+    I --> K["OBS"]
+    J --> K
+    K --> L["Livestream"]
 ```
 
-`world_events` is the single source of truth. Everything the viewer sees is a projection
-over it — `project_state()` is a pure fold whose determinism and chunk-invariance are
-property-tested, so refreshing the page restores the same world rather than a similar one.
+Because everything on screen is computed from the log, refreshing the page restores the same
+world, not a similar one. The fold function, `project_state()`, is property-tested for that.
 
-**Adding a data provider** means implementing `MarketDataProvider` from
-`ingestion/providers.py` and injecting it into the fetchers. Binance slotted in beside
-Yahoo Finance without touching the API or storage layers.
+## What it looks like
 
-## Running it
+![Two candlestick charts, BTCUSDT and ETHUSDT, with arrows showing the model's calls. Green
+arrows are wins, red are losses, grey are not resolved yet](docs/images/charts.webp)
 
-Copy `.env.example` to `.env` first, then:
+*Example data. The `/charts` page. Each arrow is one model call at the minute it was made.
+Green is a win, red is a loss, grey is still waiting for its 15 minutes to pass.*
+
+![A grid of the room's characters in eight moods, from elated to bearish](docs/images/cast.webp)
+
+*Example data. The `/world?gallery=1` page. The same characters in each mood the room can
+show. The mood comes from recent events in the log.*
+
+## What's inside
+
+| Folder | What it holds |
+|---|---|
+| `api/` | The FastAPI app, its routes, and the HTML pages (room, charts, overlays) with their JavaScript. |
+| `ingestion/` | Price, news and event providers (Binance REST and websocket, Yahoo Finance) and the fetchers that use them. |
+| `storage/` | Postgres access, the migration ledger, and optional CSV snapshots. |
+| `scheduler/` | Timed background jobs that ingest the watchlist, plus market-hours rules. |
+| `world/` | The core idea: salience rules, event types, the resolver, `project_state()`, and the room's visual rules. |
+| `model/` | LightGBM features, training, backtest and prediction, plus the research experiments. |
+| `director/` | Scene switching and commentary from phrase banks, with optional text-to-speech. |
+| `stream/` | The stream watchdog, the OBS scene spec and the uptime (soak) report. |
+| `broadcast/` | The YouTube Live broadcast lifecycle. |
+| `music/` | The music bed's credits manifest and player. |
+| `alerts/` | Rules and a mailer that put failures in front of a person. |
+| `schemas/` | Response and enum types shared by the API. |
+| `config/` | The watchlist, logging, the freqtrade dry-run config and music credits. |
+| `db/` | `init.sql`, the database schema. |
+| `scripts/` | Command-line entry points: stream control, backfills, reports, the smoke test. |
+| `tools/` | Art and measurement tools, and the script that makes this README's screenshots. |
+| `tests/` | The offline test suite and the opt-in integration tests. |
+| `docs/` | Design docs that must stay next to the code, and the README images. |
+
+## Run it locally
+
+You need Docker with Compose. For development you also need Python 3.11 or newer and
+[Poetry](https://python-poetry.org/) 2.
 
 ```bash
-docker compose up -d --build        # Postgres + API + scheduler/ingester
-./scripts/smoke_test.sh             # boots the stack and verifies it end to end
+cp .env.example .env                # local-development defaults
+docker compose up -d --build        # starts Postgres, the API and the scheduler
+./scripts/smoke_test.sh             # optional: waits for a stored bar and checks the API
 ```
 
-The API lands on `http://localhost:8000`. Open `/world` for the room, `/charts` for the
-candlestick grid, `/dashboard` for the watchlist.
+Then open:
 
-For development outside Docker:
+- <http://localhost:8000/world> for the room
+- <http://localhost:8000/charts?interval=1m> for the candlestick charts
+- <http://localhost:8000/dashboard> for the watchlist
+
+The scheduler container pulls public Binance and Yahoo Finance data. No API key is needed.
+A new database has no memory yet, so the room fills in as events arrive. To give it a past,
+replay the same rules over 60 days of history:
 
 ```bash
 poetry install
+poetry run python scripts/backfill_world_events.py --days 60 --dry-run   # drop --dry-run to write
+```
+
+To run the API outside Docker, keep Postgres from Compose running and start the server:
+
+```bash
+docker compose up -d postgres
 poetry run uvicorn api.main:app --reload
 ```
 
-Give the room a past — replays the same salience rules over historical klines, flagging
-each event `backfilled: true` so learned history stays distinct from witnessed history:
+The model, the stream and the optional services (director, broadcast, trader) are covered in
+[docs/README-details.md](docs/README-details.md).
 
-```bash
-poetry run python scripts/backfill_world_events.py --days 60
-```
-
-### The model
-
-```bash
-python -m model.train    --symbol BTCUSDT --interval 1m   # LightGBM baseline
-python -m model.backtest --symbol BTCUSDT --interval 1m   # walk-forward, fees + slippage
-python -m model.predict  --symbol BTCUSDT --interval 1m   # one-shot signal write
-
-# is the probability worth gating on? (walk-forward OOS, cached per artifact)
-poetry run python scripts/confidence_report.py --symbol BTCUSDT [--refresh]
-```
-
-The feature pipeline is shared between training and inference and is property-tested for
-no-lookahead. The backtest applies a purge gap and real costs, and the test suite includes
-an oracle leak detector.
-
-#### Reading the numbers
-
-Every figure in this README is one of these. They're defined here so the honest ones stay
-legible rather than impressive.
-
-| Term | What it means here |
-|---|---|
-| **bps** | Basis point — one hundredth of a percent. 22 bps = 0.22%. Small moves are easier to compare in bps than in decimals. |
-| **round trip** | The total cost of opening *and* closing one position: 0.1% Binance taker fee + 1 bp slippage, both sides = **22 bps**. Paid whether the call was right or wrong. |
-| **position** | One entry and one exit. *Not* one bar: a signal that stays on for 20 consecutive minutes is one position, not twenty. Charging the round trip per bar instead was a real bug here (KI-040), and merging holds that overlap into the single position one unit of capital actually held was its sibling (KI-001). |
-| **horizon** | How far ahead the model is asked to predict — currently 15 bars, i.e. 15 minutes. The label is "is the close 15 bars from now higher than the close now?" |
-| **hit rate** | Share of positions where price rose over the hold the position actually had, before costs. **56.5%** here — and it still lost 63%, so on its own it says almost nothing (see the next row). It is also flattered by the market: an 82%-exposed long in a rising month is on the right side of most holds without any skill. The skill number is **signal precision**, the share of in-market bars whose 15-bar label was up: **49.3%**, a coin flip. (The 49.9% this row used to quote graded every position on the 15 bars after its *entry*, while it exits 15 bars after its *last* bar — KI-042.) |
-| **edge** | Average profit per position *after* costs: **−19.2 bps**. This is the number that matters. A hit rate can sit at 50% while the edge is deeply negative, because being right by 6 bps and wrong by 6 bps both pay the same 22 bps toll. |
-| **walk-forward / fold** | Train on a window, predict the window immediately after it, slide forward, repeat — 253 times here. It's the honest alternative to training and testing on the same period, because the model only ever sees the past. |
-| **purge gap** | Rows skipped between a train window and its test window. Without it the last training labels — which look 15 bars ahead — would peek into the test set. |
-| **buy-and-hold** | The do-nothing benchmark: buy at the start, sell at the end, pay the toll once. **+18.4%**. Any strategy has to beat this, not merely make money. |
-| **exposure** (time in market) | Fraction of the bars over which capital was actually committed — a position is held from entry until `horizon` bars after its signal drops. The published BTC run is **82.0%** in the market. That reframes it: this is not a selective strategy, it's a near-permanent long that keeps paying to re-enter a position it barely leaves. |
-| **exposure-matched null** | What a strategy with **no forecasting skill at all** would have returned at the same exposure and the same turnover: each fold's benchmark return scaled by that fold's time in market, charged one round trip per position, compounded across folds. This is what `run_backtest` reports as `null_total_return`. Beating buy-and-hold is not the bar; beating this is. An earlier *linear* form — total benchmark return scaled by overall exposure — reproduced the −63.3% headline to 0.0 points on the 36-day window it was written for, but overstates an 87%-exposed path by ~3.5x once the benchmark compounds 10x; it is superseded, and the correction is in the vault plan. |
-| **calibration** | Whether a stated probability matches reality — of all the bars where the model says 0.9, do ~90% go up? Here they don't; realized frequency is flat near 0.50 at every stated probability, so `p` is a score, not a probability. |
-| **Brier skill score** | Calibration in one number, against the baseline of always predicting the base rate. Positive = better than that baseline. **−0.35** = worse. |
-| **ROC AUC** | Ranking quality, ignoring calibration: the chance a randomly chosen up-bar is scored above a randomly chosen down-bar. 0.5 is a coin flip. Pooled: **0.4965**. |
-| **drawdown** | Worst peak-to-trough fall of the equity curve — how bad it got on the way, not just where it ended. |
-
-### The stream
-
-```bash
-poetry run python scripts/stream_ctl.py build              # scene from SCENE_SPEC, idempotent
-poetry run python scripts/stream_ctl.py configure-output   # RTMP from OBS_STREAM_KEY
-poetry run python scripts/stream_ctl.py start              # records a stream_started event
-poetry run python scripts/stream_watchdog.py               # or the systemd unit
-```
-
-Layout constants live in `stream/scene.py`; every source is a browser source, so
-**the pages are the scene**. `stream/soak_report.py` computes uptime from the recorded
-events. The watchdog, scene spec and soak report are importable modules in `stream/`
-(art tools in `tools/`); `scripts/stream_watchdog.py`, `scripts/soak_report.py`,
-`scripts/measure_chair.py` and `scripts/prepare_plate.py` are thin entry points over them,
-so every command above is unchanged.
-
-## Endpoints
-
-| Endpoint | Description |
-|---|---|
-| `GET /health` | Liveness, including Postgres connectivity |
-| `GET /metrics` | Per-route request counts, latency, status codes, write counters |
-| `GET /ticker/{symbol}/{range}` | OHLCV history for one symbol |
-| `GET /tickers/{range}?symbols=A,B,C` | Concurrent batch fetch, up to 10 symbols |
-| `GET /events/{symbol}/{type}` | Dividends, splits, actions |
-| `GET /news/{symbol}` | Latest news |
-| `GET /bars/{symbol}` | Stored price bars from Postgres |
-| `GET /stream/bars/{symbol}` | SSE: bars stored after connect |
-| `GET /stored/events/{symbol}/{type}`, `GET /stored/news/{symbol}` | Stored events and news |
-| `GET /world/events` | Stored world events (`limit`, `event_type`, `symbol`, `since`) |
-| `GET /world/state` | The log folded into current state — moods, tiers, reactions |
-| `GET /stream/world/events` | SSE: world events stored after connect |
-| `GET /signals/{symbol}` | Model signals with outcomes and rolling accuracy |
-| `GET /world` | The room: PixiJS canvas, SSE-updated |
-| `GET /chart/{symbol}`, `GET /charts`, `GET /dashboard` | Candlestick pages and watchlist |
-| `GET /overlay/signals`, `GET /overlay/events` | OBS browser sources |
-| `GET /standby` | The procedural card the watchdog cuts to on a real drop — makes no network requests, by design and by test |
-
-## Configuration
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `POSTGRES_WRITE_ENABLED` | on | Postgres is the source of truth; an uncached fetch fails with 503 if the write fails. Set `0` only for offline dev. |
-| `CSV_WRITE_ENABLED` | on | Also snapshot fetches to `data/raw/*.csv`. |
-| `SCHEDULER_ENABLED` | off | Background watchlist ingestion; skip-logic reads the `ingestion_runs` table. |
-| `WS_INGEST_ENABLED` | off | Binance websocket 1m-kline ingester for crypto symbols. |
-| `SALIENCE_ENABLED` | on | Turn the bar stream into world events. |
-| `DIRECTOR_ENABLED` | off | Scene switching and commentary. |
-| `DIRECTOR_MUTED` | off | Global mute — suppressed lines are counted, never logged. |
-
-Watchlist entries take an optional `market: crypto` (default `equity`). Equity jobs skip
-outside Mon–Fri 9:30–16:00 ET; crypto jobs run 24/7. Crypto uses public Binance REST and
-websocket endpoints — no API key. Every write is an idempotent upsert, and the ingester
-REST-backfills the gap since the last stored bar on each reconnect, so restarts never lose
-candles.
-
-## Testing
+## Tests
 
 ```bash
 poetry run pytest
 ```
 
-856 tests, written test-first, including property-based tests on the state projection and
-mutation checks on the watchdog backoff and the director's rate limits. **No test touches
-the network** — providers, the OBS client, and the store are all injected seams. Integration
-tests under `tests/integration/` need the compose Postgres and auto-skip without it.
+Use `poetry run pytest`, not bare `pytest`. The default run is offline. It needs no network
+and no database: providers, the OBS client and the store are injected fakes, and the suite
+refuses any database connection ([`tests/db_guard.py`](tests/db_guard.py)).
 
-> Use `poetry run pytest`, not bare `pytest` — the latter resolves to the Anaconda base
-> environment and is missing dependencies.
+The tests in `tests/integration/` are opt-in. They are skipped unless you set
+`MDP_TEST_DATABASE_URL` to a throwaway Postgres whose database is named `mdp_test_*` and whose
+port is not 5432. `DATABASE_URL` and the `localhost:5432` default are never used. Some of them
+also need `POSTGRES_DISPOSABLE=1`. CI does this against a fresh `postgres:16` service and
+also runs `ruff check .` ([`ci.yml`](.github/workflows/ci.yml)).
 
-## What's not done yet
+## Learn more
 
-Being candid:
+- [docs/README-details.md](docs/README-details.md): the full technical write-up that used to
+  be this page. It has the model, the numbers glossary, the stream, every endpoint, the
+  settings, and what is not done yet.
+- [docs/world-memory.md](docs/world-memory.md): the append-only contract for `world_events`.
+- [docs/postgres-schema-spike.md](docs/postgres-schema-spike.md): the design for the Postgres
+  storage layer, where every write is an idempotent upsert.
+- [docs/freqai-takeaways.md](docs/freqai-takeaways.md): design rules taken from freqtrade's
+  FreqAI docs. Ideas only, no code copied.
+- [`.env.example`](.env.example): the settings, with comments.
 
-- **The stream is silent.** Piper TTS is wired in behind an injected runner and degrades to
-  silence when the binary is absent — which it currently is. No music bed either.
-- **There is no clip pipeline.** The world produces small moments worth cutting — a streak
-  resolving, a volatility spike decaying — and nothing turns them into shorts.
-- **The model doesn't win yet.** The walk-forward backtest (253 folds, 2026-07-18 →
-  2026-08-22) took **519 positions**, **56.5%** of which saw price rise over their hold, and
-  returned **−63.3%** against +18.4% buy-and-hold. ETHUSDT replicates: 57.5% over 485
-  positions, −56.6% against +28.6%. At the bar level its entries are a coin flip (signal
-  precision 49.3% / 51.0%). The average position earns **−19.2 bps** against a
-  22 bps round trip.
-  A separate, wider sweep — `scripts/confidence_report.py`, 251 folds and **50,200
-  out-of-sample predictions per symbol** — says there is nothing to select from either:
-  pooled ROC AUC **0.4965** (BTC) / 0.5123 (ETH), and gating on p > 0.8 buys +0.15 bps of
-  selection value against that same 22 bps toll. The binding constraint is arithmetic, not
-  tuning: the median 15-bar move is **6.5 bps** and the round trip costs 22.
-  And on that window the loss is **turnover, not forecasting**: a null with no skill in it
-  reproduces −63.3% to 0.0 points (ETH: 0.7), because 519 round trips at 22 bps compound to
-  a −68.1% drag on a strategy that was long 82% of the time.
-  `run_backtest` now reports `time_in_market`, a per-fold exposure-matched `null_return`,
-  and `excess_vs_null`, so the strategy is scored against *its own* exposure and turnover
-  instead of against a 100%-invested benchmark. Measured that way over 6.6 years of 15m
-  bars (1,159 folds, three down years), the strategy still loses to buy-and-hold by two
-  orders of magnitude at every exposure setting, and the share of folds beating their own
-  null falls through chance — 613 → 571 → 548 of 1,159 — as capital is forced genuinely
-  flat by a re-entry cooldown.
-  With error bars, **no per-position edge is measurable in either direction**: −6.0 ± 7.1,
-  +3.2 ± 9.4 and −7.4 ± 11.2 bps across the three exposure settings, all inside one
-  standard error of zero. And scored against a *constant*-exposure null rather than one
-  that inherits the model's own allocation, the full-exposure run finishes at **0.98× —
-  below a path with no skill in it at all**. Full write-up in the vault plan.
-  Earlier revisions of this README quoted 55.6% and −39.8%, from 3 folds and 264 trades on
-  a harness that billed fees per in-market bar rather than per position; both figures are
-  superseded, and the record of that is in the vault rather than deleted.
-
-- **The room's loudest reaction is keyed to an uncalibrated number.** A resolved signal's
-  severity is `|p − 0.5| × 2`, doubled on a loss — and severity drives reaction amplitude,
-  rail colour, the tier swell, and the director's scene choice. But across those 50,200
-  predictions, realized P(up) is flat at **0.47–0.50 in every predicted bucket** and the
-  Brier skill score is **−0.35** — worse than predicting the base rate. So `p` carries no
-  information about being right, and the show currently reacts hardest to a confidence that
-  means nothing. Tracked as KI-041; the fix is to calibrate `p` or read it as a rank, not to
-  quietly turn the reaction down.
-
-## Where the design docs live
-
-Planning, design records, and spikes live in an Obsidian vault outside this repo. Three
-code-coupled docs stay here: [`docs/world-memory.md`](docs/world-memory.md) (the append-only
-contract), [`docs/postgres-schema-spike.md`](docs/postgres-schema-spike.md), and
-[`docs/freqai-takeaways.md`](docs/freqai-takeaways.md).
+Planning notes and experiment write-ups live in an Obsidian vault outside this repo.
