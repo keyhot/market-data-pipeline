@@ -30,11 +30,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from model.train import _PARAMS  # noqa: E402
 import archive_report as ar  # noqa: E402
 import cross_asset_report as car  # noqa: E402
 import funding_report as fr  # noqa: E402
 import order_flow_report as ofr  # noqa: E402
+
+from model.train import _PARAMS  # noqa: E402
 
 ARM = ("arm features",)  # anything but a str: a str marks the leaked control
 INDEX = pd.date_range("2021-01-01", "2025-12-31", freq="D", tz="UTC")
