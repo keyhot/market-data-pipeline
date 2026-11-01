@@ -20,8 +20,14 @@ import vol_managed_report as vmr  # noqa: E402
 def _synthetic_close(seed: int, warmup_months: int, scored_months: int) -> pd.Series:
     rng = np.random.default_rng(seed)
     months_n = warmup_months + scored_months
-    start = pd.Timestamp("2020-01-01", tz="UTC") - pd.DateOffset(months=warmup_months) - pd.Timedelta(days=1)
-    month_starts = pd.period_range(start + pd.Timedelta(days=1), periods=months_n, freq="M")
+    start = (
+        pd.Timestamp("2020-01-01", tz="UTC")
+        - pd.DateOffset(months=warmup_months)
+        - pd.Timedelta(days=1)
+    )
+    month_starts = pd.period_range(
+        start + pd.Timedelta(days=1), periods=months_n, freq="M"
+    )
     all_rets = []
     for m in month_starts:
         all_rets.append(rng.normal(0, 0.02, m.days_in_month))

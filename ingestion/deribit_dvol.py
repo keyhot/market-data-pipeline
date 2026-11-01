@@ -55,7 +55,9 @@ def fetch_dvol(currency: str, start_ms: int, end_ms: int,
                   "end_timestamp": end, "resolution": RESOLUTION_S}
         payload = get_json(DVOL_URL, params)
         if "error" in payload or "result" not in payload:
-            raise RuntimeError(f"Deribit DVOL error for {currency}: {payload.get('error')}")
+            raise RuntimeError(
+                f"Deribit DVOL error for {currency}: {payload.get('error')}"
+            )
         result = payload["result"]
         rows.extend(result.get("data") or [])
         cont = result.get("continuation")

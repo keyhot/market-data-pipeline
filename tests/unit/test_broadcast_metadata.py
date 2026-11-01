@@ -171,7 +171,11 @@ def test_a_missing_video_reads_as_none():
 
 class FakeClient:
     def __init__(self, snippet=None):
-        self.snippet = snippet if snippet is not None else {"title": "Market World — live", "categoryId": "20"}
+        self.snippet = (
+            snippet
+            if snippet is not None
+            else {"title": "Market World — live", "categoryId": "20"}
+        )
         self.updates = []
 
     def get_video_snippet(self, video_id):

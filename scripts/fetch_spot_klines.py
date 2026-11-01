@@ -14,7 +14,7 @@ return, volatility, trend signal or other performance statistic.
 
     poetry run python scripts/fetch_spot_klines.py
     poetry run python scripts/fetch_spot_klines.py --dest /path/to/klines --symbols BTCUSDT
-"""
+"""  # noqa: E501
 
 from __future__ import annotations
 

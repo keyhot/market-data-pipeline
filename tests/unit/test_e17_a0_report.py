@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import e17_a0_report as rep  # noqa: E402
+
 from ingestion import deribit_dvol as dv  # noqa: E402
 from model import implied_vol_band as ivb  # noqa: E402
 
@@ -31,13 +32,17 @@ def _write(cur, ts, close=60.0):
 
 
 def test_scoring_loader_never_returns_a_2026_value():
-    _write("BTC", pd.date_range("2025-12-31 20:00", "2026-01-01 03:00", freq="h", tz="UTC"))
+    _write(
+        "BTC", pd.date_range("2025-12-31 20:00", "2026-01-01 03:00", freq="h", tz="UTC")
+    )
     df = rep.load_dvol_for_scoring("BTC")
     assert df["ts"].max() == pd.Timestamp("2025-12-31 23:00", tz="UTC")
 
 
 def test_gap_report_returns_counts_only():
-    ts = pd.date_range(ivb.DVOL_FIRST, ivb.GAP_END, freq="h", tz="UTC", inclusive="left")
+    ts = pd.date_range(
+        ivb.DVOL_FIRST, ivb.GAP_END, freq="h", tz="UTC", inclusive="left"
+    )
     _write("BTC", ts.delete(slice(0, 100)))
     _write("ETH", ts)
     g = rep.gap_report()
@@ -46,7 +51,9 @@ def test_gap_report_returns_counts_only():
 
 
 def test_fetch_writes_the_cache_idempotently_with_a_fake_getter():
-    rows = [[dv.DVOL_START_MS + i * 3_600_000, 1.0, 1.0, 1.0, 50.0 + i] for i in range(5)][::-1]
+    rows = [
+        [dv.DVOL_START_MS + i * 3_600_000, 1.0, 1.0, 1.0, 50.0 + i] for i in range(5)
+    ][::-1]
 
     def get_json(url, params):
         return {"result": {"data": rows, "continuation": None}}

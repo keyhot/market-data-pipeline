@@ -9,7 +9,6 @@ from ingestion.liquidations import (
     SHORT,
     CoverageTracker,
     KrakenContract,
-    KrakenTrade,
     OkxContract,
     aggregate_kraken_minutes,
     kraken_contracts,
@@ -19,10 +18,10 @@ from ingestion.liquidations import (
     kraken_new_trades,
     okx_contracts,
     parse_binance,
+    parse_bybit,
     parse_kraken_history,
     parse_okx,
     parse_okx_data,
-    parse_bybit,
 )
 
 KRAKEN_FIXTURE = (
@@ -80,7 +79,9 @@ def test_binance_uses_filled_not_original_quantity():
 
 
 def test_binance_combined_stream_envelope_is_unwrapped():
-    wrapped = json.dumps({"stream": "!forceOrder@arr", "data": json.loads(BINANCE_FRAME)})
+    wrapped = json.dumps(
+        {"stream": "!forceOrder@arr", "data": json.loads(BINANCE_FRAME)}
+    )
     assert len(parse_binance(wrapped)) == 1
 
 
@@ -117,7 +118,9 @@ def test_okx_buy_liquidates_a_short_and_converts_contracts():
 
 def test_okx_side_not_possible_decides_the_liquidated_side():
     # One-way mode reports posSide "net"; the order side still decides it.
-    frame = OKX_FRAME.replace('"posSide":"short","side":"buy"', '"posSide":"net","side":"sell"')
+    frame = OKX_FRAME.replace(
+        '"posSide":"short","side":"buy"', '"posSide":"net","side":"sell"'
+    )
     _, (liq,) = parse_okx(frame, LINEAR)
     assert liq.side == LONG
 
@@ -163,7 +166,12 @@ def test_okx_rest_data_parses_like_ws_and_is_marked_rest():
 def test_okx_contracts_reads_the_instruments_payload():
     payload = {
         "data": [
-            {"instId": "BTC-USDT-SWAP", "ctVal": "0.01", "ctMult": "1", "ctType": "linear"},
+            {
+                "instId": "BTC-USDT-SWAP",
+                "ctVal": "0.01",
+                "ctMult": "1",
+                "ctType": "linear",
+            },
             {"instId": "BROKEN", "ctVal": "n/a"},
         ]
     }
@@ -200,18 +208,31 @@ def test_bybit_buy_is_a_liquidated_long():
 def test_all_three_venues_agree_on_a_liquidated_long():
     # One forced sale of a long, as each venue spells it.
     assert parse_binance(BINANCE_FRAME)[0].side == LONG  # order side SELL
-    frame = OKX_FRAME.replace('"posSide":"short","side":"buy"', '"posSide":"long","side":"sell"')
+    frame = OKX_FRAME.replace(
+        '"posSide":"short","side":"buy"', '"posSide":"long","side":"sell"'
+    )
     assert parse_okx(frame, LINEAR)[1][0].side == LONG  # order side sell
-    assert parse_bybit(BYBIT_FRAME.replace('"S":"Sell"', '"S":"Buy"'))[1][0].side == LONG
+    assert (
+        parse_bybit(BYBIT_FRAME.replace('"S":"Sell"', '"S":"Buy"'))[1][0].side == LONG
+    )
 
 
 @pytest.mark.parametrize(
     "frame,kind",
     [
         # Real acks, captured 2026-09-29.
-        ('{"success":true,"ret_msg":"","conn_id":"x","req_id":"","op":"subscribe"}', "subscribed"),
-        ('{"success":true,"ret_msg":"pong","conn_id":"x","req_id":"","op":"ping"}', "pong"),
-        ('{"success":false,"ret_msg":"error:handler not found","op":"subscribe"}', "error"),
+        (
+            '{"success":true,"ret_msg":"","conn_id":"x","req_id":"","op":"subscribe"}',
+            "subscribed",
+        ),
+        (
+            '{"success":true,"ret_msg":"pong","conn_id":"x","req_id":"","op":"ping"}',
+            "pong",
+        ),
+        (
+            '{"success":false,"ret_msg":"error:handler not found","op":"subscribe"}',
+            "error",
+        ),
         ('{"topic":"tickers.BTCUSDT","data":{}}', "other"),
         ("garbage", "other"),
     ],
@@ -250,7 +271,9 @@ def test_parse_kraken_history_reads_every_real_row():
     assert first.side == "sell"
     assert first.price == pytest.approx(85360)
     assert first.size == pytest.approx(0.0005)
-    assert first.event_ts == datetime(2026, 10, 5, 15, 48, 56, 419439, tzinfo=timezone.utc)
+    assert first.event_ts == datetime(
+        2026, 10, 5, 15, 48, 56, 419439, tzinfo=timezone.utc
+    )
 
 
 def test_parse_kraken_history_real_sample_has_no_liquidations():
@@ -290,7 +313,13 @@ def test_kraken_trade_id_is_not_stable_across_the_window():
     "row",
     [
         {"time": "not-a-time", "uid": "x", "price": "1", "size": "1", "side": "sell"},
-        {"time": "2026-10-05T00:00:00Z", "uid": "x", "price": "bad", "size": "1", "side": "sell"},
+        {
+            "time": "2026-10-05T00:00:00Z",
+            "uid": "x",
+            "price": "bad",
+            "size": "1",
+            "side": "sell",
+        },
         {"uid": "x", "price": "1", "size": "1", "side": "sell"},  # missing time
     ],
 )
@@ -368,8 +397,12 @@ def test_kraken_gap_true_when_more_than_a_window_landed_between_polls():
 def test_kraken_contracts_reads_the_real_instruments_fixture():
     payload = json.loads(KRAKEN_INSTRUMENTS_FIXTURE.read_text())
     contracts = kraken_contracts(payload)
-    assert contracts["PF_XBTUSD"] == KrakenContract(contract_size=1.0, kind="flexible_futures")
-    assert contracts["PF_ETHUSD"] == KrakenContract(contract_size=1.0, kind="flexible_futures")
+    assert contracts["PF_XBTUSD"] == KrakenContract(
+        contract_size=1.0, kind="flexible_futures"
+    )
+    assert contracts["PF_ETHUSD"] == KrakenContract(
+        contract_size=1.0, kind="flexible_futures"
+    )
 
 
 def test_kraken_contracts_drops_malformed_rows():
@@ -417,9 +450,30 @@ def test_aggregate_kraken_minutes_groups_by_symbol_and_minute():
 
 def test_aggregate_kraken_minutes_near_wick_size_within_tolerance():
     rows = [
-        {"time": "2026-01-01T00:00:00Z", "uid": "a", "price": 100.0, "size": 1.0, "side": "sell", "type": "fill"},
-        {"time": "2026-01-01T00:00:01Z", "uid": "b", "price": 100.019, "size": 2.0, "side": "sell", "type": "fill"},  # ~1.9bps from 100
-        {"time": "2026-01-01T00:00:02Z", "uid": "c", "price": 110.0, "size": 3.0, "side": "sell", "type": "fill"},  # far from min, is the max
+        {
+            "time": "2026-01-01T00:00:00Z",
+            "uid": "a",
+            "price": 100.0,
+            "size": 1.0,
+            "side": "sell",
+            "type": "fill",
+        },
+        {
+            "time": "2026-01-01T00:00:01Z",
+            "uid": "b",
+            "price": 100.019,
+            "size": 2.0,
+            "side": "sell",
+            "type": "fill",
+        },  # ~1.9bps from 100
+        {
+            "time": "2026-01-01T00:00:02Z",
+            "uid": "c",
+            "price": 110.0,
+            "size": 3.0,
+            "side": "sell",
+            "type": "fill",
+        },  # far from min, is the max
     ]
     trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
     (agg,) = aggregate_kraken_minutes(trades)
@@ -433,8 +487,22 @@ def test_aggregate_kraken_minutes_near_wick_size_within_tolerance():
 
 def test_aggregate_kraken_minutes_counts_liquidation_rows_separately():
     rows = [
-        {"time": "2026-01-01T00:00:00Z", "uid": "a", "price": 100.0, "size": 1.0, "side": "sell", "type": "fill"},
-        {"time": "2026-01-01T00:00:01Z", "uid": "b", "price": 99.0, "size": 2.0, "side": "sell", "type": "liquidation"},
+        {
+            "time": "2026-01-01T00:00:00Z",
+            "uid": "a",
+            "price": 100.0,
+            "size": 1.0,
+            "side": "sell",
+            "type": "fill",
+        },
+        {
+            "time": "2026-01-01T00:00:01Z",
+            "uid": "b",
+            "price": 99.0,
+            "size": 2.0,
+            "side": "sell",
+            "type": "liquidation",
+        },
     ]
     trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
     (agg,) = aggregate_kraken_minutes(trades)
@@ -482,8 +550,22 @@ def test_kraken_coverage_minutes_claims_the_minute_the_last_poll_left_open():
     # "minute after last_ts" rule skipped it, and on a market that prints
     # every minute that skipped every minute.
     rows = [
-        {"time": "2026-01-01T00:00:30Z", "uid": "a", "price": 1, "size": 1, "side": "sell", "type": "fill"},
-        {"time": "2026-01-01T00:05:10Z", "uid": "b", "price": 1, "size": 1, "side": "sell", "type": "fill"},
+        {
+            "time": "2026-01-01T00:00:30Z",
+            "uid": "a",
+            "price": 1,
+            "size": 1,
+            "side": "sell",
+            "type": "fill",
+        },
+        {
+            "time": "2026-01-01T00:05:10Z",
+            "uid": "b",
+            "price": 1,
+            "size": 1,
+            "side": "sell",
+            "type": "fill",
+        },
     ]
     trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
     base = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
@@ -501,7 +583,14 @@ def test_kraken_coverage_minutes_claims_the_minute_the_last_poll_left_open():
 
 def test_kraken_coverage_minutes_marks_the_whole_stretch_uncovered_on_a_gap():
     rows = [
-        {"time": "2026-01-01T00:03:00Z", "uid": "a", "price": 1, "size": 1, "side": "sell", "type": "fill"},
+        {
+            "time": "2026-01-01T00:03:00Z",
+            "uid": "a",
+            "price": 1,
+            "size": 1,
+            "side": "sell",
+            "type": "fill",
+        },
     ]
     trades = parse_kraken_history({"history": rows}, "PF_XBTUSD")
     base = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())

@@ -64,8 +64,12 @@ def test_columns_and_utc_candle_start_timestamps():
 
 def test_merge_is_idempotent_and_new_rows_win_on_overlap():
     ts = pd.date_range("2021-03-24", periods=4, freq="h", tz="UTC")
-    a = pd.DataFrame({"ts": ts[:3], "open": 1.0, "high": 1.0, "low": 1.0, "close": [1.0, 2.0, 3.0]})
-    b = pd.DataFrame({"ts": ts[2:], "open": 1.0, "high": 1.0, "low": 1.0, "close": [30.0, 4.0]})
+    a = pd.DataFrame(
+        {"ts": ts[:3], "open": 1.0, "high": 1.0, "low": 1.0, "close": [1.0, 2.0, 3.0]}
+    )
+    b = pd.DataFrame(
+        {"ts": ts[2:], "open": 1.0, "high": 1.0, "low": 1.0, "close": [30.0, 4.0]}
+    )
     m = dv.merge_dvol(a, b)
     assert list(m["close"]) == [1.0, 2.0, 30.0, 4.0]
     pd.testing.assert_frame_equal(dv.merge_dvol(m, b), m)
@@ -74,7 +78,9 @@ def test_merge_is_idempotent_and_new_rows_win_on_overlap():
 
 def test_csv_roundtrip(tmp_path):
     ts = pd.date_range("2021-03-24", periods=3, freq="h", tz="UTC")
-    df = pd.DataFrame({"ts": ts, "open": 1.0, "high": 2.0, "low": 0.5, "close": [1.0, 2.0, 3.0]})
+    df = pd.DataFrame(
+        {"ts": ts, "open": 1.0, "high": 2.0, "low": 0.5, "close": [1.0, 2.0, 3.0]}
+    )
     path = tmp_path / "dvol" / "BTC_1h.csv"
     dv.save_dvol_csv(df, path)
     pd.testing.assert_frame_equal(dv.load_dvol_csv(path), df)

@@ -24,8 +24,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import cross_section_report as csr  # noqa: E402
-import model.cross_section as mcs  # noqa: E402
 
+import model.cross_section as mcs  # noqa: E402
 
 # ------------------------------------------------------------------ pass_rule
 
@@ -153,7 +153,9 @@ def test_last_beta_excludes_rows_on_or_after_refit_and_rounds():
     `fit_ridge` (in `model.cross_section`, untouched here) is monkeypatched
     to capture its input and return a known coefficient vector, so the row
     count and the 4-dp rounding are both pinned without needing a real fit."""
-    idx = pd.date_range("2025-11-25", periods=10, freq="D", tz="UTC")  # spans the cutoff
+    idx = pd.date_range(
+        "2025-11-25", periods=10, freq="D", tz="UTC"
+    )  # spans the cutoff
     cols = ["A", "B"]
     rng = np.random.default_rng(1)
     feats = {

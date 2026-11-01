@@ -39,7 +39,9 @@ def test_bars_404_when_nothing_stored():
 
 
 def test_bars_503_when_postgres_unreachable():
-    with patch("api.routers.stored.get_price_bars", side_effect=RuntimeError("db down")):
+    with patch(
+        "api.routers.stored.get_price_bars", side_effect=RuntimeError("db down")
+    ):
         response = client.get("/bars/AAPL")
 
     assert response.status_code == 503

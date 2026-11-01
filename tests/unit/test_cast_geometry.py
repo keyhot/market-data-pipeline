@@ -13,7 +13,6 @@ file deliberately does not pretend otherwise: no assertion here grades whether
 the room looks right.
 """
 
-from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 import dataclasses
 import json
 import re
@@ -22,9 +21,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-from world.plate import load_manifest
 from world_node import run_world
+
+from api.templating import world_page_source
+from world.plate import load_manifest
 
 WORLD_TEMPLATE = (
     Path(__file__).resolve().parents[2] / "api" / "templates" / "world.html"
@@ -238,7 +238,7 @@ for (const style of Object.keys(BODIES)) {
   heights[style] = bottom - top;
 }
 console.log(JSON.stringify(heights));
-'''
+'''  # noqa: E501
 
 
 def _page_const(name: str) -> str:
@@ -344,7 +344,9 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
         re.search(rf"^    function {name}\(.*?^    \}}$", source, re.S | re.M)
         for name in ("seatOccluderFor", "occludeBehindSeat")
     ]
-    assert all(blocks), "the page no longer declares the seat occluder at one indent level"
+    assert all(blocks), (
+        "the page no longer declares the seat occluder at one indent level"
+    )
     return _node(
         f"const PAINTED_CAST = {json.dumps(painted_cast)};\n"
         f"const plateReady = {json.dumps(plate_ready)};\n"
@@ -354,7 +356,8 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
         const path = [];
         const ctx = { beginPath() {}, closePath() {}, fill() { path.push("fill"); },
                       moveTo(x, y) { path.push([x, y]); }, lineTo(x, y) { path.push([x, y]); } };
-        const document = { createElement: () => ({ getContext: () => ctx }) };
+"""  # noqa: E501
+        + """        const document = { createElement: () => ({ getContext: () => ctx }) };
         class FakeGraphics {}
         class FakeSprite { constructor(texture) { this.texture = texture; } }
         const PIXI = {
@@ -369,7 +372,7 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
         });
         const accents = [bone("thigh", false), bone("shin", true),
                          bone("shoe", true), bone("arm", undefined)];
-        """
+        """  # noqa: E501
         + "\n".join(b.group(0) for b in blocks)
         + """
         const count = occludeBehindSeat("trader", accents);
@@ -385,7 +388,7 @@ def _occlude_run(painted_cast, plate_ready: bool = True, throw: bool = False):
           size: added.length ? [added[0].texture.canvas.width, added[0].texture.canvas.height] : null,
           path,
         }));
-        """
+        """  # noqa: E501
     )
 
 

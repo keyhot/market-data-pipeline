@@ -50,16 +50,26 @@ def _parse_backup_stamp(stamp: str) -> datetime:
 def check_backup(status: dict | None, now: datetime) -> Check:
     """KI-049: `backups/last_status.json` as backup_postgres.sh writes it."""
     if status is None:
-        return Check("backup", True, "no backup status file — has the nightly backup ever run?")
+        return Check(
+            "backup", True, "no backup status file — has the nightly backup ever run?"
+        )
     if not status.get("ok"):
         return Check("backup", True, f"last backup FAILED: {status.get('error')}")
     try:
         taken = _parse_backup_stamp(str(status.get("stamp")))
     except ValueError:
-        return Check("backup", True, f"backup status has an unreadable stamp {status.get('stamp')!r}")
+        return Check(
+            "backup",
+            True,
+            f"backup status has an unreadable stamp {status.get('stamp')!r}",
+        )
     age = now - taken
     if age > BACKUP_MAX_AGE:
-        return Check("backup", True, f"newest verified backup is {age.total_seconds() / 3600:.1f}h old")
+        return Check(
+            "backup",
+            True,
+            f"newest verified backup is {age.total_seconds() / 3600:.1f}h old",
+        )
     return Check("backup", False, f"backup ok ({status.get('stamp')})")
 
 
@@ -93,14 +103,20 @@ def check_broadcast(status: dict | None, now: datetime) -> Check:
     from broadcast.service import REFUSED_TRANSITION_ALERT_AT
 
     if status is None:
-        return Check("broadcast", True, "broadcast manager has written no status — is it running?")
+        return Check(
+            "broadcast",
+            True,
+            "broadcast manager has written no status — is it running?",
+        )
     try:
         updated = datetime.fromisoformat(str(status.get("updated_at")))
     except ValueError:
         return Check("broadcast", True, "broadcast status has an unreadable timestamp")
     if now - updated > BROADCAST_STALE_AFTER:
         minutes = (now - updated).total_seconds() / 60
-        return Check("broadcast", True, f"broadcast manager last ticked {minutes:.0f} min ago")
+        return Check(
+            "broadcast", True, f"broadcast manager last ticked {minutes:.0f} min ago"
+        )
     refused = int(status.get("refused_transitions") or 0)
     if refused >= REFUSED_TRANSITION_ALERT_AT:
         return Check(
@@ -111,7 +127,9 @@ def check_broadcast(status: dict | None, now: datetime) -> Check:
         )
     failures = int(status.get("consecutive_tick_failures") or 0)
     if failures >= BROADCAST_TICK_FAILURES_AT:
-        return Check("broadcast", True, f"broadcast manager's last {failures} ticks failed")
+        return Check(
+            "broadcast", True, f"broadcast manager's last {failures} ticks failed"
+        )
     return Check("broadcast", False, f"broadcast {status.get('lifecycle')}")
 
 
@@ -167,7 +185,12 @@ def decide(
 
 def render(alerts: list[Alert]) -> tuple[str, str]:
     """One email per run, however many checks changed."""
-    kinds = {"firing": "FIRING", "reminder": "STILL FAILING", "resolved": "RESOLVED", "gap": "GAP"}
+    kinds = {
+        "firing": "FIRING",
+        "reminder": "STILL FAILING",
+        "resolved": "RESOLVED",
+        "gap": "GAP",
+    }
     head = ", ".join(f"{kinds[a.kind]} {a.check}" for a in alerts)
     subject = f"[market-world] {head}"
     body = "\n".join(f"{kinds[a.kind]} — {a.check}: {a.summary}" for a in alerts)

@@ -22,7 +22,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import trend_report as tr  # noqa: E402
 
 
-def _write_spot_zip(directory: Path, symbol: str, interval: str, month: str, start_ms: int, n_days: int):
+def _write_spot_zip(
+    directory: Path, symbol: str, interval: str, month: str, start_ms: int, n_days: int
+):
     directory.mkdir(parents=True, exist_ok=True)
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -38,7 +40,9 @@ def _write_spot_zip(directory: Path, symbol: str, interval: str, month: str, sta
     return path
 
 
-def _write_funding_zip(directory: Path, symbol: str, month: str, start_ms: int, n_events: int):
+def _write_funding_zip(
+    directory: Path, symbol: str, month: str, start_ms: int, n_events: int
+):
     directory.mkdir(parents=True, exist_ok=True)
     lines = ["calc_time,funding_interval_hours,last_funding_rate"]
     step_ms = 8 * 3_600_000
@@ -55,18 +59,52 @@ def archive(tmp_path):
     root = tmp_path / "archive"
     dec_2025_ms = int(pd.Timestamp("2025-12-01", tz="UTC").timestamp() * 1000)
     jan_2026_ms = int(pd.Timestamp("2026-01-01", tz="UTC").timestamp() * 1000)
-    _write_spot_zip(root / "binance_spot" / "klines" / "BTCUSDT" / "1d", "BTCUSDT", "1d",
-                    "2025-12", dec_2025_ms, 31)
-    _write_spot_zip(root / "binance_spot" / "klines" / "BTCUSDT" / "1d", "BTCUSDT", "1d",
-                    "2026-01", jan_2026_ms, 10)
-    _write_spot_zip(root / "binance_um" / "monthly" / "klines" / "BTCUSDT" / "1d", "BTCUSDT", "1d",
-                    "2025-12", dec_2025_ms, 31)
-    _write_spot_zip(root / "binance_um" / "monthly" / "klines" / "BTCUSDT" / "1d", "BTCUSDT", "1d",
-                    "2026-01", jan_2026_ms, 10)
-    _write_funding_zip(root / "binance_um" / "monthly" / "fundingRate" / "BTCUSDT", "BTCUSDT",
-                       "2025-12", dec_2025_ms, 93)
-    _write_funding_zip(root / "binance_um" / "monthly" / "fundingRate" / "BTCUSDT", "BTCUSDT",
-                       "2026-01", jan_2026_ms, 30)
+    _write_spot_zip(
+        root / "binance_spot" / "klines" / "BTCUSDT" / "1d",
+        "BTCUSDT",
+        "1d",
+        "2025-12",
+        dec_2025_ms,
+        31,
+    )
+    _write_spot_zip(
+        root / "binance_spot" / "klines" / "BTCUSDT" / "1d",
+        "BTCUSDT",
+        "1d",
+        "2026-01",
+        jan_2026_ms,
+        10,
+    )
+    _write_spot_zip(
+        root / "binance_um" / "monthly" / "klines" / "BTCUSDT" / "1d",
+        "BTCUSDT",
+        "1d",
+        "2025-12",
+        dec_2025_ms,
+        31,
+    )
+    _write_spot_zip(
+        root / "binance_um" / "monthly" / "klines" / "BTCUSDT" / "1d",
+        "BTCUSDT",
+        "1d",
+        "2026-01",
+        jan_2026_ms,
+        10,
+    )
+    _write_funding_zip(
+        root / "binance_um" / "monthly" / "fundingRate" / "BTCUSDT",
+        "BTCUSDT",
+        "2025-12",
+        dec_2025_ms,
+        93,
+    )
+    _write_funding_zip(
+        root / "binance_um" / "monthly" / "fundingRate" / "BTCUSDT",
+        "BTCUSDT",
+        "2026-01",
+        jan_2026_ms,
+        30,
+    )
     return root
 
 
@@ -205,13 +243,19 @@ def _synthetic_stage_b_universe(seed=1, warmup_months=48, hold_months=24,
     for _m in range(n_months):
         mu = {}
         for s in symbols:
-            trailing = (np.prod([1 + x for x in hist[s][-12:]]) - 1) if len(hist[s]) >= 12 else 0.0
+            trailing = (
+                (np.prod([1 + x for x in hist[s][-12:]]) - 1)
+                if len(hist[s]) >= 12
+                else 0.0
+            )
             mu[s] = 0.3 * sigma_m * np.sign(trailing) if trailing != 0 else 0.0
         z1 = rng.normal(0, 1, 30)
         z2 = rng.normal(0, 1, 30)
         d = {}
         d[symbols[0]] = mu[symbols[0]] / 30 + (sigma_m / np.sqrt(30)) * z1
-        d[symbols[1]] = mu[symbols[1]] / 30 + (sigma_m / np.sqrt(30)) * (rho * z1 + np.sqrt(1 - rho ** 2) * z2)
+        d[symbols[1]] = mu[symbols[1]] / 30 + (sigma_m / np.sqrt(30)) * (
+            rho * z1 + np.sqrt(1 - rho**2) * z2
+        )
         for i in range(30):
             for s in symbols:
                 price[s] *= (1 + d[s][i])
@@ -227,7 +271,9 @@ def _synthetic_stage_b_universe(seed=1, warmup_months=48, hold_months=24,
     spot_daily = pd.DataFrame(prices, index=idx)[list(symbols)]
     perp_daily = pd.DataFrame(perp_prices, index=idx)[list(symbols)]
 
-    month_grid = pd.date_range(idx[0].normalize(), idx[-1].normalize(), freq="MS", tz="UTC")
+    month_grid = pd.date_range(
+        idx[0].normalize(), idx[-1].normalize(), freq="MS", tz="UTC"
+    )
     decision_times = month_grid[warmup_months:warmup_months + hold_months]
     hold_index = decision_times + pd.DateOffset(months=1)
 
@@ -237,7 +283,9 @@ def _synthetic_stage_b_universe(seed=1, warmup_months=48, hold_months=24,
     price_ret = tr.monthly_returns(perp_month_closes)
     funding_daily = pd.DataFrame(0.0, index=idx, columns=list(symbols))
     r_tilde = price_ret  # no funding in this synthetic world
-    events_by_symbol = {s: pd.DataFrame(columns=["symbol", "time", "rate"]) for s in symbols}
+    events_by_symbol = {
+        s: pd.DataFrame(columns=["symbol", "time", "rate"]) for s in symbols
+    }
 
     return (spot_daily, perp_daily, perp_month_closes, events_by_symbol,
             funding_daily, price_ret, r_tilde, decision_times, hold_index)
@@ -269,10 +317,22 @@ def test_run_stage_b_end_to_end_wiring(monkeypatch, tmp_path):
                 "pass_95", "secondary_verdict", "secondary_mean_x", "secondary_mean_d",
                 "e_bar", "mean_gross_exposure", "capped_months",
                 "turnover_per_year", "total_funding_paid"]) <= set(result["statistic"])
-    assert set(["x", "d", "median_x", "median_d", "secondary_x", "secondary_d"]) <= set(result["ci"])
-    assert set(["per_symbol_x", "per_symbol_d", "net_sharpe", "drawdown_and_es_90",
-                "total_return_null_form", "per_year_x", "per_year_d",
-                "surprise_rule_triggered", "one_sided_lower_bounds"]) <= set(result["extra"])
+    assert set(["x", "d", "median_x", "median_d", "secondary_x", "secondary_d"]) <= set(
+        result["ci"]
+    )
+    assert set(
+        [
+            "per_symbol_x",
+            "per_symbol_d",
+            "net_sharpe",
+            "drawdown_and_es_90",
+            "total_return_null_form",
+            "per_year_x",
+            "per_year_d",
+            "surprise_rule_triggered",
+            "one_sided_lower_bounds",
+        ]
+    ) <= set(result["extra"])
 
 
 def test_run_stage_b_one_sided_bounds_present_amendment1(monkeypatch, tmp_path):
@@ -301,7 +361,8 @@ def test_run_stage_b_verdict_matches_primary_verdict_function(monkeypatch, tmp_p
 def test_run_stage_b_secondary_verdict_matches_function(monkeypatch, tmp_path):
     verdict, statistic, result = _run_synthetic_stage_b(monkeypatch, tmp_path)
     assert result["statistic"]["secondary_verdict"] == tr.trend.primary_verdict(
-        result["statistic"]["secondary_mean_x"], result["statistic"]["secondary_mean_d"])
+        result["statistic"]["secondary_mean_x"], result["statistic"]["secondary_mean_d"]
+    )
 
 
 def test_run_stage_b_pass_95_matches_function(monkeypatch, tmp_path):
@@ -337,8 +398,12 @@ def test_run_stage_b_secondary_scored_on_spot_not_perp(monkeypatch, tmp_path):
     costs -- not on the perp series the primary condition uses. Giving the
     perp series a large extra drift the spot series never sees must not
     move the secondary's numbers."""
-    _v1, _s1, baseline = _run_synthetic_stage_b(monkeypatch, tmp_path, perp_extra_drift=0.0)
-    _v2, _s2, shifted = _run_synthetic_stage_b(monkeypatch, tmp_path, perp_extra_drift=0.01)
+    _v1, _s1, baseline = _run_synthetic_stage_b(
+        monkeypatch, tmp_path, perp_extra_drift=0.0
+    )
+    _v2, _s2, shifted = _run_synthetic_stage_b(
+        monkeypatch, tmp_path, perp_extra_drift=0.01
+    )
 
     assert shifted["statistic"]["secondary_mean_x"] == pytest.approx(
         baseline["statistic"]["secondary_mean_x"], abs=1e-12)
@@ -350,7 +415,9 @@ def test_run_stage_b_secondary_scored_on_spot_not_perp(monkeypatch, tmp_path):
         baseline["statistic"]["mean_d"], abs=1e-9)
 
 
-def test_run_stage_b_x_uses_null_reference_d_uses_control_reference(monkeypatch, tmp_path):
+def test_run_stage_b_x_uses_null_reference_d_uses_control_reference(
+    monkeypatch, tmp_path
+):
     """KI-094: x's reference must be the candidate's own signed-exposure
     null N, d's must be the +1 control R+. `primary_verdict` is symmetric
     in its two arguments, so a mutant that swaps `conditions()`'s N_c/R_plus

@@ -6,12 +6,21 @@ import pytest
 
 from ingestion.liquidation_recorder import Buffer, LiquidationRecorder, recorder_enabled
 from ingestion.liquidations import KrakenContract, parse_binance
-from tests.unit.test_liquidations import BINANCE_FRAME, BYBIT_FRAME, KRAKEN_PAYLOAD, OKX_FRAME
+from tests.unit.test_liquidations import (
+    BINANCE_FRAME,
+    BYBIT_FRAME,
+    KRAKEN_PAYLOAD,
+    OKX_FRAME,
+)
 
 T0 = 1_790_650_800  # a whole minute
 
-OKX_SUBSCRIBED = '{"event":"subscribe","arg":{"channel":"liquidation-orders","instType":"SWAP"}}'
-BYBIT_SUBSCRIBED = '{"success":true,"ret_msg":"","conn_id":"x","req_id":"","op":"subscribe"}'
+OKX_SUBSCRIBED = (
+    '{"event":"subscribe","arg":{"channel":"liquidation-orders","instType":"SWAP"}}'
+)
+BYBIT_SUBSCRIBED = (
+    '{"success":true,"ret_msg":"","conn_id":"x","req_id":"","op":"subscribe"}'
+)
 BYBIT_PONG = '{"success":true,"ret_msg":"pong","conn_id":"x","req_id":"","op":"ping"}'
 
 
@@ -34,7 +43,12 @@ class Sink:
         if self.fail:
             raise ConnectionError("postgres down")
         self.batches.append(
-            (list(liquidations), list(coverage), list(kraken_minutes), list(kraken_coverage))
+            (
+                list(liquidations),
+                list(coverage),
+                list(kraken_minutes),
+                list(kraken_coverage),
+            )
         )
 
 
@@ -83,7 +97,9 @@ def test_a_row_arriving_during_a_failed_write_is_kept_with_the_batch():
     gate = threading.Event()
 
     class SlowFailingSink(Sink):
-        def __call__(self, liquidations, coverage, kraken_minutes=(), kraken_coverage=()):
+        def __call__(
+            self, liquidations, coverage, kraken_minutes=(), kraken_coverage=()
+        ):
             gate.wait(5)
             super().__call__(liquidations, coverage, kraken_minutes, kraken_coverage)
 
@@ -287,7 +303,9 @@ def test_process_kraken_response_does_not_double_count_a_minute_seen_twice():
 
 def test_process_kraken_response_writes_kraken_coverage_once_last_ts_exists():
     recorder, _ = _recorder()
-    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)  # first poll: no last_ts yet
+    recorder.process_kraken_response(
+        "PF_XBTUSD", KRAKEN_PAYLOAD
+    )  # first poll: no last_ts yet
     assert recorder.buffer.kraken_coverage == []
     later_row = {
         **KRAKEN_PAYLOAD["history"][-1],
@@ -374,7 +392,9 @@ def _kraken_rows(seconds):
     return {
         "history": [
             {
-                "time": (_KBASE + timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                "time": (_KBASE + timedelta(seconds=s)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.%fZ"
+                ),
                 "uid": f"u{s}",
                 "price": 100.0,
                 "size": 1.0,
@@ -395,7 +415,7 @@ def _kraken_coverage_by_minute(recorder, symbol):
     ]
 
 
-def test_kraken_coverage_claims_every_whole_minute_on_a_market_that_prints_every_minute():
+def test_kraken_coverage_claims_every_whole_minute_on_a_market_that_prints_every_minute():  # noqa: E501
     recorder, _ = _recorder()
     trade_times = [s * 2 for s in range(0, 121)]  # a print every 2s, 00:00:00..00:04:00
     for poll_at in range(5, 241, 5):  # a poll every 5s
@@ -413,7 +433,7 @@ def test_kraken_coverage_claims_every_whole_minute_on_a_market_that_prints_every
         ]
 
 
-def test_kraken_gap_whose_lost_trades_fall_in_the_newest_minute_is_never_claimed_covered():
+def test_kraken_gap_whose_lost_trades_fall_in_the_newest_minute_is_never_claimed_covered():  # noqa: E501
     # The live gap shape (last_ts 03:32:58 -> oldest_in_window 03:33:00.8):
     # the lost stretch reaches into the window's own newest, still-open
     # minute, so that minute must be written false and never re-claimed.
