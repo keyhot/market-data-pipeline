@@ -11,11 +11,15 @@ writer, and everything else is pure.
 
 import asyncio
 import json
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ingestion.liquidation_recorder import LiquidationRecorder
+from ingestion.liquidation_recorder import (
+    KRAKEN_SEEN_UID_CAP,
+    LiquidationRecorder,
+)
 from ingestion.liquidations import CoverageTracker, parse_okx, parse_okx_data
 from tests.unit.test_liquidation_recorder import (
     BYBIT_SUBSCRIBED,
@@ -252,3 +256,108 @@ def test_a_pong_that_restarts_the_chain_mid_second_does_not_claim_its_minute(ven
     _pongs(recorder, clock, venue, T0 + 70.5, T0 + 120.5)
     assert _flush(recorder)
     assert _coverage_written(sink) == [(venue, T0 + 60, 0)]
+
+
+# --- F6: the uid dedupe window was only pinned against an 8-row fixture ---------
+#
+# `_kraken_seen_uids` keeps the last KRAKEN_SEEN_UID_CAP uids so a window that
+# the API returns again is not folded into the minute aggregate twice
+# (liquidation_recorder.py:98, :138). The history endpoint returns up to 100
+# rows, so the cap MUST hold at least one full window. The existing dedupe test
+# polls an 8-row fixture twice, so any cap >= 8 passed (S4: cap 50 was green).
+# The aggregate is written by an ADDITIVE upsert (storage/liquidation_store.py:
+# 57-69), so a re-folded trade silently inflates trade_count and total_size.
+#
+# What is pinned: a 100-row window never double-counts, however it slides, and
+# the set stays bounded. What is NOT pinned: the value 400 itself (a margin of
+# four windows is a choice, not a correctness boundary; see the audit note).
+
+KBASE = datetime(2026, 10, 6, 1, 0, 0, tzinfo=UTC)
+API_WINDOW = 100  # rows per history response (liquidations.py:28)
+
+
+def _kraken_trade_at(i):
+    when = KBASE + timedelta(seconds=0.37 + 0.9 * i)  # sub-second, 2 minutes / 134
+    return {
+        "time": when.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "uid": f"t{i:05d}",
+        "price": 100.0 + i % 7,
+        "size": 1.0,
+        "side": "buy",
+        "type": "fill",
+    }
+
+
+def _truth_by_minute(indices):
+    """{minute: trade count}, from the test's own arithmetic (no production)."""
+    out = Counter()
+    for i in indices:
+        when = KBASE + timedelta(seconds=0.37 + 0.9 * i)
+        out[int(when.replace(second=0, microsecond=0).timestamp())] += 1
+    return out
+
+
+def _window(end):
+    """The API's answer when trades 0..end-1 exist: newest first, <= 100 rows."""
+    newest_first = reversed(range(max(0, end - API_WINDOW), end))
+    return {"history": [_kraken_trade_at(i) for i in newest_first]}
+
+
+def _folded_by_minute(recorder, symbol="PF_XBTUSD"):
+    out = Counter()
+    for agg in recorder.buffer.kraken_minutes:
+        if agg.symbol == symbol:
+            out[agg.minute] += agg.trade_count
+    return out
+
+
+def _kraken_recorder():
+    return LiquidationRecorder(lambda *a, **k: None, clock=lambda: 1790650800.5)
+
+
+def test_a_full_100_row_window_polled_again_is_folded_once():
+    recorder = _kraken_recorder()
+    payload = _window(API_WINDOW)
+    assert len(payload["history"]) == API_WINDOW
+    for _ in range(3):
+        recorder.process_kraken_response("PF_XBTUSD", payload)
+    assert _folded_by_minute(recorder) == _truth_by_minute(range(API_WINDOW))
+    assert sum(_folded_by_minute(recorder).values()) == API_WINDOW
+
+
+def test_sliding_100_row_windows_fold_every_trade_exactly_once():
+    recorder = _kraken_recorder()
+    total = 260
+    ends = sorted(set(range(7, total + 1, 7)) | {total})
+    for end in ends:
+        recorder.process_kraken_response("PF_XBTUSD", _window(end))
+    assert recorder.kraken_gaps["PF_XBTUSD"] == 0  # the windows overlap: no gap
+    folded = _folded_by_minute(recorder)
+    assert folded == _truth_by_minute(range(total))
+    assert sum(folded.values()) == total
+    # The additive columns the upsert sums follow the same count.
+    assert sum(a.total_size for a in recorder.buffer.kraken_minutes) == pytest.approx(
+        float(total)
+    )
+
+
+def test_the_seen_set_is_bounded_and_always_holds_the_latest_window():
+    recorder = _kraken_recorder()
+    total = 10 * API_WINDOW
+    assert total > KRAKEN_SEEN_UID_CAP  # the loop below must overflow the cap
+    for end in range(API_WINDOW, total + 1, API_WINDOW):
+        recorder.process_kraken_response("PF_XBTUSD", _window(end))
+    seen = recorder._kraken_seen_uids["PF_XBTUSD"]
+    assert len(seen) == KRAKEN_SEEN_UID_CAP
+    latest = {row["uid"] for row in _window(total)["history"]}
+    assert latest <= set(seen)
+    assert sum(_folded_by_minute(recorder).values()) == total
+
+
+def test_each_symbol_keeps_its_own_seen_set():
+    recorder = _kraken_recorder()
+    payload = _window(API_WINDOW)
+    recorder.process_kraken_response("PF_XBTUSD", payload)
+    recorder.process_kraken_response("PF_ETHUSD", payload)  # same uids, other symbol
+    assert sum(_folded_by_minute(recorder, "PF_XBTUSD").values()) == API_WINDOW
+    assert sum(_folded_by_minute(recorder, "PF_ETHUSD").values()) == API_WINDOW
