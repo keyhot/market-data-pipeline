@@ -20,7 +20,14 @@ from ingestion.liquidation_recorder import (
     KRAKEN_SEEN_UID_CAP,
     LiquidationRecorder,
 )
-from ingestion.liquidations import CoverageTracker, parse_okx, parse_okx_data
+from ingestion.liquidations import (
+    KRAKEN_COVERAGE_MAX_MINUTES,
+    CoverageTracker,
+    kraken_coverage_minutes,
+    parse_kraken_history,
+    parse_okx,
+    parse_okx_data,
+)
 from tests.unit.test_liquidation_recorder import (
     BYBIT_SUBSCRIBED,
     OKX_SUBSCRIBED,
@@ -361,3 +368,101 @@ def test_each_symbol_keeps_its_own_seen_set():
     recorder.process_kraken_response("PF_ETHUSD", payload)  # same uids, other symbol
     assert sum(_folded_by_minute(recorder, "PF_XBTUSD").values()) == API_WINDOW
     assert sum(_folded_by_minute(recorder, "PF_ETHUSD").values()) == API_WINDOW
+
+
+# --- F7: the exact edge of the 1-day Kraken coverage cap was untested -----------
+#
+# `start_minute = max(next_minute, end_minute - KRAKEN_COVERAGE_MAX_MINUTES * 60)`
+# (liquidations.py:590) bounds one call to a day of coverage rows after a long
+# stall. The existing run-into-the-cap test (cursor in 2020) asserts only
+# `covered is False`, so `(KRAKEN_COVERAGE_MAX_MINUTES - 1) * 60` (S5), an
+# off-by-one the other way, or no cap at all would not show. The constant's
+# value is not pinned here (that is a policy choice); its use is: exactly
+# KRAKEN_COVERAGE_MAX_MINUTES whole minutes, ending at the minute before the
+# open one, and none beyond.
+
+KEND = datetime(2026, 1, 3, 12, 0, tzinfo=UTC)  # the newest trade's minute
+
+
+def _stamp(when):
+    return when.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _history(*whens):
+    rows = [
+        {
+            "time": _stamp(w),
+            "uid": f"c{n}",
+            "price": 1.0,
+            "size": 1.0,
+            "side": "buy",
+            "type": "fill",
+        }
+        for n, w in enumerate(sorted(whens, reverse=True))
+    ]
+    return {"history": rows}
+
+
+def _minute(offset_min):
+    return int((KEND + timedelta(minutes=offset_min)).timestamp())
+
+
+@pytest.mark.parametrize(
+    "back,rows",
+    [
+        (KRAKEN_COVERAGE_MAX_MINUTES - 1, KRAKEN_COVERAGE_MAX_MINUTES - 1),
+        (KRAKEN_COVERAGE_MAX_MINUTES, KRAKEN_COVERAGE_MAX_MINUTES),
+        (KRAKEN_COVERAGE_MAX_MINUTES + 1, KRAKEN_COVERAGE_MAX_MINUTES),
+        (36 * 60, KRAKEN_COVERAGE_MAX_MINUTES),
+        (365 * 24 * 60, KRAKEN_COVERAGE_MAX_MINUTES),
+    ],
+)
+def test_the_coverage_cap_keeps_exactly_the_newest_max_minutes(back, rows):
+    first = -rows  # minutes before the open minute; the newest row is -1
+    whens = [
+        KEND + timedelta(minutes=first, seconds=0.25),  # inside the first row
+        KEND + timedelta(minutes=first, seconds=-30.5),  # one minute too old
+        KEND - timedelta(seconds=0.1),  # inside the last row
+        KEND + timedelta(seconds=30.7),  # the open minute: never counted
+    ]
+    trades = parse_kraken_history(_history(*whens), "PF_XBTUSD")
+    out, cursor = kraken_coverage_minutes(_minute(-back), trades, False)
+    assert len(out) == rows
+    assert [m for m, _, _ in out] == [_minute(k) for k in range(first, 0)]
+    assert all(covered is True for _, covered, _ in out)
+    counts = [n for _, _, n in out]
+    assert counts[0] == 1 and counts[-1] == 1  # the two edge trades
+    assert sum(counts) == 2  # not the too-old one, not the open minute's
+    assert cursor == _minute(0)
+
+
+def test_the_coverage_cap_applies_to_a_gap_stretch_too():
+    # Stale last_ts: the whole stretch is written false, still only a day of it.
+    whens = [KEND - timedelta(seconds=90.4), KEND + timedelta(seconds=30.7)]
+    trades = parse_kraken_history(_history(*whens), "PF_XBTUSD")
+    back = 36 * 60
+    out, cursor = kraken_coverage_minutes(_minute(-back), trades, True)
+    assert len(out) == KRAKEN_COVERAGE_MAX_MINUTES
+    assert out[0][0] == _minute(-KRAKEN_COVERAGE_MAX_MINUTES)
+    assert out[-1][0] == _minute(-1)
+    assert all(covered is False for _, covered, _ in out)
+    assert cursor == _minute(0)
+
+
+def test_the_recorder_writes_a_capped_day_after_a_stall_and_moves_its_cursor():
+    recorder = _kraken_recorder()
+    stale = KEND - timedelta(hours=36)
+    recorder._kraken_last_ts["PF_XBTUSD"] = stale
+    recorder._kraken_cover_from["PF_XBTUSD"] = int(stale.timestamp())
+    recorder.process_kraken_response(
+        "PF_XBTUSD",
+        _history(KEND - timedelta(seconds=90.4), KEND + timedelta(seconds=30.7)),
+    )
+    assert recorder.kraken_gaps["PF_XBTUSD"] == 1
+    cover = recorder.buffer.kraken_coverage
+    assert len(cover) == KRAKEN_COVERAGE_MAX_MINUTES
+    assert {symbol for symbol, _, _, _ in cover} == {"PF_XBTUSD"}
+    assert cover[0][1] == _minute(-KRAKEN_COVERAGE_MAX_MINUTES)
+    assert cover[-1][1] == _minute(-1)
+    assert all(covered is False for _, _, covered, _ in cover)
+    assert recorder._kraken_cover_from["PF_XBTUSD"] == _minute(0)
