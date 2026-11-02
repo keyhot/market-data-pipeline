@@ -9,6 +9,7 @@ No database, no sockets: the recorder gets a fake clock and a list-collecting
 writer, and everything else is pure.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -16,7 +17,12 @@ import pytest
 
 from ingestion.liquidation_recorder import LiquidationRecorder
 from ingestion.liquidations import CoverageTracker, parse_okx, parse_okx_data
-from tests.unit.test_liquidations import LINEAR, OKX_FRAME
+from tests.unit.test_liquidation_recorder import (
+    BYBIT_SUBSCRIBED,
+    OKX_SUBSCRIBED,
+    Sink,
+)
+from tests.unit.test_liquidations import BINANCE_FRAME, LINEAR, OKX_FRAME
 
 UTC = timezone.utc
 T0 = 1_790_650_800  # a whole minute, as in the suite
@@ -136,3 +142,113 @@ def test_a_later_minute_obeys_the_same_threshold_to_the_sub_second():
     assert tracker.confirmed() == []
     tracker.proof(T0 + 120.001)
     assert tracker.confirmed() == [(T0 + 60, 0)]
+
+
+# --- F5: the fake clock only ever returned whole seconds ------------------------
+#
+# Every `clock.t` and `proof(...)` in the suite was `T0 +- int`; production uses
+# `time.time()`, always fractional. `CoverageTracker.proof` decides whether a
+# stretch starts mid-minute with `t % 60` (liquidations.py:644). Under `int(t)`
+# (S3a) a stretch starting at M+0.x looks like it starts exactly at M and
+# claims minute M, over-claiming a minute that was alive for < 1 s of it. The
+# recorder takes its time from `self._clock()` (liquidation_recorder.py:307 on
+# the acked-frame path, and the Binance and pong paths), so `int(self._clock())`
+# (S3b) hides behind a whole-second fake the same way.
+
+
+@pytest.mark.parametrize("offset", [0.001, 0.5, 0.999, 30.25, 59.999])
+def test_a_stretch_starting_inside_a_minute_first_confirms_the_next_whole_minute(
+    offset,
+):
+    tracker = _flowing_tracker()
+    _chain(tracker, T0 + offset, T0 + 131.0)  # last proof lands in T0+120..T0+130
+    assert tracker.last_proof >= T0 + 120
+    assert [m for m, _ in tracker.confirmed()] == [T0 + 60]
+
+
+@pytest.mark.parametrize("offset", [0.0, -0.001, -5.3])
+def test_a_stretch_alive_at_the_minute_start_claims_that_minute(offset):
+    tracker = _flowing_tracker()
+    _chain(tracker, T0 + offset, T0 + 70.0)  # last proof lands in T0+60..T0+70
+    assert tracker.last_proof >= T0 + 60
+    assert [m for m, _ in tracker.confirmed()] == [T0]
+
+
+def test_counts_at_fractional_receive_times_land_in_their_own_minute():
+    tracker = _flowing_tracker()
+    tracker.proof(T0 - 5.3)
+    tracker.count(T0 - 0.001)  # before the first claimed minute: not attributed
+    tracker.count(T0 + 59.999)
+    tracker.count(T0 + 60.0, 2)  # the next minute's first instant
+    tracker.count(T0 + 119.999, 4)
+    _chain(tracker, T0 + 4.4, T0 + 131.0)
+    assert tracker.confirmed() == [(T0, 1), (T0 + 60, 6)]
+
+
+class FractionalClock:
+    """Like time.time(): refuses to be read on a whole second."""
+
+    def __init__(self, t):
+        self.t = t
+
+    def __call__(self):
+        assert self.t != int(self.t), f"whole-second clock reading {self.t}"
+        return self.t
+
+
+def _fractional_recorder():
+    sink = Sink()
+    clock = FractionalClock(T0 - 100.3)
+    return LiquidationRecorder(sink, clock=clock), clock, sink
+
+
+OPENING_FRAME = {
+    "binance": lambda r: r.on_binance_frame(BINANCE_FRAME),
+    "okx": lambda r: r.on_okx_frame(OKX_SUBSCRIBED),
+    "bybit": lambda r: r.on_bybit_frame(BYBIT_SUBSCRIBED),
+}
+
+
+def _coverage_written(sink):
+    return [row for batch in sink.batches for row in batch[1]]
+
+
+def _flush(recorder):
+    return asyncio.run(recorder.flush())
+
+
+def _pongs(recorder, clock, venue, first, last, step=10.0):
+    t = first
+    while t <= last:
+        clock.t = t
+        recorder.on_pong(venue)
+        t += step
+
+
+@pytest.mark.parametrize("venue", sorted(OPENING_FRAME))
+def test_a_connection_opening_mid_second_does_not_claim_the_minute_it_opened_in(
+    venue,
+):
+    # The Sink must see no coverage for T0 (alive for 59.5 s of it) while the
+    # same timeline does hand over T0+60 once that has fully elapsed.
+    recorder, clock, sink = _fractional_recorder()
+    clock.t = T0 + 0.5
+    OPENING_FRAME[venue](recorder)
+    _pongs(recorder, clock, venue, T0 + 10.5, T0 + 60.5)
+    assert _flush(recorder)
+    assert _coverage_written(sink) == []
+    _pongs(recorder, clock, venue, T0 + 70.5, T0 + 120.5)
+    assert _flush(recorder)
+    assert _coverage_written(sink) == [(venue, T0 + 60, 0)]
+
+
+@pytest.mark.parametrize("venue", sorted(OPENING_FRAME))
+def test_a_pong_that_restarts_the_chain_mid_second_does_not_claim_its_minute(venue):
+    recorder, clock, sink = _fractional_recorder()
+    OPENING_FRAME[venue](recorder)  # a proof at T0-100.3
+    _pongs(recorder, clock, venue, T0 + 0.5, T0 + 60.5)  # > 30 s later: new stretch
+    assert _flush(recorder)
+    assert _coverage_written(sink) == []
+    _pongs(recorder, clock, venue, T0 + 70.5, T0 + 120.5)
+    assert _flush(recorder)
+    assert _coverage_written(sink) == [(venue, T0 + 60, 0)]
