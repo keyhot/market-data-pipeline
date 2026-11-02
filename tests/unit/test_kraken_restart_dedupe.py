@@ -23,20 +23,29 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import operator
 import re
 import socket
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import psycopg
 import pytest
-from psycopg.errors import UndefinedTable
+from psycopg.errors import (
+    InsufficientPrivilege,
+    QueryCanceled,
+    UndefinedColumn,
+    UndefinedTable,
+)
+from psycopg.pq import TransactionStatus
 
 import storage.db as storage_db
 import storage.liquidation_store as store_mod
 from ingestion.liquidation_recorder import KRAKEN_SEEN_UID_CAP, LiquidationRecorder
 from ingestion.liquidations import aggregate_kraken_minutes, parse_kraken_history
+from tests.unit.test_liquidations import BINANCE_FRAME
 
 SYM = "PF_XBTUSD"
 ETH = "PF_ETHUSD"
@@ -70,6 +79,15 @@ class _Conn:
     def __init__(self, pg):
         self.pg = pg
 
+    @property
+    def closed(self):
+        return self.pg.broken
+
+    @property
+    def info(self):
+        status = TransactionStatus.UNKNOWN if self.pg.broken else self.pg.status
+        return SimpleNamespace(transaction_status=status)
+
     @contextmanager
     def cursor(self):
         yield _Cursor(self.pg)
@@ -81,7 +99,11 @@ class _Conn:
         try:
             yield
         except BaseException:
-            self.pg.restore(saved)
+            if not self.pg.broken and self.pg.status != TransactionStatus.INERROR:
+                self.pg.restore(saved)  # ROLLBACK TO SAVEPOINT worked
+            # else psycopg's `_exit_gen` logs the failed rollback and lets the
+            # ORIGINAL error bubble up, with the connection or the transaction
+            # left unusable
             raise
 
     def execute(self, sql, params=()):
@@ -94,6 +116,9 @@ class FakePg:
     def __init__(self):
         self.state_table = True  # False: migrate_019 not applied
         self.down = False
+        self.broken = False  # the connection died (a hook sets it, then raises)
+        self.status = TransactionStatus.INTRANS  # INERROR: an aborted transaction
+        self.mono = 1000.0  # the store's monotonic clock (warning rate limit)
         self.before = None  # hook(sql): may raise, to cut a transaction in half
         self.minutes = {}
         self.coverage_kraken = {}
@@ -123,11 +148,18 @@ class FakePg:
         if self.down:
             raise psycopg.OperationalError("connection refused")
         saved = self.snapshot()
+        self.broken, self.status = False, TransactionStatus.INTRANS
         try:
             yield _Conn(self)
         except BaseException:
             self.restore(saved)  # the pool's rollback
             raise
+        if self.broken:
+            self.restore(saved)
+            raise psycopg.OperationalError("the connection is closed")
+        if self.status == TransactionStatus.INERROR:
+            # COMMIT of an aborted transaction is a ROLLBACK, and no error
+            self.restore(saved)
 
     def run(self, sql, params):
         if self.before:
@@ -213,6 +245,11 @@ class FakePg:
 def pg(monkeypatch):
     fake = FakePg()
     monkeypatch.setattr(store_mod, "get_pool", lambda: fake)
+    # The store rate-limits its fold-state warning on a monotonic clock. Each
+    # test gets a clean limiter and a clock it moves by hand (raising=False:
+    # these names do not exist on a store without the rate limit).
+    monkeypatch.setattr(store_mod, "_fold_state_last_warned", {}, raising=False)
+    monkeypatch.setattr(store_mod, "_monotonic", lambda: fake.mono, raising=False)
 
     def refuse(*args, **kwargs):
         raise AssertionError("a real database or socket was requested")
@@ -424,8 +461,11 @@ def test_a_failed_write_keeps_the_state_with_its_batch(pg):
 def test_the_state_lands_in_the_same_transaction_as_the_minutes(pg):
     # The connection dies on the state statement, AFTER the minute upserts
     # ran. Both must roll back together; the retry then applies the batch once.
+    # A dead connection cannot roll back to the savepoint either (`pg.broken`),
+    # which is what tells it apart from a refused state statement.
     def cut(sql):
         if "kraken_fold_state" in sql:
+            pg.broken = True
             raise psycopg.OperationalError("connection lost")
 
     a = _boot()
@@ -550,3 +590,271 @@ def test_polling_waits_for_the_state_and_the_first_window_is_not_recounted(
     assert history_after_loads and min(history_after_loads) >= 2
     assert len(history_after_loads) > 1  # the same window, polled again and again
     assert _stored(pg) == _expected(range(150))
+
+
+# === I1: trouble with the fold-state table must never block the core writes =========
+#
+# Review of the F10 fix, I1: only UndefinedTable was caught around the state
+# statement, so any other error on `kraken_fold_state` (permission denied, a
+# table with the wrong shape, a lock timeout) rolled back the whole batch,
+# every venue's rows included, and `write_batch` retried it forever.
+
+STATE_WARNING = "kraken_fold_state"
+FOLD_STATE_TROUBLE = {
+    "insufficient_privilege": lambda: InsufficientPrivilege(
+        'permission denied for table "kraken_fold_state"'
+    ),
+    "undefined_table": lambda: UndefinedTable(
+        'relation "kraken_fold_state" does not exist'
+    ),
+    "wrong_shape": lambda: UndefinedColumn(
+        'column "uids" of relation "kraken_fold_state" does not exist'
+    ),
+    "operational_error": lambda: psycopg.OperationalError(
+        "could not obtain lock on kraken_fold_state"
+    ),
+    "query_canceled": lambda: QueryCanceled(
+        "canceling statement due to statement timeout"
+    ),
+}
+all_fold_state_trouble = pytest.mark.parametrize(
+    "make_error", FOLD_STATE_TROUBLE.values(), ids=FOLD_STATE_TROUBLE.keys()
+)
+
+
+def _refuse_state(pg, make_error):
+    """Every statement on kraken_fold_state raises; the connection stays alive."""
+    attempts = []
+
+    def hook(sql):
+        if "kraken_fold_state" in sql:
+            attempts.append(sql)
+            raise make_error()
+
+    pg.before = hook
+    return attempts
+
+
+def _pending(recorder):
+    b = recorder.buffer
+    return (
+        b.liquidations
+        or b.coverage
+        or b.kraken_coverage
+        or b.kraken_minutes
+        or b.kraken_seen
+    )
+
+
+def _state_warnings(caplog):
+    return [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and STATE_WARNING in r.getMessage()
+    ]
+
+
+def _write_failures(caplog):
+    return [r for r in caplog.records if "write failed" in r.getMessage()]
+
+
+@all_fold_state_trouble
+def test_a_fold_state_error_does_not_block_the_core_writes(pg, caplog, make_error):
+    a = _boot()
+    a.on_binance_frame(BINANCE_FRAME)  # another venue's row, same transaction
+    _poll(a, 0, 100)
+    attempts = _refuse_state(pg, make_error)
+
+    with caplog.at_level(logging.WARNING):
+        assert _flush(a) is True  # the batch landed: it is not retried
+    assert len(attempts) == 1
+    assert not _pending(a)  # nothing is waiting for a retry
+    assert not _write_failures(caplog)
+    assert {r["venue"] for r in pg.liquidations.values()} == {"binance", "kraken"}
+    assert _stored(pg) == _expected(range(100))  # the minute upsert too
+    assert pg.fold_state == {}  # only the state was undone
+
+    assert _flush(a) is True  # and nothing was left over to write again
+    assert len(attempts) == 1
+    assert _stored(pg) == _expected(range(100))
+
+
+@all_fold_state_trouble
+def test_a_fold_state_error_is_warned_once_not_on_every_poll(pg, caplog, make_error):
+    a = _boot()
+    _refuse_state(pg, make_error)
+
+    with caplog.at_level(logging.WARNING):
+        for lo in (0, 100, 200):  # three flushes, each with a fresh fold
+            _poll(a, lo, lo + 100)
+            assert _flush(a) is True
+        assert len(_state_warnings(caplog)) == 1
+        assert _stored(pg) == _expected(range(300))
+
+        pg.mono += 3600  # long after the limiter's window
+        _poll(a, 300, 400)
+        assert _flush(a) is True
+        assert len(_state_warnings(caplog)) == 2
+    assert not _write_failures(caplog)
+
+
+@all_fold_state_trouble
+def test_after_a_fold_state_error_the_process_still_dedupes_in_memory(
+    pg, make_error
+):
+    # The fallback is the in-process uid set, which never needed the table:
+    # the same window polled again is not counted again. (A restart in this
+    # state double counts again: the old behaviour the fix accepts.)
+    a = _boot()
+    _refuse_state(pg, make_error)
+    _poll(a, 0, 100)
+    assert _flush(a) is True
+    _poll(a, 50, 150)  # 50..99 were folded already
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(150))
+
+    pg.before = None  # the owner fixes the table
+    _poll(a, 100, 200)
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(200))
+    assert set(pg.fold_state[SYM]) == {f"{SYM}:{i}" for i in range(200)}
+
+
+@pytest.mark.parametrize("fault", ["connection_lost", "transaction_aborted"])
+def test_an_unusable_transaction_still_fails_the_whole_batch(pg, caplog, fault):
+    # The guard on the catch: when the SAVEPOINT could not be rolled back (the
+    # connection died, or the transaction is aborted), nothing after it can be
+    # trusted. A swallowed error here would commit nothing and report success
+    # (COMMIT of an aborted transaction is a ROLLBACK), so the batch has to
+    # fail loudly and be retried whole.
+    a = _boot()
+    a.on_binance_frame(BINANCE_FRAME)
+    _poll(a, 0, 100)
+
+    def cut(sql):
+        if "kraken_fold_state" in sql:
+            if fault == "connection_lost":
+                pg.broken = True
+            else:
+                pg.status = TransactionStatus.INERROR
+            raise psycopg.OperationalError("the savepoint could not be rolled back")
+
+    pg.before = cut
+    with caplog.at_level(logging.WARNING):
+        assert _flush(a) is False
+    assert len(_write_failures(caplog)) == 1
+    assert pg.minutes == {} and pg.liquidations == {} and pg.fold_state == {}
+    assert _pending(a)  # the batch is back in the buffer
+
+    pg.before = None
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(100))  # once, not twice
+    assert {r["venue"] for r in pg.liquidations.values()} == {"binance", "kraken"}
+    assert len(pg.fold_state[SYM]) == 100
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["INSERT INTO kraken_trade_minutes", "INSERT INTO liquidations"],
+)
+def test_an_error_on_a_core_upsert_is_never_swallowed(pg, caplog, statement):
+    a = _boot()
+    a.on_binance_frame(BINANCE_FRAME)
+    _poll(a, 0, 100)
+
+    def refuse(sql):
+        if " ".join(sql.split()).startswith(statement):
+            raise InsufficientPrivilege(f"permission denied for {statement}")
+
+    pg.before = refuse
+    with caplog.at_level(logging.WARNING):
+        assert _flush(a) is False
+    assert len(_write_failures(caplog)) == 1
+    assert not _state_warnings(caplog)
+    assert pg.minutes == {} and pg.liquidations == {} and pg.fold_state == {}
+    assert _pending(a)
+
+    pg.before = None
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(100))
+
+
+# --- the read side: loading the state at startup ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        FOLD_STATE_TROUBLE["insufficient_privilege"],
+        FOLD_STATE_TROUBLE["wrong_shape"],
+        FOLD_STATE_TROUBLE["operational_error"],
+    ],
+    ids=["insufficient_privilege", "wrong_shape", "operational_error"],
+)
+def test_a_state_read_error_starts_the_process_without_state(pg, caplog, make_error):
+    # Before: any error but UndefinedTable propagated, and the REST loop then
+    # waited forever, so Kraken was never polled and none of its liquidations
+    # or minutes were recorded.
+    _refuse_state(pg, make_error)
+    with caplog.at_level(logging.WARNING):
+        assert store_mod.load_kraken_seen_uids() == {}
+        assert store_mod.load_kraken_seen_uids() == {}  # a second call: no 2nd warning
+    assert len(_state_warnings(caplog)) == 1
+
+    a = _boot()  # seeds with nothing and goes on
+    assert a._kraken_seeded
+    _poll(a, 0, 100)
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(100))
+
+
+def test_the_rest_loop_polls_kraken_when_the_state_cannot_be_read(pg, monkeypatch):
+    _refuse_state(pg, FOLD_STATE_TROUBLE["insufficient_privilege"])
+    requested = []
+
+    def fake_get_json(url, timeout=10.0):
+        if "history" not in url:
+            return {}
+        requested.append(url)
+        return _window(0, 100)
+
+    monkeypatch.setattr("ingestion.liquidation_recorder._get_json", fake_get_json)
+    b = LiquidationRecorder(
+        store_mod.write_liquidation_batch,
+        clock=lambda: 1_790_000_000.0,
+        kraken_symbols=(SYM,),
+        kraken_poll_seconds=0.01,
+        load_kraken_seen=store_mod.load_kraken_seen_uids,
+    )
+
+    async def scenario():
+        task = asyncio.create_task(b._kraken_rest_loop())
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        await b.flush()
+
+    asyncio.run(scenario())
+
+    assert requested  # Kraken is polled, not waiting for a table it cannot read
+    assert _stored(pg) == _expected(range(100))  # once, deduped in memory
+
+
+def test_a_database_that_cannot_be_reached_still_stops_the_state_load(pg):
+    # Only an error on the state statement itself is absorbed. No connection
+    # at all (Postgres not up yet) must still propagate, so the REST loop waits
+    # and a slow startup does not fold its first window unseeded.
+    pg.down = True
+    with pytest.raises(psycopg.OperationalError):
+        store_mod.load_kraken_seen_uids()
+
+
+def test_a_connection_lost_on_the_state_read_still_stops_the_state_load(pg):
+    def cut(sql):
+        pg.broken = True
+        raise psycopg.OperationalError("server closed the connection unexpectedly")
+
+    pg.before = cut
+    with pytest.raises(psycopg.OperationalError):
+        store_mod.load_kraken_seen_uids()
