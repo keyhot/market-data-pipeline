@@ -81,6 +81,37 @@ def test_the_grace_period_runs_from_process_start_not_from_the_clock_origin():
     assert expired["healthy"] is False and expired["detail"] == "no heartbeat"
 
 
+def test_a_custom_grace_seconds_replaces_the_default_grace_period():
+    """Residual of audit 4 (F5): no test passed `grace_seconds`, so a body that
+    read the module constant instead of the argument stayed green. The only
+    caller uses the default today; the parameter is still the contract. Each
+    probe is on opposite sides of GRACE_SECONDS (120) from the custom value."""
+    store = {}
+    short = 10.0
+    assert short < GRACE_SECONDS
+    # Past a 10 s grace but well inside the default 120 s: absence is evidence.
+    expired = renderer_status(
+        store, now=at(short), started_at=BOOT, grace_seconds=short
+    )
+    assert expired["healthy"] is False and expired["detail"] == "no heartbeat"
+    # One second short of it is still the grace period.
+    inside = renderer_status(
+        store, now=at(short - 1.0), started_at=BOOT, grace_seconds=short
+    )
+    assert inside["healthy"] is True and inside["detail"] == "no heartbeat yet"
+
+    wide = 600.0
+    assert wide > GRACE_SECONDS
+    # Past the default 120 s but inside a 600 s grace: still not evidence.
+    held = renderer_status(
+        store, now=at(GRACE_SECONDS + 80.0), started_at=BOOT, grace_seconds=wide
+    )
+    assert held["healthy"] is True and held["detail"] == "no heartbeat yet"
+    assert renderer_status(
+        store, now=at(wide), started_at=BOOT, grace_seconds=wide
+    )["healthy"] is False
+
+
 def test_a_page_that_stopped_posting_long_ago_is_forgotten_not_held_against_us():
     """A dev tab closed ten minutes ago must not pin the fleet unhealthy
     forever - that would record stream_dropped on a healthy stream, the same

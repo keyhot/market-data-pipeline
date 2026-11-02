@@ -210,6 +210,34 @@ def test_a_steady_cadence_never_reports_a_gap_and_the_gap_clock_advances():
     assert NOW.isoformat() not in alerts[0].summary
 
 
+def test_a_gap_of_exactly_the_threshold_is_not_a_gap_one_microsecond_more_is():
+    # Residual of audit 4 (F4): the 29 min / 31 min probes never reach the edge,
+    # so `gap > gap_after` -> `>=` stayed green. The comparison is strict: a run
+    # exactly GAP_AFTER after the last one is a late cron tick, not a sleeping
+    # host. Both stamps come from decide itself, so the gap is exact.
+    _, state = decide(GOOD, {}, NOW)
+    alerts, _ = decide(GOOD, state, NOW + GAP_AFTER)
+    assert alerts == []
+    alerts, _ = decide(GOOD, state, NOW + GAP_AFTER + timedelta(microseconds=1))
+    assert [a.kind for a in alerts] == ["gap"]
+
+
+def test_a_custom_gap_after_replaces_the_default_threshold():
+    # Same edge with a threshold that is not GAP_AFTER (30 min): a decide that
+    # ignored `gap_after` would find 10 min quiet and 11 min a gap only if it
+    # read the argument.
+    ten = timedelta(minutes=10)
+    _, state = decide(GOOD, {}, NOW)
+    alerts, _ = decide(GOOD, state, NOW + ten, gap_after=ten)
+    assert alerts == []
+    alerts, _ = decide(GOOD, state, NOW + ten + timedelta(seconds=1), gap_after=ten)
+    assert [a.kind for a in alerts] == ["gap"]
+    # 45 min is a gap under the default and not under a wider threshold.
+    wide = timedelta(hours=2)
+    alerts, _ = decide(GOOD, state, NOW + timedelta(minutes=45), gap_after=wide)
+    assert alerts == []
+
+
 def test_a_long_failing_then_recovering_run_sends_only_firing_and_resolved():
     # F4 (audit 4): the daily-reminder test counts only firing/reminder kinds,
     # so a stuck gap clock hid behind it. Assert the complete mail sequence.
