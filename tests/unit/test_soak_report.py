@@ -455,6 +455,75 @@ def test_an_ending_with_an_offset_ignores_the_machine_zone(host_tz):
         assert end == datetime(2026, 8, 22, 2, 30, tzinfo=timezone.utc)
 
 
+# A wall clock that does not exist (the DST gap) or exists twice (the fold)
+# looks like any other to a human typing `--ending`, and `fromisoformat` can
+# only produce fold=0. Europe/Warsaw springs forward Sun 2026-03-29 02:00 ->
+# 03:00 and falls back Sun 2026-10-25 03:00 -> 02:00. Today nothing raises:
+# an ambiguous time is its *first* occurrence (CEST +2; the second, 01:30Z,
+# cannot be typed at all) on every CPython, but a missing one depends on the
+# interpreter. 3.11 (CI) applies the offset from *after* the jump (CEST +2),
+# so 02:30 is 00:30Z, an hour that reads 01:30 on the Warsaw clock; 3.12+
+# applies the one from *before* it (CET +1), so 02:30 is 01:30Z, which reads
+# 03:30. All literals.
+# (--ending as typed, the UTC instant it maps to, why)
+_DST_EDGE_ENDINGS = [
+    ("2026-03-29T01:59:59", (2026, 3, 29, 0, 59, 59), "last second before the gap"),
+    ("2026-03-29T03:00:00", (2026, 3, 29, 1, 0, 0), "after the gap, CEST +2"),
+    ("2026-10-25T01:59:59", (2026, 10, 24, 23, 59, 59), "before the fold, CEST +2"),
+    ("2026-10-25T02:00:00", (2026, 10, 25, 0, 0, 0), "fold start, first, CEST +2"),
+    ("2026-10-25T02:30:00", (2026, 10, 25, 0, 30, 0), "inside the fold, first, CEST"),
+    ("2026-10-25T02:59:59", (2026, 10, 25, 0, 59, 59), "last of the fold, first, CEST"),
+    ("2026-10-25T03:00:00", (2026, 10, 25, 2, 0, 0), "after the fold, CET +1"),
+]
+
+# (--ending as typed, UTC instant on CPython 3.11, on CPython 3.12+)
+_DST_GAP_ENDINGS = [
+    ("2026-03-29T02:00:00", (2026, 3, 29, 0, 0, 0), (2026, 3, 29, 1, 0, 0)),
+    ("2026-03-29T02:30:00", (2026, 3, 29, 0, 30, 0), (2026, 3, 29, 1, 30, 0)),
+    ("2026-03-29T02:59:59", (2026, 3, 29, 0, 59, 59), (2026, 3, 29, 1, 59, 59)),
+]
+
+
+def _end_under_warsaw(host_tz, ending):
+    host_tz("Europe/Warsaw")
+    now = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)  # not today
+    start, end = window_bounds(24.0, ending, now)
+    assert start == end - timedelta(hours=24)
+    assert end.utcoffset() == timedelta(0)  # UTC, not just the same instant
+    return end
+
+
+@pytest.mark.parametrize(
+    "ending, utc, why",
+    _DST_EDGE_ENDINGS,
+    ids=[e for e, _, _ in _DST_EDGE_ENDINGS],
+)
+def test_an_ending_next_to_or_in_a_dst_fold_maps_to_a_fixed_instant(
+    host_tz, ending, utc, why
+):
+    """Pins current behaviour, not a judgement that it is right: 02:30 on
+    2026-10-25 happens twice and is silently the first (CEST) one."""
+    end = _end_under_warsaw(host_tz, ending)
+    assert end == datetime(*utc, tzinfo=timezone.utc), why
+
+
+@pytest.mark.parametrize(
+    "ending, py311, py312",
+    _DST_GAP_ENDINGS,
+    ids=[e for e, _, _ in _DST_GAP_ENDINGS],
+)
+def test_an_ending_in_a_dst_gap_is_accepted_and_mapped_by_the_interpreter(
+    host_tz, ending, py311, py312
+):
+    """Pins current behaviour, not a judgement that it is right: 02:30 on
+    2026-03-29 does not exist on a Warsaw clock, nothing raises, and the answer
+    is an hour off the neighbouring valid times in a direction that depends on
+    the Python minor version (see the table above)."""
+    end = _end_under_warsaw(host_tz, ending)
+    utc = py312 if sys.version_info >= (3, 12) else py311
+    assert end == datetime(*utc, tzinfo=timezone.utc)
+
+
 def test_report_fetch_drops_events_from_after_the_window_closed():
     """`since` has no upper bound, so a window that has already closed also
     pulls in everything that happened *since* it. Found by re-running A6's
