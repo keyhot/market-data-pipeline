@@ -15,10 +15,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from ingestion.liquidation_recorder import LiquidationRecorder
-from ingestion.liquidations import parse_okx, parse_okx_data
+from ingestion.liquidations import CoverageTracker, parse_okx, parse_okx_data
 from tests.unit.test_liquidations import LINEAR, OKX_FRAME
 
 UTC = timezone.utc
+T0 = 1_790_650_800  # a whole minute, as in the suite
 
 # --- F3: the OKX event_ts is never asserted -------------------------------------
 #
@@ -75,3 +76,63 @@ def test_okx_event_ts_survives_the_recorder_buffer_unchanged():
     (liq,) = recorder.buffer.liquidations
     assert liq.event_ts == datetime(2026, 9, 29, 2, 59, 21, 954000, tzinfo=UTC)
     assert liq.event_ts.utcoffset() == timedelta(0)
+
+
+# --- F4: the last 5 s before a minute ends were never probed --------------------
+#
+# `CoverageTracker.confirmed()` releases minute M once `M + 60 <= last_proof`
+# (ingestion/liquidations.py:667). The existing test proves every 10 s up to
+# T0+55 and then jumps to T0+60, so any threshold in (T0+55, T0+60] passes:
+# `M + 59 < last_proof` (S2, equivalent under whole seconds) and `M + 56 <=`
+# are both green. Under the production `time.time()` S2 confirms a minute up
+# to 1 s before it ends. The proofs here are sub-second, none on a minute edge.
+
+
+def _flowing_tracker(**kwargs):
+    tracker = CoverageTracker(**kwargs)
+    tracker.data()
+    return tracker
+
+
+def _chain(tracker, start, end, step=9.7):
+    """Proofs at start, start+step, ... while <= end (never whole seconds)."""
+    t = start
+    while t <= end:
+        tracker.proof(t)
+        t += step
+
+
+BLIND_BAND = [56.0, 57.4, 58.9, 59.5, 59.999, 59.99999]
+
+
+@pytest.mark.parametrize("offset", BLIND_BAND)
+def test_a_proof_in_the_last_seconds_of_a_minute_does_not_confirm_it(offset):
+    tracker = _flowing_tracker()
+    _chain(tracker, T0 - 5.3, T0 + 55.0)  # last proof T0+52.9: the chain is alive
+    assert tracker.last_proof == pytest.approx(T0 + 52.9)
+    assert tracker.confirmed() == []
+    tracker.proof(T0 + offset)  # < 5 s before the minute ends, within max_silence
+    assert tracker.confirmed() == []
+
+
+def test_the_minute_is_confirmed_by_the_first_proof_at_or_after_its_end():
+    tracker = _flowing_tracker()
+    _chain(tracker, T0 - 5.3, T0 + 55.0)
+    tracker.proof(T0 + 59.99999)
+    assert tracker.confirmed() == []
+    tracker.proof(T0 + 60.0)  # exactly the end: proven (the `<=` of the rule)
+    assert tracker.confirmed() == [(T0, 0)]
+    assert tracker.confirmed() == []
+
+
+def test_a_later_minute_obeys_the_same_threshold_to_the_sub_second():
+    tracker = _flowing_tracker()
+    _chain(tracker, T0 - 5.3, T0 + 63.0)  # last proof T0+62.6
+    assert tracker.confirmed() == [(T0, 0)]
+    _chain(tracker, T0 + 70.1, T0 + 119.0)
+    tracker.proof(T0 + 119.5)
+    assert tracker.confirmed() == []
+    tracker.proof(T0 + 119.999)
+    assert tracker.confirmed() == []
+    tracker.proof(T0 + 120.001)
+    assert tracker.confirmed() == [(T0 + 60, 0)]
