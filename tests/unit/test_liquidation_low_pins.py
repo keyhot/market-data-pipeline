@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from ingestion.liquidation_recorder import (
+    FLUSH_EVERY_S,
     KRAKEN_SEEN_UID_CAP,
     LiquidationRecorder,
 )
@@ -466,3 +467,109 @@ def test_the_recorder_writes_a_capped_day_after_a_stall_and_moves_its_cursor():
     assert cover[-1][1] == _minute(-1)
     assert all(covered is False for _, _, covered, _ in cover)
     assert recorder._kraken_cover_from["PF_XBTUSD"] == _minute(0)
+
+
+# --- F9: "coverage lands in the same transaction as the rows received in it" ----
+#
+# The module docstring (liquidation_recorder.py:35-37) and the test named
+# test_a_minute_lands_in_the_same_batch_as_the_rows_received_in_it say a
+# minute's coverage is written in the same batch as its rows. `_flush_loop`
+# flushes every FLUSH_EVERY_S, so the rows of minute M go out in earlier
+# batches and M's coverage lands alone after the first proof >= M+60. That test
+# passes only because it flushes once. The invariant storage actually needs
+# (storage/liquidation_store.py:110-117: a coverage row never lands without its
+# rows) holds through take/restore ordering. These tests pin THAT invariant
+# across several flush schedules, and characterise the real batching so the
+# "same batch" claim cannot quietly be relied on.
+
+ROW_FRAMES = [T0 - 5.3, T0 + 20.4, T0 + 62.2]  # Binance frames, one row each
+PONGS = [T0 + 5.1 + 10 * k for k in range(7)]  # proofs T0+5.1 .. T0+65.1
+MID_MINUTE = T0 + 27.6
+FINAL = T0 + 70.3
+EVERY_FLUSH_EVERY_S = [T0 - 5.1 + FLUSH_EVERY_S * k for k in range(1, 16)]
+
+FLUSH_SCHEDULES = {
+    "one-flush-at-the-end": [FINAL],
+    "mid-minute-flush": [MID_MINUTE, FINAL],
+    "production-cadence": EVERY_FLUSH_EVERY_S + [FINAL],
+}
+
+
+class FlakySink(Sink):
+    """Fails every write whose time (read from the clock) is in `fail_at`."""
+
+    def __init__(self, clock, fail_at=()):
+        super().__init__()
+        self._clock = clock
+        self._fail_at = set(fail_at)
+
+    def __call__(self, *args, **kwargs):
+        if self._clock() in self._fail_at:
+            raise ConnectionError("postgres down")
+        return super().__call__(*args, **kwargs)
+
+
+def _run_binance_timeline(flush_times, fail_at=()):
+    clock = FractionalClock(T0 - 10.3)
+    sink = FlakySink(clock, fail_at)
+    recorder = LiquidationRecorder(sink, clock=clock)
+    events = (
+        [(t, "row") for t in ROW_FRAMES]
+        + [(t, "pong") for t in PONGS]
+        + [(t, "flush") for t in flush_times]
+    )
+    assert len({t for t, _ in events}) == len(events)  # no ties: order is defined
+    for t, kind in sorted(events):
+        clock.t = t
+        if kind == "row":
+            recorder.on_binance_frame(BINANCE_FRAME)
+        elif kind == "pong":
+            recorder.on_pong("binance")
+        else:
+            _flush(recorder)
+    return sink
+
+
+def _assert_coverage_never_lands_before_its_rows(sink):
+    rows_through_end_of_minute = sum(1 for t in ROW_FRAMES if t < T0 + 60)
+    rows_in_minute = sum(1 for t in ROW_FRAMES if T0 <= t < T0 + 60)
+    assert (rows_through_end_of_minute, rows_in_minute) == (2, 1)
+    written = 0
+    landed = []
+    for liquidations, coverage, _km, _kc in sink.batches:
+        written += len(liquidations)
+        for venue, minute, n in coverage:
+            landed.append((venue, minute, n))
+            # Everything received up to the end of the minute is already
+            # committed, in this batch or an earlier one.
+            assert written >= rows_through_end_of_minute
+    assert landed == [("binance", T0, rows_in_minute)]  # once, with its count
+    assert written == len(ROW_FRAMES)  # nothing lost, nothing written twice
+
+
+@pytest.mark.parametrize("schedule", sorted(FLUSH_SCHEDULES))
+def test_a_minutes_coverage_never_lands_before_the_rows_received_in_it(schedule):
+    sink = _run_binance_timeline(FLUSH_SCHEDULES[schedule])
+    _assert_coverage_never_lands_before_its_rows(sink)
+
+
+def test_a_failed_write_keeps_rows_and_coverage_together_until_it_succeeds():
+    # The write at T0+64.9 carries the coverage and the T0+62.2 row, and fails.
+    # The retry at FINAL must carry both again.
+    failing = T0 + 64.9
+    sink = _run_binance_timeline([MID_MINUTE, failing, FINAL], fail_at=[failing])
+    _assert_coverage_never_lands_before_its_rows(sink)
+    assert len(sink.batches) == 2  # the failed write is not recorded
+    (_l1, c1, _, _), (l2, c2, _, _) = sink.batches
+    assert c1 == []
+    assert c2 == [("binance", T0, 1)] and len(l2) == 1  # the T0+62.2 row
+
+
+def test_real_batching_is_not_one_batch_so_same_batch_cannot_be_relied_on():
+    # Characterisation (passes on main): with a flush mid-minute, batch 1 holds
+    # the rows without any coverage and batch 2 holds the coverage alone.
+    sink = _run_binance_timeline([MID_MINUTE, FINAL])
+    (l1, c1, _, _), (l2, c2, _, _) = sink.batches
+    assert len(l1) == 2 and c1 == []
+    assert c2 == [("binance", T0, 1)]
+    assert len(l2) == 1  # only the later T0+62.2 row travels with it
