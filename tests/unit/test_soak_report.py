@@ -4,8 +4,10 @@ measurement tool."""
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -380,13 +382,77 @@ def test_an_explicit_ending_reproduces_a_window_that_has_closed():
     assert start == datetime(2026, 8, 21, 2, 30, tzinfo=timezone.utc)
 
 
-def test_an_ending_without_an_offset_is_local_wall_clock_not_utc():
+@pytest.fixture
+def host_tz():
+    """Set the process timezone as the C library sees it, for one test.
+
+    `window_bounds` reads an offset-less `--ending` through the OS (naive
+    `.astimezone()`), so the only way to vary what it means is the `TZ`
+    variable plus `time.tzset()`. monkeypatch alone restores the variable but
+    never re-runs tzset, so the zone would leak into every later test; the
+    explicit tzset after the context closes is what puts it back, and the
+    final assert makes a leak fail here rather than somewhere unrelated.
+    """
+    before = (os.environ.get("TZ"), time.tzname)
+    with pytest.MonkeyPatch.context() as mp:
+
+        def use(name):
+            mp.setenv("TZ", name)
+            time.tzset()
+            # An OS without that zone's data falls back to UTC silently,
+            # which would turn every case below back into the tautology.
+            july = datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
+            assert july.astimezone().utcoffset() == (
+                july.astimezone(ZoneInfo(name)).utcoffset()
+            ), f"TZ={name} did not take effect"
+
+        yield use
+    time.tzset()
+    assert (os.environ.get("TZ"), time.tzname) == before
+
+
+# (host zone, --ending as typed, the UTC instant it must mean). Every
+# expectation is a literal: computing it with the same `.astimezone` as the
+# code made the old test pass on a UTC machine, where local time *is* UTC, so
+# a regression that read the string as UTC went unnoticed on CI.
+_LOCAL_WALL_CLOCK = [
+    ("Europe/Warsaw", "2026-08-22T04:30:00", (2026, 8, 22, 2, 30)),  # CEST +2
+    ("Europe/Warsaw", "2026-12-22T04:30:00", (2026, 12, 22, 3, 30)),  # CET +1
+    ("Asia/Kolkata", "2026-08-22T04:30:00", (2026, 8, 21, 23, 0)),  # +5:30
+    ("America/Los_Angeles", "2026-08-22T04:30:00", (2026, 8, 22, 11, 30)),  # -7
+    ("America/Los_Angeles", "2026-12-22T04:30:00", (2026, 12, 22, 12, 30)),  # -8
+]
+
+
+@pytest.mark.parametrize(
+    "zone, ending, utc",
+    _LOCAL_WALL_CLOCK,
+    ids=[f"{z}-{e[:10]}" for z, e, _ in _LOCAL_WALL_CLOCK],
+)
+def test_an_ending_without_an_offset_is_local_wall_clock_not_utc(
+    host_tz, zone, ending, utc
+):
     """A human types the time their clock showed. Reading it as UTC would slide
-    the window by the machine's offset — two hours, here — and quietly report on
-    the wrong hours."""
+    the window by the machine's offset — one to eight hours depending on the
+    zone and the season — and quietly report on the wrong hours.
+
+    Run under a zone that is not UTC, so it means something on a UTC CI runner
+    too, and in both halves of the year so a fixed offset cannot pass."""
+    host_tz(zone)
     now = datetime(2026, 8, 22, 3, 43, tzinfo=timezone.utc)
-    _, end = window_bounds(24.0, "2026-08-22T04:30:00", now)
-    assert end == datetime(2026, 8, 22, 4, 30).astimezone(timezone.utc)
+    start, end = window_bounds(24.0, ending, now)
+    assert end == datetime(*utc, tzinfo=timezone.utc)
+    assert start == end - timedelta(hours=24)
+
+
+def test_an_ending_with_an_offset_ignores_the_machine_zone(host_tz):
+    """The other half of the contract: a stated offset is the whole answer, so
+    the same string means the same instant wherever the report is run."""
+    host_tz("Asia/Kolkata")
+    now = datetime(2026, 8, 22, 3, 43, tzinfo=timezone.utc)
+    for ending in ("2026-08-22T04:30:00+02:00", "2026-08-22T02:30:00Z"):
+        _, end = window_bounds(24.0, ending, now)
+        assert end == datetime(2026, 8, 22, 2, 30, tzinfo=timezone.utc)
 
 
 def test_report_fetch_drops_events_from_after_the_window_closed():
