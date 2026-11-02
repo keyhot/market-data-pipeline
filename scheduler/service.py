@@ -161,7 +161,8 @@ class SchedulerService:
         # fires on a fixed grid, interval apart, so a stamp taken at completion
         # is always a little under one interval old at the next fire and the
         # guard skipped every second run (audit-4 F1). The grid and
-        # max_instances=1 already keep runs from coming closer than the interval.
+        # max_instances=1 keep runs one interval apart, give or take dispatch
+        # jitter (APScheduler drops a fire picked up more than 1 s late).
         with self._lock:
             startup_fire = job_id in self._startup_pending
             self._startup_pending.discard(job_id)

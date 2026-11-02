@@ -115,11 +115,12 @@ class StubJob:
 
 
 class Run:
-    def __init__(self, job, statuses, record_calls, service):
+    def __init__(self, job, statuses, record_calls, service, registered):
         self.job = job
         self.statuses = statuses
         self.record_calls = record_calls
         self.service = service
+        self.registered = registered  # the job as APScheduler holds it
 
 
 def run_scheduler(
@@ -175,13 +176,14 @@ def run_scheduler(
         service.start()
         try:
             assert set(service.status()["jobs"]) == {JOB_ID}
+            registered = service._scheduler.get_job(JOB_ID)
             drive(service._scheduler, clock, T0 + timedelta(seconds=seconds), lateness)
         finally:
             service.shutdown()
 
     assert escaped == []
     statuses = [call.args[3] for call in record.call_args_list]
-    return Run(job, statuses, record.call_args_list, service)
+    return Run(job, statuses, record.call_args_list, service, registered)
 
 
 def drive(scheduler, clock, end, lateness):
@@ -245,6 +247,29 @@ def test_restart_guard_skips_the_first_fire_after_a_recent_success(monkeypatch):
     assert run.statuses == ["skipped"] + ["success"] * 9
     assert run.job.offsets == [300.0 * k for k in range(1, 10)]
     assert run.job.offsets[0] + 200.0 >= INTERVAL
+
+
+def test_restart_guard_skips_only_the_startup_fire_for_a_future_dated_success(
+    monkeypatch,
+):
+    # A clock stepped back leaves a success "in the future". The startup fire
+    # is skipped as before, but the guard must not keep skipping every later
+    # fire while that stamp is still less than an interval old.
+    run = run_scheduler(monkeypatch, seeded_success_age=-1000.0, duration=2.0)
+
+    assert run.statuses == ["skipped"] + ["success"] * 9
+    assert run.job.offsets == [300.0 * k for k in range(1, 10)]
+
+
+def test_job_is_registered_with_the_settings_the_cadence_rests_on(monkeypatch):
+    # The guard no longer spaces runs; the fixed grid does, and a slow job
+    # cannot overlap itself. The harness runs jobs inline, so it cannot show
+    # an overlap: pin the settings that prevent one.
+    run = run_scheduler(monkeypatch, seconds=1)
+
+    assert run.registered.trigger.interval == timedelta(seconds=INTERVAL)
+    assert run.registered.max_instances == 1
+    assert run.registered.coalesce is True
 
 
 def test_restart_guard_lets_the_first_fire_run_after_an_old_success(monkeypatch):
