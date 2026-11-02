@@ -106,6 +106,37 @@ def test_a_start_stream_stamps_its_own_cooldown_and_the_next_polls_respect_it():
     assert _actions_of(actions, "start_stream") == []
 
 
+def test_tick_stamps_down_since_when_obs_disappears_and_recovery_reads_it():
+    # F2 sibling (audit 4): test_obs_recovery... SEEDS down_since=900.0, so a
+    # tick that never stamped it (recovery_seconds silently absent from every
+    # stream_started row) stayed green. Here tick writes the stamp, a later
+    # tick reads it.
+    t0 = 1_054_798.5
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, _ = tick({"reachable": False}, state, CFG, now=t0)
+    assert state.down_since == t0
+    probe = {"reachable": True, "streaming": True, "dropped_ratio": 0.0}
+    state, actions = tick(probe, state, CFG, now=t0 + 100.0)
+    records = _actions_of(actions, "record")
+    assert records[0][1] == "stream_started"
+    assert records[0][2]["recovery_seconds"] == 100.0
+    assert state.down_since is None
+
+
+def test_tick_stamps_down_since_when_the_stream_stops_and_recovery_reads_it():
+    # F2 sibling (audit 4), the stream_stopped call site of the same stamp.
+    t0 = 1_054_798.5
+    state = WatchdogState(obs_up=True, streaming=True)
+    off_air = {"reachable": True, "streaming": False, "dropped_ratio": 0.0}
+    state, _ = tick(off_air, state, CFG, now=t0)
+    assert state.down_since == t0
+    live = {"reachable": True, "streaming": True, "dropped_ratio": 0.0}
+    state, actions = tick(live, state, CFG, now=t0 + 90.0)
+    records = _actions_of(actions, "record")
+    assert records[0][1] == "stream_started"
+    assert records[0][2]["recovery_seconds"] == 90.0
+
+
 def test_obs_recovery_rebuilds_scene_then_streaming_records_started():
     state = WatchdogState(obs_up=False, streaming=False, down_since=900.0)
     probe = {"reachable": True, "streaming": True, "dropped_ratio": 0.0}
