@@ -24,6 +24,14 @@ The rules, for every test outside tests/integration:
   * libcurl (curl_cffi, which yfinance 1.x uses) does its own DNS and sockets
     in C, past Python's socket module, so its perform entry points are refused;
   * a datagram sent (sendto, sendmsg) to such an address is refused the same way;
+  * Postgres drivers (see install_postgres_drivers): libpq connects in C, below
+    Python's socket module, so none of the rules above can see a psycopg
+    connect, over TCP or over a unix socket. They are refused where Python
+    calls them: psycopg.connect, Connection.connect, AsyncConnection.connect,
+    the construction and open() of psycopg_pool.ConnectionPool and
+    AsyncConnectionPool, the psycopg2 connect when psycopg2 is importable, and
+    psycopg.generators.connect, the one function every psycopg connect passes
+    through (it catches a connect bound before the fixture ran);
   * other AF_UNIX sockets, asyncio's own socketpair and loopback servers on
     ephemeral ports are untouched.
 
@@ -46,14 +54,24 @@ Not covered (none of these occurs in the suite today): a module- or session-
 scoped fixture, an import at collection time or a subprocess that connects; a
 thread that outlives its test; a loopback service on a port not in
 LIVE_SERVICES (Redis would be 6379; none is deployed), a service whose port a
-.env overrides, or one on an ephemeral port; a Postgres reached over its
-AF_UNIX socket by libpq, which connects in C past this hook (conftest refuses
-psycopg.connect and ConnectionPool for that), or through a hard link to a
-Postgres socket (a symlink is followed, a hard link is not); AF_UNIX datagrams;
-a fake Postgres the test serves itself on a `.s.PGSQL.*` socket (refused too:
-name it otherwise); `_socket.socket` methods called directly; reverse DNS
+.env overrides, or one on an ephemeral port; a hard link to a Postgres socket
+(a symlink is followed, a hard link is not); AF_UNIX datagrams; a fake Postgres
+the test serves itself on a `.s.PGSQL.*` socket (refused too: name it
+otherwise); `_socket.socket` methods called directly; reverse DNS
 (gethostbyaddr, getnameinfo, getfqdn); native stacks other than libcurl and
 libpq (uvloop, c-ares, grpc).
+
+Postgres over libpq is NOT covered by the socket rules above (the 5432 and
+`.s.PGSQL` refusals never see libpq) but by the driver refusals. What stays
+open there: psycopg.pq.PGconn.connect, connect_start and ping (extension-type
+methods, immutable) and a Connection built on the result;
+psycopg_binary._psycopg.connect called directly, or `from psycopg.generators
+import connect` bound before the fixture ran; ctypes or cffi on libpq; a
+psycopg2 connect bound before the fixture (psycopg2 is not installed); and a
+connection opened outside a test (collection, a wider-scoped fixture), which
+this fixture neither sees nor closes. psycopg.connect is refused with the
+test's name but not recorded: storage.db's callers degrade on it by design
+(KI-083), and recording it failed 4 tests at teardown.
 """
 
 import ipaddress
@@ -176,19 +194,94 @@ def lookup_reason(host) -> str | None:
     return None
 
 
-def install(monkeypatch, nodeid: str) -> list[str]:
-    """Patch the socket and libcurl entry points. Returns the list that every
-    refusal is appended to."""
-    attempts: list[str] = []
+def make_refuse(nodeid: str, attempts: list[str]):
+    """The refusal every rule raises: it names the test and records the attempt
+    (code that catches Exception swallows the raise; the fixture fails the test
+    at teardown when anything was recorded). `record=False` raises without
+    recording, for the one seam whose callers are meant to degrade."""
 
-    def refuse(what: str, reason: str):
-        attempts.append(what)
+    def refuse(what: str, reason: str, record: bool = True):
+        if record:
+            attempts.append(what)
         raise NetworkBlocked(
             f"{nodeid}: the unit suite reaches no network ({what}: {reason}). "
             "Stub the client at its seam, as tests/unit/test_scheduler_service.py "
             "does for the scheduler jobs; a server the test starts itself on an "
             "ephemeral loopback port is allowed. See tests/net_guard.py."
         )
+
+    return refuse
+
+
+# libpq (psycopg 3 and psycopg2 both) opens its sockets in C, so the rules on
+# Python's socket module never see it. The message never carries the connection
+# string: it may hold a password.
+_LIBPQ = (
+    "libpq connects in C, past the socket rules, so a psycopg connect would "
+    "reach Postgres whatever the host; the unit suite opens no database "
+    "connection (KI-083), tests that need Postgres live in tests/integration"
+)
+
+
+def install_postgres_drivers(monkeypatch, refuse) -> None:
+    """Refuse every route to a Postgres connection that Python code can take.
+
+    Patched on the classes, not on the names a module imported: a pool or a
+    Connection subclass is refused however it was imported. A bound classmethod
+    is the exception: psycopg/__init__.py binds `connect = Connection.connect`
+    at import, and `from psycopg import connect` taken before this fixture ran
+    is that same bound method, so the class patch does not reach it. Every
+    psycopg connect, that one included, then calls generators.connect (looked up
+    at call time in psycopg/_connection_base.py), which is refused as well.
+    Pool workers connect through Connection.connect, so an opened pool is
+    refused too. Not patchable: psycopg.pq.PGconn.connect and connect_start
+    (extension-type methods).
+    """
+    import psycopg
+    import psycopg.generators
+    import psycopg_pool
+
+    def blocked(what: str, record: bool = True):
+        def refused(*args, **kwargs):
+            refuse(what, _LIBPQ, record)
+
+        return refused
+
+    # psycopg.connect is the module attribute tests/conftest.py (KI-083) already
+    # rebinds, and storage.db's role probe and connect_read_only call it: their
+    # callers swallow the error and degrade (ping() is False), so a refusal
+    # there is raised with the test's name but not recorded.
+    monkeypatch.setattr(psycopg, "connect", blocked("psycopg.connect", record=False))
+    monkeypatch.setattr(
+        psycopg.Connection,
+        "connect",
+        staticmethod(blocked("psycopg.Connection.connect")),
+    )
+    monkeypatch.setattr(
+        psycopg.AsyncConnection,
+        "connect",
+        staticmethod(blocked("psycopg.AsyncConnection.connect")),
+    )
+    monkeypatch.setattr(
+        psycopg.generators, "connect", blocked("psycopg.generators.connect")
+    )
+    for pool in (psycopg_pool.ConnectionPool, psycopg_pool.AsyncConnectionPool):
+        monkeypatch.setattr(pool, "__init__", blocked(f"{pool.__name__}(...)"))
+        monkeypatch.setattr(pool, "open", blocked(f"{pool.__name__}.open()"))
+    try:
+        import psycopg2
+    except ImportError:  # not a dependency; absent means nothing to guard
+        return
+    monkeypatch.setattr(psycopg2, "connect", blocked("psycopg2.connect"))
+    if hasattr(psycopg2, "_connect"):  # the C function connect() calls
+        monkeypatch.setattr(psycopg2, "_connect", blocked("psycopg2._connect"))
+
+
+def install(monkeypatch, nodeid: str) -> list[str]:
+    """Patch the socket, libcurl and Postgres-driver entry points. Returns the
+    list that every refusal is appended to."""
+    attempts: list[str] = []
+    refuse = make_refuse(nodeid, attempts)
 
     def guarded_connect(real, kind):
         def connect(self, address):
@@ -258,6 +351,8 @@ def install(monkeypatch, nodeid: str) -> list[str]:
 
     monkeypatch.setattr(socket.socket, "sendto", sendto)
     monkeypatch.setattr(socket.socket, "sendmsg", sendmsg)
+
+    install_postgres_drivers(monkeypatch, refuse)
 
     def guarded_curl(what):
         def perform(*args, **kwargs):

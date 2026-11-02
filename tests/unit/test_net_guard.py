@@ -9,10 +9,18 @@ connect, so a regression fails the test instead of reaching a service."""
 import asyncio
 import os
 import socket
+import sys
+import types
 from pathlib import Path
 
+import db_guard
 import net_guard
+import psycopg
+import psycopg.generators
+import psycopg_pool
 import pytest
+from psycopg import connect as psycopg_connect
+from psycopg.conninfo import make_conninfo
 
 
 @pytest.mark.parametrize(
@@ -378,3 +386,263 @@ def test_asyncio_still_runs_and_serves_over_a_unix_socket(
     finally:
         loop.close()
     assert no_network_outside_integration == []
+
+
+# --- the Postgres drivers -----------------------------------------------------
+# libpq opens its sockets in C, so the socket rules above never see a psycopg
+# connect. Every target here is harmless if the guard is broken: db.invalid
+# never resolves, and a unix-socket directory that does not exist gives ENOENT
+# on <dir>/.s.PGSQL.1 (no DNS, no network). None names localhost, 5432 or 55432.
+# db.invalid alone would not prove the driver layer: psycopg resolves a host
+# name in Python, so the DNS rule refuses it too. Each test therefore asserts
+# which rule fired (the entry point named in the message and in the recorded
+# list), and the pre-bound routes use the unix-socket target, which skips DNS.
+#
+# Taken at collection, before any fixture ran: the routes a class patch alone
+# cannot reach, because they hold the original bound method or function.
+_EARLY_CONNECT = psycopg_connect
+_EARLY_CLASS_CONNECT = psycopg.Connection.connect
+_EARLY_ASYNC_CONNECT = psycopg.AsyncConnection.connect
+_REAL_POOL_INIT = psycopg_pool.ConnectionPool.__init__
+_REAL_ASYNC_POOL_INIT = psycopg_pool.AsyncConnectionPool.__init__
+
+_DNS_TARGET = "host=db.invalid port=1 connect_timeout=2"
+_GENERATORS = "psycopg.generators.connect"
+
+
+@pytest.fixture
+def unix_target(monkeypatch, tmp_path):
+    db_guard.scrub_routing_env(monkeypatch)  # PGHOSTADDR would outrank host
+    missing = tmp_path / "no-such-dir"
+    assert not missing.exists()
+    return make_conninfo("", host=str(missing), port=1, connect_timeout=2)
+
+
+@pytest.fixture
+def dns_target(monkeypatch):
+    db_guard.scrub_routing_env(monkeypatch)
+    return _DNS_TARGET
+
+
+def _check_refusal(request, attempts, what, recorded, refusal):
+    message = str(refusal)
+    assert message.startswith(f"{request.node.nodeid}: ")  # the guard's, not KI-083's
+    assert f"({what}: libpq connects in C" in message
+    assert attempts == ([what] if recorded else [])
+    attempts.clear()  # provoked on purpose; otherwise teardown fails the test
+
+
+def _assert_refused(request, attempts, what, recorded, call):
+    with pytest.raises(net_guard.NetworkBlocked) as refusal:
+        call()
+    _check_refusal(request, attempts, what, recorded, refusal.value)
+
+
+async def _assert_refused_async(request, attempts, what, recorded, call):
+    with pytest.raises(net_guard.NetworkBlocked) as refusal:
+        await call()
+    _check_refusal(request, attempts, what, recorded, refusal.value)
+
+
+def _late_connect(conninfo):
+    from psycopg import connect  # after the fixture ran: the patched name
+
+    return connect(conninfo)
+
+
+def _run(coroutine_function, *args):
+    return asyncio.run(coroutine_function(*args))
+
+
+@pytest.mark.parametrize(
+    "what, recorded, call",
+    [
+        # psycopg.connect is the seam storage.db calls and whose callers degrade
+        # on a refusal (ping() is False): named, not recorded.
+        ("psycopg.connect", False, lambda t: psycopg.connect(t)),
+        ("psycopg.connect", False, lambda t: psycopg.connect(conninfo=t)),
+        ("psycopg.Connection.connect", True, lambda t: psycopg.Connection.connect(t)),
+        (
+            "psycopg.Connection.connect",
+            True,
+            lambda t: type("Sub", (psycopg.Connection,), {}).connect(t),
+        ),
+        (
+            "psycopg.AsyncConnection.connect",
+            True,
+            lambda t: _run(psycopg.AsyncConnection.connect, t),
+        ),
+        ("psycopg.connect", False, lambda t: _late_connect(t)),
+    ],
+    ids=[
+        "connect",
+        "connect-keyword",
+        "Connection.connect",
+        "Connection-subclass",
+        "AsyncConnection.connect",
+        "from-import-after-the-fixture",
+    ],
+)
+def test_psycopg_entry_points_are_refused_by_name_and_never_reach_libpq(
+    request, no_network_outside_integration, dns_target, what, recorded, call
+):
+    _assert_refused(
+        request,
+        no_network_outside_integration,
+        what,
+        recorded,
+        lambda: call(dns_target),
+    )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda t: _EARLY_CONNECT(t),
+        lambda t: _EARLY_CLASS_CONNECT(t),
+        lambda t: _run(_EARLY_ASYNC_CONNECT, t),
+        lambda t: psycopg.generators.connect(t),
+    ],
+    ids=[
+        "from-psycopg-import-connect",
+        "bound-Connection.connect",
+        "bound-AsyncConnection.connect",
+        "generators.connect",
+    ],
+)
+def test_a_connect_bound_before_the_fixture_is_refused_one_level_down(
+    request, no_network_outside_integration, unix_target, call
+):
+    # The guard replaced the module's name; these still hold the original.
+    assert _EARLY_CONNECT is not psycopg.connect
+    _assert_refused(
+        request,
+        no_network_outside_integration,
+        _GENERATORS,
+        True,
+        lambda: call(unix_target),
+    )
+
+
+@pytest.mark.parametrize(
+    "pool, what",
+    [
+        (psycopg_pool.ConnectionPool, "ConnectionPool(...)"),
+        (psycopg_pool.AsyncConnectionPool, "AsyncConnectionPool(...)"),
+        (psycopg_pool.NullConnectionPool, "ConnectionPool(...)"),
+        (psycopg_pool.AsyncNullConnectionPool, "AsyncConnectionPool(...)"),
+    ],
+)
+@pytest.mark.parametrize("open_arg", [False, True])
+def test_building_a_pool_is_refused_open_or_not(
+    request, no_network_outside_integration, dns_target, pool, what, open_arg
+):
+    # `pool` was imported at collection: the patch is on the class.
+    _assert_refused(
+        request,
+        no_network_outside_integration,
+        what,
+        True,
+        lambda: pool(dns_target, min_size=1, open=open_arg),
+    )
+
+
+def test_opening_a_pool_is_refused_even_when_it_was_built_before_the_guard(
+    request, no_network_outside_integration, dns_target
+):
+    attempts = no_network_outside_integration
+    pool = object.__new__(psycopg_pool.ConnectionPool)
+    _REAL_POOL_INIT(pool, dns_target, open=False, min_size=1)  # no thread starts
+    try:
+        for opener in (pool.open, pool.__enter__):
+            _assert_refused(request, attempts, "ConnectionPool.open()", True, opener)
+        # What a pool worker calls once the pool is open: refused on its own.
+        _assert_refused(
+            request, attempts, "psycopg.Connection.connect", True, pool._connect
+        )
+    finally:
+        pool.close()
+
+    async def async_pool():
+        apool = object.__new__(psycopg_pool.AsyncConnectionPool)
+        _REAL_ASYNC_POOL_INIT(apool, dns_target, open=False, min_size=1)
+        try:
+            for opener in (apool.open, apool.__aenter__):
+                await _assert_refused_async(
+                    request, attempts, "AsyncConnectionPool.open()", True, opener
+                )
+            await _assert_refused_async(
+                request,
+                attempts,
+                "psycopg.AsyncConnection.connect",
+                True,
+                apool._connect,
+            )
+        finally:
+            await apool.close()
+
+    asyncio.run(async_pool())
+
+
+def test_a_refusal_swallowed_by_the_code_under_test_is_still_recorded(
+    no_network_outside_integration, dns_target
+):
+    def degrade():  # shaped like storage.db.ping() and record_trader_events
+        try:
+            psycopg.Connection.connect(dns_target)
+        except Exception:
+            return False
+
+    assert degrade() is False
+    assert no_network_outside_integration == ["psycopg.Connection.connect"]
+    no_network_outside_integration.clear()  # the fixture would fail this test
+
+
+def test_psycopg2_is_refused_when_importable_and_ignored_when_not(monkeypatch):
+    reached = []
+    fake = types.ModuleType("psycopg2")  # psycopg2 is not a dependency
+    fake.connect = lambda *a, **k: reached.append("connect")
+    fake._connect = lambda *a, **k: reached.append("_connect")
+    monkeypatch.setitem(sys.modules, "psycopg2", fake)
+    attempts: list[str] = []
+    refuse = net_guard.make_refuse("tests/unit/probe.py::test_probe", attempts)
+    net_guard.install_postgres_drivers(monkeypatch, refuse)
+    for call in (fake.connect, fake._connect):
+        with pytest.raises(net_guard.NetworkBlocked, match="tests/unit/probe.py"):
+            call(_DNS_TARGET)
+    assert attempts == ["psycopg2.connect", "psycopg2._connect"]
+    attempts.clear()
+    assert reached == []  # psycopg2.connect calls the module's _connect, looked
+    # up at call time, so a connect bound before the fixture is stopped there
+
+    monkeypatch.setitem(sys.modules, "psycopg2", None)  # import raises ImportError
+    net_guard.install_postgres_drivers(monkeypatch, refuse)  # must not raise
+
+
+def test_the_driver_patches_are_undone_with_the_monkeypatch(
+    no_network_outside_integration,
+):
+    def snapshot():
+        return {
+            "psycopg.connect": psycopg.connect,
+            "Connection.connect": vars(psycopg.Connection)["connect"],
+            "AsyncConnection.connect": vars(psycopg.AsyncConnection)["connect"],
+            "generators.connect": psycopg.generators.connect,
+            **{
+                f"{cls.__name__}.{name}": vars(cls)[name]
+                for cls in (
+                    psycopg_pool.ConnectionPool,
+                    psycopg_pool.AsyncConnectionPool,
+                )
+                for name in ("__init__", "open")
+            },
+        }
+
+    before = snapshot()
+    refuse = net_guard.make_refuse("tests/unit/probe.py::test_probe", [])
+    with pytest.MonkeyPatch.context() as inner:
+        net_guard.install_postgres_drivers(inner, refuse)
+        during = snapshot()
+    after = snapshot()
+    assert all(during[key] is not before[key] for key in before)
+    assert all(after[key] is before[key] for key in before)  # incl. staticmethod
