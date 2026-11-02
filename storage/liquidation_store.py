@@ -8,9 +8,12 @@ dropped by the natural key rather than overwriting the first copy.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
+import psycopg
 from psycopg.errors import UndefinedTable
+from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
 from ingestion.liquidations import KrakenMinuteAgg, Liquidation
@@ -93,6 +96,69 @@ _KRAKEN_FOLD_STATE_SQL = """
 """
 
 
+# Trouble with `kraken_fold_state` (a missing table, a missing privilege, a
+# table of the wrong shape, a lock or statement timeout) must never cost a
+# batch: the state is only the restart-dedupe extra, and without it the
+# recorder falls back to its in-memory uid set, which accepts the old restart
+# double count (<= one window, 100 trades per symbol). The warning is repeated
+# at most this often per (action, error type): a poll loop would otherwise
+# log it every few seconds for as long as the table stays broken.
+FOLD_STATE_WARN_EVERY_S = 300.0
+_monotonic = time.monotonic  # a seam: tests move the clock by hand
+_fold_state_last_warned: dict[tuple[str, str], float] = {}
+
+
+def _warn_fold_state_trouble(action: str, exc: psycopg.Error) -> None:
+    key = (action, type(exc).__name__)
+    now = _monotonic()
+    last = _fold_state_last_warned.get(key)
+    if last is not None and now - last < FOLD_STATE_WARN_EVERY_S:
+        return
+    _fold_state_last_warned[key] = now
+    if isinstance(exc, UndefinedTable):
+        what = (
+            "kraken_fold_state is missing (scripts/migrate_019.sql is not applied)"
+        )
+    else:
+        what = (
+            f"kraken_fold_state could not be {action} "
+            f"({type(exc).__name__}: {exc})"
+        )
+    if action == "written":
+        effect = (
+            "batch written without the restart-dedupe state: this process "
+            "keeps deduping in memory, but a restart can still double count "
+            "Kraken trades"
+        )
+    else:
+        effect = (
+            "starting with no restart-dedupe state: the first Kraken window "
+            "of this process can be counted twice (<= 100 trades per symbol)"
+        )
+    logger.warning(
+        f"{what}; {effect}; repeats are suppressed for "
+        f"{FOLD_STATE_WARN_EVERY_S:.0f}s",
+        extra={"error": f"{type(exc).__name__}: {exc}", "action": action},
+    )
+
+
+def _transaction_unusable(conn) -> bool:
+    """True when nothing more can be trusted on this connection's transaction.
+
+    `conn.transaction()` rolls back to its SAVEPOINT when the block raises,
+    but psycopg only logs a rollback that itself failed and lets the original
+    error bubble up. So after catching an error the connection may be gone
+    (`closed`, which includes `broken`) or the transaction still aborted
+    (INERROR). Carrying on would COMMIT an aborted transaction, which Postgres
+    turns into a ROLLBACK without an error: the batch would be reported as
+    written and be lost.
+    """
+    return conn.closed or conn.info.transaction_status in (
+        TransactionStatus.INERROR,
+        TransactionStatus.UNKNOWN,
+    )
+
+
 def _kraken_minute_row(agg: KrakenMinuteAgg) -> tuple:
     return (
         agg.symbol,
@@ -143,9 +209,14 @@ def write_liquidation_batch(
     `kraken_seen` is `{symbol: uids already folded into the aggregate}`, the
     recorder's restart-dedupe state; it is stored in this same transaction so
     it can never describe trades the aggregate does not hold, or the other way
-    round. If `kraken_fold_state` does not exist yet (scripts/migrate_019.sql
-    not applied) the state is skipped with a warning and the rest of the batch
-    still lands, as it did before the table existed.
+    round. If the state statement fails with ANY database error (the table
+    does not exist yet because scripts/migrate_019.sql is not applied, a
+    privilege or shape problem, a lock timeout) it is undone alone, by the
+    SAVEPOINT, with a rate-limited warning, and the rest of the batch still
+    lands, as it did before the table existed. The one exception is a
+    transaction that is no longer usable (the connection died): that fails the
+    whole batch for the caller to retry. Errors on the core upserts are never
+    caught here.
     """
     if not liquidations and not coverage and not kraken_minutes and not kraken_coverage:
         return
@@ -177,12 +248,10 @@ def write_liquidation_batch(
                                 for symbol, uids in kraken_seen.items()
                             ],
                         )
-                except UndefinedTable:
-                    logger.warning(
-                        "kraken_fold_state is missing (scripts/migrate_019.sql is "
-                        "not applied): batch written without the restart-dedupe "
-                        "state, so a restart can still double count Kraken trades"
-                    )
+                except psycopg.Error as exc:
+                    if _transaction_unusable(conn):
+                        raise  # not a state problem: fail the batch, retry whole
+                    _warn_fold_state_trouble("written", exc)
             if kraken_coverage:
                 cur.executemany(
                     _KRAKEN_COVERAGE_SQL,
@@ -206,20 +275,23 @@ def load_kraken_seen_uids() -> dict[str, list[str]]:
     """The uids each symbol's previous recorder process had folded, oldest first.
 
     Read once, before the first Kraken poll of a new process, so the first
-    window is not folded a second time. `{}` when the table does not exist yet
-    (migrate_019 not applied): the recorder then behaves as it did before the
-    table, and says so. Any other failure propagates, and the recorder waits
-    rather than folding a window it cannot dedupe.
+    window is not folded a second time. `{}` when the SELECT itself fails with
+    a database error (the table does not exist yet because migrate_019 is not
+    applied, a privilege or shape problem): the recorder then dedupes in memory
+    only, as it did before the table, and says so, because waiting would keep
+    Kraken unpolled for as long as the table stays broken. A failure that is
+    not about the table propagates, and the recorder waits rather than folding
+    a window it cannot dedupe: no connection from the pool (Postgres not up
+    yet), or a connection that died during the read.
     """
-    try:
-        with get_pool().connection() as conn:
+    with get_pool().connection() as conn:
+        try:
             rows = conn.execute(
                 "SELECT symbol, uids FROM kraken_fold_state"
             ).fetchall()
-    except UndefinedTable:
-        logger.warning(
-            "kraken_fold_state is missing (scripts/migrate_019.sql is not "
-            "applied): starting with no restart-dedupe state"
-        )
-        return {}
+        except psycopg.Error as exc:
+            if conn.closed:
+                raise
+            _warn_fold_state_trouble("read", exc)
+            return {}
     return {symbol: [str(u) for u in uids] for symbol, uids in rows}

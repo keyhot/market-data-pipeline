@@ -850,11 +850,14 @@ def test_a_database_that_cannot_be_reached_still_stops_the_state_load(pg):
         store_mod.load_kraken_seen_uids()
 
 
-def test_a_connection_lost_on_the_state_read_still_stops_the_state_load(pg):
+def test_a_connection_lost_on_the_state_read_still_stops_the_state_load(pg, caplog):
+    # A dead connection says nothing about the table: no "fold-state trouble"
+    # warning, and the error propagates (the pool's exit would raise it too).
     def cut(sql):
         pg.broken = True
         raise psycopg.OperationalError("server closed the connection unexpectedly")
 
     pg.before = cut
-    with pytest.raises(psycopg.OperationalError):
+    with caplog.at_level(logging.WARNING), pytest.raises(psycopg.OperationalError):
         store_mod.load_kraken_seen_uids()
+    assert not _state_warnings(caplog)
