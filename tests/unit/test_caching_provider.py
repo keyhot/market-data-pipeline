@@ -3,9 +3,16 @@ import pytest
 
 from ingestion.caching_provider import CachingProvider
 
+# F5 (audit 4): the production clock is time.monotonic(), which reads about a
+# million seconds on a host that has been up a fortnight. A fake that starts at 0
+# makes `clock() + ttl == ttl`, so a store that forgot the `clock() +` (and so
+# expired every entry at once) stayed green. Start well away from zero. The .5 is
+# exactly representable, so the boundary arithmetic below stays exact.
+BOOT = 1_054_798.5
+
 
 class FakeClock:
-    def __init__(self, t: float = 0.0):
+    def __init__(self, t: float = BOOT):
         self.t = t
 
     def __call__(self) -> float:
@@ -31,7 +38,7 @@ class CountingProvider:
 
 def test_cache_miss_then_hit_returns_same_value_without_recalling_inner():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     first = cache.get_history("AAPL", "1d")
     second = cache.get_history("AAPL", "1d")
@@ -42,7 +49,7 @@ def test_cache_miss_then_hit_returns_same_value_without_recalling_inner():
 
 def test_ttl_expiry_triggers_refetch():
     inner = CountingProvider()
-    clock = FakeClock(0)
+    clock = FakeClock(BOOT)
     cache = CachingProvider(inner, ttl_seconds=30, clock=clock)
 
     cache.get_history("AAPL", "1d")
@@ -57,7 +64,7 @@ def test_ttl_expiry_triggers_refetch():
 
 def test_keys_are_separated_by_method_symbol_and_arg():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     cache.get_history("AAPL", "1d")
     cache.get_history("AAPL", "5d")
@@ -71,7 +78,7 @@ def test_keys_are_separated_by_method_symbol_and_arg():
 
 def test_lru_eviction_at_max_entries():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, max_entries=2, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, max_entries=2, clock=FakeClock(BOOT))
 
     cache.get_history("AAPL", "1d")
     cache.get_history("MSFT", "1d")
@@ -101,7 +108,7 @@ def test_inner_exceptions_are_not_cached():
             return pd.Series()
 
     inner = FlakyProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     with pytest.raises(RuntimeError):
         cache.get_history("AAPL", "1d")
@@ -113,7 +120,7 @@ def test_inner_exceptions_are_not_cached():
 
 def test_invalidate_specific_key():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     cache.get_history("AAPL", "1d")
     cache.get_history("MSFT", "1d")
@@ -126,7 +133,7 @@ def test_invalidate_specific_key():
 
 def test_invalidate_all():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     cache.get_history("AAPL", "1d")
     cache.get_events("AAPL", "dividends")
@@ -140,7 +147,7 @@ def test_invalidate_all():
 
 def test_peek_history_returns_none_on_miss():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     assert cache.peek_history("AAPL", "1d") is None
     assert inner.history_calls == 0
@@ -148,7 +155,7 @@ def test_peek_history_returns_none_on_miss():
 
 def test_peek_history_returns_cached_on_hit_without_calling_inner():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     cache.get_history("AAPL", "1d")
     assert inner.history_calls == 1
@@ -160,7 +167,7 @@ def test_peek_history_returns_cached_on_hit_without_calling_inner():
 
 def test_peek_events_returns_none_on_miss_and_value_on_hit():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     assert cache.peek_events("AAPL", "dividends") is None
     cache.get_events("AAPL", "dividends")
@@ -170,7 +177,7 @@ def test_peek_events_returns_none_on_miss_and_value_on_hit():
 
 def test_invalidate_history_clears_specific_key():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     cache.get_history("AAPL", "1d")
     cache.get_history("MSFT", "1d")
@@ -182,7 +189,7 @@ def test_invalidate_history_clears_specific_key():
 
 def test_invalidate_events_clears_specific_key():
     inner = CountingProvider()
-    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(0))
+    cache = CachingProvider(inner, ttl_seconds=60, clock=FakeClock(BOOT))
 
     cache.get_events("AAPL", "dividends")
     cache.get_events("AAPL", "splits")
