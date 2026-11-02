@@ -213,6 +213,16 @@ CREATE TABLE IF NOT EXISTS liquidation_coverage_kraken (
     PRIMARY KEY (symbol, minute)
 );
 
+-- F10 (scripts/migrate_019.sql): the Kraken recorder's folded-uid set, one row
+-- per symbol, written in the same transaction as the kraken_trade_minutes
+-- upsert it describes and loaded before the first poll after a restart, so the
+-- additive upsert does not count the previous process's trades twice.
+CREATE TABLE IF NOT EXISTS kraken_fold_state (
+    symbol     TEXT        PRIMARY KEY,
+    uids       JSONB       NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- KI-091: the migration ledger. Which scripts/migrate_NNN.sql a database has,
 -- RECORDING ONLY: nothing applies a migration, and the app only reads this
 -- (storage/migrations.py logs a warning at startup for any migrate_NNN.sql on
@@ -228,5 +238,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 INSERT INTO schema_migrations (version) VALUES
-    ('009'), ('012'), ('013'), ('014'), ('015'), ('016'), ('017'), ('018')
+    ('009'), ('012'), ('013'), ('014'), ('015'), ('016'), ('017'), ('018'),
+    ('019')
 ON CONFLICT (version) DO NOTHING;

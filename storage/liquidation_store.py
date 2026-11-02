@@ -7,12 +7,16 @@ dropped by the natural key rather than overwriting the first copy.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
+from psycopg.errors import UndefinedTable
 from psycopg.types.json import Jsonb
 
 from ingestion.liquidations import KrakenMinuteAgg, Liquidation
 from storage.db import get_pool
+
+logger = logging.getLogger(__name__)
 
 _LIQUIDATIONS_SQL = """
     INSERT INTO liquidations
@@ -53,6 +57,13 @@ _KRAKEN_COVERAGE_SQL = """
 # aggregating, so trade_count/total_size/size_near_min/size_near_max summing
 # here never double-counts a trade. min/max price converge to the true
 # minute extremes via LEAST/GREATEST regardless of poll order.
+#
+# The uid set that does the deduping is the recorder's own, so it has to
+# outlive the process: a restarted recorder would otherwise fold again the
+# trades its predecessor already flushed, and this upsert would ADD them
+# (audit 5 F10). `kraken_fold_state` below carries the set across a restart.
+# Replacing instead of adding is not a fix: a minute whose trades are split
+# across two processes (or two polls) would be undercounted.
 _KRAKEN_MINUTES_SQL = """
     INSERT INTO kraken_trade_minutes
         (symbol, minute, min_price, max_price, trade_count, total_size,
@@ -67,6 +78,18 @@ _KRAKEN_MINUTES_SQL = """
         size_near_max = kraken_trade_minutes.size_near_max + EXCLUDED.size_near_max,
         liq_count = kraken_trade_minutes.liq_count + EXCLUDED.liq_count,
         liq_size = kraken_trade_minutes.liq_size + EXCLUDED.liq_size
+"""
+
+# The recorder's folded-uid set per symbol (scripts/migrate_019.sql), written
+# in the SAME transaction as the minute upsert it vouches for: the aggregate
+# and the set that says "these trades are already in it" land together or not
+# at all. REPLACE, never merge: the recorder sends its whole set each time.
+_KRAKEN_FOLD_STATE_SQL = """
+    INSERT INTO kraken_fold_state (symbol, uids, updated_at)
+    VALUES (%s, %s, now())
+    ON CONFLICT (symbol) DO UPDATE SET
+        uids = EXCLUDED.uids,
+        updated_at = EXCLUDED.updated_at
 """
 
 
@@ -107,6 +130,7 @@ def write_liquidation_batch(
     coverage: list[tuple[str, int, int]],
     kraken_minutes: list[KrakenMinuteAgg] = (),
     kraken_coverage: list[tuple[str, int, bool, int]] = (),
+    kraken_seen: dict[str, list[str]] | None = None,
 ) -> None:
     """Liquidations, coverage, and the Kraken aggregate — one transaction.
 
@@ -115,6 +139,13 @@ def write_liquidation_batch(
     four lists to retry. `coverage` is `(venue, minute_start_epoch_s,
     rows_received)`; `kraken_coverage` is `(symbol, minute_start_epoch_s,
     covered, rows_received)`.
+
+    `kraken_seen` is `{symbol: uids already folded into the aggregate}`, the
+    recorder's restart-dedupe state; it is stored in this same transaction so
+    it can never describe trades the aggregate does not hold, or the other way
+    round. If `kraken_fold_state` does not exist yet (scripts/migrate_019.sql
+    not applied) the state is skipped with a warning and the rest of the batch
+    still lands, as it did before the table existed.
     """
     if not liquidations and not coverage and not kraken_minutes and not kraken_coverage:
         return
@@ -136,6 +167,22 @@ def write_liquidation_batch(
                 cur.executemany(
                     _KRAKEN_MINUTES_SQL, [_kraken_minute_row(a) for a in kraken_minutes]
                 )
+            if kraken_seen:
+                try:
+                    with conn.transaction():  # a SAVEPOINT: only the state is undone
+                        cur.executemany(
+                            _KRAKEN_FOLD_STATE_SQL,
+                            [
+                                (symbol, Jsonb(list(uids)))
+                                for symbol, uids in kraken_seen.items()
+                            ],
+                        )
+                except UndefinedTable:
+                    logger.warning(
+                        "kraken_fold_state is missing (scripts/migrate_019.sql is "
+                        "not applied): batch written without the restart-dedupe "
+                        "state, so a restart can still double count Kraken trades"
+                    )
             if kraken_coverage:
                 cur.executemany(
                     _KRAKEN_COVERAGE_SQL,
@@ -153,3 +200,26 @@ def latest_coverage() -> dict[str, datetime]:
             "SELECT venue, max(minute) FROM liquidation_coverage GROUP BY venue"
         ).fetchall()
     return {venue: minute for venue, minute in rows}
+
+
+def load_kraken_seen_uids() -> dict[str, list[str]]:
+    """The uids each symbol's previous recorder process had folded, oldest first.
+
+    Read once, before the first Kraken poll of a new process, so the first
+    window is not folded a second time. `{}` when the table does not exist yet
+    (migrate_019 not applied): the recorder then behaves as it did before the
+    table, and says so. Any other failure propagates, and the recorder waits
+    rather than folding a window it cannot dedupe.
+    """
+    try:
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                "SELECT symbol, uids FROM kraken_fold_state"
+            ).fetchall()
+    except UndefinedTable:
+        logger.warning(
+            "kraken_fold_state is missing (scripts/migrate_019.sql is not "
+            "applied): starting with no restart-dedupe state"
+        )
+        return {}
+    return {symbol: [str(u) for u in uids] for symbol, uids in rows}

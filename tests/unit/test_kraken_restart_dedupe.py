@@ -26,7 +26,7 @@ import copy
 import operator
 import re
 import socket
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 
 import psycopg
@@ -35,7 +35,7 @@ from psycopg.errors import UndefinedTable
 
 import storage.db as storage_db
 import storage.liquidation_store as store_mod
-from ingestion.liquidation_recorder import LiquidationRecorder
+from ingestion.liquidation_recorder import KRAKEN_SEEN_UID_CAP, LiquidationRecorder
 from ingestion.liquidations import aggregate_kraken_minutes, parse_kraken_history
 
 SYM = "PF_XBTUSD"
@@ -275,11 +275,14 @@ def _count(stored):
 
 def _boot(symbols=(SYM,)):
     """A fresh recorder process, wired the way scripts/liquidation_recorder.py does."""
-    return LiquidationRecorder(
+    recorder = LiquidationRecorder(
         store_mod.write_liquidation_batch,
         clock=lambda: 1_790_000_000.0,
         kraken_symbols=symbols,
+        load_kraken_seen=store_mod.load_kraken_seen_uids,
     )
+    recorder.seed_kraken_state()
+    return recorder
 
 
 def _poll(recorder, lo, hi, symbol=SYM):
@@ -353,3 +356,197 @@ def test_a_restart_after_a_full_window_of_downtime_has_nothing_to_remove(pg):
 
     assert _count(_stored(pg)) == 200
     assert _stored(pg) == _expected(range(200))
+
+
+# === added with the fix =============================================================
+
+
+def test_a_minute_split_across_the_restart_is_counted_exactly(pg):
+    # Minute 01:00 holds trades 50..: A folded 50..99, B folds 100..149. The
+    # total is 100: not 150 (the overlap twice) and not 50 (a replace-style
+    # store, or skipping B's first window, loses what printed while down).
+    a = _boot()
+    _poll(a, 0, 100)
+    assert _flush(a)
+    before = _stored(pg)
+    assert before[(SYM, M1)][0] == 50
+    del a
+
+    b = _boot()
+    _poll(b, 50, 150)
+    assert _flush(b)
+    after = _stored(pg)
+
+    assert after[(SYM, M0)] == before[(SYM, M0)]  # the finished minute is untouched
+    assert after[(SYM, M1)][0] == 100
+    assert after == _expected(range(150))  # sizes and liq_count too
+
+
+def test_trades_folded_but_never_flushed_are_counted_by_the_next_process(pg):
+    # A is killed after folding 100..139 and before flushing them. Those
+    # trades are not in the DB, so they must not be in the persisted state
+    # either: B's window 90..189 has to count 100..189, not skip 100..139.
+    a = _boot()
+    _poll(a, 0, 100)
+    assert _flush(a)
+    _poll(a, 40, 140)  # folded into the buffer only
+    del a
+
+    b = _boot()
+    _poll(b, 90, 190)
+    assert _flush(b)
+
+    assert _count(_stored(pg)) == 190
+    assert _stored(pg) == _expected(range(190))
+
+
+def test_a_failed_write_keeps_the_state_with_its_batch(pg):
+    # The batch (aggregates AND the state that vouches for them) is restored
+    # after a failed write. No poll arrives before the retry, so nothing
+    # re-snapshots the state: it has to come back with the batch.
+    a = _boot()
+    _poll(a, 0, 100)
+    pg.down = True
+    assert _flush(a) is False
+    assert pg.minutes == {} and pg.fold_state == {}
+    pg.down = False
+    assert _flush(a) is True
+    assert _count(_stored(pg)) == 100
+    assert set(pg.fold_state[SYM]) == {f"{SYM}:{i}" for i in range(100)}
+    del a
+
+    b = _boot()
+    _poll(b, 50, 150)
+    assert _flush(b)
+    assert _stored(pg) == _expected(range(150))
+
+
+def test_the_state_lands_in_the_same_transaction_as_the_minutes(pg):
+    # The connection dies on the state statement, AFTER the minute upserts
+    # ran. Both must roll back together; the retry then applies the batch once.
+    def cut(sql):
+        if "kraken_fold_state" in sql:
+            raise psycopg.OperationalError("connection lost")
+
+    a = _boot()
+    _poll(a, 0, 100)
+    pg.before = cut
+    assert _flush(a) is False
+    assert pg.minutes == {} and pg.fold_state == {}
+
+    pg.before = None
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(100))  # once, not twice
+    assert len(pg.fold_state[SYM]) == 100
+
+
+def test_a_database_without_the_state_table_still_takes_the_batch(pg):
+    # Deploy order: this code may run before migrate_019.sql is applied. The
+    # recorder must keep recording (as it did before the fix), once per
+    # batch, with the state write skipped inside its SAVEPOINT.
+    pg.state_table = False
+    assert store_mod.load_kraken_seen_uids() == {}
+
+    a = _boot()
+    _poll(a, 0, 100)
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(100))  # not rolled back, not repeated
+    assert pg.fold_state == {}
+
+    pg.state_table = True  # the owner applies the migration later
+    _poll(a, 50, 150)
+    assert _flush(a) is True
+    assert _stored(pg) == _expected(range(150))
+    assert len(pg.fold_state[SYM]) == 150
+
+
+def test_a_recorder_without_a_loader_does_not_touch_the_state_table(pg):
+    recorder = LiquidationRecorder(
+        store_mod.write_liquidation_batch,
+        clock=lambda: 1_790_000_000.0,
+        kraken_symbols=(SYM,),
+    )
+    assert recorder._kraken_seeded  # nothing to wait for
+    pg.state_table = False
+    _poll(recorder, 0, 100)
+    assert _flush(recorder) is True
+    assert _count(_stored(pg)) == 100
+
+
+def test_each_symbol_keeps_its_own_state(pg):
+    a = _boot((SYM, ETH))
+    _poll(a, 0, 100, ETH)
+    assert _flush(a)
+    _poll(a, 0, 100, SYM)  # a batch that folds BTC only
+    assert _flush(a)
+    assert set(pg.fold_state) == {SYM, ETH}  # ETH's state survived BTC's batch
+    del a
+
+    b = _boot((SYM, ETH))
+    _poll(b, 50, 150, ETH)  # overlaps A's ETH window
+    _poll(b, 100, 200, SYM)  # does not overlap A's BTC window
+    assert _flush(b)
+    assert _stored(pg, ETH) == _expected(range(150), ETH)
+    assert _stored(pg, SYM) == _expected(range(200), SYM)
+
+
+def test_the_persisted_set_is_the_newest_uids_up_to_the_cap(pg):
+    a = _boot()
+    for lo in range(0, 600, 100):
+        _poll(a, lo, lo + 100)
+    assert _flush(a)
+    uids = pg.fold_state[SYM]
+    assert len(uids) == KRAKEN_SEEN_UID_CAP
+    assert {f"{SYM}:{i}" for i in range(500, 600)} <= set(uids)
+    assert f"{SYM}:0" not in uids
+
+
+def test_polling_waits_for_the_state_and_the_first_window_is_not_recounted(
+    pg, monkeypatch
+):
+    # Through the real REST loop. The first load fails (Postgres not up yet):
+    # no history request may go out until the state is loaded, otherwise the
+    # first window would be folded without it and then overwrite the state.
+    a = _boot()
+    _poll(a, 0, 100)
+    assert _flush(a)
+    del a
+
+    loads = {"n": 0}
+    history_after_loads = []
+
+    def flaky_load():
+        loads["n"] += 1
+        if loads["n"] == 1:
+            raise ConnectionError("postgres is not up yet")
+        return store_mod.load_kraken_seen_uids()
+
+    def fake_get_json(url, timeout=10.0):
+        if "history" not in url:
+            return {}
+        history_after_loads.append(loads["n"])
+        return _window(50, 150)
+
+    monkeypatch.setattr("ingestion.liquidation_recorder._get_json", fake_get_json)
+    b = LiquidationRecorder(
+        store_mod.write_liquidation_batch,
+        clock=lambda: 1_790_000_000.0,
+        kraken_symbols=(SYM,),
+        kraken_poll_seconds=0.01,
+        load_kraken_seen=flaky_load,
+    )
+
+    async def scenario():
+        task = asyncio.create_task(b._kraken_rest_loop())
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        await b.flush()
+
+    asyncio.run(scenario())
+
+    assert loads["n"] >= 2
+    assert history_after_loads and min(history_after_loads) >= 2
+    assert len(history_after_loads) > 1  # the same window, polled again and again
+    assert _stored(pg) == _expected(range(150))

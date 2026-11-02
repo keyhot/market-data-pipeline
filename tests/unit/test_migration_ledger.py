@@ -128,6 +128,7 @@ class TestOnDiskVersions:
             "016",
             "017",
             "018",
+            "019",
         ]
 
 
