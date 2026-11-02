@@ -72,8 +72,10 @@ async def _world_event_stream(poll_seconds: float):
             newest_first = stored  # reader returns newest first
             if last_id is None:
                 # Events from before the connect; the page fetched those
-                # via /world/events.
-                last_id = newest_first[0]["id"]
+                # via /world/events. The window is newest by occurred_at, not
+                # by id (back-dated rows get a higher id but sort lower), so
+                # the watermark is the highest id in it, not row 0's.
+                last_id = max(e["id"] for e in newest_first)
             else:
                 fresh = [e for e in newest_first if e["id"] > last_id]
                 for event in reversed(fresh):  # emit oldest first
