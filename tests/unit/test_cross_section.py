@@ -240,7 +240,9 @@ def test_slippage_is_floored_and_point_in_time():
     assert (s.dropna() >= 0.0001).all().all()
     h2 = high.copy()
     h2.iloc[51:] *= 3
-    pd.testing.assert_frame_equal(s.iloc[:51], slippage_per_side(h2, low, close).iloc[:51])
+    pd.testing.assert_frame_equal(
+        s.iloc[:51], slippage_per_side(h2, low, close).iloc[:51]
+    )
 
 
 # ------------------------------------------------------------- model ------
@@ -263,12 +265,17 @@ def test_walk_forward_scores_do_not_see_targets_from_the_month_they_score():
     feats = daily_features(close, pd.DataFrame(0.0, index=close.index,
                                                columns=close.columns))
     target = forward_returns(close)
-    start, end = pd.Timestamp("2021-05-01", tz="UTC"), pd.Timestamp("2021-08-15", tz="UTC")
+    start, end = (
+        pd.Timestamp("2021-05-01", tz="UTC"),
+        pd.Timestamp("2021-08-15", tz="UTC"),
+    )
     base = walk_forward_scores(feats, target, elig, start, end, min_train_days=60)
     for month in ("2021-06-01", "2021-07-01"):
         R = pd.Timestamp(month, tz="UTC")
         t2 = target.copy()
-        t2.loc[t2.index >= R] = np.random.default_rng(3).normal(0, 1, t2.loc[t2.index >= R].shape)
+        t2.loc[t2.index >= R] = np.random.default_rng(3).normal(
+            0, 1, t2.loc[t2.index >= R].shape
+        )
         again = walk_forward_scores(feats, t2, elig, start, end, min_train_days=60)
         stop = R + pd.offsets.MonthBegin(1)
         span = (base.index >= R) & (base.index < stop)
@@ -296,7 +303,10 @@ def test_a_non_finite_ridge_beta_fails_loud_instead_of_flattening_the_book(
     feats = daily_features(close, pd.DataFrame(0.0, index=close.index,
                                                columns=close.columns))
     target = forward_returns(close)
-    start, end = pd.Timestamp("2021-05-01", tz="UTC"), pd.Timestamp("2021-06-15", tz="UTC")
+    start, end = (
+        pd.Timestamp("2021-05-01", tz="UTC"),
+        pd.Timestamp("2021-06-15", tz="UTC"),
+    )
     kwargs = dict(features=feats, target=target, eligible=elig, start=start,
                   end=end, min_train_days=60)
     assert np.isfinite(walk_forward_scores(**kwargs).to_numpy()[elig.to_numpy()]).any()
@@ -336,7 +346,9 @@ def test_decile_weights_are_market_neutral_with_the_decile_book():
 
 def test_costs_are_charged_on_what_trades_not_on_the_whole_book():
     days = _days(4)
-    w = pd.DataFrame({"A": [0.5, 0.5, 0.5, 0.0], "B": [-0.5, -0.5, -0.5, 0.0]}, index=days)
+    w = pd.DataFrame(
+        {"A": [0.5, 0.5, 0.5, 0.0], "B": [-0.5, -0.5, -0.5, 0.0]}, index=days
+    )
     zero = pd.DataFrame(0.0, index=days, columns=w.columns)
     pnl = portfolio_pnl(w, zero, zero, fee_per_side=0.0005, slippage=0.0001)
     assert pnl["cost"].tolist() == pytest.approx([0.0006, 0, 0, 0.0006])
@@ -361,8 +373,12 @@ def test_random_null_matches_exposure_and_turnover_per_day():
     close, qv = _panel(120, 60)
     elig = eligibility(qv, qv, warmup=5, liquidity_window=5, top_n=50)
     rng = np.random.default_rng(0)
-    scores = pd.DataFrame(rng.normal(size=close.shape), close.index, close.columns).where(elig)
-    scores = scores.rolling(20, min_periods=1).mean().where(elig)   # sticky -> partial retention
+    scores = pd.DataFrame(
+        rng.normal(size=close.shape), close.index, close.columns
+    ).where(elig)
+    scores = (
+        scores.rolling(20, min_periods=1).mean().where(elig)
+    )  # sticky -> partial retention
     w = decile_weights(scores)
     null = random_null_weights(w, elig, np.random.default_rng(1))
     zero = pd.DataFrame(0.0, index=w.index, columns=w.columns)
@@ -374,7 +390,7 @@ def test_random_null_matches_exposure_and_turnover_per_day():
     np.testing.assert_allclose((null < 0).sum(axis=1), (w < 0).sum(axis=1))
     np.testing.assert_allclose(null.clip(lower=0).sum(axis=1)[active], 1.0)
     same = np.isclose(null_t[active], model_t[active], atol=1e-9)
-    assert same.mean() > 0.9         # exact unless a retained null name left the universe
+    assert same.mean() > 0.9  # exact unless a retained null name left the universe
     assert null_t[active].mean() == pytest.approx(model_t[active].mean(), rel=0.05)
     assert not (null.where(~elig.fillna(False)).fillna(0) != 0).any().any()
     assert (null != w).any().any()
@@ -416,7 +432,9 @@ def test_block_bootstrap_ci_is_a_95_percent_interval_and_can_draw_either_end():
     series shows up in the upper bound."""
     x = np.random.default_rng(11).normal(0.0, 0.02, 200)
     _, lo, hi = block_bootstrap_ci(x, block=1, n=5000)
-    assert (hi - lo) / 2 == pytest.approx(1.96 * x.std(ddof=1) / np.sqrt(len(x)), rel=0.08)
+    assert (hi - lo) / 2 == pytest.approx(
+        1.96 * x.std(ddof=1) / np.sqrt(len(x)), rel=0.08
+    )
     for at in (0, -1):
         spike = np.zeros(100)
         spike[at] = 1.0
@@ -533,7 +551,9 @@ def _hourly(n_days=40, n_sym=3, seed=1):
     rng = np.random.default_rng(seed)
     idx = pd.date_range("2023-01-01", periods=n_days * 24, freq="h", tz="UTC")
     cols = [f"S{i}USDT" for i in range(n_sym)]
-    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.005, (len(idx), n_sym)), 0)), idx, cols)
+    close = pd.DataFrame(
+        100 * np.exp(np.cumsum(rng.normal(0, 0.005, (len(idx), n_sym)), 0)), idx, cols
+    )
     high = close * np.exp(np.abs(rng.normal(0, 0.003, close.shape)))
     low = close * np.exp(-np.abs(rng.normal(0, 0.003, close.shape)))
     return high, low, close
@@ -567,7 +587,9 @@ def test_hourly_ar_is_point_in_time_for_every_day():
         h2.loc[after] *= 1.5
         moved = slippage_hourly(h2, low, close, days)
         pd.testing.assert_frame_equal(base.loc[:d], moved.loc[:d])
-        assert not base.loc[d + pd.Timedelta(days=1):].equals(moved.loc[d + pd.Timedelta(days=1):])
+        assert not base.loc[d + pd.Timedelta(days=1) :].equals(
+            moved.loc[d + pd.Timedelta(days=1) :]
+        )
 
 
 def test_depth_slippage_is_the_linear_book_formula_as_of_backward():
@@ -576,11 +598,19 @@ def test_depth_slippage_is_the_linear_book_formula_as_of_backward():
     d1 = pd.DataFrame({"AUSDT": [1e6, 2e6, 4e6]}, wed)
     out = slippage_depth(d1, days, ["AUSDT", "BUSDT"], order_usd=1e5)
     assert out["AUSDT"].loc[:"2023-01-03"].isna().all()     # before the first sample
-    assert out["BUSDT"].isna().all()                        # never sampled
-    assert out.loc["2023-01-04", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 1e6)
-    assert out.loc["2023-01-10", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 1e6)
-    assert out.loc["2023-01-11", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 2e6)
-    assert out.loc["2023-01-21", "AUSDT"] == pytest.approx(1e-4 + 0.5 * 0.01 * 1e5 / 4e6)
+    assert out["BUSDT"].isna().all()  # never sampled
+    assert out.loc["2023-01-04", "AUSDT"] == pytest.approx(
+        1e-4 + 0.5 * 0.01 * 1e5 / 1e6
+    )
+    assert out.loc["2023-01-10", "AUSDT"] == pytest.approx(
+        1e-4 + 0.5 * 0.01 * 1e5 / 1e6
+    )
+    assert out.loc["2023-01-11", "AUSDT"] == pytest.approx(
+        1e-4 + 0.5 * 0.01 * 1e5 / 2e6
+    )
+    assert out.loc["2023-01-21", "AUSDT"] == pytest.approx(
+        1e-4 + 0.5 * 0.01 * 1e5 / 4e6
+    )
 
 
 def test_depth_slippage_is_point_in_time_for_every_sample():
@@ -592,4 +622,6 @@ def test_depth_slippage_is_point_in_time_for_every_sample():
     for d in days[3:]:
         d2 = d1.copy()
         d2.loc[d2.index > d] *= 10
-        pd.testing.assert_frame_equal(base.loc[:d], slippage_depth(d2, days, ["AUSDT"], order_usd=1e5).loc[:d])
+        pd.testing.assert_frame_equal(
+            base.loc[:d], slippage_depth(d2, days, ["AUSDT"], order_usd=1e5).loc[:d]
+        )

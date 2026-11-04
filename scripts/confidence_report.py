@@ -77,7 +77,9 @@ def _forward_returns(
     return fwd.loc[index].to_numpy()
 
 
-LN2 = float(np.log(2))  # coin-flip log loss: the reference every LL below is judged against
+LN2 = float(
+    np.log(2)
+)  # coin-flip log loss: the reference every LL below is judged against
 
 
 def log_loss_score(y: np.ndarray, p: np.ndarray) -> float:

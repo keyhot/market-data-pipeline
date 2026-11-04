@@ -19,7 +19,9 @@ import archive_report as ar  # noqa: E402
 import report_results  # noqa: E402
 
 
-def _make_oos(gross_positive: bool, control_value: float, row_share: float) -> tuple[pd.DataFrame, dict]:
+def _make_oos(
+    gross_positive: bool, control_value: float, row_share: float
+) -> tuple[pd.DataFrame, dict]:
     if gross_positive:
         # top quintile (conf tie at 0.4) = last two rows, both long, both +
         arm_col = [0.5] * 6 + [0.9, 0.9]

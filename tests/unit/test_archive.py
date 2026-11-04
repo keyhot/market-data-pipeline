@@ -4,8 +4,8 @@ import pytest
 
 from model.archive import (
     DEPTH_FEATURES,
-    METRICS_FEATURES,
     DEPTH_MAX_AGE,
+    METRICS_FEATURES,
     METRICS_MAX_AGE,
     METRICS_STEP,
     asof,
@@ -27,7 +27,7 @@ _METRICS_CSV = """create_time,symbol,sum_open_interest,sum_open_interest_value,c
 2020-09-01 00:00:00,BTCUSDT,39080.23100000,456144339.23360443,1.17547937,1.23012681,1.35731217,0.78373373
 2020-09-01 00:00:00,BTCUSDT,39080.23100000,456144339.23360443,1.17547937,1.23012681,1.35731217,0.78373373
 2020-09-01 00:05:00,BTCUSDT,39106.41300000,455693833.60853225,1.17905012,1.22928510,1.35924435,0.85063183
-"""
+"""  # noqa: E501
 
 
 def _grid(n, start="2025-01-01", freq="15min"):
@@ -172,7 +172,7 @@ def test_a_metrics_row_is_carried_for_exactly_15_minutes_at_the_close_and_no_lon
     assert np.isnan(got.iloc[1])
 
 
-def test_a_depth_snapshot_is_carried_for_exactly_10_minutes_at_the_close_and_no_longer():
+def test_a_depth_snapshot_is_carried_for_exactly_10_minutes_at_the_close_and_no_longer():  # noqa: E501
     """KI-096: DEPTH_MAX_AGE, same boundary. A snapshot at 00:05 is 10 min old
     at the 00:15 close and 11 min old at the 00:16 close."""
     assert DEPTH_MAX_AGE == pd.Timedelta(minutes=10)

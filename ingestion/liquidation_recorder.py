@@ -179,7 +179,9 @@ class Buffer:
         self.coverage.extend((venue, m, n) for m, n in minutes)
 
     def cover_kraken(self, symbol: str, minutes: list[tuple[int, bool, int]]) -> None:
-        self.kraken_coverage.extend((symbol, m, covered, n) for m, covered, n in minutes)
+        self.kraken_coverage.extend(
+            (symbol, m, covered, n) for m, covered, n in minutes
+        )
 
     def add_kraken_minutes(self, aggs: list[KrakenMinuteAgg]) -> None:
         self.kraken_minutes.extend(aggs)
@@ -192,7 +194,12 @@ class Buffer:
         list[KrakenMinuteAgg],
         list[tuple[str, int, bool, int]],
     ]:
-        batch = (self.liquidations, self.coverage, self.kraken_minutes, self.kraken_coverage)
+        batch = (
+            self.liquidations,
+            self.coverage,
+            self.kraken_minutes,
+            self.kraken_coverage,
+        )
         self.liquidations, self.coverage, self.kraken_minutes, self.kraken_coverage = (
             [],
             [],
@@ -222,7 +229,8 @@ class Buffer:
             self.kraken_coverage.clear()
             self.rows_dropped += overflow
             logger.error(
-                "Liquidation buffer overflowed; oldest rows and pending coverage dropped",
+                "Liquidation buffer overflowed; "
+                "oldest rows and pending coverage dropped",
                 extra={"dropped": overflow},
             )
 
@@ -238,7 +246,9 @@ class LiquidationRecorder:
     ):
         self._write = write
         self.buffer = Buffer()
-        self._binance_url = binance_url or os.environ.get(BINANCE_URL_ENV) or BINANCE_WS_URL
+        self._binance_url = (
+            binance_url or os.environ.get(BINANCE_URL_ENV) or BINANCE_WS_URL
+        )
         self._clock = clock
         self.contracts: dict[str, OkxContract] = {}
         self.trackers = {
@@ -390,7 +400,12 @@ class LiquidationRecorder:
         """The writer-thread half of a flush: True when the batch landed."""
         kraken_minutes = kraken_minutes or []
         kraken_coverage = kraken_coverage or []
-        if not liquidations and not coverage and not kraken_minutes and not kraken_coverage:
+        if (
+            not liquidations
+            and not coverage
+            and not kraken_minutes
+            and not kraken_coverage
+        ):
             return True
         try:
             self._write(liquidations, coverage, kraken_minutes, kraken_coverage)
@@ -451,7 +466,9 @@ class LiquidationRecorder:
 
     async def _binance_session(self) -> None:
         async with websockets.connect(self._binance_url, ping_interval=None) as ws:
-            logger.info("Binance liquidation stream connected", extra={"url": self._binance_url})
+            logger.info(
+                "Binance liquidation stream connected", extra={"url": self._binance_url}
+            )
             keepalive = asyncio.create_task(self._binance_keepalive(ws))
             try:
                 async for message in ws:
@@ -519,14 +536,17 @@ class LiquidationRecorder:
             if self._clock() - contracts_at > CONTRACTS_REFRESH_S:
                 try:
                     payload = await asyncio.to_thread(
-                        _get_json, f"{OKX_REST_BASE}/api/v5/public/instruments?instType=SWAP"
+                        _get_json,
+                        f"{OKX_REST_BASE}/api/v5/public/instruments?instType=SWAP",
                     )
                     fresh = okx_contracts(payload)
                     if fresh:
                         self.contracts = fresh
                         contracts_at = self._clock()
                 except Exception as e:
-                    logger.warning("OKX instruments fetch failed", extra={"error": str(e)})
+                    logger.warning(
+                        "OKX instruments fetch failed", extra={"error": str(e)}
+                    )
             for uly in OKX_REST_UNDERLYINGS:
                 try:
                     payload = await asyncio.to_thread(
@@ -534,10 +554,16 @@ class LiquidationRecorder:
                         f"{OKX_REST_BASE}/api/v5/public/liquidation-orders"
                         f"?instType=SWAP&uly={uly}&state=filled",
                     )
-                    self.buffer.add(parse_okx_data(payload.get("data") or [], self.contracts, "rest"))
+                    self.buffer.add(
+                        parse_okx_data(
+                            payload.get("data") or [], self.contracts, "rest"
+                        )
+                    )
                 except Exception as e:
-                    logger.warning("OKX REST liquidation poll failed",
-                                   extra={"uly": uly, "error": str(e)})
+                    logger.warning(
+                        "OKX REST liquidation poll failed",
+                        extra={"uly": uly, "error": str(e)},
+                    )
             await asyncio.sleep(REST_POLL_EVERY_S)
 
     async def _kraken_rest_loop(self) -> None:
@@ -558,12 +584,15 @@ class LiquidationRecorder:
                         self.kraken_contracts = fresh
                         contracts_at = self._clock()
                 except Exception as e:
-                    logger.warning("Kraken instruments fetch failed", extra={"error": str(e)})
+                    logger.warning(
+                        "Kraken instruments fetch failed", extra={"error": str(e)}
+                    )
             ok = True
             for symbol in self._kraken_symbols:
                 try:
                     payload = await asyncio.to_thread(
-                        _get_json, f"{KRAKEN_REST_BASE}{KRAKEN_HISTORY_PATH}?symbol={symbol}"
+                        _get_json,
+                        f"{KRAKEN_REST_BASE}{KRAKEN_HISTORY_PATH}?symbol={symbol}",
                     )
                     self.process_kraken_response(symbol, payload)
                 except Exception as e:

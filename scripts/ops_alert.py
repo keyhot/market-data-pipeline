@@ -28,7 +28,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from alerts import mailer  # noqa: E402
-from alerts.rules import Check, check_backup, check_broadcast, check_world, decide, render  # noqa: E402
+from alerts.rules import (  # noqa: E402
+    Check,
+    check_backup,
+    check_broadcast,
+    check_world,
+    decide,
+    render,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +44,15 @@ HEALTH_TIMEOUT_S = 15
 
 
 def state_path() -> Path:
-    return Path(os.environ.get("OPS_ALERT_STATE", ROOT / "data" / "ops_alert_state.json"))
+    return Path(
+        os.environ.get("OPS_ALERT_STATE", ROOT / "data" / "ops_alert_state.json")
+    )
 
 
 def broadcast_status_path() -> Path:
-    return Path(os.environ.get("BROADCAST_STATUS_PATH", ROOT / "data" / "broadcast_status.json"))
+    return Path(
+        os.environ.get("BROADCAST_STATUS_PATH", ROOT / "data" / "broadcast_status.json")
+    )
 
 
 def read_json(path: Path) -> dict | None:
@@ -67,15 +78,23 @@ def _guarded(name: str, check) -> Check:
     try:
         return check()
     except Exception as exc:
-        return Check(name, True, f"the {name} check crashed: {type(exc).__name__}: {exc}")
+        return Check(
+            name, True, f"the {name} check crashed: {type(exc).__name__}: {exc}"
+        )
 
 
 def observe_system(now: datetime):
     health, error = _fetch_health()
     return [
-        _guarded("backup", lambda: check_backup(read_json(ROOT / "backups" / "last_status.json"), now)),
+        _guarded(
+            "backup",
+            lambda: check_backup(read_json(ROOT / "backups" / "last_status.json"), now),
+        ),
         _guarded("world", lambda: check_world(health, error)),
-        _guarded("broadcast", lambda: check_broadcast(read_json(broadcast_status_path()), now)),
+        _guarded(
+            "broadcast",
+            lambda: check_broadcast(read_json(broadcast_status_path()), now),
+        ),
     ]
 
 
@@ -91,7 +110,9 @@ def _write_state(state: dict) -> None:
     tmp.replace(path)
 
 
-def run_once(observe=None, send=None, now: datetime | None = None, dry_run=False) -> list:
+def run_once(
+    observe=None, send=None, now: datetime | None = None, dry_run=False
+) -> list:
     now = now or datetime.now(timezone.utc)
     send = send or _send_real
     state = read_json(state_path()) or {}
@@ -99,7 +120,9 @@ def run_once(observe=None, send=None, now: datetime | None = None, dry_run=False
     alerts, new_state = decide(checks, state, now)
     if dry_run:
         for check in checks:
-            print(f"{'FAIL' if check.failing else 'ok  '} {check.name}: {check.summary}")
+            print(
+                f"{'FAIL' if check.failing else 'ok  '} {check.name}: {check.summary}"
+            )
         if alerts:
             print("would send:\n  " + "\n  ".join(render(alerts)))
         return alerts
@@ -116,7 +139,10 @@ def run_once(observe=None, send=None, now: datetime | None = None, dry_run=False
                 subject,
                 f"{type(exc).__name__}: {exc}",
             )
-            kept = {**state, "undelivered_since": state.get("undelivered_since") or now.isoformat()}
+            kept = {
+                **state,
+                "undelivered_since": state.get("undelivered_since") or now.isoformat(),
+            }
             # The runner was watching even though the mail failed, so this run
             # counts against the gap clock — unless the undelivered alert IS
             # the gap notice, which must survive to be retried.
@@ -133,7 +159,9 @@ def main(argv=None) -> int:
     from config.logging import init_logging
 
     init_logging()
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--test-email", action="store_true")
     args = parser.parse_args(argv)

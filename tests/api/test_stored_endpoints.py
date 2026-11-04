@@ -20,7 +20,9 @@ NEWS = [
 
 
 def test_stored_events_returns_rows():
-    with patch("api.routers.stored.get_corporate_events", return_value=EVENTS) as reader:
+    with patch(
+        "api.routers.stored.get_corporate_events", return_value=EVENTS
+    ) as reader:
         response = client.get("/stored/events/aapl/dividends?limit=50")
 
     assert response.status_code == 200
@@ -32,7 +34,9 @@ def test_stored_events_returns_rows():
 
 
 def test_stored_events_actions_reads_all_types():
-    with patch("api.routers.stored.get_corporate_events", return_value=EVENTS) as reader:
+    with patch(
+        "api.routers.stored.get_corporate_events", return_value=EVENTS
+    ) as reader:
         response = client.get("/stored/events/AAPL/actions")
 
     assert response.status_code == 200
@@ -45,7 +49,9 @@ def test_stored_events_404_when_empty():
 
 
 def test_stored_events_503_when_postgres_down():
-    with patch("api.routers.stored.get_corporate_events", side_effect=RuntimeError("down")):
+    with patch(
+        "api.routers.stored.get_corporate_events", side_effect=RuntimeError("down")
+    ):
         assert client.get("/stored/events/AAPL/dividends").status_code == 503
 
 

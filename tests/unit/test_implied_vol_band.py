@@ -19,7 +19,9 @@ UTC = "UTC"
 
 def _dvol(ts, close):
     ts = pd.DatetimeIndex(ts)
-    return pd.DataFrame({"ts": ts, "open": close, "high": close, "low": close, "close": close})
+    return pd.DataFrame(
+        {"ts": ts, "open": close, "high": close, "low": close, "close": close}
+    )
 
 
 # ---------------------------------------------------------------- x_iv timing
@@ -55,7 +57,9 @@ def test_iv_feature_missing_candle_gives_nan_never_filled():
 # ---------------------------------------------------------------- loader cut
 
 def test_truncate_values_cuts_strictly_before_2026():
-    ts = pd.DatetimeIndex(["2025-12-31 23:00", "2026-01-01 00:00", "2026-03-01"], tz=UTC)
+    ts = pd.DatetimeIndex(
+        ["2025-12-31 23:00", "2026-01-01 00:00", "2026-03-01"], tz=UTC
+    )
     out = ivb.truncate_values(_dvol(ts, [1.0, 2.0, 3.0]))
     assert list(out["ts"]) == [ts[0]]
     assert ivb.SCORING_CUTOFF == pd.Timestamp("2026-01-01", tz=UTC)
@@ -67,7 +71,9 @@ def test_gap_share_counts_hours_by_timestamp_only():
     start = pd.Timestamp("2021-03-24", tz=UTC)
     ts = pd.date_range(start, periods=10, freq="h", tz=UTC)
     present = ts.delete([3, 7]).append(pd.DatetimeIndex([ts[0]]))  # a duplicate
-    present = present.append(pd.DatetimeIndex([start + pd.Timedelta(hours=50)]))  # outside
+    present = present.append(
+        pd.DatetimeIndex([start + pd.Timedelta(hours=50)])
+    )  # outside
     g = ivb.gap_share(present, start, start + pd.Timedelta(hours=10))
     assert g == {"expected": 10, "present": 8, "missing": 2, "share": 0.2}
 
@@ -99,25 +105,42 @@ def test_paired_contrast_positive_when_candidate_band_is_tighter_and_calibrated(
 def test_dev_blocks_are_six_nine_month_blocks_from_2021_04_plus_a_stub():
     b = ivb.dev_blocks()
     assert len(b) == 6
-    assert b[0] == (pd.Timestamp("2021-04-01", tz=UTC), pd.Timestamp("2022-01-01", tz=UTC))
-    assert b[-1] == (pd.Timestamp("2025-01-01", tz=UTC), pd.Timestamp("2025-10-01", tz=UTC))
+    assert b[0] == (
+        pd.Timestamp("2021-04-01", tz=UTC),
+        pd.Timestamp("2022-01-01", tz=UTC),
+    )
+    assert b[-1] == (
+        pd.Timestamp("2025-01-01", tz=UTC),
+        pd.Timestamp("2025-10-01", tz=UTC),
+    )
     for (s0, e0), (s1, _) in zip(b, b[1:]):
         assert e0 == s1
-    assert ivb.DEV_STUB == (pd.Timestamp("2025-10-01", tz=UTC), pd.Timestamp("2026-01-01", tz=UTC))
+    assert ivb.DEV_STUB == (
+        pd.Timestamp("2025-10-01", tz=UTC),
+        pd.Timestamp("2026-01-01", tz=UTC),
+    )
 
 
 def test_a0_kills_count_blocks_per_symbol_not_pooled():
     ok = dict(gaps={"BTC": 0.01, "ETH": 0.01}, power=0.6)
     # 10 of 12 pooled would be >= 80%, but ETH alone has 4 of 6
-    assert ivb.a0_kills(block_fails={"BTCUSDT": 6, "ETHUSDT": 4}, **ok) == ["kill2_control_block_fail_rate"]
+    assert ivb.a0_kills(block_fails={"BTCUSDT": 6, "ETHUSDT": 4}, **ok) == [
+        "kill2_control_block_fail_rate"
+    ]
     assert ivb.a0_kills(block_fails={"BTCUSDT": 5, "ETHUSDT": 5}, **ok) == []
 
 
 def test_a0_kills_gap_and_power_thresholds():
     fails = {"BTCUSDT": 6, "ETHUSDT": 6}
-    assert ivb.a0_kills(gaps={"BTC": 0.051, "ETH": 0.0}, block_fails=fails, power=0.9) == ["kill1_dvol_gaps"]
-    assert ivb.a0_kills(gaps={"BTC": 0.05, "ETH": 0.0}, block_fails=fails, power=0.5) == []
-    assert ivb.a0_kills(gaps={"BTC": 0.0, "ETH": 0.0}, block_fails=fails, power=0.499) == ["kill3_power"]
+    assert ivb.a0_kills(
+        gaps={"BTC": 0.051, "ETH": 0.0}, block_fails=fails, power=0.9
+    ) == ["kill1_dvol_gaps"]
+    assert (
+        ivb.a0_kills(gaps={"BTC": 0.05, "ETH": 0.0}, block_fails=fails, power=0.5) == []
+    )
+    assert ivb.a0_kills(
+        gaps={"BTC": 0.0, "ETH": 0.0}, block_fails=fails, power=0.499
+    ) == ["kill3_power"]
 
 
 def test_choose_sd_u_is_smallest_reaching_target():
@@ -155,8 +178,12 @@ IV_START = pd.Timestamp("2024-10-01", tz=UTC)
 
 @pytest.fixture(scope="module")
 def dgp_pair():
-    a = ivb.iv_dgp(seed=5, sd_u=0.4, kappa=1.0, start=START, years=0.6, iv_start=IV_START)
-    b = ivb.iv_dgp(seed=5, sd_u=0.4, kappa=0.0, start=START, years=0.6, iv_start=IV_START)
+    a = ivb.iv_dgp(
+        seed=5, sd_u=0.4, kappa=1.0, start=START, years=0.6, iv_start=IV_START
+    )
+    b = ivb.iv_dgp(
+        seed=5, sd_u=0.4, kappa=0.0, start=START, years=0.6, iv_start=IV_START
+    )
     return a, b
 
 
@@ -189,7 +216,7 @@ def test_seasonal_dgp_latent_none_is_unchanged():
     pd.testing.assert_frame_equal(a, b)
 
 
-# ---------------------------------------------------------------- walk-forward extension
+# --------------------------------------------------------------- walk-forward extension
 
 def test_walk_forward_extra_none_reproduces_e15_snapshot():
     """Snapshot taken on main 1821c46 BEFORE `extra` existed: E15's
@@ -197,7 +224,12 @@ def test_walk_forward_extra_none_reproduces_e15_snapshot():
     b = seasonal_dgp(3, 1.6, start=pd.Timestamp("2024-07-01", tz=UTC))
     g = hourly_grid(b)
     snap = {
-        "seasonal_har": (2208, 26.70770764857044, -32.762037355121215, 32.27629958905803),
+        "seasonal_har": (
+            2208,
+            26.70770764857044,
+            -32.762037355121215,
+            32.27629958905803,
+        ),
         "plain_har": (2208, 26.675748078053825, -32.43293044554696, 32.00960506489888),
     }
     for m, (n, s, lo, hi) in snap.items():
@@ -205,15 +237,24 @@ def test_walk_forward_extra_none_reproduces_e15_snapshot():
                           pd.Timestamp("2025-11-01", tz=UTC), extra=None)
         assert len(wf) == n
         np.testing.assert_allclose(
-            [wf["sigma"].sum(), wf["L80"].sum(), wf["U80"].sum()], [s, lo, hi], rtol=1e-12)
+            [wf["sigma"].sum(), wf["L80"].sum(), wf["U80"].sum()],
+            [s, lo, hi],
+            rtol=1e-12,
+        )
 
 
 def test_walk_forward_extra_rejects_non_har_models():
     b = seasonal_dgp(3, 1.2, start=pd.Timestamp("2024-07-01", tz=UTC))
     g = hourly_grid(b)
     with pytest.raises(ValueError):
-        walk_forward(g, 1, "rolling", pd.Timestamp("2025-08-01", tz=UTC),
-                     pd.Timestamp("2025-09-01", tz=UTC), extra=pd.Series(0.0, index=g.index))
+        walk_forward(
+            g,
+            1,
+            "rolling",
+            pd.Timestamp("2025-08-01", tz=UTC),
+            pd.Timestamp("2025-09-01", tz=UTC),
+            extra=pd.Series(0.0, index=g.index),
+        )
 
 
 def test_strong_planted_iv_beats_the_control_and_nan_iv_drops_rows():

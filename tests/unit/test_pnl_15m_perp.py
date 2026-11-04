@@ -13,7 +13,9 @@ from pnl_15m_report import Replay, parse_vision_klines  # noqa: E402
 
 _HEADER = ("open_time,open,high,low,close,volume,close_time,quote_volume,"
            "count,taker_buy_volume,taker_buy_quote_volume,ignore\n")
-_ROW = "1577836800000,7189.43,7190.52,7170.15,7171.55,2449.049,1577837699999,0,0,0,0,0\n"
+_ROW = (
+    "1577836800000,7189.43,7190.52,7170.15,7171.55,2449.049,1577837699999,0,0,0,0,0\n"
+)
 
 
 def test_a_header_row_is_skipped_and_a_headerless_file_is_read():

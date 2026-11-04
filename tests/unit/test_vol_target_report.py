@@ -18,7 +18,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import vol_target_report as vtr  # noqa: E402
 
 
-def test_stage_a0_is_synthetic_only_even_though_the_module_now_has_a_loader(tmp_path, monkeypatch):
+def test_stage_a0_is_synthetic_only_even_though_the_module_now_has_a_loader(
+    tmp_path, monkeypatch
+):
     """A0 itself must read no real returns -- replaces the old AST-based
     'the module never imports the loader' assertion, which broke once
     stage A (which DOES need `load_spot_klines`) was built. Proven
@@ -27,22 +29,33 @@ def test_stage_a0_is_synthetic_only_even_though_the_module_now_has_a_loader(tmp_
         raise AssertionError("stage A0 must never call the real archive loader")
 
     monkeypatch.setattr(vtr, "load_spot_klines", boom)
-    branch, a0 = vtr.run_stage_a0(seeds=range(2), reps=20, results_dir=tmp_path, max_workers=1)
+    branch, a0 = vtr.run_stage_a0(
+        seeds=range(2), reps=20, results_dir=tmp_path, max_workers=1
+    )
     assert branch in ("clean", "contaminated", "VOID_UNDERPOWERED")
 
 
 def test_stage_a0_writes_result_with_allowlisted_keys(tmp_path):
-    branch, a0 = vtr.run_stage_a0(seeds=range(3), reps=30, results_dir=tmp_path, max_workers=1)
+    branch, a0 = vtr.run_stage_a0(
+        seeds=range(3), reps=30, results_dir=tmp_path, max_workers=1
+    )
     out_path = tmp_path / "e15c_stage_a0.json"
     assert out_path.exists()
     payload = json.loads(out_path.read_text())
-    assert set(payload["statistic"].keys()) == {"a0_power", "a0_size", "a0_mde", "branch"}
+    assert set(payload["statistic"].keys()) == {
+        "a0_power",
+        "a0_size",
+        "a0_mde",
+        "branch",
+    }
     assert payload["verdict"] == branch
     assert branch in ("clean", "contaminated", "VOID_UNDERPOWERED")
     assert payload["inputs"]["data"] == "synthetic only -- no real returns read"
 
 
-def test_stage_a0_runs_clean_first_skips_contaminated_when_clean_powered(tmp_path, monkeypatch):
+def test_stage_a0_runs_clean_first_skips_contaminated_when_clean_powered(
+    tmp_path, monkeypatch
+):
     calls = []
     real_run_branch = vtr._run_branch_a0
 
@@ -54,7 +67,9 @@ def test_stage_a0_runs_clean_first_skips_contaminated_when_clean_powered(tmp_pat
         return out
 
     monkeypatch.setattr(vtr, "_run_branch_a0", spy)
-    branch, a0 = vtr.run_stage_a0(seeds=range(2), reps=20, results_dir=tmp_path, max_workers=1)
+    branch, a0 = vtr.run_stage_a0(
+        seeds=range(2), reps=20, results_dir=tmp_path, max_workers=1
+    )
     assert branch == "clean"
     assert vtr.CLEAN_MONTHS in calls
     assert vtr.FALLBACK_MONTHS not in calls  # contaminated A0 never ran
@@ -66,7 +81,9 @@ def test_stage_a_refuses_without_a0(tmp_path):
 
 
 def test_stage_a_refuses_when_a0_void_underpowered(tmp_path):
-    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps({"verdict": "VOID_UNDERPOWERED"}))
+    (tmp_path / "e15c_stage_a0.json").write_text(
+        json.dumps({"verdict": "VOID_UNDERPOWERED"})
+    )
     with pytest.raises(RuntimeError, match="stage A0 verdict"):
         vtr.run_stage_a(Path("/nonexistent"), results_dir=tmp_path)
 
@@ -74,7 +91,12 @@ def test_stage_a_refuses_when_a0_void_underpowered(tmp_path):
 def _fake_a0_result(branch: str, size_gate_ok: bool = True) -> dict:
     return {
         "verdict": branch,
-        "statistic": {"a0_power": 0.62, "a0_size": 0.0, "a0_mde": 0.0078, "branch": branch},
+        "statistic": {
+            "a0_power": 0.62,
+            "a0_size": 0.0,
+            "a0_mde": 0.0078,
+            "branch": branch,
+        },
         "extra": {"size_gate_ok_on_chosen_branch": size_gate_ok},
     }
 
@@ -98,8 +120,14 @@ def _synthetic_close(seed: int, warmup_months: int, scored_months: int,
     otherwise a single constant sigma=0.02 is used throughout."""
     rng = np.random.default_rng(seed)
     months_n = warmup_months + scored_months
-    start_ts = pd.Timestamp(start, tz="UTC") - pd.DateOffset(months=warmup_months) - pd.Timedelta(days=1)
-    month_starts = pd.period_range(start_ts + pd.Timedelta(days=1), periods=months_n, freq="M")
+    start_ts = (
+        pd.Timestamp(start, tz="UTC")
+        - pd.DateOffset(months=warmup_months)
+        - pd.Timedelta(days=1)
+    )
+    month_starts = pd.period_range(
+        start_ts + pd.Timedelta(days=1), periods=months_n, freq="M"
+    )
     all_rets = []
     for i, m in enumerate(month_starts):
         if sigmas is None or i < warmup_months:
@@ -119,7 +147,9 @@ def _synthetic_close(seed: int, warmup_months: int, scored_months: int,
 def small_stage_a(monkeypatch, tmp_path):
     """A fast stage-A run on a tiny synthetic 6-month contaminated-branch
     window, with A0 pre-faked as already-chosen 'contaminated'."""
-    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps(_fake_a0_result("contaminated")))
+    (tmp_path / "e15c_stage_a0.json").write_text(
+        json.dumps(_fake_a0_result("contaminated"))
+    )
 
     monkeypatch.setattr(vtr, "VALIDATION_A_FIRST", "2020-01")
     monkeypatch.setattr(vtr, "VALIDATION_A_LAST", "2020-06")
@@ -170,7 +200,15 @@ def test_stage_a_statistic_has_no_stage_b_leakage(small_stage_a):
     key (BH/ebar-book ES comparisons on the B window)."""
     vtr.run_stage_a(Path("."), results_dir=small_stage_a)
     written = json.loads((small_stage_a / "e15c_stage_a.json").read_text())
-    forbidden = ("delta_es_bh", "delta_es_e", "es_bh", "es_vt", "ci_bh", "ci_ebar", "winkler")
+    forbidden = (
+        "delta_es_bh",
+        "delta_es_e",
+        "es_bh",
+        "es_vt",
+        "ci_bh",
+        "ci_ebar",
+        "winkler",
+    )
     for block_name in ("statistic", "extra"):
         for key in written[block_name].keys():
             low = key.lower()
@@ -189,7 +227,9 @@ def test_stage_a_never_calls_score_pair_or_scores_b():
         assert "score_pair" not in src, fn.__name__
 
 
-def test_stage_a_bootstrap_called_exactly_once_per_symbol_from_a1(small_stage_a, monkeypatch):
+def test_stage_a_bootstrap_called_exactly_once_per_symbol_from_a1(
+    small_stage_a, monkeypatch
+):
     calls = []
     real_bootstrap = vtr.paired_block_bootstrap
 
@@ -207,7 +247,9 @@ def test_load_close_truncates_bars_opening_on_or_after_2026(monkeypatch):
     close = pd.Series(np.linspace(100, 101, len(idx)), index=idx)
 
     def fake_loader(root, symbol, interval):
-        return pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 0.0})
+        return pd.DataFrame(
+            {"open": close, "high": close, "low": close, "close": close, "volume": 0.0}
+        )
 
     monkeypatch.setattr(vtr, "load_spot_klines", fake_loader)
     result = vtr.load_close(Path("."), "BTCUSDT")
@@ -248,14 +290,40 @@ def test_stage_a_checks_boundaries():
     assert vtr.stage_a_checks(1.0, a2_ok, a3_viol, 0, 27, 27, a6_pass)["a5"] is True
 
     # a6: both real AND oracle must be ok
-    assert vtr.stage_a_checks(1.0, a2_ok, a3_viol, 0, 72, 72,
-                               {"real": {"ok": True}, "oracle": {"ok": False}})["a6"] is False
-    assert vtr.stage_a_checks(1.0, a2_ok, a3_viol, 0, 72, 72,
-                               {"real": {"ok": False}, "oracle": {"ok": True}})["a6"] is False
+    assert (
+        vtr.stage_a_checks(
+            1.0,
+            a2_ok,
+            a3_viol,
+            0,
+            72,
+            72,
+            {"real": {"ok": True}, "oracle": {"ok": False}},
+        )["a6"]
+        is False
+    )
+    assert (
+        vtr.stage_a_checks(
+            1.0,
+            a2_ok,
+            a3_viol,
+            0,
+            72,
+            72,
+            {"real": {"ok": False}, "oracle": {"ok": True}},
+        )["a6"]
+        is False
+    )
 
     assert vtr.stage_a_checks(1.0, a2_ok, a3_viol, 0, 72, 72, a6_pass) == {
-        "a1": True, "a2_validation_a": True, "a2_chosen_b": True,
-        "a3_validation_a": True, "a3_chosen_b": True, "a4": True, "a5": True, "a6": True,
+        "a1": True,
+        "a2_validation_a": True,
+        "a2_chosen_b": True,
+        "a3_validation_a": True,
+        "a3_chosen_b": True,
+        "a4": True,
+        "a5": True,
+        "a6": True,
     }
 
 
@@ -271,7 +339,9 @@ def test_a3_tolerance_1e_9_catches_a_1e_7_perturbation():
     assert vtr._a3_compounding(close, e, vm, tol=vtr.A3_TOL) == 0
 
     perturbed = vm.copy()
-    feb_idx = perturbed.index[pd.PeriodIndex(perturbed.index, freq="M") == pd.Period("2020-02", freq="M")]
+    feb_idx = perturbed.index[
+        pd.PeriodIndex(perturbed.index, freq="M") == pd.Period("2020-02", freq="M")
+    ]
     perturbed.loc[feb_idx[-1], "y"] += 1e-7
     assert vtr._a3_compounding(close, e, perturbed, tol=1e-9) == 1
     assert vtr._a3_compounding(close, e, perturbed, tol=1e-6) == 0
@@ -307,7 +377,12 @@ def test_stage_c_refuses_without_b_pass_mutant8():
 def _fake_a0_b(branch: str, size_gate_ok: bool = True) -> dict:
     return {
         "verdict": branch,
-        "statistic": {"a0_power": 0.62, "a0_size": 0.0, "a0_mde": 0.0078, "branch": branch},
+        "statistic": {
+            "a0_power": 0.62,
+            "a0_size": 0.0,
+            "a0_mde": 0.0078,
+            "branch": branch,
+        },
         "extra": {"size_gate_ok_on_chosen_branch": size_gate_ok},
     }
 
@@ -330,14 +405,18 @@ def test_stage_b_refuses_without_valid_a(tmp_path):
 
 
 def test_stage_b_refuses_when_a0_void_underpowered(tmp_path):
-    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps({"verdict": "VOID_UNDERPOWERED"}))
+    (tmp_path / "e15c_stage_a0.json").write_text(
+        json.dumps({"verdict": "VOID_UNDERPOWERED"})
+    )
     (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID")))
     with pytest.raises(RuntimeError, match="stage A0 verdict"):
         vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
 
 
 def test_stage_b_refuses_when_a0_size_gate_failed(tmp_path):
-    (tmp_path / "e15c_stage_a0.json").write_text(json.dumps(_fake_a0_b("contaminated", size_gate_ok=False)))
+    (tmp_path / "e15c_stage_a0.json").write_text(
+        json.dumps(_fake_a0_b("contaminated", size_gate_ok=False))
+    )
     (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID")))
     with pytest.raises(RuntimeError, match="size gate"):
         vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
@@ -345,7 +424,9 @@ def test_stage_b_refuses_when_a0_size_gate_failed(tmp_path):
 
 def test_stage_b_refuses_when_a_branch_mismatches_a0_branch(tmp_path):
     (tmp_path / "e15c_stage_a0.json").write_text(json.dumps(_fake_a0_b("contaminated")))
-    (tmp_path / "e15c_stage_a.json").write_text(json.dumps(_fake_a("VALID", branch="clean")))
+    (tmp_path / "e15c_stage_a.json").write_text(
+        json.dumps(_fake_a("VALID", branch="clean"))
+    )
     with pytest.raises(RuntimeError, match="does not match"):
         vtr.run_stage_b(Path("/nonexistent"), results_dir=tmp_path)
 
@@ -359,7 +440,9 @@ def test_load_close_b_clean_branch_truncates_before_2020(monkeypatch):
     close = pd.Series(np.linspace(100, 101, len(idx)), index=idx)
 
     def fake_loader(root, symbol, interval):
-        return pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 0.0})
+        return pd.DataFrame(
+            {"open": close, "high": close, "low": close, "close": close, "volume": 0.0}
+        )
 
     monkeypatch.setattr(vtr, "load_spot_klines", fake_loader)
     result = vtr.load_close_b(Path("."), "BTCUSDT", "clean")
@@ -371,7 +454,9 @@ def test_load_close_b_contaminated_branch_keeps_2020_never_2026(monkeypatch):
     close = pd.Series(np.linspace(100, 101, len(idx)), index=idx)
 
     def fake_loader(root, symbol, interval):
-        return pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 0.0})
+        return pd.DataFrame(
+            {"open": close, "high": close, "low": close, "close": close, "volume": 0.0}
+        )
 
     monkeypatch.setattr(vtr, "load_spot_klines", fake_loader)
     result = vtr.load_close_b(Path("."), "BTCUSDT", "contaminated")
@@ -393,20 +478,28 @@ def small_stage_b(monkeypatch, tmp_path):
 
     sigmas = [0.01, 0.06, 0.01, 0.06, 0.01, 0.06]
     closes = {
-        "BTCUSDT": _synthetic_close(21, warmup_months=8, scored_months=6, sigmas=sigmas),
-        "ETHUSDT": _synthetic_close(22, warmup_months=8, scored_months=6, sigmas=sigmas),
+        "BTCUSDT": _synthetic_close(
+            21, warmup_months=8, scored_months=6, sigmas=sigmas
+        ),
+        "ETHUSDT": _synthetic_close(
+            22, warmup_months=8, scored_months=6, sigmas=sigmas
+        ),
     }
 
     def fake_load_spot_klines(root, symbol, interval):
         close = closes[symbol]
-        return pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 0.0})
+        return pd.DataFrame(
+            {"open": close, "high": close, "low": close, "close": close, "volume": 0.0}
+        )
 
     monkeypatch.setattr(vtr, "load_spot_klines", fake_load_spot_klines)
     return tmp_path
 
 
 def test_stage_b_end_to_end_synthetic_writes_allowlisted_result(small_stage_b):
-    verdict, statistic = vtr.run_stage_b(Path("."), results_dir=small_stage_b, boot_reps=50)
+    verdict, statistic = vtr.run_stage_b(
+        Path("."), results_dir=small_stage_b, boot_reps=50
+    )
     assert verdict in ("PASS", "FAIL", "SPLIT")
     written = json.loads((small_stage_b / "e15c_stage_b.json").read_text())
     assert written["verdict"] == verdict
@@ -417,17 +510,25 @@ def test_stage_b_end_to_end_synthetic_writes_allowlisted_result(small_stage_b):
         assert "delta_es_bh" in row and "delta_es_ebar" in row
         assert set(row["delta_es_bh"].keys()) == {"point", "ci_lo", "ci_hi"}
     assert written["extra"]["window_label"] == "(contaminated window)"
-    assert "prior look" in written["extra"]["contamination_caveat"] or "2026" in written["extra"]["contamination_caveat"]
+    assert (
+        "prior look" in written["extra"]["contamination_caveat"]
+        or "2026" in written["extra"]["contamination_caveat"]
+    )
     for sym in vtr.SYMBOLS:
         ro = written["extra"]["report_only"][sym]
-        assert "perp_taker_sensitivity" in ro and ro["perp_taker_sensitivity"]["funding_included"] is False
+        assert (
+            "perp_taker_sensitivity" in ro
+            and ro["perp_taker_sensitivity"]["funding_included"] is False
+        )
 
 
 def test_stage_b_perp_sensitivity_never_changes_verdict(small_stage_b):
     """Report-only means report-only: the top-level verdict must be
     derivable from `statistic.per_symbol[*].pass` alone, with no perps
     figure anywhere near it."""
-    verdict, statistic = vtr.run_stage_b(Path("."), results_dir=small_stage_b, boot_reps=50)
+    verdict, statistic = vtr.run_stage_b(
+        Path("."), results_dir=small_stage_b, boot_reps=50
+    )
     passes = {s: v["pass"] for s, v in statistic["per_symbol"].items()}
     n_pass = sum(passes.values())
     expected = "PASS" if n_pass == 2 else ("FAIL" if n_pass == 0 else "SPLIT")
@@ -453,7 +554,9 @@ def test_stage_b_default_boot_reps_is_10000():
     assert sig.parameters["boot_reps"].default == vtr.BOOT_REPS == 10_000
 
 
-def test_stage_b_bootstrap_shares_one_seed_block_reps_across_symbols(small_stage_b, monkeypatch):
+def test_stage_b_bootstrap_shares_one_seed_block_reps_across_symbols(
+    small_stage_b, monkeypatch
+):
     """Mutant 4 (call-site variant, e.g. seed=boot_seed+1 on one leg or one
     symbol): every bootstrap call score_pair makes must share the SAME
     (seed, block, reps) tuple -- the pre-reg's 'one index set per rep,
@@ -469,7 +572,9 @@ def test_stage_b_bootstrap_shares_one_seed_block_reps_across_symbols(small_stage
 
     monkeypatch.setattr(vt_mod, "paired_block_bootstrap", spy)
     vtr.run_stage_b(Path("."), results_dir=small_stage_b, boot_reps=20)
-    assert len(seen) >= 4  # 2 legs x 2 symbols (report-only calls add more, still uniform)
+    assert (
+        len(seen) >= 4
+    )  # 2 legs x 2 symbols (report-only calls add more, still uniform)
     assert len(set(seen)) == 1
 
 
@@ -507,5 +612,7 @@ def test_choose_branch_gate_is_0_5_not_0_4_via_run_stage_a0(tmp_path, monkeypatc
                 "median_ebar": 0.7, "median_months_below_1": 10, "n_paths": 2}
 
     monkeypatch.setattr(vtr, "_run_branch_a0", fake_run_branch)
-    branch, a0 = vtr.run_stage_a0(seeds=range(2), reps=20, results_dir=tmp_path, max_workers=1)
+    branch, a0 = vtr.run_stage_a0(
+        seeds=range(2), reps=20, results_dir=tmp_path, max_workers=1
+    )
     assert branch != "clean"

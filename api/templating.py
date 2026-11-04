@@ -16,7 +16,9 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 # /world's script is native ES modules served from /static/world/ (#42); the
 # page loads only the entry, `main.js`, and the browser follows its imports.
 WORLD_MODULE_DIR = Path(__file__).parent / "static" / "world"
-_MODULE_IMPORT = re.compile(r'^import\s+(?:\{[^}]*\}\s*from\s+)?"\./([\w-]+\.js)";', re.M)
+_MODULE_IMPORT = re.compile(
+    r'^import\s+(?:\{[^}]*\}\s*from\s+)?"\./([\w-]+\.js)";', re.M
+)
 
 
 def world_modules() -> list[str]:

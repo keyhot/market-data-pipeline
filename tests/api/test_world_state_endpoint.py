@@ -113,7 +113,9 @@ def test_world_state_404_when_empty():
 
 
 def test_world_state_503_when_postgres_down():
-    with patch("api.routers.world.get_world_events", side_effect=RuntimeError("no pool")):
+    with patch(
+        "api.routers.world.get_world_events", side_effect=RuntimeError("no pool")
+    ):
         response = client.get("/world/state")
 
     assert response.status_code == 503
@@ -125,7 +127,9 @@ def test_world_state_rejects_out_of_range_limit():
 
 
 def test_world_state_is_stable_across_identical_calls(lookups):
-    with patch("api.routers.world.get_world_events", return_value=[_event(1), _event(2)]):
+    with patch(
+        "api.routers.world.get_world_events", return_value=[_event(1), _event(2)]
+    ):
         first = client.get("/world/state").json()["data"]
         second = client.get("/world/state").json()["data"]
 

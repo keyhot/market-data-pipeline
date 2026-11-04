@@ -1,6 +1,7 @@
 """Forced-liquidation feeds, parsed (C1 · the liquidations recorder).
 
-No venue serves free liquidation *history* (vault `Spikes/forward-data-collector-spike.md`,
+No venue serves free liquidation *history*
+(vault `Spikes/forward-data-collector-spike.md`,
 `Spikes/literature-for-open-experiments.md`), so the only way to test
 "cascade → reversal" is to record the live feeds forward. A gap in the record
 is permanent, and that shapes both halves of this module:
@@ -18,7 +19,8 @@ is permanent, and that shapes both halves of this module:
 Binance `!forceOrder@arr` is **sampled**: at most one liquidation per symbol
 per second (documented), so its counts are a lower bound. Bybit's
 `allLiquidation` (since 2025-02) claims every liquidation, pushed every
-500ms; OKX's completeness is unverified. The pre-registration (vault `Docs/liquidation-cascade-experiment.md`)
+500ms; OKX's completeness is unverified. The pre-registration
+(vault `Docs/liquidation-cascade-experiment.md`)
 says how each venue may be used.
 
 **Kraken Futures** has no public liquidation push feed; instead its public
@@ -516,8 +518,12 @@ def aggregate_kraken_minutes(
         lo = min(r.price for r in rows)
         hi = max(r.price for r in rows)
         total_size = sum(r.size for r in rows)
-        near_min = sum(r.size for r in rows if lo > 0 and (r.price - lo) / lo <= near_frac)
-        near_max = sum(r.size for r in rows if hi > 0 and (hi - r.price) / hi <= near_frac)
+        near_min = sum(
+            r.size for r in rows if lo > 0 and (r.price - lo) / lo <= near_frac
+        )
+        near_max = sum(
+            r.size for r in rows if hi > 0 and (hi - r.price) / hi <= near_frac
+        )
         liq_rows = [r for r in rows if r.type in KRAKEN_LIQUIDATION_TYPES]
         out.append(
             KrakenMinuteAgg(

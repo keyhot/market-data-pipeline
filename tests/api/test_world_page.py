@@ -3,17 +3,6 @@ silently break a 24/7 browser source: substitution, the same-origin rule
 for the renderer (KI-045), the bounded boot retry, and the textContent-only
 rule that keeps event payloads from becoming markup."""
 
-from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
-from world_node import (
-    DRIVER_MARK,
-    NODE,
-    function_source,
-    needs_node,
-    run_driver,
-    run_world,
-    served_config,
-    world_driver,
-)
 import dataclasses
 import functools
 import hashlib
@@ -26,8 +15,19 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from world_node import (
+    DRIVER_MARK,
+    NODE,
+    function_source,
+    needs_node,
+    run_driver,
+    run_world,
+    served_config,
+    world_driver,
+)
 
 from api.main import app
+from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 from world.light import DEFAULT_LIGHT, as_json
 from world.plate import load_manifest
 
@@ -490,7 +490,11 @@ def test_a_shadow_is_a_sibling_of_its_body_not_a_child_of_it():
     # accents hang off the character, and the shadow does NOT — is checked on
     # the parts that survived both rather than on the old literal.
     # The MODEL's badge (2026-09-24) rides between the body and the head.
-    assert 'rig.addChild(...depthOrder(accents, "far"), body, ...(badge ? [badge] : []), head' in made
+    assert (
+        'rig.addChild(...depthOrder(accents, "far"), body, '
+        "...(badge ? [badge] : []), head"
+        in made
+    )
     assert "container.addChild(rig," in made
     assert "container.addChild(shadow" not in made, "the shadow is parented to the body"
     assert "rig.addChild(shadow" not in made, "the shadow scales with the figure"
@@ -567,7 +571,8 @@ def test_the_animation_sheet_loops_every_animation_through_the_real_player():
 def test_the_tier_scale_is_injected_rather_than_reinvented():
     """The canvas and the events rail each decide how big an event reads, and
     both did it on an absolute 2/5/8 scale while the server normalises PER RULE.
-    `signal_resolved` cut at 0.6/1.2/1.8 (bps of realized move since KI-041) — so the room's single most frequent
+    `signal_resolved` cut at 0.6/1.2/1.8 (bps of realized move since KI-041)
+    — so the room's single most frequent
     event has always rendered at tier 0: minimum amplitude, no swell, no tier
     colour. Exactly the drift a restated reaction registry would cause, and the
     same fix — the scale comes from `world.state`."""
@@ -1264,7 +1269,7 @@ const { anchorFor, tubeFor, pillarGeometry, bannerMinHeight, CAST_FRACTIONS, pla
 const { GROUND } = need(await W("cast.js"), "GROUND");
 const { app } = need(await W("boot.js"), "app");
 const PLATE = CONFIG.plate, PAINTED_CAST = CONFIG.painted_cast;
-'''
+'''  # noqa: E501
 
 
 def _layout_driver(body: str, *, plate: bool, manifest: dict | None = None) -> str:
@@ -1730,7 +1735,9 @@ def test_the_rendered_page_is_valid_javascript():
     # #42: the script is ES modules now; each is checked as a module (the
     # package.json makes node parse them as the browser does, strict ESM).
     page = client.get("/world").text
-    assert not re.findall(r"<script>(.*?)</script>", page, re.S), "inline script is back"
+    assert not re.findall(r"<script>(.*?)</script>", page, re.S), (
+        "inline script is back"
+    )
     modules = world_modules()
     assert modules, "the page has no module to check"
     with tempfile.TemporaryDirectory() as tmp:
@@ -1965,7 +1972,7 @@ console.log(JSON.stringify({
     cells: g.mask.shapes.flat(),
   })),
 }));
-'''
+'''  # noqa: E501
 
 
 def _pillar_light_driver(mood: str, direction: list | None = None) -> str:
@@ -2409,7 +2416,10 @@ def test_the_near_limbs_composite_in_front_of_the_torso_and_under_the_labels():
     # the body — so under the head and the near arms.
     for badge, order in (
         ("null", ["legFar", "legNear", "body", "head", "armL", "armR"]),
-        ('{ id: "badge" }', ["legFar", "legNear", "body", "badge", "head", "armL", "armR"]),
+        (
+            '{ id: "badge" }',
+            ["legFar", "legNear", "body", "badge", "head", "armL", "armR"],
+        ),
     ):
         assert _run_node(f"const badge = {badge};\n" + driver) == {
             "order": order,
@@ -2925,10 +2935,13 @@ def test_the_neck_holds_its_length_through_a_breath():
         """
     )
     for name, samples in _run_node(driver)["samples"].items():
-        assert len({s["bodyY"] for s in samples}) > 1, f"{name} no longer moves the body"
+        assert len({s["bodyY"] for s in samples}) > 1, (
+            f"{name} no longer moves the body"
+        )
         stretched = [s for s in samples if s["headY"] - s["bodyY"] != -108]
         assert not stretched, (
-            f"the head does not ride {name}, so the neck changes length: {stretched[:3]}"
+            f"the head does not ride {name}, so the neck changes length: "
+            f"{stretched[:3]}"
         )
 
 
@@ -3013,11 +3026,13 @@ def test_a_profile_head_stays_on_its_neck_while_it_looks():
           }
         }
         console.log(JSON.stringify({ out }));
-        """
+        """  # noqa: E501
     )
     out = _run_node(driver)["out"]
     assert any(o["bx"] != 0 for o in out), "the idle shift no longer moves the torso"
-    assert any(abs(o["ar"] - 0.25) > 1e-6 for o in out), "a profile's look no longer nods"
+    assert any(abs(o["ar"] - 0.25) > 1e-6 for o in out), (
+        "a profile's look no longer nods"
+    )
     for o in out:
         assert o["hx"] == o["bx"], f"the head slid off the neck: {o}"
         assert o["hr"] == 0, f"the head spun about its skull, not its neck: {o}"
@@ -3184,7 +3199,7 @@ def test_the_seated_figure_is_drawn_to_the_chairs_own_proportion():
           armsAreFirst: accents.slice(0, 2).every((a) => !a.limb),
           armDepths: accents.filter((a) => !a.limb).map((a) => a.depth),
         }));
-        """
+        """  # noqa: E501
     )
     from tools.measure_chair import measure_plate_chair
 
@@ -3304,7 +3319,7 @@ def _profile_head_run(side: int = -1, manifest: dict | None = None) -> dict:
           noPlateSide: gazeSide(null, cast.x, cast.facing),
           noPlatePitch: gazePitch({ x: 0, y: 0 }, null, -1),
         }));
-        """
+        """  # noqa: E501
     )
 
 
@@ -3320,9 +3335,12 @@ def _aim_run(head_y: float, side: int) -> dict:
         + _js_const(source, "CAST_SCALE")
         + _js_const(source, "GAZE_MAX")
         + _js_const(source, "GAZE_HEAD_SHARE")
-        + function_source("cast.js", "chartTarget") + "\n"
-        + function_source("cast.js", "gazePitch") + "\n"
-        + function_source("scene.js", "aimAtCharts") + "\n"
+        + function_source("cast.js", "chartTarget")
+        + "\n"
+        + function_source("cast.js", "gazePitch")
+        + "\n"
+        + function_source("scene.js", "aimAtCharts")
+        + "\n"
         + f"const EYE = {json.dumps(_profile_head_run(side)['head'])};\n"
         + f"""
         const char = {{ profile: {{ ...EYE, side: {int(side)} }}, figureScale: {trader["figure_scale"]},
@@ -3330,7 +3348,7 @@ def _aim_run(head_y: float, side: int) -> dict:
         const anchor = {{ x: {trader["sit_anchor"]["x"]}, baseY: {trader["sit_anchor"]["y"]} }};
         aimAtCharts(char, anchor);
         console.log(JSON.stringify({{ rotation: char.aim.rotation }}));
-        """
+        """  # noqa: E501
     )
 
 
@@ -3451,11 +3469,15 @@ def test_the_profile_eye_sits_in_the_front_of_the_head_above_the_nose_tip():
         x0 = min(_extent(v)[0] for v in hair + run["volumes"])
         x1 = max(_extent(v)[2] for v in run["volumes"])
         centre = (x0 + x1) / 2
-        assert side * (ex - centre) > 0, f"facing {side:+d}, the eye is in the back half"
+        assert side * (ex - centre) > 0, (
+            f"facing {side:+d}, the eye is in the back half"
+        )
         nose = next(f for f in run["features"] if f["kind"] == "poly")
         pts = list(zip(nose["geom"][0::2], nose["geom"][1::2]))
         tip = max(pts, key=lambda p: side * p[0])
-        assert ey < tip[1], f"facing {side:+d}, the eye ({ey}) is not above the nose tip ({tip[1]})"
+        assert ey < tip[1], (
+            f"facing {side:+d}, the eye ({ey}) is not above the nose tip ({tip[1]})"
+        )
 
 
 @needs_node
@@ -3515,7 +3537,9 @@ def test_no_hair_shows_below_the_ear():
                 continue   # behind the ear
             for j in range(int((y1 - ear_bottom) * 2) + 1):
                 py = ear_bottom + j / 2
-                top = next((v for v in reversed(run["volumes"]) if covers(v, px, py)), None)
+                top = next(
+                    (v for v in reversed(run["volumes"]) if covers(v, px, py)), None
+                )
                 if top is not None and top["fill"] == hair:
                     tufts.append((px, py))
         assert not tufts, (
@@ -3545,7 +3569,8 @@ def test_the_hair_is_matte_whichever_way_the_head_faces():
         assert any(v["fill"] == palette["hair"] for v in run["volumes"])
     body = _without_comments(function_source("character.js", "character"))
     facing = re.findall(
-        r"paint\(skull, litCircle\([^)]*\), HUMAN\.(\w+),[^;]*?matte: (true|false) \}\);",
+        r"paint\(skull, litCircle\([^)]*\), HUMAN\.(\w+),"
+        r"[^;]*?matte: (true|false) \}\);",
         body,
     )
     assert sorted(facing) == [("hair", "true"), ("skin", "false")], facing
@@ -3573,14 +3598,18 @@ def test_the_trader_looks_at_a_chart():
     side = run["side"]
     k = run["CAST_SCALE"] * trader["figure_scale"]
     ex, ey = run["head"]["eye"]
-    eye = (trader["sit_anchor"]["x"] + ex * k, trader["sit_anchor"]["y"] + (head_y + ey) * k)
+    eye = (
+        trader["sit_anchor"]["x"] + ex * k,
+        trader["sit_anchor"]["y"] + (head_y + ey) * k,
+    )
     target = run["target"]
     pitch = math.atan2(eye[1] - target["y"], side * (target["x"] - eye[0]))
     pitch = max(0.0, min(run["GAZE_MAX"], pitch))
     charts = [s["quad"] for s in plate["screens"] if s.get("role") == "chart"]
 
     assert any(_ray_hits_quad(eye, pitch, side, q) for q in charts), (
-        f"from the eye at ({eye[0]:.0f}, {eye[1]:.0f}) a look {math.degrees(pitch):.1f} "
+        f"from the eye at ({eye[0]:.0f}, {eye[1]:.0f}) "
+        f"a look {math.degrees(pitch):.1f} "
         "degrees up misses every chart screen"
     )
     assert not any(_ray_hits_quad(eye, 0.0, side, q) for q in charts), (
@@ -3602,7 +3631,9 @@ def test_the_trader_looks_at_a_chart():
     assert pupil["fill"] != eye_white["fill"], "the pupil is the colour of the white"
     wx0, wy0, wx1, wy1 = _extent(eye_white)
     px0, py0, px1, py1 = _extent(pupil)
-    assert side * ((px0 + px1) - (wx0 + wx1)) > 0, "the pupil is not at the front of the eye"
+    assert side * ((px0 + px1) - (wx0 + wx1)) > 0, (
+        "the pupil is not at the front of the eye"
+    )
     assert (py0 + py1) < (wy0 + wy1), "the pupil is not raised toward the charts"
 
 
@@ -3648,7 +3679,7 @@ def _seated_rig_run() -> dict:
           drawn.push({ rect: volume.rect, fill, opts: opts || {},
                        host: g, radius: volume.radius, pts: volume.pts || null });
         }
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -3935,7 +3966,9 @@ def test_the_seated_figure_sits_on_a_seat_not_on_the_ball_of_a_thigh():
         d for d in emitted["drawn"]
         if d["fill"] == jeans and d["host"] not in ("leg", "child")
     ]
-    assert seats, "nothing but the legs wears jeans: his hips are the thighs' round ends"
+    assert seats, (
+        "nothing but the legs wears jeans: his hips are the thighs' round ends"
+    )
     for seat in seats:
         # `breathe` moves `body.y` a whole CELL; the thighs never move. A
         # seat on the torso lifts off them and shows the ball every breath.
@@ -4063,7 +4096,7 @@ def _rig_bone_driver(source: str) -> str:
             fill, opts: opts || {},
           });
         }
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -4126,8 +4159,13 @@ def _bone_capsule(drawn: list, gid: int, palette: dict) -> dict | None:
     the sleeve compared the palm with itself and passed.
     """
     return next(
-        (d for d in drawn if d["gid"] == gid
-         and d["fill"] not in (palette["skin"], palette["crease"], palette.get("contact"))),
+        (
+            d
+            for d in drawn
+            if d["gid"] == gid
+            and d["fill"]
+            not in (palette["skin"], palette["crease"], palette.get("contact"))
+        ),
         None,
     )
 
@@ -4606,7 +4644,7 @@ def test_the_seated_arms_bend_at_an_elbow():
         function paint(g, volume, fill, rim, opts) {
           (g.drawn || (g.drawn = [])).push({ rect: volume.rect, fill });
         }
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -5058,12 +5096,14 @@ def test_the_seated_shrug_lifts_the_forearm_at_the_elbow():
           rest, phases, depth: arm.depth,
           restored: fore.rotation === fore.restRotation,
         }));
-        """
+        """  # noqa: E501
     )
     out = _run_node(driver)
     assert out["depth"] == "near", "the shrugging arm must be the one the viewer sees"
     rest_x, rest_y = out["rest"]["tip"]
-    moved_upper = [ph["p"] for ph in out["phases"] if ph["upper"] != out["rest"]["upper"]]
+    moved_upper = [
+        ph["p"] for ph in out["phases"] if ph["upper"] != out["rest"]["upper"]
+    ]
     assert not moved_upper, f"the shrug swings the upper arm at p={moved_upper[:3]}"
     peak = min(ph["tip"][1] for ph in out["phases"])
     assert rest_y - peak >= 4, f"the fingertip rises only {rest_y - peak:.1f} units"
@@ -5263,7 +5303,9 @@ def test_a_limb_is_an_outline_that_tapers_into_the_next_one():
 
     for thigh in (bones[0], bones[3]):
         c, length = thigh["width"] / 2, thigh["length"]
-        (lo0, hi0), (lo1, hi1) = (_convex_span(thigh["outline"], y) for y in (c, c + length))
+        (lo0, hi0), (lo1, hi1) = (
+            _convex_span(thigh["outline"], y) for y in (c, c + length)
+        )
         # Which local side is UP: local +x lands on screen at (cos r, sin r).
         up_is_plus = math.sin(thigh["rotation"]) < 0
         proud = {True: 0.0, False: 0.0}
@@ -5511,7 +5553,7 @@ def _machine_body_driver(source: str, run: bool = True) -> str:
             points: volume.points || null,
           });
         }
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -5850,7 +5892,7 @@ def _machine_head_driver(source: str) -> str:
           beacon: beacon.calls.filter((c) => c.box).map((c) => c.box),
           MACHINE, BODY_FILL, headStyles: Object.keys(MACHINE_HEADS),
         }));
-        """
+        """  # noqa: E501
     )
 
 
@@ -6416,7 +6458,7 @@ def test_the_seated_figure_points_where_the_painted_cushion_points():
         const PIXI = { Graphics: FakeGraphics };
         const fakeGfx = { roundRect() { return this; }, circle() { return this; }, poly() { return this; },
                            fill() { return this; }, stroke() { return this; } };
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -6588,7 +6630,7 @@ def test_the_seated_rig_fits_inside_the_painted_seat_not_just_the_backrest():
           fill() { return this; },
           stroke() { return this; },
         };
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -6707,7 +6749,7 @@ def test_the_seated_figure_puts_its_feet_on_the_painted_floor():
           fill() { return this; },
           stroke() { return this; },
         };
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -6815,7 +6857,7 @@ def test_every_seated_leg_bone_carries_its_own_angle_and_opts_out_of_gestures():
           roundRect() { return this; }, circle() { return this; }, poly() { return this; },
           fill() { return this; }, stroke() { return this; },
         };
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -6909,7 +6951,7 @@ def _seated_rig_bounds():
         const fakeGfx = makeRecorder(bodyCalls);
         const skullCalls = [];
         const fakeSkull = makeRecorder(skullCalls);
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap")
         + "\n"
         + _js_const(source, "CELL")
@@ -8625,7 +8667,11 @@ def test_no_band_is_ever_drawn_outside_the_volume_it_belongs_to():
     # convex PATHS since increment 18 and are graded by
     # `test_no_path_band_leaves_its_outline`.
     profile = dict(
-        re.findall(r"^\s+(\w+): \[([-\d, ]+)\],", _js_block(source, "const PROFILE_HEAD = {"), re.M)
+        re.findall(
+            r"^\s+(\w+): \[([-\d, ]+)\],",
+            _js_block(source, "const PROFILE_HEAD = {"),
+            re.M,
+        )
     )
     for key in ("nape",):
         rects.append(tuple(v.strip() for v in profile[key].split(",")))
@@ -8898,7 +8944,7 @@ def test_a_light_without_a_ramp_degrades_instead_of_blanking_the_page():
         paint(rec, litRect(-24, -80, 48, 40, 20), BODY_FILL);
         console.log(JSON.stringify(
           { rim: BODY_RIM_SHADED.color, fills, shapes: shapes.length }));
-        """
+        """  # noqa: E501
     )
     e = _run_node(driver)
     assert e["rim"] == 0xFFFFFF, (
@@ -9062,7 +9108,8 @@ def test_the_contact_shadow_is_thrown_away_from_the_lamp():
     # Mutation 1: the pre-KI-061 room-wide axis. The trader's cross product
     # must see it.
     global_axis = block.replace(
-        "const axis = throwAxis(char.container.x * CAST_SCALE, char.baseY * CAST_SCALE);",
+        "const axis = throwAxis(char.container.x * CAST_SCALE, "
+        "char.baseY * CAST_SCALE);",
         "const axis = KEY_AXIS;",
     )
     assert global_axis != block, "the global-axis mutation did not apply"
@@ -10047,7 +10094,8 @@ def test_placedLabel_trusts_its_placement_so_the_manifest_check_is_the_real_guar
     with nothing on the page able to show it. Corrupts a real placement
     exactly the way `test_a_label_nudged_off_its_surface_is_caught`
     (`tests/unit/test_text_layout.py`) does - a label nudged off its
-    surface (here `history`, the room's last canvas label) - resolves it exactly as `as_json` would, and
+    surface (here `history`, the room's last canvas label)
+    - resolves it exactly as `as_json` would, and
     confirms the page's own function reproduces the escaped position
     verbatim. That is the proof this ticket's brief was missing: not that
     the page mentions `TEXT_PLACEMENTS`, but that a bad value in it reaches
@@ -10277,7 +10325,9 @@ def test_ambient_lights_snap_position_but_draw_the_measured_size():
             f"the {light['w']}x{light['h']} light at ({light['x']}, "
             f"{light['y']}) was drawn {w}x{h}"
         )
-        assert x % 4 == 0 and y % 4 == 0, f"the light's position ({x}, {y}) is off the CELL grid"
+        assert x % 4 == 0 and y % 4 == 0, (
+            f"the light's position ({x}, {y}) is off the CELL grid"
+        )
 
 
 @needs_node
@@ -10561,16 +10611,22 @@ def test_the_keyline_shader_declares_shared_uniforms_at_the_vertex_precision():
     the keyline was silently off. Every uniform the vendored vertex declares
     must be `highp` if the fragment declares it too.
     """
-    pixi = (Path(__file__).resolve().parents[2] / "api" / "static" / "pixi-8.19.0.min.js").read_text()
+    pixi = (
+        Path(__file__).resolve().parents[2] / "api" / "static" / "pixi-8.19.0.min.js"
+    ).read_text()
     vertex_at = pixi.index("in vec2 aPosition;")
     vertex = pixi[vertex_at : pixi.index("`", vertex_at)]
     shared = set(re.findall(r"uniform\s+vec\d\s+(\w+);", vertex))
     assert "uInputSize" in shared, "could not read the vendored filter vertex"
 
     fragment = _keyline_fragment(_world_source())
-    declared = re.findall(r"uniform\s+(highp\s+|mediump\s+|lowp\s+)?\w+\s+(\w+);", fragment)
+    declared = re.findall(
+        r"uniform\s+(highp\s+|mediump\s+|lowp\s+)?\w+\s+(\w+);", fragment
+    )
     checked = [name for _, name in declared if name in shared]
-    assert checked, "the fragment reads no uniform the vertex shares; this test graded nothing"
+    assert checked, (
+        "the fragment reads no uniform the vertex shares; this test graded nothing"
+    )
     for qualifier, name in declared:
         if name in shared:
             assert qualifier.strip() == "highp", (
@@ -10650,14 +10706,23 @@ def _keyline_driver(source: str, scenario: str) -> str:
         const got = keylineFilter();
         console.log(JSON.stringify({ attached: !!got, state: window.__keyline,
                                      cachedTwice: keylineFilter() === got }));
-        """ % json.dumps(scenario)
+        """ % json.dumps(scenario)  # noqa: E501
     )
 
 
 @needs_node
 @pytest.mark.parametrize(
     "scenario",
-    ["webgpu", "throws", "blank", "passthrough", "bounds", "norim", "undirected", "facingonly"],
+    [
+        "webgpu",
+        "throws",
+        "blank",
+        "passthrough",
+        "bounds",
+        "norim",
+        "undirected",
+        "facingonly",
+    ],
 )
 def test_a_keyline_that_cannot_be_proven_is_not_worn(scenario):
     """No WebGL, a throw, or a shader that draws nothing: the trader goes on
@@ -10705,7 +10770,9 @@ def test_only_the_seated_rig_wears_the_keyline_and_never_its_labels():
         body,
     )
     assert guard, "the keyline is no longer attached to the rig under the seated guard"
-    assert "container.filters" not in body, "a filter on `container` outlines the labels"
+    assert "container.filters" not in body, (
+        "a filter on `container` outlines the labels"
+    )
     assert body.count("keylineFilter(") == 1
 
 
@@ -10753,16 +10820,22 @@ def test_both_shoes_sit_between_the_floor_and_the_jeans():
             key=lambda k: sum((a - b) ** 2 for a, b in zip(rgb(c), rgb(palette[k]))),
         )
 
-    shoes = sorted({d["fill"] for d in emitted["drawn"] if nearest(d["fill"]) == "shoes"})
+    shoes = sorted(
+        {d["fill"] for d in emitted["drawn"] if nearest(d["fill"]) == "shoes"}
+    )
     assert len(shoes) == 2, f"expected a near and a far shoe colour, found {shoes}"
     source = _world_source()
     rendered = _run_node(
         "const BODY_FILL = 0xffffff, BODY_RIM = { color: 0xffffff };\n"
         + _js_const(source, "LIGHT")
-        + function_source("shading.js", "mixHex") + "\n"
-        + function_source("shading.js", "shade") + "\n"
-        + function_source("shading.js", "rampLevel") + "\n"
-        + f"console.log(JSON.stringify({json.dumps(shoes)}.map((c) => shade(c, rampLevel('base')))));"
+        + function_source("shading.js", "mixHex")
+        + "\n"
+        + function_source("shading.js", "shade")
+        + "\n"
+        + function_source("shading.js", "rampLevel")
+        + "\n"
+        + f"console.log(JSON.stringify({json.dumps(shoes)}"
+        ".map((c) => shade(c, rampLevel('base')))));"
     )
     far, near = measure_floor_band()
     hips = _manifest()["cast"]["trader"]["sit_anchor"]
@@ -10838,7 +10911,10 @@ def test_no_path_band_leaves_its_outline():
     # come off the rig itself: one outline per side, both chains.
     rig = _run_node(_rig_bone_driver(source))
     for name, index in (("thigh", 0), ("shin", 1)):
-        placements[name] = [rig["bones"][index]["outline"], rig["bones"][index + 3]["outline"]]
+        placements[name] = [
+            rig["bones"][index]["outline"],
+            rig["bones"][index + 3]["outline"],
+        ]
     placements["upper arm"] = [a["outline"] for a in rig["arms"]]
     placements["forearm"] = [a["foreOutline"] for a in rig["arms"]]
     for name, both in placements.items():
@@ -10899,7 +10975,11 @@ def _outline_distance(pts, px, py) -> float:
     for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
         dx, dy = bx - ax, by - ay
         span = dx * dx + dy * dy
-        t = 0.0 if span < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / span))
+        t = (
+            0.0
+            if span < 1e-12
+            else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / span))
+        )
         best = min(best, math.hypot(px - ax - t * dx, py - ay - t * dy))
     return best
 
@@ -10936,10 +11016,15 @@ def test_the_splayed_hand_keeps_its_light_patch():
     grid and every sample inside it must be on the hand.
     """
     source = _world_source()
-    hand = json.loads(_js_const(source, "HAND_OUTLINE").split("=", 1)[1].strip().rstrip(";"))
+    hand = json.loads(
+        _js_const(source, "HAND_OUTLINE").split("=", 1)[1].strip().rstrip(";")
+    )
     assert _hand_webs(hand), "the hand is convex: this test grades a concave outline"
     across = max(x for x, _ in hand)
-    for label, placed in (("flare on +x", hand), ("flare on -x", [[across - x, y] for x, y in hand])):
+    for label, placed in (
+        ("flare on +x", hand),
+        ("flare on -x", [[across - x, y] for x, y in hand]),
+    ):
         driver = _geometry_driver(
             source,
             f"const PTS = {json.dumps(placed)};\n"
@@ -10967,7 +11052,9 @@ def test_the_splayed_hand_keeps_its_light_patch():
             f"{label}: the lit band covers {lit / whole:.1%} of the hand (needs "
             f"{HAND_LIT_SHARE_MIN:.0%}): the hand is painted flat, no light patch"
         )
-        assert shade > base > lit, f"{label}: band areas {shade:.1f}/{base:.1f}/{lit:.1f}"
+        assert shade > base > lit, (
+            f"{label}: band areas {shade:.1f}/{base:.1f}/{lit:.1f}"
+        )
         step = 0.25
         lit_samples = []
         for name, poly in zip(("shade", "base", "lit"), polys):
@@ -10994,7 +11081,9 @@ def test_the_splayed_hand_keeps_its_light_patch():
             (x_lo + (i + 0.5) * step, y_lo + (j + 0.5) * step)
             for i in range(int((x_hi - x_lo) / step) + 1)
             for j in range(int((y_hi - y_lo) / step) + 1)
-            if _inside_concave(outline, x_lo + (i + 0.5) * step, y_lo + (j + 0.5) * step)
+            if _inside_concave(
+                outline, x_lo + (i + 0.5) * step, y_lo + (j + 0.5) * step
+            )
         ]
         hx = sum(x for x, _ in hand_samples) / len(hand_samples)
         hy = sum(y for _, y in hand_samples) / len(hand_samples)
@@ -11125,7 +11214,9 @@ def test_only_a_sideburn_of_hair_shows_in_front_of_the_ear():
                     elif v["kind"] == "path":
                         hit = _inside_convex(list(zip(g[0::2], g[1::2])), px, py)
                     else:
-                        hit = _inside_round_rect(px, py, g[:4], g[4] if len(g) > 4 else 0, slack=0)
+                        hit = _inside_round_rect(
+                            px, py, g[:4], g[4] if len(g) > 4 else 0, slack=0
+                        )
                     if hit:
                         top = v
                         break
@@ -11136,7 +11227,9 @@ def test_only_a_sideburn_of_hair_shows_in_front_of_the_ear():
             f"{len(tufts)} points, e.g. {tufts[:4]}"
         )
         sx, sy, sw, sh = P["sideburn"]
-        assert sw <= 2, f"the sideburn is {sw} wide; a taper leaves a line, not a column"
+        assert sw <= 2, (
+            f"the sideburn is {sw} wide; a taper leaves a line, not a column"
+        )
         assert sy + sh <= ey + eh / 2, "the sideburn runs past mid-ear toward the jaw"
         assert abs(sx + sw - front) <= 4, "the sideburn is not in front of the ear"
 
@@ -11148,7 +11241,9 @@ def _neck_outline() -> list[list[float]]:
         d for d in run["drawn"]
         if d["host"] == "body" and d["fill"] == run["HUMAN"]["skin"] and d["pts"]
     ]
-    assert len(neck) == 1, f"expected the neck as ONE skin path on the body, found {len(neck)}"
+    assert len(neck) == 1, (
+        f"expected the neck as ONE skin path on the body, found {len(neck)}"
+    )
     return neck[0]["pts"]
 
 
@@ -11243,7 +11338,9 @@ def test_the_sweater_ends_in_a_hem():
     hem = hems[0]
     pts = hem["pts"]
     for px, py in pts:
-        assert _inside_convex(torso, px, py), f"the hem pokes out of the torso at {px},{py}"
+        assert _inside_convex(torso, px, py), (
+            f"the hem pokes out of the torso at {px},{py}"
+        )
     at_bottom = [x for x, y in pts if y == bottom]
     assert max(at_bottom) - min(at_bottom) >= 0.8 * base_w, (
         "the hem is a patch, not a band round the waist"
@@ -11289,7 +11386,9 @@ def test_the_profile_eye_is_tired():
         # The nose is filled with the skin's own base value.
         nose = [f for f in run["features"] if f["kind"] == "poly"]
         assert nose, "the nose is no longer a poly"
-        lum = lambda c: _relative_luminance(c)
+        def lum(c):
+            return _relative_luminance(c)
+
         assert lum(mouth[0]["fill"]) < lum(bags[0]["fill"]) < lum(nose[0]["fill"]), (
             "the under-eye shadow must sit between the mouth's shade and the "
             "skin — at the mouth's value it is a bruise"
@@ -11317,7 +11416,9 @@ def test_every_stage_layer_has_an_eval_role():
     )
     assert built, "no stage layers found — the scan is broken"
     assert built - roles.keys() == set(), f"unclassified layers: {built - roles.keys()}"
-    assert roles.keys() - built == set(), f"roles for layers that don't exist: {roles.keys() - built}"
+    assert roles.keys() - built == set(), (
+        f"roles for layers that don't exist: {roles.keys() - built}"
+    )
     assert set(roles.values()) <= {"scenery", "content", "stage"}
 
 
@@ -11343,7 +11444,8 @@ def test_the_eval_rule_hides_content_and_refuses_an_unclassified_layer():
             f"const VOID_MODE = {str(void).lower()};\n"
             + _js_const(source, "EVAL_LAYER_ROLES")
             + "\nconst layers = {};\n"
-            + "for (const k of Object.keys(EVAL_LAYER_ROLES)) layers[k] = { visible: true };\n"
+            + "for (const k of Object.keys(EVAL_LAYER_ROLES)) "
+            "layers[k] = { visible: true };\n"
             + ("layers.brandNew = { visible: true };\n" if extra else "")
             + function_source("boot.js", "applyEvalLayers")
             + """
@@ -11411,7 +11513,7 @@ def _mood_blind_driver(source: str, bodies_block: str) -> str:
           (g.volumes || (g.volumes = [])).push(v);
           g.context.instructions.push("fill");
         }
-        """
+        """  # noqa: E501
         + function_source("tiers.js", "snap") + "\n"
         + _js_const(source, "CELL") + "\n"
         + _js_const(source, "CAST_SCALE") + "\n"

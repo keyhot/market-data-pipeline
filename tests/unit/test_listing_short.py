@@ -1,10 +1,11 @@
-"""R3-a (short new perp listings, days 1-30): events, windows, loader cut, A0 harness."""
+"""R3-a (short new perp listings, days 1-30): events, windows, loader cut, A0
+harness."""
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from model import listing_short as ls
-
 
 # --- token normalisation / universe -------------------------------------------------
 
@@ -17,7 +18,9 @@ def test_token_of_strips_quote_and_multiplier(sym, tok):
     assert ls.token_of(sym) == tok
 
 
-@pytest.mark.parametrize("sym", ["BTCUSDT_230331", "BTCDOMUSDT", "DEFIUSDT", "FOOTBALLUSDT"])
+@pytest.mark.parametrize(
+    "sym", ["BTCUSDT_230331", "BTCDOMUSDT", "DEFIUSDT", "FOOTBALLUSDT"]
+)
 def test_delivery_and_index_symbols_excluded(sym):
     assert ls.excluded_by_name(sym)
 
@@ -27,13 +30,23 @@ def test_plain_perp_not_excluded_by_name():
 
 
 def _info(sym, onboard, ctype="PERPETUAL", utype="COIN"):
-    return {"symbol": sym, "onboardDate": int(pd.Timestamp(onboard, tz="UTC").value // 10**6),
-            "contractType": ctype, "underlyingType": utype}
+    return {
+        "symbol": sym,
+        "onboardDate": int(pd.Timestamp(onboard, tz="UTC").value // 10**6),
+        "contractType": ctype,
+        "underlyingType": utype,
+    }
 
 
 def test_build_events_earliest_symbol_wins_and_tradfi_dropped():
-    first_month = {"BTCUSDT": "2020-01", "SUIUSDT": "2023-05", "SUIUSDC": "2024-02",
-                   "1000PEPEUSDT": "2023-05", "TSLAUSDT": "2026-02", "OLDUSDT": "2021-03"}
+    first_month = {
+        "BTCUSDT": "2020-01",
+        "SUIUSDT": "2023-05",
+        "SUIUSDC": "2024-02",
+        "1000PEPEUSDT": "2023-05",
+        "TSLAUSDT": "2026-02",
+        "OLDUSDT": "2021-03",
+    }
     info = [_info("SUIUSDT", "2023-05-03"), _info("SUIUSDC", "2024-02-10"),
             _info("1000PEPEUSDT", "2023-05-05"),
             _info("TSLAUSDT", "2026-02-01", ctype="TRADIFI_PERPETUAL", utype="EQUITY")]
@@ -64,16 +77,28 @@ def test_build_events_daily_first_name_gives_day_precision():
 
 
 def test_renames_flagged_not_counted_as_listings():
-    ev = ls.build_events({"BTCUSDT": "2020-01", "MATICUSDT": "2020-10", "POLUSDT": "2024-09"},
-                         [], daily_first={}).set_index("token")
+    ev = ls.build_events(
+        {"BTCUSDT": "2020-01", "MATICUSDT": "2020-10", "POLUSDT": "2024-09"},
+        [],
+        daily_first={},
+    ).set_index("token")
     assert ev.loc["POL", "rename"]
     assert not ev.loc["MATIC", "rename"]
 
 
-@pytest.mark.parametrize("d,w", [
-    ("2020-01-31", None), ("2020-02-01", "a"), ("2025-12-01", "a"), ("2025-12-02", "straddle"),
-    ("2025-12-31", "straddle"), ("2026-01-01", "b"), ("2026-09-04", "b"), ("2026-09-05", None),
-])
+@pytest.mark.parametrize(
+    "d,w",
+    [
+        ("2020-01-31", None),
+        ("2020-02-01", "a"),
+        ("2025-12-01", "a"),
+        ("2025-12-02", "straddle"),
+        ("2025-12-31", "straddle"),
+        ("2026-01-01", "b"),
+        ("2026-09-04", "b"),
+        ("2026-09-05", None),
+    ],
+)
 def test_assign_window_boundaries(d, w):
     assert ls.assign_window(pd.Timestamp(d)) == w
 
@@ -123,7 +148,9 @@ def test_assert_rejects_rows_before_day0_too():
 
 def test_event_rows_rejects_unknown_kind():
     with pytest.raises(ValueError):
-        ls.event_rows(_bars(pd.Timestamp("2024-01-01")), pd.Timestamp("2024-01-01"), kind="mark")
+        ls.event_rows(
+            _bars(pd.Timestamp("2024-01-01")), pd.Timestamp("2024-01-01"), kind="mark"
+        )
 
 
 # --- K2: tradability ----------------------------------------------------------------
@@ -174,8 +201,12 @@ def test_cluster_rho_matches_se_inflation():
 def test_cluster_lower_bound_positive_for_strong_plant_negative_for_null():
     rng = np.random.default_rng(1)
     month = np.repeat(np.arange(30), 10)
-    lb_pos = ls.cluster_lower_bound(0.5 + 0.1 * rng.standard_normal(300), month, rng, n_boot=499)
-    lb_null = ls.cluster_lower_bound(-0.5 + 0.1 * rng.standard_normal(300), month, rng, n_boot=499)
+    lb_pos = ls.cluster_lower_bound(
+        0.5 + 0.1 * rng.standard_normal(300), month, rng, n_boot=499
+    )
+    lb_null = ls.cluster_lower_bound(
+        -0.5 + 0.1 * rng.standard_normal(300), month, rng, n_boot=499
+    )
     assert lb_pos > 0 > lb_null
 
 
