@@ -21,6 +21,40 @@ def _bar(minute, close):
     }
 
 
+# The bar stream's window is `get_price_bars(symbol, interval, 10)`: the latest
+# `limit` bars, oldest first (the SQL is ORDER BY bar_timestamp DESC LIMIT n,
+# then reversed in Python; storage/postgres_store.py). Stubs for it come from
+# one helper that applies that same ordering to a table of stored bars, so no
+# test can hand the stream an order the real getter never returns.
+def _stored_window(table, limit):
+    newest_first = sorted(table, key=lambda bar: bar["timestamp"], reverse=True)
+    return list(reversed(newest_first[:limit]))
+
+
+def _fake_get_price_bars(table):
+    def fake(symbol, interval, limit):
+        return _stored_window(table, limit)
+
+    return fake
+
+
+async def _poll(stream):
+    """One poll of the stream: its data chunks, up to the keepalive that
+    closes the poll. The table may be changed between calls."""
+    data = []
+    while (chunk := await anext(stream)) != ": keepalive\n\n":
+        data.append(chunk)
+    return data
+
+
+def _timestamps(data_chunks):
+    return [json.loads(c[len("data: "):])["timestamp"] for c in data_chunks]
+
+
+def _ts(minute):
+    return _bar(minute, 1.0)["timestamp"]
+
+
 def test_stream_rejects_invalid_symbol():
     assert client.get("/stream/bars/%3Cscript%3E").status_code == 400
 
@@ -65,3 +99,55 @@ def test_stream_survives_db_errors():
         first = asyncio.run(first_chunk())
 
     assert first == ": keepalive\n\n"
+
+
+def test_stored_window_is_the_latest_bars_oldest_first():
+    # Inserted out of order and more than the window holds: the stub returns
+    # what ORDER BY bar_timestamp DESC LIMIT n, reversed, returns.
+    table = [_bar(m, 1.0) for m in (5, 1, 9, 3, 7, 0, 8, 2, 6, 4)]
+    assert [b["timestamp"] for b in _stored_window(table, 3)] == [
+        _ts(7), _ts(8), _ts(9)
+    ]
+    assert _stored_window(table, 99) == [_bar(m, 1.0) for m in range(10)]
+
+
+def test_stream_connect_window_of_three_bars_emits_none_of_them():
+    table = [_bar(0, 1.0), _bar(1, 2.0), _bar(2, 3.0)]
+
+    async def collect():
+        stream = _bar_event_stream("BTCUSDT", "1m", poll_seconds=0.01)
+        polls = [await _poll(stream) for _ in range(3)]  # connect + 2 unchanged
+        await stream.aclose()
+        return polls
+
+    with patch("api.routers.sse.get_price_bars", side_effect=_fake_get_price_bars(table)):
+        polls = asyncio.run(collect())
+
+    # The baseline is the newest bar of the window. A baseline at the oldest
+    # bar would emit bars 1 and 2 on the second poll; one that never advances
+    # past the newest would re-send it on every poll.
+    assert polls == [[], [], []]
+
+
+def test_stream_two_new_bars_in_one_poll_emit_exactly_those_two_in_order():
+    table = [_bar(0, 1.0), _bar(1, 2.0), _bar(2, 3.0)]
+
+    async def collect():
+        stream = _bar_event_stream("BTCUSDT", "1m", poll_seconds=0.01)
+        polls = [await _poll(stream)]  # connect on the three-bar window
+        table.extend([_bar(3, 4.0), _bar(4, 5.0)])  # both land between polls
+        polls.append(await _poll(stream))
+        polls.append(await _poll(stream))  # same table again
+        table.append(_bar(5, 6.0))
+        polls.append(await _poll(stream))
+        await stream.aclose()
+        return polls
+
+    with patch("api.routers.sse.get_price_bars", side_effect=_fake_get_price_bars(table)):
+        polls = asyncio.run(collect())
+
+    assert polls[0] == []
+    assert _timestamps(polls[1]) == [_ts(3), _ts(4)]  # oldest first, no old bar
+    assert polls[2] == []  # nothing is sent twice
+    assert _timestamps(polls[3]) == [_ts(5)]  # the watermark moved to the newest
+    assert json.loads(polls[1][1][len("data: "):])["close"] == 5.0
