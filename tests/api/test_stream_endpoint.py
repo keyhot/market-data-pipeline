@@ -120,7 +120,8 @@ def test_stream_connect_window_of_three_bars_emits_none_of_them():
         await stream.aclose()
         return polls
 
-    with patch("api.routers.sse.get_price_bars", side_effect=_fake_get_price_bars(table)):
+    fake = _fake_get_price_bars(table)
+    with patch("api.routers.sse.get_price_bars", side_effect=fake):
         polls = asyncio.run(collect())
 
     # The baseline is the newest bar of the window. A baseline at the oldest
@@ -143,11 +144,15 @@ def test_stream_two_new_bars_in_one_poll_emit_exactly_those_two_in_order():
         await stream.aclose()
         return polls
 
-    with patch("api.routers.sse.get_price_bars", side_effect=_fake_get_price_bars(table)):
+    fake = _fake_get_price_bars(table)
+    with patch("api.routers.sse.get_price_bars", side_effect=fake):
         polls = asyncio.run(collect())
 
     assert polls[0] == []
     assert _timestamps(polls[1]) == [_ts(3), _ts(4)]  # oldest first, no old bar
     assert polls[2] == []  # nothing is sent twice
     assert _timestamps(polls[3]) == [_ts(5)]  # the watermark moved to the newest
-    assert json.loads(polls[1][1][len("data: "):])["close"] == 5.0
+    assert [json.loads(c[len("data: "):]) for c in polls[1]] == [
+        _bar(3, 4.0),
+        _bar(4, 5.0),
+    ]
