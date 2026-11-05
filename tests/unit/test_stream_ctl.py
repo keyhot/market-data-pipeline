@@ -613,22 +613,20 @@ def test_the_audio_gain_reaches_the_music_bed_build_made_at_every_tier(monkeypat
     client = FakeClient()
     stream_ctl.build_scene(client)
     existing = {i["inputName"] for i in client.get_input_list().inputs}
+    (bed,) = stream_scene.audio_source_names()  # the spec's one shared bed
 
-    for tier in range(4):
+    sent = []
+    for tier in range(len(stream_scene._AUDIO_GAIN_DB)):
         client.volumes.clear()
         stream_ctl.set_audio_gain(client, tier=tier)
         gain = stream_scene.audio_gain_db(tier)
-        assert client.volumes == [wire("set_input_volume", "audio-bed", vol_db=gain)[1]]
+        assert client.volumes == [wire("set_input_volume", bed, vol_db=gain)[1]]
         assert {v["inputName"] for v in client.volumes} <= existing
         assert client.volumes[0]["inputVolumeDb"] == gain
+        sent.append(gain)
 
-    # The ramp is audible: the four tiers did not all send the same gain.
-    sent = []
-    for tier in range(4):
-        client.volumes.clear()
-        stream_ctl.set_audio_gain(client, tier=tier)
-        sent.append(client.volumes[0]["inputVolumeDb"])
-    assert sent == sorted(set(sent)) and len(sent) == 4
+    # The ramp is audible: every tier sent a gain of its own, rising.
+    assert sent == sorted(set(sent)) and len(sent) == len(stream_scene._AUDIO_GAIN_DB)
 
 
 def test_the_audio_gain_sends_nothing_when_the_spec_has_no_bed(monkeypatch):
