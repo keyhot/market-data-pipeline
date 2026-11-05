@@ -362,6 +362,7 @@ def test_acked_session_subscribes_pings_and_ends_when_the_keepalive_closes_it(
     _run_bounded(getattr(recorder, session)())
     assert connects == [(getattr(lr, url_const), {"ping_interval": None})]
     # The ack is the only proof, at connect time; three pings, then the close.
+    assert recorder.trackers[venue].last_proof == T0  # the ack was counted as a proof
     assert ws.sent == [getattr(lr, subscribe_const), ping, ping, ping]
     assert ws.closed == 1
     assert sleeper.delays == [PING_EVERY_S] * 4
