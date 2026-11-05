@@ -508,6 +508,71 @@ def test_flush_loop_retries_a_failed_write_with_the_same_rows_next_tick(monkeypa
     assert recorder.buffer.rows_written == n_rows
 
 
+class SeenSink(Sink):
+    """A Sink that also takes the fold-state keyword, and logs every attempt."""
+
+    def __init__(self, fail=False):
+        super().__init__(fail=fail)
+        self.attempts = []  # (kraken_seen, batch contents) of every call, failed or not
+        self.seen = []  # kraken_seen of the calls that landed
+
+    def __call__(
+        self,
+        liquidations,
+        coverage,
+        kraken_minutes=(),
+        kraken_coverage=(),
+        kraken_seen=None,
+    ):
+        self.attempts.append(
+            (liquidations, coverage, kraken_minutes, kraken_coverage, kraken_seen)
+        )
+        super().__call__(liquidations, coverage, kraken_minutes, kraken_coverage)
+        self.seen.append(kraken_seen)
+
+
+def test_flush_loop_failed_write_keeps_coverage_and_kraken_state_for_the_retry(
+    monkeypatch,
+):
+    sink = SeenSink(fail=True)
+
+    def on_sleep(n):
+        if n == 2:
+            sink.fail = False  # postgres is back before the second flush
+
+    recorder, clock, _ = _setup(
+        monkeypatch,
+        stop_after=4,
+        on_sleep=on_sleep,
+        sink=sink,
+        kraken_symbols=("PF_XBTUSD",),
+    )
+    recorder.on_binance_frame(BINANCE_FRAME)  # data at T0 (a whole minute)
+    for i in range(1, 13):  # a pong every 10s for two minutes
+        clock.t = T0 + 10 * i
+        recorder.on_pong(BINANCE)
+    recorder.process_kraken_response("PF_XBTUSD", KRAKEN_PAYLOAD)
+    uids = [t.uid for t in parse_kraken_history(KRAKEN_PAYLOAD, "PF_XBTUSD")]
+    n_rows = len(parse_binance(BINANCE_FRAME))
+    assert uids and recorder.buffer.kraken_minutes
+
+    _drive(recorder._flush_loop())
+
+    # the first, failed attempt carried the coverage and the Kraken state ...
+    first, _retry = sink.attempts
+    assert first[1] == [(BINANCE, T0, n_rows), (BINANCE, T0 + 60, 0)]
+    assert first[4] == {"PF_XBTUSD": uids}
+    # ... and the retry that landed carries all of it again, nothing lost
+    (batch,) = sink.batches
+    assert len(batch[0]) == n_rows
+    assert batch[1] == first[1]
+    assert batch[2] == first[2] and batch[2]
+    assert sink.seen == [{"PF_XBTUSD": uids}]
+    # and a landed batch leaves nothing behind to be written a third time
+    assert recorder.buffer.kraken_seen == {}
+    assert recorder.buffer.coverage == []
+
+
 def test_flush_loop_writes_the_coverage_minutes_it_collected(monkeypatch):
     sink = Sink()
     recorder, clock, sleeper = _setup(monkeypatch, stop_after=2, sink=sink)
