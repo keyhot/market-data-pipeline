@@ -10,6 +10,7 @@ import pytest
 from music.library import Track
 from music.player import BedState
 from scripts import music_bed
+from tests.unit.obs_real import OBSSDKRequestError, signature_diffs, wire
 
 T0 = datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc)
 
@@ -38,17 +39,25 @@ class FakeClient:
 
     def get_media_input_status(self, name):
         if self._raise_status:
-            raise RuntimeError("no such input")
+            # What the real client raises when OBS refuses (ResourceNotFound).
+            raise OBSSDKRequestError(
+                "GetMediaInputStatus", 600, f"No source was found by the name `{name}`."
+            )
         return self._status
 
     def set_input_settings(self, name, settings, overlay):
         self.settings.append((name, settings, overlay))
 
-    def set_input_volume(self, name, vol_db=None):
-        self.volumes.append((name, vol_db))
+    def set_input_volume(self, name, vol_mul=None, vol_db=None):
+        # The real client's order: the second positional is the MULTIPLIER. Both
+        # keys always go out, an unused one as a JSON null, and the client picks
+        # neither, so this records exactly that requestData.
+        self.volumes.append(
+            {"inputName": name, "inputVolumeMul": vol_mul, "inputVolumeDb": vol_db}
+        )
 
-    def set_input_audio_monitor_type(self, name, kind):
-        self.monitors.append((name, kind))
+    def set_input_audio_monitor_type(self, name, mon_type):
+        self.monitors.append((name, mon_type))
 
 
 def _track(name="alpha"):
@@ -95,7 +104,30 @@ def test_the_bed_is_audible_on_the_broadcast_not_just_at_the_desk():
     client = FakeClient()
     music_bed.run_once(client, BedState(), [_track()], Path("/music"), T0)
     assert client.monitors == [("audio-bed", "OBS_MONITORING_TYPE_NONE")]
-    assert client.volumes == [("audio-bed", music_bed.DEFAULT_GAIN_DB)]
+    # Decibels, by keyword. The multiplier slot goes out as a JSON null: whether
+    # obs-websocket reads that as "absent" or as a second volume field ("You may
+    # only specify one volume field.") is UNVERIFIED, so this pins the shape
+    # production sends today, not that OBS accepts it.
+    assert client.volumes == [
+        {
+            "inputName": "audio-bed",
+            "inputVolumeMul": None,
+            "inputVolumeDb": music_bed.DEFAULT_GAIN_DB,
+        }
+    ]
+
+
+def test_the_fake_takes_the_arguments_the_real_client_takes():
+    """`set_input_volume` took dB second here while the real client takes a
+    multiplier second, so a gain passed positionally (a negative multiplier on
+    real OBS) was recorded as -18 dB and the test stayed green."""
+    assert signature_diffs(FakeClient) == {}
+    client = FakeClient()
+    client.set_input_volume("audio-bed", -18.0)
+    assert client.volumes == [
+        {"inputName": "audio-bed", "inputVolumeMul": -18.0, "inputVolumeDb": None}
+    ]
+    assert client.volumes[0] == wire("set_input_volume", "audio-bed", -18.0)[1]
 
 
 def test_a_playing_track_is_not_restarted():

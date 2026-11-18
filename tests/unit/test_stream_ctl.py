@@ -1,10 +1,16 @@
 """stream_ctl logic against a fake obsws client — CI has no OBS, so every
 request the tool would issue is pinned here instead."""
 
+import copy
+
 import pytest
 
 from scripts import stream_ctl
 from stream import scene as stream_scene
+from tests.unit.obs_real import OBSSDKRequestError, signature_diffs, wire
+
+# obs-websocket's RequestStatus codes for the two refusals `build_scene` can meet.
+_NOT_FOUND, _ALREADY_EXISTS = 600, 601
 
 
 class FakeResp:
@@ -13,6 +19,26 @@ class FakeResp:
 
 
 class FakeClient:
+    """OBS as far as `build_scene` depends on it: scenes, the inputs they are
+    made of, and the scene items that join the two.
+
+    Modelled on what obs-websocket does, because a fake that answers for
+    anything is how a source created in the wrong scene stayed green:
+
+    - a source name is unique across scenes AND inputs (CreateInput and
+      CreateScene both answer "A source already exists by that ... name.");
+    - `create_input` also creates the scene item, in the scene it is told, and
+      the item is hidden unless `sceneItemEnabled` is true;
+    - scene item ids are assigned per scene, from 1, and never reused;
+    - `get_scene_item_id` finds only what is in THAT scene, so a source that
+      lives in another scene is an error rather than an id;
+    - a refused request is an `OBSSDKRequestError`, which is what the real
+      client raises (`ReqClient.send`), not a `RuntimeError`.
+
+    Held to the real client's signatures by
+    `test_the_fake_takes_the_arguments_the_real_client_takes`.
+    """
+
     def __init__(
         self,
         scenes=(),
@@ -25,10 +51,13 @@ class FakeClient:
         transitions=("Cut", "Fade"),
     ):
         self.calls = []
-        self._item_ids = {}
         self.transforms = {}
-        self._scenes = list(scenes)
-        self._inputs = list(inputs)
+        # The requestData of each SetInputVolume, exactly as it goes on the wire.
+        self.volumes = []
+        self._scene_items = {name: [] for name in scenes}  # bottom-first
+        self._next_item_id = {name: 1 for name in scenes}
+        # Pre-existing inputs sit in no scene.
+        self._inputs = {name: {"kind": None, "settings": {}} for name in inputs}
         self._streaming = streaming
         self._reconnecting = reconnecting
         self._congestion = congestion
@@ -44,11 +73,16 @@ class FakeClient:
     def set_current_scene_transition(self, name):
         self._log("set_current_scene_transition", name)
 
-    def set_current_scene_transition_duration(self, ms):
-        self._log("set_current_scene_transition_duration", ms)
+    def set_current_scene_transition_duration(self, duration):
+        self._log("set_current_scene_transition_duration", duration)
 
-    def set_input_volume(self, name, vol_db=None):
-        self._log("set_input_volume", name, vol_db)
+    def set_input_volume(self, name, vol_mul=None, vol_db=None):
+        # The real client picks neither: the second positional is the MULTIPLIER,
+        # and both keys go out, a None as a JSON null. Which one OBS honours when
+        # both (or a null) arrive is the server's business, so none is chosen here.
+        self.volumes.append(
+            {"inputName": name, "inputVolumeMul": vol_mul, "inputVolumeDb": vol_db}
+        )
 
     def press_input_properties_button(self, input_name, prop_name):
         self._log("press_input_properties_button", input_name, prop_name)
@@ -56,38 +90,142 @@ class FakeClient:
     def _log(self, name, *args):
         self.calls.append((name, *args))
 
+    def _scene(self, request, name):
+        if name not in self._scene_items:
+            raise OBSSDKRequestError(
+                request, _NOT_FOUND, f"No source was found by the name of `{name}`."
+            )
+        return self._scene_items[name]
+
+    def _input(self, request, name):
+        if name not in self._inputs:
+            raise OBSSDKRequestError(
+                request, _NOT_FOUND, f"No source was found by the name of `{name}`."
+            )
+        return self._inputs[name]
+
+    def _item(self, request, scene, item_id):
+        for item in self._scene(request, scene):
+            if item["sceneItemId"] == item_id:
+                return item
+        raise OBSSDKRequestError(
+            request, _NOT_FOUND, f"No scene items were found in scene `{scene}`."
+        )
+
+    def _place(self, scene, source, enabled):
+        item_id = self._next_item_id[scene]
+        self._next_item_id[scene] += 1
+        self._scene_items[scene].append(
+            {
+                "sceneItemId": item_id,
+                "sourceName": source,
+                # OBS's default for an omitted flag is visible.
+                "sceneItemEnabled": True if enabled is None else bool(enabled),
+            }
+        )
+        return item_id
+
     def get_scene_list(self):
-        return FakeResp(scenes=[{"sceneName": s} for s in self._scenes])
+        return FakeResp(scenes=[{"sceneName": s} for s in self._scene_items])
 
     def create_scene(self, name):
         self._log("create_scene", name)
-        self._scenes.append(name)
+        if name in self._scene_items or name in self._inputs:
+            raise OBSSDKRequestError(
+                "CreateScene", _ALREADY_EXISTS,
+                "A source already exists by that scene name.",
+            )
+        self._scene_items[name] = []
+        self._next_item_id[name] = 1
 
-    def get_input_list(self):
-        return FakeResp(inputs=[{"inputName": n} for n in self._inputs])
+    def get_input_list(self, kind=None):
+        return FakeResp(
+            inputs=[
+                {"inputName": n, "inputKind": state["kind"]}
+                for n, state in self._inputs.items()
+                if kind is None or state["kind"] == kind
+            ]
+        )
 
-    def create_input(self, scene, name, kind, settings, enabled):
-        self._log("create_input", name)
-        self._inputs.append(name)
+    def get_input_settings(self, name):
+        state = self._input("GetInputSettings", name)
+        return FakeResp(
+            input_settings=copy.deepcopy(state["settings"]), input_kind=state["kind"]
+        )
+
+    def create_input(
+        self, sceneName, inputName, inputKind, inputSettings, sceneItemEnabled
+    ):
+        # Also puts a scene item in `sceneName`: the one place an input's scene
+        # is decided, which is why it is modelled and not just logged.
+        self._log("create_input", inputName)
+        self._scene("CreateInput", sceneName)
+        if inputName in self._inputs or inputName in self._scene_items:
+            raise OBSSDKRequestError(
+                "CreateInput", _ALREADY_EXISTS,
+                "A source already exists by that input name.",
+            )
+        self._inputs[inputName] = {
+            "kind": inputKind,
+            "settings": copy.deepcopy(inputSettings or {}),
+        }
+        return FakeResp(
+            scene_item_id=self._place(sceneName, inputName, sceneItemEnabled)
+        )
 
     def set_input_settings(self, name, settings, overlay):
         self._log("set_input_settings", name)
+        state = self._input("SetInputSettings", name)
+        if overlay is False:
+            state["settings"] = copy.deepcopy(settings)
+        else:
+            state["settings"].update(copy.deepcopy(settings))
 
-    def get_scene_item_id(self, scene, name):
-        # Distinct per source: an ordering bug is invisible if every item in
-        # the scene answers to the same id.
-        self._item_ids.setdefault((scene, name), len(self._item_ids) + 1)
-        return FakeResp(scene_item_id=self._item_ids[(scene, name)])
+    def get_scene_item_list(self, name):
+        items = self._scene("GetSceneItemList", name)
+        return FakeResp(
+            scene_items=[dict(item, sceneItemIndex=i) for i, item in enumerate(items)]
+        )
 
-    def set_scene_item_transform(self, scene, item_id, transform):
+    def create_scene_item(self, scene_name, source_name, enabled=None):
+        self._log("create_scene_item", scene_name, source_name)
+        self._scene("CreateSceneItem", scene_name)
+        if source_name not in self._inputs and source_name not in self._scene_items:
+            raise OBSSDKRequestError(
+                "CreateSceneItem", _NOT_FOUND,
+                f"No source was found by the name of `{source_name}`.",
+            )
+        return FakeResp(scene_item_id=self._place(scene_name, source_name, enabled))
+
+    def get_scene_item_id(self, scene_name, source_name, offset=None):
+        items = self._scene("GetSceneItemId", scene_name)
+        matches = [i for i in items if i["sourceName"] == source_name]
+        try:
+            item = matches[-1] if offset == -1 else matches[offset or 0]
+        except IndexError:
+            raise OBSSDKRequestError(
+                "GetSceneItemId", _NOT_FOUND,
+                "No scene items were found in the specified scene by that name "
+                "or offset.",
+            ) from None
+        return FakeResp(scene_item_id=item["sceneItemId"])
+
+    def set_scene_item_transform(self, scene_name, item_id, transform):
         # The transform payload itself, not just the fact of the call: a fake
         # that forgets the arguments cannot catch a builder that pins position
         # and forgets scale (KI-026).
-        self.transforms[(scene, item_id)] = dict(transform)
-        self._log("set_scene_item_transform", scene, item_id)
+        self._item("SetSceneItemTransform", scene_name, item_id)
+        self.transforms[(scene_name, item_id)] = dict(transform)
+        self._log("set_scene_item_transform", scene_name, item_id)
 
-    def set_scene_item_index(self, scene, item_id, item_index):
-        self._log("set_scene_item_index", scene, item_id, item_index)
+    def set_scene_item_index(self, scene_name, item_id, item_index):
+        self._log("set_scene_item_index", scene_name, item_id, item_index)
+        items = self._scene("SetSceneItemIndex", scene_name)
+        item = self._item("SetSceneItemIndex", scene_name, item_id)
+        items.remove(item)
+        # Index 0 is the bottom. An index past the top is clamped here; what
+        # OBS does with one is unverified, and `build_scene` never sends it.
+        items.insert(max(0, min(item_index, len(items))), item)
 
     def set_current_program_scene(self, name):
         self._log("set_current_program_scene", name)
@@ -119,8 +257,10 @@ class FakeClient:
             output_congestion=self._congestion,
         )
 
-    def save_source_screenshot(self, name, fmt, path, width, height, quality):
-        self._log("save_source_screenshot", name, fmt, path)
+    def save_source_screenshot(
+        self, name, img_format, file_path, width, height, quality
+    ):
+        self._log("save_source_screenshot", name, img_format, file_path)
 
     def set_stream_service_settings(self, ss_type, ss_settings):
         self._log("set_stream_service_settings", ss_type, ss_settings)
@@ -135,6 +275,23 @@ class FakeClient:
         )
 
     fps_numerator, fps_denominator = 30, 1
+
+
+def _stacking(client, scene):
+    """What OBS draws in `scene`, bottom to top: the scene's item names."""
+    return [i["sourceName"] for i in client.get_scene_item_list(scene).scene_items]
+
+
+def _item_id(client, scene, source):
+    return client.get_scene_item_id(scene, source).scene_item_id
+
+
+def _layout(client):
+    """Every scene's items (ids, order, visibility), as OBS would list them."""
+    return {
+        s["sceneName"]: client.get_scene_item_list(s["sceneName"]).scene_items
+        for s in client.get_scene_list().scenes
+    }
 
 
 def _creates(client):
@@ -179,10 +336,101 @@ def test_switch_scene_sets_the_program_scene():
 def test_build_is_idempotent():
     client = FakeClient()
     stream_ctl.build_scene(client)
+    layout = _layout(client)
     client.calls.clear()
     stream_ctl.build_scene(client)
     assert _creates(client) == []  # second run must not create anything
     assert any(c[0] == "set_input_settings" for c in client.calls)
+    # ...and must not have moved, duplicated or re-numbered a single scene item.
+    assert _layout(client) == layout
+
+
+def _assert_obs_shows_the_spec(client):
+    """What OBS would show after `build_scene`: each scene holds exactly its
+    spec's sources, bottom-first, every one visible, of the spec's kind and
+    carrying the spec's settings. (The fake keeps only the settings it was
+    given, so this is a subset check; a real browser source also fills in its
+    defaults.)"""
+    for spec in stream_scene.scenes_spec():
+        scene = spec["scene"]
+        items = client.get_scene_item_list(scene).scene_items
+        assert [i["sourceName"] for i in items] == [
+            s["name"] for s in spec["sources"]
+        ], f"{scene} does not hold its own sources, in spec order"
+        hidden = [i["sourceName"] for i in items if not i["sceneItemEnabled"]]
+        assert not hidden, f"{scene}: hidden scene items {hidden} are black on air"
+        for src in spec["sources"]:
+            live = client.get_input_settings(src["name"])
+            assert live.input_kind == src["kind"], f"{src['name']} has the wrong kind"
+            wrong = {
+                k: v for k, v in src["settings"].items()
+                if live.input_settings.get(k) != v
+            }
+            assert not wrong, f"{scene}/{src['name']} lacks settings {wrong}"
+
+
+def test_build_leaves_every_scene_holding_its_own_visible_configured_sources():
+    """The audit-2 F1 mutants, as a state check: a source created in the wrong
+    scene, created hidden, created without its settings, or never created in a
+    scene at all (an empty scene) each leave OBS showing something other than
+    the spec. The old fake logged the calls and answered every id lookup, so none
+    of them failed anything."""
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+    _assert_obs_shows_the_spec(client)
+
+
+def test_a_rebuild_resends_the_spec_settings_over_whatever_drifted():
+    """`build` is what the watchdog runs after every OBS recovery; "idempotent"
+    must mean it puts the settings back, not that it called something."""
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+    for spec in stream_scene.scenes_spec():
+        for src in spec["sources"]:
+            client.set_input_settings(
+                src["name"], {k: "drifted" for k in src["settings"]}, True
+            )
+    stream_ctl.build_scene(client)
+    _assert_obs_shows_the_spec(client)
+
+
+def test_a_rebuild_puts_a_scrambled_layer_order_back():
+    """The stacking half of the same state check: sources that already exist in
+    the wrong order are re-ordered by `build`, which a fresh build (created in
+    spec order) cannot show."""
+    client = FakeClient()
+    for spec in stream_scene.scenes_spec():
+        client.create_scene(spec["scene"])
+        for src in reversed(spec["sources"]):
+            client.create_input(
+                spec["scene"], src["name"], src["kind"], src["settings"], True
+            )
+    assert any(
+        _stacking(client, spec["scene"]) != [s["name"] for s in spec["sources"]]
+        for spec in stream_scene.scenes_spec()
+    ), "the seeded scenes must actually be scrambled"
+    stream_ctl.build_scene(client)
+    _assert_obs_shows_the_spec(client)
+
+
+def test_build_with_the_music_bed_carries_one_input_into_every_scene(monkeypatch):
+    """STREAM_AUDIO_DIR set: `audio-bed` is ONE input with a scene item in each
+    scene (four inputs is four players), built through `get_scene_item_list`
+    and `create_scene_item`, which the old fake did not have."""
+    monkeypatch.setenv("STREAM_AUDIO_DIR", "/music")
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+    _assert_obs_shows_the_spec(client)
+
+    scenes = [s["scene"] for s in stream_scene.scenes_spec()]
+    assert all("audio-bed" in _stacking(client, s) for s in scenes)
+    bed_inputs = client.get_input_list(kind="ffmpeg_source").inputs
+    assert [i["inputName"] for i in bed_inputs] == ["audio-bed"]
+    created = [c[1] for c in client.calls if c[0] == "create_input"]
+    assert created.count("audio-bed") == 1
+    assert [c for c in client.calls if c[0] == "create_scene_item"] == [
+        ("create_scene_item", s, "audio-bed") for s in scenes[1:]
+    ]
 
 
 def test_status_parses_dropped_ratio():
@@ -326,10 +574,57 @@ def test_setting_the_audio_gain_is_a_no_op_without_an_audio_bed():
     a source that isn't there must not raise on a live stream."""
     client = FakeClient()
     stream_ctl.set_audio_gain(client, tier=3, sources=[])
-    assert not any(c[0] == "set_input_volume" for c in client.calls)
+    assert client.volumes == []
 
     stream_ctl.set_audio_gain(client, tier=3, sources=["audio-bed"])
-    assert ("set_input_volume", "audio-bed", pytest.approx(0.0)) in client.calls
+    assert [v["inputName"] for v in client.volumes] == ["audio-bed"]
+
+
+def test_the_audio_gain_goes_out_as_decibels_with_a_null_multiplier():
+    """Pins the call shape production sends today, and nothing more.
+
+    `set_audio_gain` passes `vol_db=` by keyword, and the real client puts BOTH
+    volume keys on the wire: the unused multiplier as a JSON null. Whether
+    obs-websocket reads that null as "absent" or counts it as a second volume
+    field ("You may only specify one volume field.") is UNVERIFIED, so this pins
+    what is sent, not that OBS accepts it.
+
+    The second positional parameter of the real `set_input_volume` is the
+    MULTIPLIER, which is the slip this guards: a gain of -18.0 passed
+    positionally is a negative multiplier, not -18 dB."""
+    client = FakeClient()
+    stream_ctl.set_audio_gain(client, tier=3, sources=["audio-bed"])
+    (sent,) = client.volumes
+    assert sent == {
+        "inputName": "audio-bed",
+        "inputVolumeMul": None,
+        "inputVolumeDb": pytest.approx(stream_scene.audio_gain_db(3)),
+    }
+
+
+def test_the_fake_records_a_volume_request_as_the_real_client_would_send_it():
+    """The second positional is the multiplier, both keys always go out, and a
+    value given for both is sent for both: the client chooses nothing. Each
+    expectation is checked against the library's own request builder, so the
+    fake cannot drift from what ends up on the socket."""
+    for args, kwargs in [
+        (("bed", -18.0), {}),  # dB in the multiplier slot
+        (("bed",), {"vol_db": -18.0}),
+        (("bed",), {"vol_mul": 0.5}),
+        (("bed", 0.5, -6.0), {}),  # both: nothing picks one
+        (("bed",), {}),  # neither: nothing complains
+    ]:
+        client = FakeClient()
+        client.set_input_volume(*args, **kwargs)
+        request, data = wire("set_input_volume", *args, **kwargs)
+        assert request == "SetInputVolume"
+        assert client.volumes == [data], (args, kwargs)
+
+    client = FakeClient()
+    client.set_input_volume("bed", -18.0)
+    assert client.volumes == [
+        {"inputName": "bed", "inputVolumeMul": -18.0, "inputVolumeDb": None}
+    ]
 
 
 def test_build_puts_the_fade_in_place_before_the_director_starts_switching():
@@ -355,7 +650,7 @@ def test_build_pins_the_layer_order_instead_of_inheriting_it():
 
     spec = next(s for s in stream_scene.scenes_spec() if s["scene"] == "chart-focus")
     order = [src["name"] for src in spec["sources"]]
-    ids = {name: client._item_ids[("chart-focus", name)] for name in order}
+    ids = {name: _item_id(client, "chart-focus", name) for name in order}
     indexes = {
         item_id: index
         for call, scene, item_id, index in
@@ -435,7 +730,7 @@ def test_the_rendered_rect_of_every_source_is_the_rect_the_spec_declares():
         for src in spec["sources"]:
             if src["kind"] != "browser_source":
                 continue
-            item_id = client._item_ids[(spec["scene"], src["name"])]
+            item_id = _item_id(client, spec["scene"], src["name"])
             transform = client.transforms[(spec["scene"], item_id)]
             rendered = (
                 src["settings"]["width"] * transform["scaleX"],
@@ -460,49 +755,83 @@ def test_status_surfaces_the_reconnect_signals():
     assert status["streaming"] is True   # the whole problem, in one assertion
 
 
-class _SharedBedClient:
+def _bed_placed_in_one_scene():
     """OBS where `audio-bed` exists but has only ever been placed in one scene."""
-
-    def __init__(self):
-        self.placed = {"chart-focus": {"audio-bed"}}
-        self.created_items = []
-
-    def get_scene_item_list(self, scene):
-        items = [{"sourceName": n} for n in self.placed.get(scene, set())]
-        return type("R", (), {"scene_items": items})()
-
-    def get_scene_item_id(self, scene, source):
-        if source not in self.placed.get(scene, set()):
-            raise RuntimeError(f"{source} not in {scene}")
-        return type("R", (), {"scene_item_id": 1})()
-
-    def create_scene_item(self, scene, source):
-        self.placed.setdefault(scene, set()).add(source)
-        self.created_items.append((scene, source))
-        return type("R", (), {"scene_item_id": 2})()
+    client = FakeClient(scenes=("chart-focus", "world-focus"))
+    client.create_input("chart-focus", "audio-bed", "ffmpeg_source", {}, True)
+    client.calls.clear()
+    return client
 
 
 def test_a_shared_input_is_added_to_a_scene_it_is_missing_from():
     """One bed in four scenes means three of them need a scene item created,
     not a second input — four inputs is four players."""
-    client = _SharedBedClient()
-    assert (
-        stream_ctl._scene_item_id(client, "chart-focus", "audio-bed", shared=True) == 1
-    )
-    assert (
-        stream_ctl._scene_item_id(client, "world-focus", "audio-bed", shared=True) == 2
-    )
-    assert client.created_items == [("world-focus", "audio-bed")]
+    client = _bed_placed_in_one_scene()
+    home = _item_id(client, "chart-focus", "audio-bed")
+    assert stream_ctl._scene_item_id(client, "chart-focus", "audio-bed", True) == home
+    assert client.calls == []  # already there: nothing to create
+
+    placed = stream_ctl._scene_item_id(client, "world-focus", "audio-bed", True)
+    assert client.calls == [("create_scene_item", "world-focus", "audio-bed")]
+    assert placed == _item_id(client, "world-focus", "audio-bed")
+    assert _stacking(client, "world-focus") == ["audio-bed"]
+    assert [i["inputName"] for i in client.get_input_list().inputs] == ["audio-bed"]
 
 
 def test_a_missing_non_shared_input_still_raises():
     """The 'each scene owns its inputs' invariant holds everywhere else — a
-    browser source missing from its own scene is a bug, not a thing to paper over."""
-    client = _SharedBedClient()
-    with pytest.raises(RuntimeError):
-        stream_ctl._scene_item_id(
-            client, "world-focus", "overlay-signals", shared=False
-        )
+    browser source missing from its own scene is a bug, not a thing to paper
+    over. It surfaces as the real client's `OBSSDKRequestError`."""
+    client = _bed_placed_in_one_scene()
+    with pytest.raises(OBSSDKRequestError):
+        stream_ctl._scene_item_id(client, "world-focus", "audio-bed", shared=False)
+    assert _stacking(client, "world-focus") == []
+
+
+def test_the_fake_will_not_resolve_a_source_that_is_not_in_the_scene():
+    """The F1 divergence itself. Real OBS answers `GetSceneItemId` for a source
+    that lives in another scene with ResourceNotFound, and the library raises it
+    (`ReqClient.send`). A fake that invents an id here is what let `build_scene`
+    put sources in the wrong scene and stay green."""
+    client = FakeClient(scenes=("chart-focus", "world-focus"))
+    client.create_input("chart-focus", "charts-1m", "browser_source", {}, True)
+    assert _item_id(client, "chart-focus", "charts-1m") == 1
+    with pytest.raises(OBSSDKRequestError) as miss:
+        client.get_scene_item_id("world-focus", "charts-1m")
+    assert miss.value.code == 600
+    with pytest.raises(OBSSDKRequestError):
+        client.get_scene_item_id("no-such-scene", "charts-1m")
+
+
+def test_the_fake_numbers_scene_items_per_scene_from_one():
+    client = FakeClient(scenes=("a", "b"))
+    for name in ("x", "y"):
+        client.create_input("a", name, "browser_source", {}, True)
+    client.create_input("b", "z", "browser_source", {}, True)
+    client.create_scene_item("b", "x")
+    assert [_item_id(client, "a", n) for n in ("x", "y")] == [1, 2]
+    assert [_item_id(client, "b", n) for n in ("z", "x")] == [1, 2]
+
+
+def test_the_fake_refuses_a_second_source_of_the_same_name():
+    """Scenes and inputs share one namespace in OBS."""
+    client = FakeClient(scenes=("a",))
+    client.create_input("a", "x", "browser_source", {}, True)
+    with pytest.raises(OBSSDKRequestError) as dup:
+        client.create_input("a", "x", "browser_source", {}, True)
+    assert dup.value.code == 601
+    with pytest.raises(OBSSDKRequestError):
+        client.create_scene("x")
+    with pytest.raises(OBSSDKRequestError):
+        client.create_input("a", "a", "browser_source", {}, True)
+
+
+def test_the_fake_takes_the_arguments_the_real_client_takes():
+    """Both sides of the seam, for every request the fake answers: the same
+    parameter names, kinds and defaults as `obsws_python.ReqClient`, and no
+    request the real client does not have. `set_input_volume` took dB second
+    here while the real one takes a multiplier second, and nothing noticed."""
+    assert signature_diffs(FakeClient) == {}
 
 
 def test_refresh_browser_source_presses_the_browser_refresh_button():
