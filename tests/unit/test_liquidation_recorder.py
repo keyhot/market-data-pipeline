@@ -75,7 +75,7 @@ def test_binance_url_defaults_to_the_market_path(monkeypatch):
     assert recorder._binance_url == "wss://fstream.binance.com/market/ws/!forceOrder@arr"
 
 
-def test_a_minute_lands_in_the_same_batch_as_the_rows_received_in_it():
+def test_a_minutes_coverage_never_lands_before_the_rows_received_in_it():
     sink = Sink()
     recorder, clock = _recorder(sink)
     recorder.on_binance_frame(BINANCE_FRAME)  # T0-5: before the minute

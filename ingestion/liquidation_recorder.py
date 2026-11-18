@@ -33,8 +33,8 @@ flowing; Binance has no ack, so it must deliver a liquidation first.
 
 Parsing and the coverage rule live in `ingestion/liquidations.py` (pure,
 tested); this module only wires them to the network. Every write goes through
-`Buffer`, which keeps rows through a Postgres outage and writes a minute's
-coverage in the same transaction as the rows received in it.
+`Buffer`, which keeps rows through a Postgres outage; a minute's coverage
+never lands before the rows received in it.
 """
 
 from __future__ import annotations
