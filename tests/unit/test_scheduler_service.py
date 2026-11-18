@@ -2,10 +2,23 @@ import threading
 import time
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from scheduler.service import SchedulerService, scheduler_enabled
 from scheduler.watchlist import EventJobSpec, TickerJobSpec, Watchlist
+
+
+@pytest.fixture(autouse=True)
+def stub_the_jobs_the_tests_do_not_exercise(monkeypatch):
+    """start() registers more than the ticker and event jobs: with salience on,
+    which is the default, it also adds trader:mirror, and resolver:signals once
+    Postgres writes are on. Left real, trader:mirror asks the default
+    FREQTRADE_URL host `freqtrade`, and only fails because that name does not
+    resolve on this box. The registration is kept; only the job bodies are
+    stubbed, as the tests already do for the ticker and event jobs."""
+    monkeypatch.setattr("scheduler.service.jobs.run_trader_mirror_job", lambda: {})
+    monkeypatch.setattr("scheduler.service.jobs.run_resolver_job", lambda: {})
 
 
 def make_watchlist():

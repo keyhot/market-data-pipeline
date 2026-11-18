@@ -211,9 +211,33 @@ def test_iv_dgp_kappa_zero_is_noise_and_iv_starts_late(dgp_pair):
 
 
 def test_seasonal_dgp_latent_none_is_unchanged():
+    """`latent=None` is the E15 path: same RNG draws, same output, whatever
+    `latent` later grew into. The two calls below bind identical arguments
+    (None is the default), so comparing them to each other can only say the
+    default is None: a change to the None path itself moves both and reads
+    green. The literals were recorded from this call on main 1493521, before
+    this test was edited; they are what pins the path."""
     a = seasonal_dgp(9, 0.05)
     b = seasonal_dgp(9, 0.05, latent=None)
-    pd.testing.assert_frame_equal(a, b)
+    pd.testing.assert_frame_equal(a, b)  # the default is None
+    for frame in (a, b):
+        assert frame.shape == (1752, 6)  # 0.05 y = 438 h = 1752 15m bars
+        assert list(frame.columns) == [
+            "timestamp", "open", "high", "low", "close", "volume"]
+        assert frame["timestamp"].iloc[0] == pd.Timestamp("2019-12-31 23:45", tz=UTC)
+        assert frame["timestamp"].iloc[-1] == pd.Timestamp("2020-01-19 05:30", tz=UTC)
+        close = frame["close"].to_numpy()
+        for col in ("open", "high", "low"):
+            np.testing.assert_array_equal(frame[col].to_numpy(), close)
+        np.testing.assert_array_equal(frame["volume"].to_numpy(), np.ones(1752))
+        # The sum of squared 15m log returns is the realized-variance level
+        # `latent` scales, so it moves with any change to the None path.
+        sq = np.diff(np.log(close)) ** 2
+        np.testing.assert_allclose(
+            [close[0], close[-1], close.sum(), sq.sum()],
+            [0.9990424644067508, 1.080610614699463,
+             1790.7157995401003, 0.017379095246359246],
+            rtol=1e-12)
 
 
 # --------------------------------------------------------------- walk-forward extension

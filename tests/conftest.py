@@ -1,4 +1,5 @@
 # tests/conftest.py
+import net_guard  # first import snapshots psycopg's connect routes; see there
 import pytest
 from data_guard import REPO_DATA_DIR, assert_tree_unchanged, snapshot_tree
 
@@ -119,3 +120,29 @@ def data_root_in_tmp(monkeypatch, tmp_path):
     import storage.naming as naming
 
     monkeypatch.setattr(naming, "_DATA_ROOT", tmp_path / "data")
+
+
+@pytest.fixture(autouse=True)
+def no_network_outside_integration(
+    request, monkeypatch, no_database_outside_integration
+):
+    """S22: nothing outside tests/integration reaches a network service (see
+    tests/net_guard.py for the rules). Refusals raise, and they are recorded
+    because code that catches Exception swallows the raise (the trader mirror
+    does): a test that provoked one fails at teardown, naming it. The value is
+    the list of refusals, for the tests that provoke one on purpose.
+
+    Requests no_database_outside_integration so it is set up after it: both
+    rebind psycopg.connect, and the later one is the one a test sees (the name
+    that refusal carries is the guard's, not KI-083's)."""
+    if not net_guard.applies_to(request.node.path, request.config.rootpath):
+        yield []
+        return
+    attempts = net_guard.install(monkeypatch, request.node.nodeid)
+    yield attempts
+    if attempts:
+        pytest.fail(
+            f"{request.node.nodeid}: {len(attempts)} blocked network attempt(s), "
+            f"swallowed by the code under test: {attempts}",
+            pytrace=False,
+        )
