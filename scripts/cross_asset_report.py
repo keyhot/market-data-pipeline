@@ -75,6 +75,38 @@ def delta_auc_ci(oos: pd.DataFrame, arm: str = "cross") -> tuple[float, float, f
     return point, float(low), float(high)
 
 
+def delta_auc_over_seeds(fit_oos, seeds, arm: str = "cross") -> dict:
+    """KI-095, opt-in: spread of ΔAUC across fit seeds, next to each seed's
+    bootstrap CI. Nothing on the default report path calls this.
+
+    `fit_oos(seed)` must refit BOTH boosters under that seed and return the
+    `oos` frame (columns y, base, `arm`; day-indexed). The seed enters the
+    fit as `lgb.train({**_PARAMS, "seed": seed}, ...)`: LightGBM's master
+    `seed` drives `feature_fraction_seed` (and the bagging/data seeds), and
+    `_PARAMS` has feature_fraction 0.9, so column subsampling is what varies.
+    `deterministic=True` keeps a repeated seed bit-identical.
+
+    Returns the seeds, per-seed ΔAUC points and (low, high) bootstrap CIs
+    from `delta_auc_ci` (its own bootstrap seed is fixed, so the spread is
+    fit variance only), plus min, max and spread = max - min of the points.
+    Repeated seeds are refused: they would understate the spread."""
+    seeds = list(seeds)
+    if not seeds:
+        raise ValueError("delta_auc_over_seeds needs at least one seed")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError(f"duplicate seeds understate the spread: {seeds}")
+    points, cis = [], []
+    for seed in seeds:
+        point, low, high = delta_auc_ci(fit_oos(seed), arm)
+        points.append(point)
+        cis.append((low, high))
+    return {
+        "seeds": seeds, "points": points, "cis": cis,
+        "min": min(points), "max": max(points),
+        "spread": max(points) - min(points),
+    }
+
+
 def top_quintile_hit(g: pd.DataFrame, arm: str) -> float:
     conf = (g[arm] - 0.5).abs()
     top = g[conf >= conf.quantile(0.8)]

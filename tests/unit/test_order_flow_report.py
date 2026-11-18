@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import order_flow_report as ofr  # noqa: E402
 import report_results  # noqa: E402
 
-
 # ------------------------------------------------------------ top_quintile_gross_bps
 
 def test_top_quintile_gross_bps_signed_and_dropped_sign_would_flip_it():

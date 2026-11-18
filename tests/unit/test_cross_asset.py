@@ -65,7 +65,9 @@ def test_each_x_column_is_the_other_symbols_feature_at_the_same_timestamp():
 
     x_cols = [c for c in X.columns if c.startswith("x_")]
     assert x_cols == list(other.columns)
-    assert X.index.equals(own.X.index.intersection(other.index))  # exact-label inner join
+    assert X.index.equals(
+        own.X.index.intersection(other.index)
+    )  # exact-label inner join
     pd.testing.assert_frame_equal(X[x_cols], other.loc[X.index])
     pd.testing.assert_series_equal(y, own.y.loc[X.index])
     # The test has teeth only if neighbouring bars really differ.

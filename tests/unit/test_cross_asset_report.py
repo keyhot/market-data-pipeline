@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import cross_asset_report as car  # noqa: E402
 import report_results  # noqa: E402
 
-
 # ---------------------------------------------------------------- delta_auc_ci
 
 def _perfect_separation_one_day(n: int = 20) -> pd.DataFrame:
@@ -98,8 +97,11 @@ def _isolated_results_dir(tmp_path, monkeypatch):
 
 def _patch_auc_and_ci(monkeypatch, low, high, point=None):
     monkeypatch.setattr(car, "auc", lambda y, p: float(np.mean(p)))
-    monkeypatch.setattr(car, "delta_auc_ci",
-                        lambda oos, arm="cross": (point if point is not None else low, low, high))
+    monkeypatch.setattr(
+        car,
+        "delta_auc_ci",
+        lambda oos, arm="cross": (point if point is not None else low, low, high),
+    )
 
 
 def test_report_passes_ci_above_zero_and_three_positive_years(monkeypatch, tmp_path):

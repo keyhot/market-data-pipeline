@@ -470,11 +470,17 @@ def test_launch_clears_a_plain_file_sentinel(tmp_path):
     assert not sentinel.exists()
 
 
-def test_launch_survives_a_missing_sentinel(monkeypatch, tmp_path):
+def test_launch_survives_a_missing_sentinel(monkeypatch, tmp_path, caplog):
     """A clean previous exit leaves no sentinel — that is the normal case, and
     OBS must still be launched. Surviving the missing file is not the property:
     a launcher that gave up when there was nothing to clear would "survive" it
-    too, so this asserts the launch happened."""
+    too, so this asserts the launch happened. It also asserts the clear was
+    attempted (a launcher that skipped the call reads green) and that the
+    missing file took the quiet path: `clear_crash_sentinel` returns False
+    both there and when it hits a real error, so only the absence of a
+    warning (the real error logs "Could not clear...") tells them apart."""
+    from stream import watchdog as wd
+
     # _launch_obs keeps OBS's stderr in a temp file; keep it out of /tmp.
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     absent = tmp_path / "absent"
@@ -485,16 +491,37 @@ def test_launch_survives_a_missing_sentinel(monkeypatch, tmp_path):
         popen_calls.append(command)
         return process
 
-    launched = _launch_obs(
-        ["obs", "--startstreaming"],
-        popen=fake_popen,
-        read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0"},
-        sentinel_path=str(absent),
-    )
+    # `_launch_obs` looks the function up in the module at call time, so wrap
+    # the real one there and record what it was asked and what it answered.
+    clear_calls = []
+    real_clear = wd.clear_crash_sentinel
+
+    def spy_clear(path):
+        result = real_clear(path)
+        clear_calls.append((path, result))
+        return result
+
+    monkeypatch.setattr(wd, "clear_crash_sentinel", spy_clear)
+
+    with caplog.at_level(logging.WARNING, logger=wd.logger.name):
+        launched = _launch_obs(
+            ["obs", "--startstreaming"],
+            popen=fake_popen,
+            read_manager_env=lambda: {"WAYLAND_DISPLAY": "wayland-0"},
+            sentinel_path=str(absent),
+        )
     assert popen_calls == [["obs", "--startstreaming"]], (
         "OBS is launched once, with the command, though there was no sentinel"
     )
     assert launched.process is process, "the caller gets a handle on that process"
+    assert clear_calls == [(str(absent), False)], (
+        "the launch asked for the missing sentinel to be cleared, once, and "
+        "was told there was nothing to clear"
+    )
+    warned = [r.getMessage() for r in caplog.records if r.name == wd.logger.name]
+    assert warned == [], (
+        f"a missing sentinel is the normal case, not an error to warn about: {warned}"
+    )
 
 
 def test_obs_command_suppresses_startup_dialogs():

@@ -301,7 +301,9 @@ def measure_sit_anchor(back_fraction: float = 0.35) -> dict:
 # `_is_cushion`; the two side faces are the same upholstery two values down,
 # ~(35, 41, 58), which the floor under it (~(24, 27, 39)) never reaches.
 OCCLUDER_SEED = (1320, 700)
-OCCLUDER_BOX = ((1255, 1431), (666, 765))   # rows from the backrest's foot down; columns stop short of the backrest strip, which the foreground hides anyway
+# rows from the backrest's foot down; columns stop short of the backrest strip,
+# which the foreground hides anyway
+OCCLUDER_BOX = ((1255, 1431), (666, 765))
 
 
 def _seat_face(px, x: int, y: int) -> bool:

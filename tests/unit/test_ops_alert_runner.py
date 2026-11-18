@@ -48,7 +48,9 @@ def test_credentials_in_the_environment_still_send_nothing(monkeypatch, caplog):
     # alone cannot tell that from a config error, a crash before SMTP or a real
     # SMTP that merely fails offline, all of which also leave it False.
     failures = [
-        r.getMessage() for r in caplog.records if "alert NOT delivered" in r.getMessage()
+        r.getMessage()
+        for r in caplog.records
+        if "alert NOT delivered" in r.getMessage()
     ]
     assert failures
     assert all("RuntimeError: the test suite sends no mail" in m for m in failures)
@@ -107,7 +109,9 @@ def test_the_mailer_speaks_starttls_then_login_then_send(monkeypatch):
         def send_message(self, msg):
             calls.append(("send", msg["To"], msg["Subject"]))
 
-    cfg = mailer.MailConfig("smtp.gmail.com", 587, "me@example.com", "pw", "me@example.com")
+    cfg = mailer.MailConfig(
+        "smtp.gmail.com", 587, "me@example.com", "pw", "me@example.com"
+    )
     mailer.send_email("subj", "body", cfg, smtp_factory=FakeSMTP)
     assert [c[0] for c in calls] == ["connect", "starttls", "login", "send", "quit"]
     assert calls[0][1:] == ("smtp.gmail.com", 587)
@@ -145,7 +149,9 @@ def test_a_crashing_check_is_reported_not_fatal_to_the_others(monkeypatch, tmp_p
     # A malformed status file must not silence every check on every run —
     # that is the no-path-to-a-human failure this alerter exists to end.
     bad = tmp_path / "broadcast_status.json"
-    bad.write_text('{"updated_at": "2026-09-26T12:00:00+00:00", "refused_transitions": "lots"}')
+    bad.write_text(
+        '{"updated_at": "2026-09-26T12:00:00+00:00", "refused_transitions": "lots"}'
+    )
     monkeypatch.setenv("BROADCAST_STATUS_PATH", str(bad))
     monkeypatch.setattr(ops_alert, "_fetch_health", lambda: (None, "down"))
     checks = {c.name: c for c in ops_alert.observe_system(NOW)}

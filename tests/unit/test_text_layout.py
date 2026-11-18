@@ -67,7 +67,8 @@ def test_the_banner_survives():
 
 
 # The shipped labels' own fit is graded with their real content by
-# `tests/api/test_world_page.py::test_no_room_label_the_page_actually_draws_overflows_its_own_box`;
+# `tests/api/test_world_page.py::
+# test_no_room_label_the_page_actually_draws_overflows_its_own_box`;
 # the fixed MODEL/TRADER nameplates this file used to check came off the room
 # on 2026-09-24.
 

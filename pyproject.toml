@@ -48,3 +48,83 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 markers = ["slow: end-to-end synthetic checks, several seconds each (E15 A6/DGP)"]
+
+[tool.ruff.lint.per-file-ignores]
+# Frozen / pre-registered research code stays byte-identical, so its lint is
+# ignored per file and per rule instead of reformatted. No test hashes these
+# files; the freeze is the vault pre-registration (whether its clause covers
+# code is an open user question), so not editing them needs no decision.
+# Every entry names only the rules that file actually trips today.
+
+# E15c vol-target, FROZEN 2026-09-30 (vault Docs/e15c-preregistration.md);
+# tests/unit/test_vol_target.py is its test-first pre-run commitment
+"model/vol_target.py" = ["E501", "F401"]
+"scripts/vol_target_report.py" = ["E501", "I001"]
+"tests/unit/test_vol_target.py" = ["E501", "F401"]
+
+# E15b vol-managed exposure, frozen 2026-09-29 (vault Docs/vol-managed-exposure-
+# experiment.md)
+"model/vol_managed.py" = ["E501"]
+"scripts/vol_managed_report.py" = ["E501", "I001"]
+"tests/unit/test_vol_managed.py" = ["E501", "F401", "F841", "I001"]
+
+# E16 trend, frozen 2026-09-29 (vault Docs/trend-experiment.md)
+"model/trend.py" = ["E501"]
+"scripts/trend_report.py" = ["E501", "F401", "I001"]
+"tests/unit/test_trend.py" = ["E501"]
+
+# E15 range forecast, frozen 2026-09-29 (vault Docs/range-forecast-experiment.md)
+"model/range_forecast.py" = ["E501"]
+"model/range_forecast_a6b.py" = ["E501"]
+"scripts/range_forecast_report.py" = ["E501", "F401", "I001"]
+"scripts/e15_a6b_report.py" = ["E501", "F401", "I001"]
+"tests/unit/test_range_forecast.py" = ["E501", "F401", "F841", "I001"]
+
+# E13 cross-sectional ranking, pre-registered, verdict recorded in
+# scripts/results/e13_stage_b.json; tests/unit/test_cross_section_report.py pins A1
+# and the rows keys against literal copies. e13_diagnostics.py asserts it reproduces
+# that result
+"model/cross_section.py" = ["E501"]
+"scripts/cross_section_report.py" = ["E501", "E741", "I001"]
+"scripts/e13_diagnostics.py" = ["E501", "I001"]
+
+# R3-b wick catch, FROZEN 2026-10-05 + Amendment 1 (vault
+# Docs/r3b-preregistration.md); the wick/boot-t/stage-B tests are its pre-run
+# commitments (c16fa26)
+"model/wick_catch.py" = ["E501", "E702"]
+"scripts/r3b_a0_report.py" = ["E501", "E731", "F401"]
+"scripts/r3b_stage_a.py" = ["E501"]
+"scripts/r3b_stage_a1.py" = ["E501", "E731", "F841"]
+"scripts/r3b_stage_a_diag.py" = ["E501", "E702"]
+"scripts/r3b_stage_b.py" = ["E501"]
+"tests/unit/test_wick_catch.py" = ["E501", "E702", "E731"]
+"tests/unit/test_wick_score.py" = ["E501"]
+"tests/unit/test_wick_boot_t.py" = ["E501"]
+"tests/unit/test_r3b_stage_b.py" = ["E501", "F401"]
+
+# R3-a listing short, pre-registered, closed as a record (vault
+# Docs/r3a-preregistration.md)
+"model/listing_short.py" = ["E501"]
+"scripts/r3a_stage_a0.py" = ["E501"]
+"scripts/r3a_fetch_metadata.py" = ["E501"]
+
+# E17 implied-vol band, pre-registered draft killed at A0, kept as a record (vault
+# Docs/e17-preregistration.md)
+"model/implied_vol_band.py" = ["E501"]
+"scripts/e17_a0_report.py" = ["E501", "I001"]
+
+# E12 archive information, pre-registered, stage B complete (vault Docs/archive-
+# information-experiment.md)
+"scripts/archive_report.py" = ["E501", "I001"]
+
+# E7-E11 and L1, pre-registered and falsified; each script 'applies' the vault note,
+# never chooses (Docs/{cross-asset,funding,order-flow,horizon,cost-
+# horizon,pnl-15m}-experiment.md)
+"scripts/cross_asset_report.py" = ["I001"]
+"scripts/funding_report.py" = ["I001"]
+"scripts/funding_plumbing.py" = ["E401", "E402", "E501", "E702", "E731", "I001"]
+"scripts/order_flow_report.py" = ["I001"]
+"scripts/horizon_report.py" = ["E501", "I001"]
+"scripts/cost_horizon_report.py" = ["I001"]
+"scripts/pnl_15m_report.py" = ["I001"]
+"model/horizon.py" = ["E501"]

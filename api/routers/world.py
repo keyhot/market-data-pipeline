@@ -310,7 +310,10 @@ def _plate_warnings(manifest, symbols: list[str]) -> list[str]:
         for p in watchlist_disagreements(manifest, symbols)
     ]
     problems += [
-        f"plate glow {g} overlaps a live chart screen; the candles turn olive at high tier (KI-056)"
+        (
+            f"plate glow {g} overlaps a live chart screen; "
+            "the candles turn olive at high tier (KI-056)"
+        )
         for g in glow_chart_overlaps(manifest)
     ]
     problems += [

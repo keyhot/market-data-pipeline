@@ -55,7 +55,9 @@ def test_a_glow_over_a_live_chart_is_a_startup_warning(monkeypatch, caplog, tmp_
     assert any(glow_id in w and "chart" in w for w in warnings), warnings
 
 
-def test_a_text_placement_off_its_surface_is_a_startup_warning(monkeypatch, caplog, tmp_path):
+def test_a_text_placement_off_its_surface_is_a_startup_warning(
+    monkeypatch, caplog, tmp_path
+):
     def edit(raw):
         history = next(t for t in raw["text"] if t["id"] == "history")
         history["x"] = 5000
@@ -64,7 +66,9 @@ def test_a_text_placement_off_its_surface_is_a_startup_warning(monkeypatch, capl
     assert any("history" in w and "surface" in w for w in warnings), warnings
 
 
-def test_a_banner_box_too_small_for_its_copy_is_a_startup_warning(monkeypatch, caplog, tmp_path):
+def test_a_banner_box_too_small_for_its_copy_is_a_startup_warning(
+    monkeypatch, caplog, tmp_path
+):
     def edit(raw):
         banner = next(t for t in raw["text"] if t["id"] == "banner")
         banner["w"] = 200

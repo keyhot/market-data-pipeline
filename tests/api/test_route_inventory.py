@@ -119,7 +119,9 @@ def _unwrap_lifespan(ctx):
     while getattr(ctx, "__name__", "") == "merged_lifespan":
         inner = ctx.__wrapped__
         free = dict(
-            zip(inner.__code__.co_freevars, (c.cell_contents for c in inner.__closure__))
+            zip(
+                inner.__code__.co_freevars, (c.cell_contents for c in inner.__closure__)
+            )
         )
         nested.append(type(free["nested_context"]).__name__)
         ctx = free["original_context"]

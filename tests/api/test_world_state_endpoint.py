@@ -8,6 +8,7 @@ enrichment does to the state. The `lookups` fixture stubs both at the seam the r
 imports them by, so the enrichment really runs."""
 
 import copy
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -113,7 +114,9 @@ def test_world_state_404_when_empty():
 
 
 def test_world_state_503_when_postgres_down():
-    with patch("api.routers.world.get_world_events", side_effect=RuntimeError("no pool")):
+    with patch(
+        "api.routers.world.get_world_events", side_effect=RuntimeError("no pool")
+    ):
         response = client.get("/world/state")
 
     assert response.status_code == 503
@@ -125,7 +128,9 @@ def test_world_state_rejects_out_of_range_limit():
 
 
 def test_world_state_is_stable_across_identical_calls(lookups):
-    with patch("api.routers.world.get_world_events", return_value=[_event(1), _event(2)]):
+    with patch(
+        "api.routers.world.get_world_events", return_value=[_event(1), _event(2)]
+    ):
         first = client.get("/world/state").json()["data"]
         second = client.get("/world/state").json()["data"]
 
@@ -164,3 +169,64 @@ def test_world_state_survives_a_price_lookup_failure(monkeypatch):
         response = client.get("/world/state")
     assert response.status_code == 200
     assert response.json()["data"]["prices"] == {}
+
+
+def _stub_predict_symbols(monkeypatch, *symbols):
+    """Pin the symbols the route looks prices up for. The route reads them from
+    the real watchlist; naming them here keeps the cases below independent of
+    config/watchlist.yaml (it carries two predicted symbols today)."""
+    import api.routers.world as world
+
+    tickers = [SimpleNamespace(symbol=s, predict=True) for s in symbols]
+    tickers.append(SimpleNamespace(symbol="AAPL", predict=False))
+    monkeypatch.setattr(
+        world, "load_watchlist", lambda: SimpleNamespace(tickers=tickers)
+    )
+
+
+def _price_lookup_down(symbol, interval="1m", limit=1):
+    raise RuntimeError("pg down")
+
+
+@pytest.mark.parametrize(
+    ("get_price_bars", "expected_prices"),
+    [
+        pytest.param(
+            lambda symbol, interval="1m", limit=1: [], {}, id="no_price_for_any_symbol"
+        ),
+        pytest.param(
+            lambda symbol, interval="1m", limit=1: (
+                [{"close": 118432.5}] if symbol == "BTCUSDT" else []
+            ),
+            {"BTCUSDT": 118432.5},
+            id="a_price_for_only_one_symbol",
+        ),
+        pytest.param(
+            lambda symbol, interval="1m", limit=1: [{"close": 118432.5}],
+            {"BTCUSDT": 118432.5, "ETHUSDT": 118432.5},
+            id="a_price_for_every_symbol",
+        ),
+        pytest.param(_price_lookup_down, {}, id="the_price_lookup_fails"),
+    ],
+)
+def test_world_state_envelope_status_is_200_whatever_the_prices_are(
+    lookups, monkeypatch, get_price_bars, expected_prices
+):
+    """The envelope's `status` mirrors the HTTP code and the projection is there,
+    so it is 200 however many prices got attached. Prices are enrichment: none,
+    some or all of them, or a failed lookup, is a missing line in the band, never a
+    503 in the body behind a 200 on the wire (the HTTP code alone would not show it,
+    and a client that reads `status` from the body would take it for an outage)."""
+    import api.routers.world as world
+
+    _stub_predict_symbols(monkeypatch, "BTCUSDT", "ETHUSDT")
+    monkeypatch.setattr(world, "get_price_bars", get_price_bars)
+    with patch("api.routers.world.get_world_events", return_value=[_event(1)]):
+        response = client.get("/world/state")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == 200
+    assert body["message"] is None
+    assert body["data"]["prices"] == expected_prices
+    assert body["data"]["event_count"] == 1  # the projection rode along intact

@@ -13,7 +13,6 @@ pin the seam from both ends: what the server emits, what the page reads, and
 that the two key sets are the same set.
 """
 
-from api.templating import WORLD_MODULE_DIR, world_modules, world_page_source
 import json
 import re
 import shutil
@@ -27,6 +26,7 @@ from fastapi.testclient import TestClient
 import api.main as main
 import api.routers.world as world_router
 from api.main import app
+from api.templating import world_page_source
 from world import monitors, reactions, visuals
 from world.light import as_json as light_as_json
 from world.light import light_for
@@ -36,7 +36,9 @@ from world.text_layout import as_json as text_as_json
 
 client = TestClient(app)
 NODE = shutil.which("node")
-needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed on this host")
+needs_node = pytest.mark.skipif(
+    NODE is None, reason="node is not installed on this host"
+)
 
 TEMPLATE = Path(main.__file__).resolve().parent / "templates" / "world.html"
 
@@ -102,7 +104,13 @@ def _config_text(body: str) -> str:
 
 
 def _served_config(body: str | None = None) -> dict:
-    return json.loads(_config_text(body if body is not None else world_page_source(page=client.get("/world").text)))
+    return json.loads(
+        _config_text(
+            body
+            if body is not None
+            else world_page_source(page=client.get("/world").text)
+        )
+    )
 
 
 def _function_text(source: str, name: str) -> str:
@@ -140,7 +148,10 @@ def test_the_page_carries_exactly_one_json_config_block():
 
 def test_the_page_parses_the_block_once_and_no_old_token_is_left():
     source = world_page_source()
-    assert source.count('JSON.parse(document.getElementById("world-config").textContent)') == 1
+    assert (
+        source.count('JSON.parse(document.getElementById("world-config").textContent)')
+        == 1
+    )
     assert len(re.findall(r"\bconst WORLD_CONFIG\b", source)) == 1
     tokens = set(re.findall(r"__[A-Z_]+__", source))
     assert tokens == {"__THEME_VARS__", "__WORLD_CONFIG__"}, (
@@ -167,7 +178,8 @@ def test_every_page_const_reads_its_own_config_key():
             f"`const {const}` no longer reads WORLD_CONFIG.{key} on a line of its own"
         )
     assert re.search(
-        r"const BODY_RIM = \{ width: 1\.5, color: WORLD_CONFIG\.body_rim_fill, alignment: 1 \};",
+        r"const BODY_RIM = \{ width: 1\.5, color: WORLD_CONFIG\.body_rim_fill, "
+        r"alignment: 1 \};",
         source,
     )
     # The second room-light site copies from the first; it does not read the key.
@@ -304,7 +316,11 @@ def test_the_pages_const_lines_resolve_to_the_config_through_json_parse(
     """Runs the page's own `const X = WORLD_CONFIG.y;` lines against the served
     block through a `document` stub, so the whole path - element text,
     JSON.parse, the const - is exercised rather than read off the source."""
-    body = _hostile_body(monkeypatch) if hostile else world_page_source(page=client.get("/world").text)
+    body = (
+        _hostile_body(monkeypatch)
+        if hostile
+        else world_page_source(page=client.get("/world").text)
+    )
     lines = [
         line.strip()
         for line in body.splitlines()
@@ -316,7 +332,9 @@ def test_the_pages_const_lines_resolve_to_the_config_through_json_parse(
         line.strip() for line in body.splitlines() if "const WORLD_CONFIG =" in line
     )
     rim = next(
-        line.strip() for line in body.splitlines() if line.strip().startswith("const BODY_RIM = ")
+        line.strip()
+        for line in body.splitlines()
+        if line.strip().startswith("const BODY_RIM = ")
     )
     names = [*PAGE_CONSTS, "BODY_RIM"]
     script = (

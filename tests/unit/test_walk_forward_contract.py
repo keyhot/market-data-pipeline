@@ -27,18 +27,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from model.archive import METRICS_STEP, stamp_delays  # noqa: E402
 import archive_report as ar  # noqa: E402
 import cross_asset_report as car  # noqa: E402
 import funding_report as fr  # noqa: E402
 import live_gate_report as lgr  # noqa: E402
 import order_flow_report as ofr  # noqa: E402
 
+from model.archive import METRICS_STEP, stamp_delays  # noqa: E402
+
 # 5 calendar years x 4 daily rows. id i sits in year 2021 + i // 4, so the
 # first row of 2022 is id 4, of 2023 id 8, and so on.
 IDS = list(range(20))
-INDEX = pd.DatetimeIndex([pd.Timestamp(year=2021 + i // 4, month=1, day=1 + i % 4, tz="UTC")
-                          for i in IDS])
+INDEX = pd.DatetimeIndex(
+    [pd.Timestamp(year=2021 + i // 4, month=1, day=1 + i % 4, tz="UTC") for i in IDS]
+)
 CLOSE = [100.0 + i ** 2 for i in IDS]
 LABEL = 1000  # y(id) = LABEL + id, so a label proves which row it belongs to
 ARM_DROP, CTRL_DROP = {5}, {10}  # a row only the control lacks / only the arm lacks
@@ -317,12 +319,16 @@ def _run_archive_info(monkeypatch, arm):
     monkeypatch.setattr(ar, "metrics_features", lambda m, idx, delay: FEATS)
     monkeypatch.setattr(ar, "depth_features", lambda d, idx: FEATS)
     monkeypatch.setattr(ar, "leaked_control", lambda feats, close, col: "CTRL")
-    monkeypatch.setattr(ar, "with_archive_features", _with_features(ARM_DROP, CTRL_DROP))
+    monkeypatch.setattr(
+        ar, "with_archive_features", _with_features(ARM_DROP, CTRL_DROP)
+    )
     monkeypatch.setattr(ar, "build_features", lambda bars, horizon_bars: own)
     return ar.collect("BTCUSDT", arm, False)
 
 
-def test_archive_metrics_arm_checks_the_stamp_convention_and_passes_its_delay(monkeypatch):
+def test_archive_metrics_arm_checks_the_stamp_convention_and_passes_its_delay(
+    monkeypatch,
+):
     seen = {}
     own = _own()
     monkeypatch.setattr(ar, "lgb", _RecordingLgb())
@@ -337,8 +343,12 @@ def test_archive_metrics_arm_checks_the_stamp_convention_and_passes_its_delay(mo
                         lambda m, idx, delay: seen.update(delay=delay) or FEATS)
     monkeypatch.setattr(ar, "depth_features",
                         lambda d, idx: pytest.fail("depth features on the metrics arm"))
-    monkeypatch.setattr(ar, "leaked_control", lambda feats, close, col: seen.update(col=col) or "CTRL")
-    monkeypatch.setattr(ar, "with_archive_features", _with_features(ARM_DROP, CTRL_DROP))
+    monkeypatch.setattr(
+        ar, "leaked_control", lambda feats, close, col: seen.update(col=col) or "CTRL"
+    )
+    monkeypatch.setattr(
+        ar, "with_archive_features", _with_features(ARM_DROP, CTRL_DROP)
+    )
     monkeypatch.setattr(ar, "build_features", lambda bars, horizon_bars: own)
     _, info = ar.collect("BTCUSDT", "metrics", False)
     assert seen["m"] == "RAW-metrics"
@@ -361,8 +371,12 @@ def test_archive_depth_arm_uses_depth_features_and_no_stamp_check(monkeypatch):
     monkeypatch.setattr(ar, "metrics_features",
                         lambda m, idx, delay: pytest.fail("metrics features on depth"))
     monkeypatch.setattr(ar, "depth_features", lambda d, idx: seen.update(d=d) or FEATS)
-    monkeypatch.setattr(ar, "leaked_control", lambda feats, close, col: seen.update(col=col) or "CTRL")
-    monkeypatch.setattr(ar, "with_archive_features", _with_features(ARM_DROP, CTRL_DROP))
+    monkeypatch.setattr(
+        ar, "leaked_control", lambda feats, close, col: seen.update(col=col) or "CTRL"
+    )
+    monkeypatch.setattr(
+        ar, "with_archive_features", _with_features(ARM_DROP, CTRL_DROP)
+    )
     monkeypatch.setattr(ar, "build_features", lambda bars, horizon_bars: own)
     _, info = ar.collect("BTCUSDT", "depth", False)
     assert seen == {"d": "RAW-bookDepth", "col": "depth_change_4"}

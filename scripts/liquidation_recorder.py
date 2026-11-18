@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 def main() -> int:
     init_logging("INFO")
     if not recorder_enabled():
-        logger.info("Liquidation recorder disabled (LIQUIDATION_RECORDER_ENABLED); exiting")
+        logger.info(
+            "Liquidation recorder disabled (LIQUIDATION_RECORDER_ENABLED); exiting"
+        )
         return 0
     recorder = LiquidationRecorder(write_liquidation_batch)
     try:

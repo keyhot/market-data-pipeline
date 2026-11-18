@@ -15,14 +15,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import numpy as np
-
 import range_forecast_report as rfr  # noqa: E402
 import report_results  # noqa: E402
+
 from model.range_forecast import (  # noqa: E402
     ALPHA_PRIMARY,
     dq_design,
     dq_test,
-    hourly_grid,
     lr_cc,
     lr_uc,
     miss,
@@ -185,7 +184,9 @@ def test_stage_a_json_statistic_keys_are_allowlisted(tmp_path, monkeypatch):
     monkeypatch.setattr(rfr, "load_bars", fake_load_bars)
     monkeypatch.setattr(rfr, "STAGE_B_START", pd.Timestamp("2021-01-01", tz="UTC"))
     monkeypatch.setattr(rfr, "STAGE_B_END", pd.Timestamp("2021-06-01", tz="UTC"))
-    monkeypatch.setattr(rfr, "run_a6", lambda **kw: {1: {"uc": 0.9, "cc": 0.9, "dq": 0.9, "all": 0.8}})
+    monkeypatch.setattr(
+        rfr, "run_a6", lambda **kw: {1: {"uc": 0.9, "cc": 0.9, "dq": 0.9, "all": 0.8}}
+    )
 
     verdict, failing, statistic = rfr.run_stage_a(results_dir=tmp_path)
 
@@ -205,8 +206,11 @@ def test_run_stage_b_uses_ci_lower_bound_not_upper(tmp_path, monkeypatch):
     _write_stage_a(tmp_path, verdict="VALID")
     monkeypatch.setattr(rfr, "SYMBOLS", ("BTCUSDT",))
     monkeypatch.setattr(rfr, "HORIZONS", (1,))
-    monkeypatch.setattr(rfr, "load_bars",
-                         lambda symbol, stage: seasonal_dgp(seed=3, years=1.3, seasonal=True))
+    monkeypatch.setattr(
+        rfr,
+        "load_bars",
+        lambda symbol, stage: seasonal_dgp(seed=3, years=1.3, seasonal=True),
+    )
     monkeypatch.setattr(rfr, "STAGE_B_START", pd.Timestamp("2021-01-01", tz="UTC"))
     monkeypatch.setattr(rfr, "STAGE_B_END", pd.Timestamp("2021-06-01", tz="UTC"))
 
@@ -237,8 +241,11 @@ def test_run_stage_b_scores_ii_as_plain_har(tmp_path, monkeypatch):
     _write_stage_a(tmp_path, verdict="VALID")
     monkeypatch.setattr(rfr, "SYMBOLS", ("BTCUSDT",))
     monkeypatch.setattr(rfr, "HORIZONS", (1,))
-    monkeypatch.setattr(rfr, "load_bars",
-                         lambda symbol, stage: seasonal_dgp(seed=4, years=1.3, seasonal=True))
+    monkeypatch.setattr(
+        rfr,
+        "load_bars",
+        lambda symbol, stage: seasonal_dgp(seed=4, years=1.3, seasonal=True),
+    )
     monkeypatch.setattr(rfr, "STAGE_B_START", pd.Timestamp("2021-01-01", tz="UTC"))
     monkeypatch.setattr(rfr, "STAGE_B_END", pd.Timestamp("2021-06-01", tz="UTC"))
 
@@ -271,8 +278,11 @@ def test_run_stage_b_void_when_validity_below_threshold(tmp_path, monkeypatch):
     _write_stage_a(tmp_path, verdict="VALID")
     monkeypatch.setattr(rfr, "SYMBOLS", ("BTCUSDT",))
     monkeypatch.setattr(rfr, "HORIZONS", (1,))
-    monkeypatch.setattr(rfr, "load_bars",
-                         lambda symbol, stage: seasonal_dgp(seed=6, years=1.3, seasonal=True))
+    monkeypatch.setattr(
+        rfr,
+        "load_bars",
+        lambda symbol, stage: seasonal_dgp(seed=6, years=1.3, seasonal=True),
+    )
     monkeypatch.setattr(rfr, "STAGE_B_START", pd.Timestamp("2021-01-01", tz="UTC"))
     monkeypatch.setattr(rfr, "STAGE_B_END", pd.Timestamp("2021-06-01", tz="UTC"))
 
@@ -301,8 +311,11 @@ def test_run_stage_b_void_check_is_load_bearing(tmp_path, monkeypatch):
     _write_stage_a(tmp_path, verdict="VALID")
     monkeypatch.setattr(rfr, "SYMBOLS", ("BTCUSDT",))
     monkeypatch.setattr(rfr, "HORIZONS", (1,))
-    monkeypatch.setattr(rfr, "load_bars",
-                         lambda symbol, stage: seasonal_dgp(seed=6, years=1.3, seasonal=True))
+    monkeypatch.setattr(
+        rfr,
+        "load_bars",
+        lambda symbol, stage: seasonal_dgp(seed=6, years=1.3, seasonal=True),
+    )
     monkeypatch.setattr(rfr, "STAGE_B_START", pd.Timestamp("2021-01-01", tz="UTC"))
     monkeypatch.setattr(rfr, "STAGE_B_END", pd.Timestamp("2021-06-01", tz="UTC"))
 

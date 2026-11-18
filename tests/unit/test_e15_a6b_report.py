@@ -9,14 +9,13 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import e15_a6b_report as a6b  # noqa: E402
 import report_results  # noqa: E402
+
 from model.range_forecast import ALPHA_PRIMARY, seasonal_dgp  # noqa: E402
 from model.range_forecast_a6b import garch_t_dgp  # noqa: E402
 
@@ -129,7 +128,9 @@ def test_run_a6b_control_variant_reproduces_a6_style_pass_rate(monkeypatch):
             expected_pass += 1
 
     assert control["n_seeds"] == len(list(seeds))
-    assert control["all_strict_pass_rate"] * control["n_seeds"] == pytest.approx(expected_pass)
+    assert control["all_strict_pass_rate"] * control["n_seeds"] == pytest.approx(
+        expected_pass
+    )
 
 
 def test_run_a6b_calibration_achieves_targets_on_pooled_sample(monkeypatch):

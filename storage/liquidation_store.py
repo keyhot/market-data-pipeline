@@ -140,7 +140,12 @@ def write_liquidation_batch(
                 cur.executemany(
                     _KRAKEN_COVERAGE_SQL,
                     [
-                        (symbol, datetime.fromtimestamp(minute, tz=timezone.utc), covered, n)
+                        (
+                            symbol,
+                            datetime.fromtimestamp(minute, tz=timezone.utc),
+                            covered,
+                            n,
+                        )
                         for symbol, minute, covered, n in kraken_coverage
                     ],
                 )

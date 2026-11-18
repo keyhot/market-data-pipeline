@@ -8,7 +8,6 @@ them go further and check the manifest against the PNG itself: numbers measured
 off an image drift the moment the image is replaced, and a candle drawn 6px off
 the painted glass is not something a schema check can see.
 """
-from world_node import run_driver, run_world, world_driver
 import dataclasses
 import json
 import math
@@ -19,6 +18,7 @@ import sys
 
 import pytest
 from PIL import Image
+from world_node import run_driver, run_world, world_driver
 
 from world import monitors
 from world.plate import (
@@ -434,7 +434,7 @@ for (const accent of accents) {
   hi = Math.max(hi, ahi);
 }
 console.log(JSON.stringify({ lo, hi, castScale: CAST_SCALE }));
-'''
+'''  # noqa: E501
 
 
 @needs_node

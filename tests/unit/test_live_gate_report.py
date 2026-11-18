@@ -67,7 +67,7 @@ def fake_lgbm(monkeypatch):
 
 def test_collect_purges_exactly_horizon_rows_before_each_test_fold(fake_lgbm):
     bars = _synthetic_bars(end="2025-12-31")
-    oos = lgr.collect(bars, test_years=(2023, 2024))
+    lgr.collect(bars, test_years=(2023, 2024))
 
     feats = lgr.build_features(bars, horizon_bars=lgr.HORIZON)
     X = feats.X

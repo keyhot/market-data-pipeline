@@ -1,4 +1,5 @@
-"""The expanding, gated fold predictor behind L1 (vault `Docs/pnl-15m-experiment.md`)."""
+"""The expanding, gated fold predictor behind L1
+(vault `Docs/pnl-15m-experiment.md`)."""
 
 import numpy as np
 import pandas as pd

@@ -36,7 +36,9 @@ def test_a_verified_backup_from_last_night_is_healthy():
 
 
 def test_a_failed_backup_is_failing_and_says_why():
-    check = check_backup(_backup(ok=False, error="service postgres is not running"), NOW)
+    check = check_backup(
+        _backup(ok=False, error="service postgres is not running"), NOW
+    )
     assert check.failing is True
     assert "postgres is not running" in check.summary
 

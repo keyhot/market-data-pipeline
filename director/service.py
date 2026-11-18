@@ -67,6 +67,8 @@ def run(
     config=None,
     sleep_seconds=5.0,
     max_ticks=None,
+    clock=None,
+    sleep=None,
 ) -> int:
     """Injected dependencies keep this testable (fetch_state() -> dict,
     obs_client = stream_ctl seam, tts_runner(text, voice) [Task 6],
@@ -75,8 +77,20 @@ def run(
     Loops forever unless ``max_ticks`` is set (the test seam, as in
     broadcast/service.py). Returns 2 if it gave up after sustained failure so
     systemd restarts it, 0 otherwise.
+
+    ``clock() -> aware datetime`` and ``sleep(seconds)`` are the time seams
+    (Q07): tests drive the loop's time with them. Left as None they are the
+    wall clock (UTC) and ``time.sleep``, resolved at call time, so production
+    behaviour is unchanged.
     """
     config = config or DirectorConfig()
+    if clock is None:
+
+        def clock():
+            return datetime.now(timezone.utc)
+
+    if sleep is None:
+        sleep = time.sleep
     from scripts import stream_ctl
 
     # Read the program scene, don't assume it (KI-034). OBS outlives a director
@@ -88,9 +102,14 @@ def run(
     on_air = stream_ctl.current_scene(obs_client)
     if on_air and on_air != config.home_scene:
         logger.info("director resuming on the scene already on air: %s", on_air)
+    # Q05(b): the boot hold is not wanted. Seeding `last_switch = now` made the
+    # dwell guard hold the program for min_dwell_seconds after every start (and
+    # a resumed off-home scene wait return_to_home_seconds before decaying), so
+    # a salient event right after boot could not switch. Start the dwell as
+    # already served; a real switch still restarts it.
     dir_state = DirectorState(
         current_scene=on_air or config.home_scene,
-        last_switch=datetime.now(timezone.utc),
+        last_switch=clock() - timedelta(seconds=config.min_dwell_seconds),
         muted=director_muted(),
     )
     metrics = DirectorMetrics()
@@ -99,7 +118,7 @@ def run(
     seeded = False
     while max_ticks is None or ticks < max_ticks:
         ticks += 1
-        now = datetime.now(timezone.utc)
+        now = clock()
         try:
             state = fetch_state()
             if not seeded:
@@ -205,7 +224,7 @@ def run(
                 "tts_failures": metrics.tts_failures,
             },
         )
-        time.sleep(sleep_seconds)
+        sleep(sleep_seconds)
     return 0
 
 

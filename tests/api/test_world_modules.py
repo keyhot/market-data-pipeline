@@ -14,7 +14,6 @@ import json
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -94,9 +93,14 @@ def test_the_boot_fallback_retries_a_module_graph_that_never_ran(tmp_path):
     page = client.get("/world").text
     code = next(b for a, b in _SCRIPT.findall(page) if 'id="world-boot-fallback"' in a)
     backoff = json.loads(
-        re.search(r"const RETRY_BACKOFF_MS = (\[[^\]]*\]);", _source("boot.js")).group(1)
+        re.search(r"const RETRY_BACKOFF_MS = (\[[^\]]*\]);", _source("boot.js")).group(
+            1
+        )
     )
-    assert json.loads(re.search(r"var BACKOFF_MS = (\[[^\]]*\]);", code).group(1)) == backoff
+    assert (
+        json.loads(re.search(r"var BACKOFF_MS = (\[[^\]]*\]);", code).group(1))
+        == backoff
+    )
     driver = tmp_path / "fallback.cjs"
     driver.write_text(_FALLBACK_DRIVER)
 
@@ -120,7 +124,9 @@ def test_the_boot_fallback_retries_a_module_graph_that_never_ran(tmp_path):
         assert "still running" in out["text"], search
 
     main_js = _source("main.js")
-    assert main_js.index("window.__worldModules = true;") < main_js.index("boot().catch(")
+    assert main_js.index("window.__worldModules = true;") < main_js.index(
+        "boot().catch("
+    )
 
 
 def test_only_the_world_modules_are_served_no_cache():
@@ -128,9 +134,14 @@ def test_only_the_world_modules_are_served_no_cache():
     rendered fresh, so a cached module is a stale half of a deploy); a 304 on
     the ETag keeps that cheap. The rest of /static keeps its old headers."""
     for name in world_modules():
-        assert client.get(f"/static/world/{name}").headers.get("cache-control") == "no-cache"
+        assert (
+            client.get(f"/static/world/{name}").headers.get("cache-control")
+            == "no-cache"
+        )
     first = client.get("/static/world/main.js")
-    again = client.get("/static/world/main.js", headers={"if-none-match": first.headers["etag"]})
+    again = client.get(
+        "/static/world/main.js", headers={"if-none-match": first.headers["etag"]}
+    )
     assert again.status_code == 304
     assert again.headers.get("cache-control") == "no-cache"
     for path in ("/static/pixi-8.19.0.min.js", "/static/world-plate-btc-eth.png"):
@@ -172,7 +183,9 @@ def test_every_import_is_exported_by_the_module_it_names():
     for name in world_modules():
         for group, spec in _IMPORT.findall(_source(name)):
             missing = _names(group or "") - exports[spec[2:]]
-            assert not missing, f"{name} imports {sorted(missing)} that {spec} never exports"
+            assert not missing, (
+                f"{name} imports {sorted(missing)} that {spec} never exports"
+            )
 
 
 def test_the_modules_evaluate_in_the_single_scripts_order():
@@ -223,7 +236,9 @@ def test_the_module_graph_links_and_evaluates_in_node(tmp_path):
     ReferenceError, both fatal to the whole page. DOM and PIXI are stubbed; the
     config is the one /world serves."""
     page = client.get("/world").text
-    config = re.search(r'<script type="application/json" id="world-config">(.*?)</script>', page, re.S)
+    config = re.search(
+        r'<script type="application/json" id="world-config">(.*?)</script>', page, re.S
+    )
     (tmp_path / "package.json").write_text('{"type": "module"}')
     for name in world_modules():
         (tmp_path / name).write_text(_source(name))

@@ -29,13 +29,17 @@ def test_p_up_rises_as_the_current_close_falls_through_the_distribution():
 def test_a_distribution_entirely_above_the_close_clamps_to_the_top_level():
     # Beyond the outermost quantile there is no information: the answer is
     # the most the forecast can say, never 1.0.
-    assert p_up_from_quantiles(_LEVELS, [101.0, 102.0, 103.0], 100.0) == pytest.approx(0.9)
+    assert p_up_from_quantiles(_LEVELS, [101.0, 102.0, 103.0], 100.0) == pytest.approx(
+        0.9
+    )
     assert p_up_from_quantiles(_LEVELS, [97.0, 98.0, 99.0], 100.0) == pytest.approx(0.1)
 
 
 def test_between_quantiles_the_cdf_is_linear():
     # close halfway between q0.5=100 and q0.9=102 -> F = 0.7 -> P(up) = 0.3
-    assert p_up_from_quantiles(_LEVELS, [98.0, 100.0, 102.0], 101.0) == pytest.approx(0.3)
+    assert p_up_from_quantiles(_LEVELS, [98.0, 100.0, 102.0], 101.0) == pytest.approx(
+        0.3
+    )
 
 
 def test_a_tie_with_a_flat_run_of_quantiles_counts_as_down():
