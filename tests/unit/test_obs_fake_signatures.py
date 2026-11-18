@@ -157,11 +157,18 @@ def test_the_list_of_obs_fakes_is_complete():
     assert _obs_fake_classes() - set(NOT_OBS_FAKES) == set(OBS_FAKES)
 
 
-def test_the_not_obs_exclusions_are_live_and_never_hide_an_obs_fake():
-    """An exclusion must still match a class the scan flags (no stale entries)
-    and must not be on `OBS_FAKES`, whose members are always signature-pinned."""
+# `ReqClient` names that a clock, websocket or `asyncio` stand-in shares by chance
+_SHARED_NAMES = {"sleep", "send", "close"}
+
+
+def test_the_not_obs_exclusions_are_live_and_share_only_chance_names():
+    """An exclusion must still match a class the scan flags (no stale entries),
+    and the only `ReqClient` names such a class may define are the chance ones
+    above: give `FakeClock` a `set_current_program_scene` and this goes red."""
     assert set(NOT_OBS_FAKES) <= _obs_fake_classes()
-    assert not set(NOT_OBS_FAKES) & set(OBS_FAKES)
+    for module, name in NOT_OBS_FAKES:
+        own = {m for m in vars(_fake(module, name)) if m in _REAL}
+        assert own <= _SHARED_NAMES, (module, name, own - _SHARED_NAMES)
 
 
 @pytest.mark.parametrize(
