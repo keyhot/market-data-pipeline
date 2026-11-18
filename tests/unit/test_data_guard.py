@@ -197,7 +197,7 @@ def test_a_session_that_writes_under_data_fails_the_run(tmp_path, scenario):
     seed, body, want_code, want_text = _BODIES[scenario]
     project = tmp_path / "project"
     (project / "tests").mkdir(parents=True)
-    for name in ("conftest.py", "data_guard.py"):
+    for name in ("conftest.py", "data_guard.py", "net_guard.py"):
         shutil.copy(REPO / "tests" / name, project / "tests" / name)
     for name, text in seed.items():
         (project / "data").mkdir(exist_ok=True)
