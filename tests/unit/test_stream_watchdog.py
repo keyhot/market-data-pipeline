@@ -42,6 +42,101 @@ def test_backoff_suppresses_restart_storm():
     assert ("relaunch_obs",) in actions
 
 
+def _polls_inside_cooldown(cfg=CFG):
+    """Every poll offset (seconds after a restart) strictly inside the cooldown."""
+    return [
+        i * cfg.poll_seconds
+        for i in range(1, int(cfg.restart_cooldown_seconds // cfg.poll_seconds))
+    ]
+
+
+def test_a_relaunch_stamps_its_own_cooldown_and_the_next_polls_respect_it():
+    # F2 (audit 4): test_backoff_suppresses_restart_storm SEEDS last_restart_at
+    # by hand, so a tick that never stamps it (a relaunch on every 30 s poll,
+    # i.e. an OBS restart storm on air) stayed green. Here the stamp is written
+    # by tick itself and a later tick reads it. The origin is a real-looking
+    # monotonic reading, not 0.
+    t0 = 1_054_798.5
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, actions = tick({"reachable": False}, state, CFG, now=t0)
+    assert actions.count(("relaunch_obs",)) == 1
+    assert state.last_restart_at == t0, "tick must stamp the restart it issued"
+
+    for offset in _polls_inside_cooldown():
+        state, actions = tick({"reachable": False}, state, CFG, now=t0 + offset)
+        assert _actions_of(actions, "relaunch_obs") == [], (
+            f"relaunched again {offset}s into the cooldown"
+        )
+    assert state.last_restart_at == t0, "a suppressed poll must not move the stamp"
+
+    # Exactly one cooldown later it is allowed, once, and re-stamps.
+    t1 = t0 + CFG.restart_cooldown_seconds
+    state, actions = tick({"reachable": False}, state, CFG, now=t1)
+    assert actions.count(("relaunch_obs",)) == 1
+    assert state.last_restart_at == t1
+    state, actions = tick(
+        {"reachable": False}, state, CFG, now=t1 + CFG.poll_seconds
+    )
+    assert _actions_of(actions, "relaunch_obs") == []
+
+
+def test_a_start_stream_stamps_its_own_cooldown_and_the_next_polls_respect_it():
+    # F2 (audit 4), the start_stream half: OBS answers but the output is not
+    # live. Same shape as above, so a dropped stamp at the second call site
+    # (not just the relaunch one) also goes red.
+    t0 = 1_054_798.5
+    off_air = {"reachable": True, "streaming": False, "dropped_ratio": 0.0}
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, actions = tick(off_air, state, CFG, now=t0)
+    assert actions.count(("start_stream",)) == 1
+    assert state.last_restart_at == t0, "tick must stamp the restart it issued"
+
+    for offset in _polls_inside_cooldown():
+        state, actions = tick(off_air, state, CFG, now=t0 + offset)
+        assert _actions_of(actions, "start_stream") == [], (
+            f"restarted the stream again {offset}s into the cooldown"
+        )
+    assert state.last_restart_at == t0, "a suppressed poll must not move the stamp"
+
+    t1 = t0 + CFG.restart_cooldown_seconds
+    state, actions = tick(off_air, state, CFG, now=t1)
+    assert actions.count(("start_stream",)) == 1
+    assert state.last_restart_at == t1
+    state, actions = tick(off_air, state, CFG, now=t1 + CFG.poll_seconds)
+    assert _actions_of(actions, "start_stream") == []
+
+
+def test_tick_stamps_down_since_when_obs_disappears_and_recovery_reads_it():
+    # F2 sibling (audit 4): test_obs_recovery... SEEDS down_since=900.0, so a
+    # tick that never stamped it (recovery_seconds silently absent from every
+    # stream_started row) stayed green. Here tick writes the stamp, a later
+    # tick reads it.
+    t0 = 1_054_798.5
+    state = WatchdogState(obs_up=True, streaming=True)
+    state, _ = tick({"reachable": False}, state, CFG, now=t0)
+    assert state.down_since == t0
+    probe = {"reachable": True, "streaming": True, "dropped_ratio": 0.0}
+    state, actions = tick(probe, state, CFG, now=t0 + 100.0)
+    records = _actions_of(actions, "record")
+    assert records[0][1] == "stream_started"
+    assert records[0][2]["recovery_seconds"] == 100.0
+    assert state.down_since is None
+
+
+def test_tick_stamps_down_since_when_the_stream_stops_and_recovery_reads_it():
+    # F2 sibling (audit 4), the stream_stopped call site of the same stamp.
+    t0 = 1_054_798.5
+    state = WatchdogState(obs_up=True, streaming=True)
+    off_air = {"reachable": True, "streaming": False, "dropped_ratio": 0.0}
+    state, _ = tick(off_air, state, CFG, now=t0)
+    assert state.down_since == t0
+    live = {"reachable": True, "streaming": True, "dropped_ratio": 0.0}
+    state, actions = tick(live, state, CFG, now=t0 + 90.0)
+    records = _actions_of(actions, "record")
+    assert records[0][1] == "stream_started"
+    assert records[0][2]["recovery_seconds"] == 90.0
+
+
 def test_obs_recovery_rebuilds_scene_then_streaming_records_started():
     state = WatchdogState(obs_up=False, streaming=False, down_since=900.0)
     probe = {"reachable": True, "streaming": True, "dropped_ratio": 0.0}
@@ -69,6 +164,8 @@ def test_stream_stopped_underneath_us_records_stopped_and_restarts():
     # (the world isn't told "stopped" over and over).
     _, again = tick(probe, state, CFG, now=1030.0)
     assert _actions_of(again, "record") == []
+    # ...and nor is the restart repeated: the first tick stamped the cooldown.
+    assert _actions_of(again, "start_stream") == []
 
 
 def test_dropped_frames_records_event_but_never_restarts():

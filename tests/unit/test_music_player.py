@@ -92,6 +92,45 @@ def test_a_stuck_track_is_overruled_by_the_clock(tracks):
     assert advanced.is_change and advanced.reason == "overran its length"
 
 
+def test_every_track_is_timed_from_its_own_start_not_the_first_tracks(tracks):
+    """F3 (audit 4): the overrun clock was only ever exercised on track 1,
+    where the previous state has no started_at. A tick that keeps the OLD
+    started_at (`state.started_at or now`) cut every later track about 15 s in
+    once the first track's start was more than length + grace behind it."""
+    ended = MediaStatus("OBS_MEDIA_STATE_ENDED")
+    playing = MediaStatus(
+        "OBS_MEDIA_STATE_PLAYING", cursor_ms=5_000, duration_ms=180_000
+    )
+    length = timedelta(seconds=180)
+
+    state, action = tick(BedState(), MediaStatus(), T0, tracks)
+    assert state.started_at == T0 and action.reason == "first track"
+
+    start = T0
+    for track_no in (2, 3, 4):
+        # Each hand-over lands well past length + grace of the FIRST start, so
+        # a stale started_at would already read as overrun.
+        start += timedelta(seconds=230)
+        state, action = tick(state, ended, start, tracks)
+        assert action.is_change and action.reason == "media ended"
+        assert state.started_at == start, f"track {track_no} not stamped at its start"
+
+        # Inside its own length: left alone.
+        _, held = tick(state, playing, start + timedelta(seconds=5), tracks)
+        assert not held.is_change, f"track {track_no} cut 5 s into a 180 s track"
+
+        # Up to and including length + grace: still left alone.
+        edge = start + length + OVERRUN_GRACE
+        _, held = tick(state, playing, edge, tracks)
+        assert not held.is_change, f"track {track_no} cut before length + grace"
+
+        # One second past it: the clock overrules OBS, measured from THIS start.
+        _, advanced = tick(
+            state, playing, edge + timedelta(seconds=1), tracks
+        )
+        assert advanced.is_change and advanced.reason == "overran its length"
+
+
 def test_the_whole_playlist_plays_before_anything_repeats(tracks):
     state, action = tick(BedState(), MediaStatus(), T0, tracks)
     played = [action.play.file]
