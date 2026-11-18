@@ -22,7 +22,10 @@ from ingestion.liquidation_recorder import (  # noqa: E402
     LiquidationRecorder,
     recorder_enabled,
 )
-from storage.liquidation_store import write_liquidation_batch  # noqa: E402
+from storage.liquidation_store import (  # noqa: E402
+    load_kraken_seen_uids,
+    write_liquidation_batch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +37,9 @@ def main() -> int:
             "Liquidation recorder disabled (LIQUIDATION_RECORDER_ENABLED); exiting"
         )
         return 0
-    recorder = LiquidationRecorder(write_liquidation_batch)
+    recorder = LiquidationRecorder(
+        write_liquidation_batch, load_kraken_seen=load_kraken_seen_uids
+    )
     try:
         asyncio.run(recorder.run())
     except KeyboardInterrupt:

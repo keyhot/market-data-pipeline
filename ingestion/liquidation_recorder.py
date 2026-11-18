@@ -168,6 +168,12 @@ class Buffer:
         # its own table (storage/liquidation_store.py, liquidation_coverage_kraken).
         self.kraken_coverage: list[tuple[str, int, bool, int]] = []
         self.kraken_minutes: list[KrakenMinuteAgg] = []
+        # symbol -> the uids already folded into `kraken_minutes` and into what
+        # earlier batches wrote, as of the newest fold. It travels with the
+        # aggregates it vouches for (take_kraken_seen / restore_kraken_seen)
+        # and is stored in the same transaction, so a restarted process can
+        # skip exactly the trades the database already holds.
+        self.kraken_seen: dict[str, list[str]] = {}
         self.rows_written = 0
         self.rows_dropped = 0
 
@@ -221,6 +227,18 @@ class Buffer:
         self.kraken_coverage = (kraken_coverage or []) + self.kraken_coverage
         self._trim()
 
+    def set_kraken_seen(self, symbol: str, uids) -> None:
+        self.kraken_seen[symbol] = list(uids)
+
+    def take_kraken_seen(self) -> dict[str, list[str]]:
+        """Call right after `take()`, with no await between: same instant."""
+        taken, self.kraken_seen = self.kraken_seen, {}
+        return taken
+
+    def restore_kraken_seen(self, taken: dict[str, list[str]]) -> None:
+        # A snapshot taken since is newer and a superset of the failed one.
+        self.kraken_seen = {**taken, **self.kraken_seen}
+
     def _trim(self) -> None:
         overflow = len(self.liquidations) - self._max_rows
         if overflow > 0:
@@ -243,6 +261,7 @@ class LiquidationRecorder:
         clock: Callable[[], float] = time.time,
         kraken_symbols: tuple[str, ...] | None = None,
         kraken_poll_seconds: float | None = None,
+        load_kraken_seen: Callable[[], dict[str, list[str]]] | None = None,
     ):
         self._write = write
         self.buffer = Buffer()
@@ -289,6 +308,27 @@ class LiquidationRecorder:
         self._kraken_seen_uids: dict[str, dict[str, None]] = {
             s: {} for s in self._kraken_symbols
         }
+        # The set above is seeded from the database (`load_kraken_seen`) before
+        # the first Kraken poll, so a restart does not fold again the trades
+        # the previous process already flushed (audit 5 F10). Without a loader
+        # (tests, a recorder with no database) there is nothing to wait for.
+        self._load_kraken_seen = load_kraken_seen
+        self._kraken_seeded = load_kraken_seen is None
+
+    def seed_kraken_state(self) -> None:
+        """Load the previous process's folded uids (blocking: a worker thread).
+
+        Only called before this process has folded anything, which is why the
+        loaded uids can simply be marked seen. They are older than anything
+        this process will see, so the FIFO cap evicts them first.
+        """
+        if self._load_kraken_seen is not None:
+            persisted = self._load_kraken_seen()
+            for symbol in self._kraken_symbols:
+                if persisted.get(symbol):
+                    seen = self._kraken_seen_uids.setdefault(symbol, {})
+                    _kraken_mark_seen(seen, persisted[symbol])
+        self._kraken_seeded = True
 
     # --- frame handling (sync, testable) ------------------------------------
 
@@ -372,6 +412,7 @@ class LiquidationRecorder:
             aggs = aggregate_kraken_minutes(fresh)
             if aggs:
                 self.buffer.add_kraken_minutes(aggs)
+            self.buffer.set_kraken_seen(symbol, seen)
 
         new = kraken_new_trades(trades, last_ts)
         if new:
@@ -396,6 +437,7 @@ class LiquidationRecorder:
         coverage: list,
         kraken_minutes: list | None = None,
         kraken_coverage: list | None = None,
+        kraken_seen: dict | None = None,
     ) -> bool:
         """The writer-thread half of a flush: True when the batch landed."""
         kraken_minutes = kraken_minutes or []
@@ -408,7 +450,16 @@ class LiquidationRecorder:
         ):
             return True
         try:
-            self._write(liquidations, coverage, kraken_minutes, kraken_coverage)
+            if kraken_seen:
+                self._write(
+                    liquidations,
+                    coverage,
+                    kraken_minutes,
+                    kraken_coverage,
+                    kraken_seen=kraken_seen,
+                )
+            else:
+                self._write(liquidations, coverage, kraken_minutes, kraken_coverage)
         except Exception as e:
             logger.warning(
                 "Liquidation write failed; keeping rows to retry",
@@ -421,11 +472,18 @@ class LiquidationRecorder:
     async def flush(self) -> bool:
         self.collect_coverage()
         liquidations, coverage, kraken_minutes, kraken_coverage = self.buffer.take()
+        kraken_seen = self.buffer.take_kraken_seen()  # same instant as take()
         ok = await asyncio.to_thread(
-            self.write_batch, liquidations, coverage, kraken_minutes, kraken_coverage
+            self.write_batch,
+            liquidations,
+            coverage,
+            kraken_minutes,
+            kraken_coverage,
+            kraken_seen,
         )
         if not ok:
             self.buffer.restore(liquidations, coverage, kraken_minutes, kraken_coverage)
+            self.buffer.restore_kraken_seen(kraken_seen)
         return ok
 
     # --- network --------------------------------------------------------------
@@ -574,6 +632,20 @@ class LiquidationRecorder:
         backoff = self._kraken_poll_seconds
         contracts_at = 0.0
         while True:
+            if not self._kraken_seeded:
+                # A window folded before the previous process's uids are known
+                # would be counted twice, and its snapshot would then replace
+                # the stored state. Wait for the database instead.
+                try:
+                    await asyncio.to_thread(self.seed_kraken_state)
+                except Exception as e:
+                    logger.warning(
+                        "Kraken restart-dedupe state not loaded; not polling yet",
+                        extra={"error": f"{type(e).__name__}: {e}"},
+                    )
+                    backoff = min(backoff * 2, _BACKOFF_MAX_S)
+                    await asyncio.sleep(backoff)
+                    continue
             if self._clock() - contracts_at > CONTRACTS_REFRESH_S:
                 try:
                     payload = await asyncio.to_thread(
