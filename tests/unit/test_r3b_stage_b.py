@@ -53,22 +53,60 @@ def test_decide_maps_bounds_gate_and_fill_count():
     assert sb.decide(_res(1.0, 2.0), **{**ok, "stage_a_valid": False}) == "VOID"
 
 
-def test_runner_refuses_without_valid_amended_stage_a(tmp_path, monkeypatch):
+class _GotPastTheGuards(RuntimeError):
+    """Raised by the load_verdict stub. main() reaching it means a refusal guard did not fire,
+    and the real loader would go on to fetch the verdict window from Kraken."""
+
+
+@pytest.fixture
+def stub_loader(monkeypatch):
+    def boom(*args, **kwargs):
+        raise _GotPastTheGuards("main() got past the guards to load_verdict")
+    monkeypatch.setattr(sb, "load_verdict", boom)
+
+
+STAGE_A_REFUSAL = "amended stage A is not VALID: stage B is not run (VOID by rule 11)"
+
+
+def test_runner_refuses_without_valid_amended_stage_a(tmp_path, monkeypatch, stub_loader):
     monkeypatch.setattr(sb, "OUT", tmp_path / "b.json")
     monkeypatch.setattr(sb, "STAGE_A1", tmp_path / "a1.json")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as missing:
         sb.main()                                                   # no stage A1 file
+    assert missing.value.code == STAGE_A_REFUSAL
     (tmp_path / "a1.json").write_text(json.dumps({"stage_a1": {"result": "INVALID"}}))
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as invalid:
         sb.main()
+    assert invalid.value.code == STAGE_A_REFUSAL
     assert not (tmp_path / "b.json").exists()
 
 
-def test_runner_refuses_to_overwrite_a_verdict(tmp_path, monkeypatch):
+@pytest.mark.parametrize("a1", [{}, {"stage_a1": {}}], ids=["no-stage_a1-key", "no-result-key"])
+def test_runner_refuses_a_stage_a1_file_without_a_result(tmp_path, monkeypatch, stub_loader, a1):
+    monkeypatch.setattr(sb, "OUT", tmp_path / "b.json")
+    monkeypatch.setattr(sb, "STAGE_A1", tmp_path / "a1.json")
+    (tmp_path / "a1.json").write_text(json.dumps(a1))
+    with pytest.raises(SystemExit) as refused:                      # a missing key is "not VALID", not a KeyError
+        sb.main()
+    assert refused.value.code == STAGE_A_REFUSAL
+    assert not (tmp_path / "b.json").exists()
+
+
+def test_runner_refuses_to_overwrite_a_verdict(tmp_path, monkeypatch, stub_loader):
     monkeypatch.setattr(sb, "OUT", tmp_path / "b.json")
     monkeypatch.setattr(sb, "STAGE_A1", tmp_path / "a1.json")
     (tmp_path / "a1.json").write_text(json.dumps({"stage_a1": {"result": "VALID"}}))
     (tmp_path / "b.json").write_text("{}")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exists:
         sb.main()
+    assert exists.value.code == f"{tmp_path / 'b.json'} exists: stage B is run once"
     assert (tmp_path / "b.json").read_text() == "{}"
+
+
+def test_runner_goes_past_the_guards_for_a_valid_stage_a_and_no_verdict(tmp_path, monkeypatch, stub_loader):
+    monkeypatch.setattr(sb, "OUT", tmp_path / "b.json")
+    monkeypatch.setattr(sb, "STAGE_A1", tmp_path / "a1.json")
+    (tmp_path / "a1.json").write_text(json.dumps({"stage_a1": {"result": "VALID"}}))
+    with pytest.raises(_GotPastTheGuards):                          # neither refusal fires
+        sb.main()
+    assert not (tmp_path / "b.json").exists()
