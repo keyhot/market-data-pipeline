@@ -45,6 +45,19 @@ OBS_FAKES = [
     ("tests.unit.test_director_rails", "_FakeObs"),
     ("tests.unit.test_director_restart_scene", "FakeObs"),
     ("tests.unit.test_director_standby_handoff", "FakeObs"),
+    ("tests.unit.test_director_clock", "FakeObs"),
+    ("tests.unit.test_director_restart_narration", "_Obs"),
+]
+
+# (module, class) of test doubles the scan flags by shape only: they stand in for
+# a clock, a websocket or `asyncio`, never for the OBS client (`sleep`/`send`/`close`
+# share a name with a `ReqClient` method; `_AsyncioProxy` has `__getattr__`).
+# Named one by one, so a new OBS fake in the same file is still caught.
+NOT_OBS_FAKES = [
+    ("tests.unit.test_director_clock", "FakeClock"),
+    ("tests.unit.test_liquidation_recorder_loops", "FakeWS"),
+    ("tests.unit.test_liquidation_recorder_loops", "_AsyncioProxy"),
+    ("tests.unit.test_liquidation_recorder_loops", "Sleeper"),
 ]
 
 
@@ -141,7 +154,14 @@ def _obs_fake_classes():
 def test_the_list_of_obs_fakes_is_complete():
     """A new OBS double in any test file must be added to `OBS_FAKES`, which is
     what puts it under the signature pin above."""
-    assert _obs_fake_classes() == set(OBS_FAKES)
+    assert _obs_fake_classes() - set(NOT_OBS_FAKES) == set(OBS_FAKES)
+
+
+def test_the_not_obs_exclusions_are_live_and_never_hide_an_obs_fake():
+    """An exclusion must still match a class the scan flags (no stale entries)
+    and must not be on `OBS_FAKES`, whose members are always signature-pinned."""
+    assert set(NOT_OBS_FAKES) <= _obs_fake_classes()
+    assert not set(NOT_OBS_FAKES) & set(OBS_FAKES)
 
 
 @pytest.mark.parametrize(
