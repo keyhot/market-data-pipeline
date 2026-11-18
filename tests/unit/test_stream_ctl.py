@@ -602,6 +602,43 @@ def test_the_audio_gain_goes_out_as_decibels_with_a_null_multiplier():
     }
 
 
+def test_the_audio_gain_reaches_the_music_bed_build_made_at_every_tier(monkeypatch):
+    """`set_audio_gain` with the sources the SPEC names, not a hand-typed list:
+    after a real `build_scene` with STREAM_AUDIO_DIR set, every input it
+    addresses exists in OBS, the bed is addressed once per call, and what goes
+    out is byte for byte what the real `set_input_volume` builds for that tier's
+    dB (so a gain in the multiplier slot, or the tier's neighbour, would differ).
+    """
+    monkeypatch.setenv("STREAM_AUDIO_DIR", "/music")
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+    existing = {i["inputName"] for i in client.get_input_list().inputs}
+    (bed,) = stream_scene.audio_source_names()  # the spec's one shared bed
+
+    sent = []
+    for tier in range(len(stream_scene._AUDIO_GAIN_DB)):
+        client.volumes.clear()
+        stream_ctl.set_audio_gain(client, tier=tier)
+        gain = stream_scene.audio_gain_db(tier)
+        assert client.volumes == [wire("set_input_volume", bed, vol_db=gain)[1]]
+        assert {v["inputName"] for v in client.volumes} <= existing
+        assert client.volumes[0]["inputVolumeDb"] == gain
+        sent.append(gain)
+
+    # The ramp is audible: every tier sent a gain of its own, rising.
+    assert sent == sorted(set(sent)) and len(sent) == len(stream_scene._AUDIO_GAIN_DB)
+
+
+def test_the_audio_gain_sends_nothing_when_the_spec_has_no_bed(monkeypatch):
+    """STREAM_AUDIO_DIR unset: the spec has no bed, `audio_source_names()` is
+    empty, and the default `sources=None` path sends no request at all."""
+    monkeypatch.delenv("STREAM_AUDIO_DIR", raising=False)
+    client = FakeClient()
+    stream_ctl.build_scene(client)
+    stream_ctl.set_audio_gain(client, tier=3)
+    assert client.volumes == []
+
+
 def test_the_fake_records_a_volume_request_as_the_real_client_would_send_it():
     """The second positional is the multiplier, both keys always go out, and a
     value given for both is sent for both: the client chooses nothing. Each

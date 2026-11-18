@@ -27,8 +27,10 @@ class FakeClient:
     def get_stream_status(self):
         return FakeResp(output_active=self.streaming)
 
-    def save_source_screenshot(self, scene, fmt, path, w, h, quality):
-        self.calls.append(("shot", scene, str(path)))
+    def save_source_screenshot(
+        self, name, img_format, file_path, width, height, quality
+    ):
+        self.calls.append(("shot", name, str(file_path)))
 
 
 def shots(client):
