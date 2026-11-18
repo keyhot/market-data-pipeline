@@ -55,6 +55,21 @@ def _spoken(recorded):
     ]
 
 
+class _Obs:
+    """OBS seam that accepts switches. The boot dwell no longer holds the
+    program (Q05 b), so a salient event can switch on the first tick and the
+    loop needs a client to switch with; these tests are about narration."""
+
+    def __init__(self):
+        self._scene = "chart-focus"
+
+    def get_current_program_scene(self):
+        return type("R", (), {"current_program_scene_name": self._scene})()
+
+    def set_current_program_scene(self, name):
+        self._scene = name
+
+
 def _run_capturing(states, max_ticks):
     """Drive the real tick/_apply path (no policy stubs — the seeding lives
     between them) over a scripted sequence of world states."""
@@ -67,7 +82,7 @@ def _run_capturing(states, max_ticks):
 
     code = service.run(
         fetch_state=fetch,
-        obs_client=None,
+        obs_client=_Obs(),
         tts_runner=None,
         record_event=recorded.append,
         sleep_seconds=0,
