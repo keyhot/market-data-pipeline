@@ -19,7 +19,6 @@ import psycopg
 import psycopg.generators
 import psycopg_pool
 import pytest
-from psycopg import connect as psycopg_connect
 from psycopg.conninfo import make_conninfo
 
 
@@ -398,16 +397,31 @@ def test_asyncio_still_runs_and_serves_over_a_unix_socket(
 # which rule fired (the entry point named in the message and in the recorded
 # list), and the pre-bound routes use the unix-socket target, which skips DNS.
 #
-# Taken at collection, before any fixture ran: the routes a class patch alone
-# cannot reach, because they hold the original bound method or function.
-_EARLY_CONNECT = psycopg_connect
-_EARLY_CLASS_CONNECT = psycopg.Connection.connect
-_EARLY_ASYNC_CONNECT = psycopg.AsyncConnection.connect
+# Taken before any fixture ran: the routes a class patch alone cannot reach,
+# because they hold the original bound method or function. They come from
+# net_guard, which snapshots them when tests/conftest.py imports it; binding
+# them here, at collection, would capture tests/integration's collection-time
+# refusal instead whenever that directory is collected in the same run.
+_EARLY_CONNECT = net_guard.EARLY_CONNECT
+_EARLY_CLASS_CONNECT = net_guard.EARLY_CLASS_CONNECT
+_EARLY_ASYNC_CONNECT = net_guard.EARLY_ASYNC_CONNECT
 _REAL_POOL_INIT = psycopg_pool.ConnectionPool.__init__
 _REAL_ASYNC_POOL_INIT = psycopg_pool.AsyncConnectionPool.__init__
 
 _DNS_TARGET = "host=db.invalid port=1 connect_timeout=2"
 _GENERATORS = "psycopg.generators.connect"
+
+
+@pytest.mark.parametrize(
+    "route",
+    [_EARLY_CONNECT, _EARLY_CLASS_CONNECT, _EARLY_ASYNC_CONNECT],
+    ids=["connect", "Connection.connect", "AsyncConnection.connect"],
+)
+def test_the_early_routes_are_psycopgs_own_not_another_guards_refusal(route):
+    # A collection-time patch (db_guard's, under tests/integration) bound here
+    # would pass for "pre-bound" while refusing for another guard's reason.
+    func = getattr(route, "__func__", route)
+    assert func.__module__.startswith("psycopg."), func
 
 
 @pytest.fixture

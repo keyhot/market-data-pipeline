@@ -80,6 +80,8 @@ import os
 import socket
 from pathlib import Path
 
+import psycopg
+
 # Loopback ports where a service of this host listens, and what it is. The
 # first five are this repo's own (docker-compose.yml, .env.example,
 # config/freqtrade/config.json, scripts/stream_ctl.py, .github/workflows/ci.yml);
@@ -103,6 +105,22 @@ _UNIX = getattr(socket, "AF_UNIX", None)
 
 class NetworkBlocked(RuntimeError):
     """A test tried to reach a network service."""
+
+
+# The connect routes as psycopg shipped them, taken when this module is first
+# imported. tests/conftest.py imports it before any other conftest or test
+# module loads, so before tests/integration/conftest.py makes its
+# collection-time refusal (db_guard.refuse_all_connections) and before any
+# fixture patches psycopg. A test that needs "bound before the fixture ran"
+# takes these, not `from psycopg import connect` at its own import: that
+# import runs under the collection-time patch whenever tests/integration is
+# collected too (a bare `pytest`, which CI runs), and would bind db_guard's
+# refusal instead of the real function. These are the unguarded originals: call
+# one only under the no_network_outside_integration fixture, which refuses it
+# one level down.
+EARLY_CONNECT = psycopg.connect
+EARLY_CLASS_CONNECT = psycopg.Connection.connect
+EARLY_ASYNC_CONNECT = psycopg.AsyncConnection.connect
 
 
 def applies_to(path, root=None) -> bool:

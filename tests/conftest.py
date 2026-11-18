@@ -1,4 +1,5 @@
 # tests/conftest.py
+import net_guard  # first import snapshots psycopg's connect routes; see there
 import pytest
 from data_guard import REPO_DATA_DIR, assert_tree_unchanged, snapshot_tree
 
@@ -134,8 +135,6 @@ def no_network_outside_integration(
     Requests no_database_outside_integration so it is set up after it: both
     rebind psycopg.connect, and the later one is the one a test sees (the name
     that refusal carries is the guard's, not KI-083's)."""
-    import net_guard
-
     if not net_guard.applies_to(request.node.path, request.config.rootpath):
         yield []
         return
