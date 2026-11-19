@@ -98,12 +98,16 @@ def control_blocks(bars: pd.DataFrame, dvol: pd.DataFrame) -> dict:
             "rows": int(len(rows)), "control_rows": int(len(wf))}
 
 
+def _require_before_scoring_cutoff(bars: pd.DataFrame) -> None:
+    if not (pd.to_datetime(bars["timestamp"], utc=True).max() < ivb.SCORING_CUTOFF):
+        raise AssertionError(f"bars reach the scoring cutoff {ivb.SCORING_CUTOFF}")
+
 def kill2(symbols=tuple(PAIRS)) -> dict:
     from range_forecast_report import load_bars
     out = {}
     for sym in symbols:
         bars = load_bars(sym, "B")
-        assert pd.to_datetime(bars["timestamp"], utc=True).max() < ivb.SCORING_CUTOFF
+        _require_before_scoring_cutoff(bars)
         dvol = load_dvol_for_scoring(PAIRS[sym])
         out[sym] = control_blocks(bars, dvol)
     return out
