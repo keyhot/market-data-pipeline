@@ -366,12 +366,70 @@ def test_the_helper_reproduces_the_construction_e13_q4_carried_inline():
     assert (got > portfolio_pnl(w, fwd, z, 0, 0)["turnover"] + 1e-9).sum() > 20
 
 
+def _nan_return_book():
+    """`_decile_book` with held names whose next close is missing (NaN return),
+    the case q4 reports as `held_next_close_missing`."""
+    w, fwd = _decile_book()
+    held_days = [d for d in range(30, 80) if (w.iloc[d] != 0).any()]
+    for i, d in enumerate(held_days[::2]):
+        held = np.flatnonzero(w.iloc[d].to_numpy() != 0)
+        fwd.iloc[d, held[i % len(held)]] = np.nan
+    fwd.iloc[40, 0] = np.nan                       # an unheld-or-held stray
+    fwd.iloc[55] = np.nan                          # a whole row missing
+    assert fwd.isna().to_numpy().sum() > 15
+    return w, fwd
+
+
+def test_q4_drift_turnover_matches_the_old_inline_code_on_nan_returns():
+    # F1 (review of #56): a held name with a NaN return is DROPPED by the old
+    # inline code (weight 0, the others rescaled to the leg's gross), not
+    # treated as a 0% return.
+    w, fwd = _nan_return_book()
+    old = _old_q4_inline_drift_turnover(w, fwd)
+    np.testing.assert_allclose(e13._drift_turnover(w, fwd).to_numpy(),
+                               old.to_numpy(), atol=1e-12)
+    # the NaN-free book still matches, and the NaNs matter (not a vacuous case)
+    w0, fwd0 = _decile_book()
+    np.testing.assert_allclose(e13._drift_turnover(w0, fwd0).to_numpy(),
+                               _old_q4_inline_drift_turnover(w0, fwd0).to_numpy(),
+                               atol=1e-12)
+    as_zero = (w - drifted_weights(w, fwd)).abs().sum(axis=1)
+    assert (as_zero - old).abs().max() > 1e-3
+
+
+def test_q4_drift_turnover_review_probe_nan_on_a_held_name():
+    # The reviewer's probe: A, B long, C short; A's return is NaN on day 0.
+    # Old: A drops out, B takes the whole long leg (1.0), turnover 1.0.
+    days = _days(3)
+    w = pd.DataFrame([[.5, .5, -1.0]] * 3, days, list("ABC"))
+    fwd = pd.DataFrame([[np.nan, .1, -.1]] + [[.0, .0, .0]] * 2, days, list("ABC"))
+    old = _old_q4_inline_drift_turnover(w, fwd)
+    assert old.iloc[1] == pytest.approx(1.0)
+    assert e13._drift_turnover(w, fwd).iloc[1] == pytest.approx(1.0)
+    assert (w - drifted_weights(w, fwd)).abs().sum(axis=1).iloc[1] == pytest.approx(
+        1 / 21, rel=1e-3)   # the default NaN-as-0 reading the other callers keep
+
+
+def test_other_callers_keep_nan_return_as_zero():
+    # portfolio_pnl fills NaN returns with 0 for gross, so its drift path must
+    # too: drift=True on a NaN panel equals drift=True on the 0-filled panel,
+    # and the default `drifted_weights` reading is unchanged.
+    w, fwd = _nan_return_book()
+    z = pd.DataFrame(0.0, w.index, w.columns)
+    got = portfolio_pnl(w, fwd, z, 0, 0, drift=True)["turnover"]
+    want = (w - drifted_weights(w, fwd.fillna(0.0))).abs().sum(axis=1)
+    np.testing.assert_allclose(got.to_numpy(), want.to_numpy(), atol=1e-15)
+    np.testing.assert_allclose(drifted_weights(w, fwd).to_numpy(),
+                               drifted_weights(w, fwd.fillna(0.0)).to_numpy(), atol=1e-15)
+
+
 def test_q4_takes_its_drift_turnover_from_the_shared_helper_not_an_inline_copy():
     # q4 needs the archive panels, so it is not run here; this pins that its
     # drift number comes from `drifted_weights` (one definition, KI-101).
     src = inspect.getsource(e13.q4)
-    assert "drifted_weights(w, fwd)" in src
+    assert "_drift_turnover(w, fwd)" in src
     assert "r_prev" not in src and "dl = " not in src and "ds = " not in src
+    assert "drifted_weights" in inspect.getsource(e13._drift_turnover)
 
 
 # ----------------------------------- the declared post-hoc E13 re-score --
