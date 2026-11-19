@@ -318,7 +318,8 @@ def decile_weights(scores: pd.DataFrame, frac: float = 0.1,
     return pd.DataFrame(w, index=scores.index, columns=scores.columns)
 
 
-def drifted_weights(weights: pd.DataFrame, fwd_ret: pd.DataFrame) -> pd.DataFrame:
+def drifted_weights(weights: pd.DataFrame, fwd_ret: pd.DataFrame, *,
+                    nan_return_drops_name: bool = False) -> pd.DataFrame:
     """The book yesterday's weights have DRIFTED into by today's rebalance
     (KI-101; the one definition, also used by `scripts/e13_diagnostics.py`).
     Row d is w_{d-1} grown by day d-1's own return, `fwd_ret` row d-1 (the
@@ -330,11 +331,18 @@ def drifted_weights(weights: pd.DataFrame, fwd_ret: pd.DataFrame) -> pd.DataFram
     the decile book (+-1/k, legs of +-1) the rescale is to exactly +-1. A flat
     row, the first row, or a leg wiped out to zero exposure drifts to 0, so
     the rebalance trades the whole new book, as the coded path does. NaN
-    weights and returns count as 0, as in `portfolio_pnl`. A whole-book
-    denominator sum(w*(1+r)) is not used: for a dollar-neutral book it is
+    weights and returns count as 0, as in `portfolio_pnl`. Exception, opt-in:
+    `nan_return_drops_name=True` (the pre-#56 inline code of e13 q4) drops a
+    held name whose return is NaN instead: it drifts to 0, and the rest of its
+    leg is rescaled to the leg's prior gross, which still includes it. A
+    whole-book denominator sum(w*(1+r)) is not used: for a dollar-neutral book it is
     about the day's P&L, not 1."""
     w = weights.fillna(0.0)
-    grow = 1.0 + fwd_ret.reindex_like(w).fillna(0.0).shift(1).fillna(0.0)
+    r = fwd_ret.reindex_like(w)
+    if nan_return_drops_name:
+        grow = 1.0 + r.shift(1)          # NaN stays: a NaN term is skipped by .sum()
+    else:
+        grow = 1.0 + r.fillna(0.0).shift(1).fillna(0.0)
     held = w.shift(1).fillna(0.0)
     out = pd.DataFrame(0.0, index=w.index, columns=w.columns)
     for leg in (held.clip(lower=0), held.clip(upper=0)):

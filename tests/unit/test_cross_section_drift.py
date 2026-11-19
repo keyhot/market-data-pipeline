@@ -419,8 +419,9 @@ def test_other_callers_keep_nan_return_as_zero():
     got = portfolio_pnl(w, fwd, z, 0, 0, drift=True)["turnover"]
     want = (w - drifted_weights(w, fwd.fillna(0.0))).abs().sum(axis=1)
     np.testing.assert_allclose(got.to_numpy(), want.to_numpy(), atol=1e-15)
-    np.testing.assert_allclose(drifted_weights(w, fwd).to_numpy(),
-                               drifted_weights(w, fwd.fillna(0.0)).to_numpy(), atol=1e-15)
+    np.testing.assert_allclose(
+        drifted_weights(w, fwd).to_numpy(),
+        drifted_weights(w, fwd.fillna(0.0)).to_numpy(), atol=1e-15)
 
 
 def test_q4_takes_its_drift_turnover_from_the_shared_helper_not_an_inline_copy():

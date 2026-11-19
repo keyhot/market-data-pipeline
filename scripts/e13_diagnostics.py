@@ -453,6 +453,14 @@ def q3(c: dict) -> dict:
 
 # ------------------------------------------------------------------ Q4 --
 
+def _drift_turnover(w: pd.DataFrame, fwd: pd.DataFrame) -> pd.Series:
+    """KI-101 drift-rebalance turnover, one definition (`model.cross_section`).
+    `nan_return_drops_name=True` keeps what q4 did before it moved there: a held
+    name with no next close (NaN return) drops out of the drifted book. The
+    other callers (`portfolio_pnl`) count a NaN return as 0, as their P&L does."""
+    return (w - drifted_weights(w, fwd, nan_return_drops_name=True)).abs().sum(axis=1)
+
+
 def q4(c: dict) -> dict:
     w, fwd, ffund, close, vol, elig = c["w"], c["fwd"], c["ffund"], c["close"], c["vol"], c["elig"]
     held = w != 0
@@ -460,7 +468,7 @@ def q4(c: dict) -> dict:
     nxt_nan = close.shift(-1).isna() & close.notna()
     leaves = ~elig.shift(-1).fillna(False).astype(bool)
     out = {}
-    drift_turn = (w - drifted_weights(w, fwd)).abs().sum(axis=1)   # KI-101: model.cross_section
+    drift_turn = _drift_turnover(w, fwd)
     coded_turn = (w - w.shift(1).fillna(0.0)).abs().sum(axis=1)
     for per in PERIODS:
         days = span(w.index, per)
