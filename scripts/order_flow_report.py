@@ -22,7 +22,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cross_asset_report import _bars, delta_auc_ci, top_quintile_hit  # noqa: E402
+from cross_asset_report import (  # noqa: E402
+    _bars, delta_auc_ci, fit_params, top_quintile_hit)
 from live_gate_report import HORIZON, TEST_YEARS, auc  # noqa: E402
 from ingestion.binance_provider import BinanceProvider  # noqa: E402
 from model.features import build_features  # noqa: E402
@@ -33,7 +34,7 @@ from model.order_flow import (  # noqa: E402
     leaked_control,
     with_flow_features,
 )
-from model.train import _NUM_ROUNDS, _PARAMS  # noqa: E402
+from model.train import _NUM_ROUNDS  # noqa: E402
 from report_results import write_result  # noqa: E402
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "model" / "artifacts"
@@ -64,7 +65,10 @@ def _load_raw(symbol: str) -> list[list]:
         return [[int(r[0]), *r[1:]] for r in csv.reader(fh)]
 
 
-def collect(symbol: str) -> tuple[pd.DataFrame, float]:
+def collect(symbol: str, seed: int | None = None) -> tuple[pd.DataFrame, float]:
+    """`seed` as in `cross_asset_report.collect`: None keeps `_PARAMS`; a seed
+    refits all three arms under it. For `delta_auc_over_seeds` read
+    `collect(symbol, seed=s)[0]` with arm="flow"."""
     bars = _bars(symbol)
     flow = align_flow(flow_frame(_load_raw(symbol)), bars)
     close = pd.Series(bars["close"].astype(float).to_numpy(),
@@ -89,7 +93,8 @@ def collect(symbol: str) -> tuple[pd.DataFrame, float]:
                "ret": forward.iloc[test].to_numpy()}
         for arm, X in (("base", X_base), ("flow", X_flow), ("control", X_ctrl)):
             booster = lgb.train(
-                _PARAMS, lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
+                fit_params(seed),
+                lgb.Dataset(X.iloc[:train_end], label=y.iloc[:train_end]),
                 num_boost_round=_NUM_ROUNDS,
             )
             row[arm] = booster.predict(X.iloc[test])
