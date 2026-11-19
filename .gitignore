@@ -224,3 +224,6 @@ data/broadcast_status.json
 # Chronos spike: torch lives here, never in the poetry env
 .venv-forecast/
 data/archive/
+
+# Ad-hoc screenshots dropped under data/ (stream captures); tracked art lives in api/static/
+data/*.png
