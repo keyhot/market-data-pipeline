@@ -12,3 +12,5 @@ tests/
 docs/
 *.md
 .env
+backups/
+.venv-forecast/
