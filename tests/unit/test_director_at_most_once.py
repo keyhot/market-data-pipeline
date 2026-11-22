@@ -154,3 +154,17 @@ def test_the_happy_path_still_speaks_each_new_event_once_and_records_it():
     types = [e["event_type"] for batch in recorded for e in batch]
     assert types.count("commentary_spoken") == tts.calls == lines, types
     assert types.count("scene_switched") == len(obs.switches) == 1, types
+
+
+def test_a_new_event_after_a_failed_tick_is_still_spoken_once():
+    """The mark moved past the failed tick's events, not past the future: a
+    later event is narrated normally, and exactly once."""
+    later = {"recent": NEW["recent"] + [_event(4, "XRPUSDT")]}
+    tts = _Tts(fail_on=1)
+    _run([SEED, NEW, later, later], tts)
+
+    # 1 call that raised (events 1-3) + the lines for event 4 only, once
+    ev4_lines = _Tts()
+    _run([{"recent": [_event(3, "SOLUSDT")]}, later], ev4_lines)
+    assert tts.calls == 1 + ev4_lines.calls, (tts.calls, ev4_lines.calls)
+    assert ev4_lines.calls >= 1
