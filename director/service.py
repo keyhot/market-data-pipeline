@@ -166,6 +166,18 @@ def run(
                 # from the change we noticed, not from our own last switch.
                 dir_state.last_switch = now
             action = tick(state, dir_state, now, config)
+            # R7 / KI-116 (Q06): at-most-once speech. Advance past the events we
+            # are about to react to *before* `_apply`, not after it returns. If
+            # `_apply` raises part-way (a TTS runner on line 2), the lines
+            # already spoken must not be generated again next tick: a dropped
+            # line beats a repeated one on air. The runner owns this mutable
+            # bookkeeping (lines_for_tick reads it; tick() stays pure).
+            recent = state.get("recent") or []
+            if recent:
+                dir_state.last_seen_event_id = max(
+                    dir_state.last_seen_event_id or 0,
+                    max((e.get("id") or 0) for e in recent),
+                )
             _apply(
                 action,
                 dir_state,
@@ -176,14 +188,6 @@ def run(
                 config,
                 metrics,
             )
-            # Advance past the events we've now reacted to, so lines aren't
-            # re-spoken every tick (the runner owns this mutable bookkeeping).
-            recent = state.get("recent") or []
-            if recent:
-                dir_state.last_seen_event_id = max(
-                    dir_state.last_seen_event_id or 0,
-                    max((e.get("id") or 0) for e in recent),
-                )
             consecutive_failures = 0
         except Exception as exc:  # a director hiccup must never take the stream down
             consecutive_failures += 1
@@ -231,14 +235,42 @@ def run(
 def _apply(
     action, dir_state, now, obs_client, tts_runner, record_event, config, metrics
 ) -> None:
-    """Apply a decided action and advance dir_state — the only place with side
-    effects. Per-minute budgets are enforced here (keyed off tick's proposed
-    action) so a runaway tick can't flap OBS or spam TTS."""
+    """Apply a decided action and record what happened.
+
+    R7 / KI-116: if an effect raises part-way, the events built so far (a
+    ``scene_switched`` for a switch OBS already performed, lines already spoken)
+    are still handed to the recorder before the exception propagates, so the log
+    does not lose what really happened. The recorder is best-effort on that
+    path: its own failure is logged and never masks the original error."""
+    events = []
+    try:
+        _apply_effects(
+            action, dir_state, now, obs_client, tts_runner, config, metrics, events
+        )
+    except Exception:
+        if events and record_event is not None:
+            try:
+                record_event(events)
+            except Exception:
+                logger.warning("could not record a partial tick", exc_info=True)
+        raise
+    # Always call the recorder (even with no events) so it drains the spool
+    # backlog every tick — flush-on-tick, not only when the director acts.
+    if record_event is not None:
+        record_event(events)
+
+
+def _apply_effects(
+    action, dir_state, now, obs_client, tts_runner, config, metrics, events
+) -> None:
+    """The side effects of ``_apply`` — the only place that touches OBS and TTS
+    and advances dir_state. Per-minute budgets are enforced here (keyed off
+    tick's proposed action) so a runaway tick can't flap OBS or spam TTS. Each
+    event is appended to ``events`` as soon as its effect has happened."""
     from director.events import build_commentary_spoken, build_scene_switched
     from director.policy import within_line_budget, within_switch_budget
     from scripts import stream_ctl
 
-    events = []
     if action.scene and action.scene != dir_state.current_scene:
         if within_switch_budget(dir_state, now, config):
             stream_ctl.switch_scene(obs_client, action.scene)
@@ -280,10 +312,6 @@ def _apply(
             )
         )
         metrics.lines_spoken += 1
-    # Always call the recorder (even with no events) so it drains the spool
-    # backlog every tick — flush-on-tick, not only when the director acts.
-    if record_event is not None:
-        record_event(events)
 
 
 def main() -> int:
