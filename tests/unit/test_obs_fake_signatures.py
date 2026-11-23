@@ -66,6 +66,36 @@ def _fake(module, name):
     return getattr(importlib.import_module(module), name)
 
 
+def _top_level_bindings(source, name):
+    """The module-level statements that bind `name`, in order, as node kinds.
+
+    `getattr(module, name)` sees only the last module-level binding, so a class
+    is only what the scan checked if it is the sole one: a second `class`, a
+    `def`, an assignment or an import of the same name would redirect it. Names
+    bound inside a nested class or function do not count. Bindings under a
+    top-level `if`/`try`/`with` are not seen (test modules do not do that)."""
+    kinds = []
+    for n in ast.parse(source).body:
+        if isinstance(n, ast.ClassDef) and n.name == name:
+            kinds.append("class")
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
+            kinds.append("def")
+        elif isinstance(n, (ast.Import, ast.ImportFrom)) and any(
+            (a.asname or a.name).split(".")[0] == name for a in n.names
+        ):
+            kinds.append("import")
+        elif isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+            if any(
+                isinstance(x, ast.Name) and x.id == name
+                for t in targets
+                for x in ast.walk(t)
+            ):
+                kinds.append("assign")
+    return kinds
+
+
+
 @pytest.mark.parametrize(
     "module,name", OBS_FAKES, ids=[m.split(".")[-1] for m, _ in OBS_FAKES]
 )
@@ -202,3 +232,47 @@ def test_the_completeness_scan_sees_every_shape_of_obs_stand_in(source, expected
     """Each detection of `_fakes_in_source`, proven on a planted snippet: the
     shapes the first version of the scan walked past stay red."""
     assert {n for _, n in _fakes_in_source(source, "m")} == expected
+
+
+@pytest.mark.parametrize(
+    "source,name,expected",
+    [
+        ("class F:\n    pass\n", "F", ["class"]),
+        ("class F:\n    pass\nclass F:\n    pass\n", "F", ["class", "class"]),
+        ("class F:\n    pass\ndef F(): ...\n", "F", ["class", "def"]),
+        ("class F:\n    pass\nF = object\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\nF: type = object\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\nfrom m import X as F\n", "F", ["class", "import"]),
+        ("class F:\n    pass\nimport F\n", "F", ["class", "import"]),
+        # nested definitions are not module attributes: not a binding of `F`
+        ("class G:\n    class F:\n        pass\n", "F", []),
+        ("def g():\n    class F:\n        pass\n", "F", []),
+        ("class F:\n    pass\n", "G", []),
+    ],
+    ids=[
+        "once", "redefined", "def-after", "assign-after", "annassign-after",
+        "import-as-after", "import-after", "nested-class", "local-class", "absent",
+    ],
+)
+def test_the_binding_scan_sees_every_way_a_name_can_be_rebound(
+    source, name, expected
+):
+    """`_fake()` and the scan key a double by `(module, name)`, so a rebinding
+    of the name hides an earlier class behind the last one (review mutant M3)."""
+    assert _top_level_bindings(source, name) == expected
+
+
+@pytest.mark.parametrize(
+    "module,name",
+    OBS_FAKES + NOT_OBS_FAKES,
+    ids=lambda v: v.split(".")[-1],
+)
+def test_every_listed_double_is_defined_exactly_once_in_its_module(module, name):
+    """`(module, class)` resolves only the last binding of a name. A second class
+    of that name, defined earlier in the module (say a `FakeClock` with a real
+    `set_input_volume` above the real `FakeClock`), or a later `def`, assignment
+    or import of the name, would pass the signature pin and the exclusion check
+    while a different class went unchecked."""
+    path = importlib.import_module(module).__file__
+    source = Path(path).read_text(encoding="utf-8")
+    assert _top_level_bindings(source, name) == ["class"], (module, name)
