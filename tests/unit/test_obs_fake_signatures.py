@@ -47,6 +47,7 @@ OBS_FAKES = [
     ("tests.unit.test_director_standby_handoff", "FakeObs"),
     ("tests.unit.test_director_clock", "FakeObs"),
     ("tests.unit.test_director_restart_narration", "_Obs"),
+    ("tests.unit.test_director_at_most_once", "_Obs"),
 ]
 
 # (module, class) of test doubles the scan flags by shape only: they stand in for
