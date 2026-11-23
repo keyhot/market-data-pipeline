@@ -166,18 +166,16 @@ def run(
                 # from the change we noticed, not from our own last switch.
                 dir_state.last_switch = now
             action = tick(state, dir_state, now, config)
-            # R7 / KI-116 (Q06): at-most-once speech. Advance past the events we
-            # are about to react to *before* `_apply`, not after it returns. If
-            # `_apply` raises part-way (a TTS runner on line 2), the lines
-            # already spoken must not be generated again next tick: a dropped
-            # line beats a repeated one on air. The runner owns this mutable
-            # bookkeeping (lines_for_tick reads it; tick() stays pure).
+            # R7 / KI-116 (Q06, narrowed 2026-11-23): at-most-once speech. The
+            # mark over the events we are reacting to advances inside
+            # `_apply_effects`, after the OBS switch block and before the first
+            # line, so a line that fails mid-tick is dropped, never repeated,
+            # while a transient switch error (nothing spoken yet) is retried
+            # next tick. The runner owns this mutable bookkeeping
+            # (lines_for_tick reads it; tick() stays pure); here we only
+            # compute how far the window reaches.
             recent = state.get("recent") or []
-            if recent:
-                dir_state.last_seen_event_id = max(
-                    dir_state.last_seen_event_id or 0,
-                    max((e.get("id") or 0) for e in recent),
-                )
+            seen_through = max((e.get("id") or 0 for e in recent), default=None)
             _apply(
                 action,
                 dir_state,
@@ -187,6 +185,7 @@ def run(
                 record_event,
                 config,
                 metrics,
+                seen_through=seen_through,
             )
             consecutive_failures = 0
         except Exception as exc:  # a director hiccup must never take the stream down
@@ -233,7 +232,15 @@ def run(
 
 
 def _apply(
-    action, dir_state, now, obs_client, tts_runner, record_event, config, metrics
+    action,
+    dir_state,
+    now,
+    obs_client,
+    tts_runner,
+    record_event,
+    config,
+    metrics,
+    seen_through=None,
 ) -> None:
     """Apply a decided action and record what happened.
 
@@ -245,7 +252,15 @@ def _apply(
     events = []
     try:
         _apply_effects(
-            action, dir_state, now, obs_client, tts_runner, config, metrics, events
+            action,
+            dir_state,
+            now,
+            obs_client,
+            tts_runner,
+            config,
+            metrics,
+            events,
+            seen_through,
         )
     except Exception:
         if events and record_event is not None:
@@ -261,12 +276,26 @@ def _apply(
 
 
 def _apply_effects(
-    action, dir_state, now, obs_client, tts_runner, config, metrics, events
+    action,
+    dir_state,
+    now,
+    obs_client,
+    tts_runner,
+    config,
+    metrics,
+    events,
+    seen_through=None,
 ) -> None:
     """The side effects of ``_apply`` — the only place that touches OBS and TTS
     and advances dir_state. Per-minute budgets are enforced here (keyed off
     tick's proposed action) so a runaway tick can't flap OBS or spam TTS. Each
-    event is appended to ``events`` as soon as its effect has happened."""
+    event is appended to ``events`` as soon as its effect has happened.
+
+    ``seen_through`` is the highest event id in the window this action reacts
+    to. The at-most-once mark (``last_seen_event_id``) moves to it after the
+    switch block and before the first line, even when there are no lines: a
+    switch error leaves it un-advanced (nothing was spoken, retry the tick),
+    anything from the first line on is never repeated."""
     from director.events import build_commentary_spoken, build_scene_switched
     from director.policy import within_line_budget, within_switch_budget
     from scripts import stream_ctl
@@ -283,6 +312,10 @@ def _apply_effects(
             metrics.scene_switches += 1
         else:
             metrics.switches_suppressed += 1
+    if seen_through is not None:
+        dir_state.last_seen_event_id = max(
+            dir_state.last_seen_event_id or 0, seen_through
+        )
     for i, line in enumerate(action.lines):
         if not within_line_budget(dir_state, now, config):
             metrics.lines_suppressed += 1
