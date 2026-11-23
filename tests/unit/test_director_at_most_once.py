@@ -6,9 +6,12 @@ raised mid-way (a TTS runner on line 2, say), the lines already spoken were
 generated again on the next tick, and the tick's local `events` list, including
 the `scene_switched` for a switch OBS had already performed, was lost.
 
-Owner decision Q06 (2026-11-18): at-most-once speech. The mark advances before
-`_apply`, so a line that fails is dropped, never repeated (a dropped line beats
-a repeated one on air). The rows for what *did* happen are still recorded.
+Owner decision Q06 (2026-11-18): at-most-once speech. The mark advances after
+the OBS switch block and before the first line (narrowed 2026-11-23; it first
+moved before `_apply`), so a line that fails is dropped, never repeated (a
+dropped line beats a repeated one on air), while a transient switch error, with
+nothing spoken yet, is retried next tick. The rows for what *did* happen are
+still recorded.
 """
 
 import logging
@@ -202,8 +205,9 @@ def test_an_obs_switch_error_speaks_nothing_and_the_next_tick_retries_once():
 def test_an_obs_switch_error_does_not_speak_before_the_failure():
     """Nothing is spoken on the tick whose switch failed."""
     tts = _Tts()
-    _run([SEED, NEW], tts, obs=_Obs(fail_switch=-1))
+    _, recorded = _run([SEED, NEW], tts, obs=_Obs(fail_switch=-1))
     assert tts.calls == 0, tts.spoken
+    assert [e for batch in recorded for e in batch] == []
 
 
 def _apply_args(dir_state, obs, tts, lines, scene="main-stage"):
@@ -279,14 +283,14 @@ def test_sustained_effect_failures_still_exit_with_code_2():
 
     _run([SEED], tts, fetch=fetch, ticks=service.MAX_CONSECUTIVE_FAILURES + 5)
     assert _run.rc == 2
-    assert n["i"] <= service.MAX_CONSECUTIVE_FAILURES + 1  # exited at the threshold, not later
+    assert n["i"] == service.MAX_CONSECUTIVE_FAILURES + 1  # seed tick + exactly the threshold
 
 
 def test_sustained_obs_switch_failures_exit_with_code_2():
     obs = _Obs(fail_switch=-1)
     _run([SEED, NEW], _Tts(), obs=obs, ticks=service.MAX_CONSECUTIVE_FAILURES + 5)
     assert _run.rc == 2
-    assert obs.switch_attempts >= service.MAX_CONSECUTIVE_FAILURES - 1
+    assert obs.switch_attempts == service.MAX_CONSECUTIVE_FAILURES
 
 
 def test_a_failing_partial_recorder_never_masks_the_original_error(caplog):
