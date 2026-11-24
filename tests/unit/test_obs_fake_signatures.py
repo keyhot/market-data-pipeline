@@ -66,34 +66,129 @@ def _fake(module, name):
     return getattr(importlib.import_module(module), name)
 
 
+def _store_names(target):
+    """Names a binding target (re)binds: walk only the containers that unpack
+    (`Tuple`, `List`, `Starred`) down to `Name` nodes. `F.x = 0`, `REG[F] = 1`,
+    `F.n += 1` and `del F.x` use `F` without rebinding it, and a comprehension
+    variable or walrus inside a subscript is not a binding either, so the walk
+    stops at `Attribute` and `Subscript`."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*map(_store_names, target.elts)) if target.elts else set()
+    if isinstance(target, ast.Starred):
+        return _store_names(target.value)
+    return set()
+
+
+def _walrus_names(node):
+    """Names bound by `(x := ...)` inside `node`, not looking into a `lambda`,
+    `def` or `class` (their walrus binds their own scope)."""
+    names = set()
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(
+            n, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            continue
+        if isinstance(n, ast.NamedExpr):
+            names.add(n.target.id)
+        stack.extend(ast.iter_child_nodes(n))
+    return names
+
+
 def _top_level_bindings(source, name):
-    """The module-level statements that bind `name`, in order, as node kinds.
+    """The module-level statements that bind `name`, as node kinds, in source
+    order (a `try` is walked body, handlers, else, finally).
 
     `getattr(module, name)` sees only the last module-level binding, so a class
     is only what the scan checked if it is the sole one: a second `class`, a
-    `def`, an assignment or an import of the same name would redirect it. Names
-    bound inside a nested class or function do not count. Bindings under a
-    top-level `if`/`try`/`with` are not seen (test modules do not do that)."""
+    `def`, an assignment, an import, a `for`/`with`/`except` target, a walrus or
+    a `del` of the same name would redirect it. Only the NAME being bound counts:
+    `F.x = 0`, `REG[F] = 1`, `F.n += 1` and a bare `F: type` do not. Names bound
+    inside a nested class or function do not count either. Compound statements
+    (`if`/`try`/`for`/`while`/`with`) are entered, since a module-level `if`
+    binds at module level. A `from m import *` is reported (it may rebind
+    anything, and the scan cannot tell), which fails loudly in a listed module.
+
+    Out of scope, deliberately (test modules do not do these, and no static scan
+    sees them all): `globals()[name] = ...`, `setattr(sys.modules[...])`, `exec`,
+    `global name` in a class body, `match` capture patterns (bodies of `case`
+    arms are walked), a walrus in a decorator, default, annotation, class base
+    or `except` type, `type F = ...` (3.12 syntax; the project targets 3.11), a
+    decorator on `class F` that returns something else, and a binding made in
+    another module that this one star-imports from (the star import itself is
+    what gets reported)."""
     kinds = []
-    for n in ast.parse(source).body:
-        if isinstance(n, ast.ClassDef) and n.name == name:
-            kinds.append("class")
-        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
-            kinds.append("def")
-        elif isinstance(n, (ast.Import, ast.ImportFrom)) and any(
-            (a.asname or a.name).split(".")[0] == name for a in n.names
-        ):
-            kinds.append("import")
-        elif isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            targets = n.targets if isinstance(n, ast.Assign) else [n.target]
-            if any(
-                isinstance(x, ast.Name) and x.id == name
-                for t in targets
-                for x in ast.walk(t)
-            ):
-                kinds.append("assign")
+
+    def walk(stmts):
+        for n in stmts:
+            if isinstance(n, ast.ClassDef):
+                if n.name == name:
+                    kinds.append("class")
+                continue
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if n.name == name:
+                    kinds.append("def")
+                continue
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    if a.name == "*":
+                        kinds.append("star-import")
+                    elif (a.asname or a.name).split(".")[0] == name:
+                        kinds.append("import")
+            elif isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                if isinstance(n, ast.AnnAssign) and n.value is None:
+                    pass  # a bare annotation binds nothing
+                else:
+                    targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                    if any(name in _store_names(t) for t in targets):
+                        kinds.append("assign")
+            elif isinstance(n, ast.Delete):
+                if any(name in _store_names(t) for t in n.targets):
+                    kinds.append("del")
+            elif isinstance(n, (ast.For, ast.AsyncFor)):
+                if name in _store_names(n.target):
+                    kinds.append("for")
+            elif isinstance(n, (ast.With, ast.AsyncWith)):
+                if any(
+                    i.optional_vars is not None
+                    and name in _store_names(i.optional_vars)
+                    for i in n.items
+                ):
+                    kinds.append("with")
+            # a walrus in this statement's own expressions (not in nested bodies)
+            heads = [
+                c
+                for c in ast.iter_child_nodes(n)
+                if not isinstance(c, (ast.stmt, ast.ExceptHandler, ast.match_case))
+            ]
+            if any(name in _walrus_names(h) for h in heads):
+                kinds.append("walrus")
+            walk(getattr(n, "body", []) or [])
+            for h in getattr(n, "handlers", []) or []:
+                if h.name == name:
+                    kinds.append("except")
+                walk(h.body)
+            for c in getattr(n, "cases", []) or []:
+                walk(c.body)
+            walk(getattr(n, "orelse", []) or [])
+            walk(getattr(n, "finalbody", []) or [])
+
+    walk(ast.parse(source).body)
     return kinds
 
+
+def _class_defs(source, name):
+    """How many `class <name>` statements `source` holds, at any depth. A nested
+    one (`def test_x(): class FakeClock: ...`) is no module attribute, but
+    `_fakes_in_source` walks the whole tree and folds it into the same
+    `(module, name)` key, so the signature pin would never look at it."""
+    return sum(
+        isinstance(n, ast.ClassDef) and n.name == name
+        for n in ast.walk(ast.parse(source))
+    )
 
 
 @pytest.mark.parametrize(
@@ -178,7 +273,7 @@ def _obs_fake_classes():
         if path.name == "obs_real.py":
             continue  # its `_NoSocket` stub has `send`, and is the library's seam
         module = ".".join(path.relative_to(TESTS.parent).with_suffix("").parts)
-        found |= _fakes_in_source(path.read_text(), module)
+        found |= _fakes_in_source(path.read_bytes(), module)
     return found
 
 
@@ -244,14 +339,85 @@ def test_the_completeness_scan_sees_every_shape_of_obs_stand_in(source, expected
         ("class F:\n    pass\nF: type = object\n", "F", ["class", "assign"]),
         ("class F:\n    pass\nfrom m import X as F\n", "F", ["class", "import"]),
         ("class F:\n    pass\nimport F\n", "F", ["class", "import"]),
+        ("class F:\n    pass\nfrom m import F\n", "F", ["class", "import"]),
+        ("class F:\n    pass\nF += 1\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\nF, G = 1, 2\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\n[G, *F] = 1, 2\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\nasync def F(): ...\n", "F", ["class", "def"]),
+        ("class F:\n    pass\ndel F\n", "F", ["class", "del"]),
+        # control flow at module level: the same rebinding, one level down
+        ("class F:\n    pass\nif 1:\n    F = 0\n", "F", ["class", "assign"]),
+        ("if 1:\n    class F:\n        pass\n", "F", ["class"]),
+        (
+            "class F:\n    pass\ntry:\n    pass\nexcept E:\n    F = 0\n",
+            "F",
+            ["class", "assign"],
+        ),
+        (
+            "class F:\n    pass\ntry:\n    pass\nexcept E as F:\n    pass\n",
+            "F",
+            ["class", "except"],
+        ),
+        ("class F:\n    pass\ntry:\n    pass\nfinally:\n    F = 0\n", "F",
+         ["class", "assign"]),
+        ("class F:\n    pass\nfor F in x:\n    pass\n", "F", ["class", "for"]),
+        ("class F:\n    pass\nfor i in x:\n    F = i\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\nwhile x:\n    F = 0\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\nwith a as F:\n    pass\n", "F", ["class", "with"]),
+        ("class F:\n    pass\nwith a as (G, F):\n    pass\n", "F",
+         ["class", "with"]),
+        ("class F:\n    pass\nwith a as G:\n    F = 0\n", "F", ["class", "assign"]),
+        ("class F:\n    pass\n(F := object)\n", "F", ["class", "walrus"]),
+        ("class F:\n    pass\nif (F := 1):\n    pass\n", "F", ["class", "walrus"]),
+        ("class F:\n    pass\nfrom m import *\n", "F", ["class", "star-import"]),
+        ("class F:\n    pass\nimport F.sub\n", "F", ["class", "import"]),
+        ("class F:\n    pass\nmatch x:\n    case 1:\n        F = 0\n", "F",
+         ["class", "assign"]),
+        (
+            "try:\n    class F:\n        pass\nexcept E as F:\n    pass\n"
+            "else:\n    F = 1\nfinally:\n    F = 0\n",
+            "F",
+            ["class", "except", "assign", "assign"],
+        ),
+        # naming the fake without rebinding it is legitimate test code
+        ("class F:\n    pass\nF.x = 0\n", "F", ["class"]),
+        ("class F:\n    pass\nREG[F] = 1\n", "F", ["class"]),
+        ("class F:\n    pass\nF.n += 1\n", "F", ["class"]),
+        ("class F:\n    pass\nF.a.b = 1\n", "F", ["class"]),
+        ("class F:\n    pass\nx = F()\nG = F\n", "F", ["class"]),
+        ("class F:\n    pass\ndel F.x\n", "F", ["class"]),
+        ("class F:\n    pass\ndel REG[F]\n", "F", ["class"]),
+        ("class F:\n    pass\nREG[tuple(F for F in xs)] = 1\n", "F", ["class"]),
+        ("class F:\n    pass\nREG[lambda: (F := 1)] = 1\n", "F", ["class"]),
+        ("class F:\n    pass\nimport F.sub as G\nfrom m import F as G\n", "F",
+         ["class"]),
+        ("class F:\n    pass\nF: type\n", "F", ["class"]),
+        ("class F:\n    pass\nfor i in F:\n    pass\n", "F", ["class"]),
+        ("class F:\n    pass\nwith F() as g:\n    pass\n", "F", ["class"]),
+        ("class F:\n    pass\nimport m\nm.F = 1\n", "F", ["class"]),
         # nested definitions are not module attributes: not a binding of `F`
         ("class G:\n    class F:\n        pass\n", "F", []),
         ("def g():\n    class F:\n        pass\n", "F", []),
+        ("def g():\n    F = 0\n    for F in x: ...\n    (F := 1)\n", "F", []),
+        ("x = lambda: (F := 1)\n", "F", []),
+        ("class G:\n    F = 0\n", "F", []),
         ("class F:\n    pass\n", "G", []),
     ],
     ids=[
         "once", "redefined", "def-after", "assign-after", "annassign-after",
-        "import-as-after", "import-after", "nested-class", "local-class", "absent",
+        "import-as-after", "import-after", "from-import-after", "augassign-after",
+        "tuple-after", "starred-after", "async-def-after", "del-after",
+        "if-assign", "if-class", "except-assign", "except-as", "finally-assign",
+        "for-target", "for-body-assign", "while-assign", "with-as", "with-tuple-as",
+        "with-body-assign", "walrus", "walrus-in-if", "star-import",
+        "import-dotted", "match-case-assign", "try-order",
+        "attr-assign-ok", "subscript-assign-ok", "attr-augassign-ok",
+        "attr-chain-ok", "use-ok", "del-attr-ok", "del-subscript-ok",
+        "comprehension-target-ok", "lambda-walrus-in-target-ok",
+        "import-other-ok", "bare-annotation-ok", "for-iter-ok", "with-expr-ok",
+        "module-attr-ok",
+        "nested-class", "local-class", "local-bindings", "lambda-walrus",
+        "class-attr", "absent",
     ],
 )
 def test_the_binding_scan_sees_every_way_a_name_can_be_rebound(
@@ -260,6 +426,34 @@ def test_the_binding_scan_sees_every_way_a_name_can_be_rebound(
     """`_fake()` and the scan key a double by `(module, name)`, so a rebinding
     of the name hides an earlier class behind the last one (review mutant M3)."""
     assert _top_level_bindings(source, name) == expected
+
+
+@pytest.mark.parametrize(
+    "source,name,expected",
+    [
+        ("class F:\n    pass\n", "F", 1),
+        ("class F:\n    pass\nclass F:\n    pass\n", "F", 2),
+        ("class G:\n    class F:\n        pass\nclass F:\n    pass\n", "F", 2),
+        ("def test_x():\n    class F:\n        pass\nclass F:\n    pass\n", "F", 2),
+        ("if 1:\n    class F:\n        pass\n", "F", 1),
+        ("class G:\n    pass\n", "F", 0),
+    ],
+    ids=["once", "twice", "nested-in-class", "nested-in-def", "under-if", "absent"],
+)
+def test_the_class_count_sees_a_same_name_class_at_any_depth(source, name, expected):
+    """A nested `class FakeClock` is no module binding, but the OBS scan walks
+    the whole tree and files it under the same `(module, name)`, so the
+    signature pin (which checks only the module-level class) would skip it."""
+    assert _class_defs(source, name) == expected
+
+
+def test_the_scans_read_a_source_with_a_byte_order_mark():
+    """`read_text(encoding="utf-8")` would leave a BOM in the text and
+    `ast.parse` would raise; the guard hands `ast.parse` the raw bytes."""
+    src = b"\xef\xbb\xbfclass F:\n    pass\n"
+    assert _top_level_bindings(src, "F") == ["class"]
+    assert _class_defs(src, "F") == 1
+    assert _fakes_in_source(src, "m") == set()
 
 
 @pytest.mark.parametrize(
@@ -272,7 +466,9 @@ def test_every_listed_double_is_defined_exactly_once_in_its_module(module, name)
     of that name, defined earlier in the module (say a `FakeClock` with a real
     `set_input_volume` above the real `FakeClock`), or a later `def`, assignment
     or import of the name, would pass the signature pin and the exclusion check
-    while a different class went unchecked."""
-    path = importlib.import_module(module).__file__
-    source = Path(path).read_text(encoding="utf-8")
+    while a different class went unchecked. A same-name class nested in a
+    function or class is no binding, but the scan files it under the same key
+    and the pin never looks at it, so it is counted too."""
+    source = Path(importlib.import_module(module).__file__).read_bytes()
     assert _top_level_bindings(source, name) == ["class"], (module, name)
+    assert _class_defs(source, name) == 1, (module, name)
