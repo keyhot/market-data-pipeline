@@ -27,7 +27,12 @@ def scheduler_enabled() -> bool:
 class SchedulerService:
     def __init__(self, watchlist: Watchlist | None = None):
         self._watchlist = watchlist
+        # job_id -> ISO start of its newest success in a previous process, read
+        # once at start(). Not updated by this process's own runs (see _run_job).
         self._state: dict[str, str] = {}
+        # Jobs whose startup fire has not happened yet; only that fire consults
+        # _state.
+        self._startup_pending: set[str] = set()
         self._scheduler: BackgroundScheduler | None = None
         self._interval_seconds: int | None = None
         self._job_ids: list[str] = []
@@ -46,6 +51,7 @@ class SchedulerService:
         self._interval_seconds = watchlist.interval_seconds
         self._state = self._load_last_success()
         self._job_ids = []
+        self._startup_pending = set()
         self._scheduler = BackgroundScheduler()
 
         for spec in watchlist.tickers:
@@ -135,6 +141,7 @@ class SchedulerService:
         self, job_id: str, func: Callable, args: tuple, interval_seconds: int
     ) -> None:
         self._job_ids.append(job_id)
+        self._startup_pending.add(job_id)
         self._scheduler.add_job(
             self._run_job,
             trigger=IntervalTrigger(seconds=interval_seconds),
@@ -149,7 +156,18 @@ class SchedulerService:
     def _run_job(self, job_id: str, func: Callable, args: tuple) -> None:
         started_at = datetime.now(UTC)
 
-        if self._recently_succeeded(job_id):
+        # The skip guard is for a restart: a previous process already ran this
+        # job within the interval. It must not run on later fires. APScheduler
+        # fires on a fixed grid, interval apart, so a stamp taken at completion
+        # is always a little under one interval old at the next fire and the
+        # guard skipped every second run (audit-4 F1). The grid and
+        # max_instances=1 keep runs one interval apart, give or take dispatch
+        # jitter (APScheduler drops a fire picked up more than 1 s late).
+        with self._lock:
+            startup_fire = job_id in self._startup_pending
+            self._startup_pending.discard(job_id)
+
+        if startup_fire and self._recently_succeeded(job_id):
             logger.info(
                 "Skipping job, last success within interval",
                 extra={"job_id": job_id},
@@ -172,10 +190,7 @@ class SchedulerService:
         rows = result.get("rows", result.get("events")) if result else None
         self._record_run(job_id, started_at, "success", rows_written=rows)
 
-        now_iso = datetime.now(UTC).isoformat()
-        self._record(job_id, "last_success", now_iso)
-        with self._lock:
-            self._state[job_id] = now_iso
+        self._record(job_id, "last_success", datetime.now(UTC).isoformat())
 
     def _record_run(
         self,
