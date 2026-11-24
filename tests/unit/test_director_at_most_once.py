@@ -47,7 +47,8 @@ class _Obs:
         self._scene = "chart-focus"
         self.switches = []
         self.switch_attempts = 0
-        self.fail_switch = fail_switch  # raise on the first N switch attempts; -1 = always
+        # raise on the first N switch attempts; -1 = always
+        self.fail_switch = fail_switch
 
     def get_current_program_scene(self):
         return type("R", (), {"current_program_scene_name": self._scene})()
@@ -60,7 +61,8 @@ class _Obs:
         self._scene = name
 
 
-SEED = {"recent": []}  # cold start: seeds nothing, so NEW is all news and the switch lands with the lines
+# cold start: seeds nothing, so NEW is all news and the switch lands with the lines
+SEED = {"recent": []}
 NEW = {"recent": [_event(1, "BTCUSDT"), _event(2, "ETHUSDT"), _event(3, "SOLUSDT")]}
 
 
@@ -90,7 +92,8 @@ def _run(states, tts, record=None, ticks=None, obs=None, fetch=None):
         obs_client=obs,
         tts_runner=tts,
         record_event=record or recorded.append,
-        config=DirectorConfig(max_lines_per_minute=100),  # the budget must not mask a repeat
+        # the budget must not mask a repeat
+        config=DirectorConfig(max_lines_per_minute=100),
         sleep_seconds=0,
         max_ticks=ticks or len(states),
     )
@@ -195,11 +198,16 @@ def test_an_obs_switch_error_speaks_nothing_and_the_next_tick_retries_once():
     obs = _Obs(fail_switch=1)
     _, recorded = _run([SEED, NEW, NEW, NEW], tts, obs=obs)
 
-    assert obs.switch_attempts == 2, "tick 1 fails, tick 2 retries, tick 3 has nothing new"
+    assert obs.switch_attempts == 2, (
+        "tick 1 fails, tick 2 retries, tick 3 has nothing new"
+    )
     assert len(obs.switches) == 1, obs.switches
     assert tts.calls == lines, f"{tts.calls} runner calls, expected {lines}"
     types = [e["event_type"] for batch in recorded for e in batch]
-    assert types.count("scene_switched") == 1 and types.count("commentary_spoken") == lines, types
+    assert (
+        types.count("scene_switched") == 1
+        and types.count("commentary_spoken") == lines
+    ), types
 
 
 def test_an_obs_switch_error_does_not_speak_before_the_failure():
@@ -215,11 +223,26 @@ def _apply_args(dir_state, obs, tts, lines, scene="main-stage"):
 
     now = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
     action = DirectorAction(scene=scene, lines=lines)
-    return (action, dir_state, now, obs, tts, lambda events: None, DirectorConfig(), service.DirectorMetrics())
+    return (
+        action,
+        dir_state,
+        now,
+        obs,
+        tts,
+        lambda events: None,
+        DirectorConfig(),
+        service.DirectorMetrics(),
+    )
 
 
 def _line(i):
-    return {"character": "A", "text": f"t{i}", "voice": "v", "event_id": i, "symbol": "BTCUSDT"}
+    return {
+        "character": "A",
+        "text": f"t{i}",
+        "voice": "v",
+        "event_id": i,
+        "symbol": "BTCUSDT",
+    }
 
 
 def _state():
@@ -230,7 +253,10 @@ def test_mark_position_unmoved_when_the_switch_raises():
     ds = _state()
     ds.last_seen_event_id = 5
     try:
-        service._apply(*_apply_args(ds, _Obs(fail_switch=-1), _Tts(), [_line(1)]), seen_through=9)
+        service._apply(
+            *_apply_args(ds, _Obs(fail_switch=-1), _Tts(), [_line(1)]),
+            seen_through=9,
+        )
     except RuntimeError:
         pass
     else:
@@ -248,7 +274,9 @@ def test_mark_position_advanced_before_the_first_line_is_spoken():
         raise RuntimeError("tts blew up")
 
     try:
-        service._apply(*_apply_args(ds, _Obs(), tts, [_line(1), _line(2)]), seen_through=9)
+        service._apply(
+            *_apply_args(ds, _Obs(), tts, [_line(1), _line(2)]), seen_through=9
+        )
     except RuntimeError:
         pass
     assert seen == [9]
@@ -283,7 +311,8 @@ def test_sustained_effect_failures_still_exit_with_code_2():
 
     _run([SEED], tts, fetch=fetch, ticks=service.MAX_CONSECUTIVE_FAILURES + 5)
     assert _run.rc == 2
-    assert n["i"] == service.MAX_CONSECUTIVE_FAILURES + 1  # seed tick + exactly the threshold
+    # seed tick + exactly the threshold
+    assert n["i"] == service.MAX_CONSECUTIVE_FAILURES + 1
 
 
 def test_sustained_obs_switch_failures_exit_with_code_2():
@@ -309,4 +338,6 @@ def test_a_failing_partial_recorder_never_masks_the_original_error(caplog):
     msgs = [r.getMessage() for r in caplog.records]
     assert any("could not record a partial tick" in m for m in msgs), msgs
     failed = [m for m in msgs if "Director tick failed" in m]
-    assert failed and all("tts blew up" in m and "db down" not in m for m in failed), failed
+    assert failed and all(
+        "tts blew up" in m and "db down" not in m for m in failed
+    ), failed
