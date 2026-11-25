@@ -10,9 +10,18 @@ Every job function is a stub. The scheduler registers exactly one job, the
 ticker; the others (salience, resolver, trader mirror, inference, events) are
 stubs that record an escape, and the helper asserts none ran. Nothing here
 opens a socket or reads a database.
+
+The production-config tests at the end (review F1-F3) start the service on the
+real config/watchlist.yaml, so all 12 jobs exist. They pin what the cadence
+rests on (the 300 s interval, the job set, the executor pool, misfire grace,
+coalesce, max_instances, the start stagger). One of them runs the real
+BackgroundScheduler on real threads, because the manual scheduler swaps the
+executor out and cannot show a job waiting for a worker.
 """
 
 import socket
+import threading
+import time
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -22,7 +31,7 @@ from apscheduler.executors.debug import DebugExecutor
 from apscheduler.schedulers.base import BaseScheduler
 
 from scheduler.service import SchedulerService
-from scheduler.watchlist import TickerJobSpec, Watchlist
+from scheduler.watchlist import TickerJobSpec, Watchlist, load_watchlist
 
 T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 INTERVAL = 300
@@ -311,3 +320,172 @@ def test_a_failure_does_not_delay_the_retry_or_the_run_after_it(monkeypatch):
     assert run.statuses == ["error", "success", "success"]
     assert run.job.offsets == [0.0, 300.0, 600.0]
 
+
+def test_a_fire_picked_up_30_s_late_still_runs_once(monkeypatch):
+    # Review F1. APScheduler's default grace is 1 s: a fire that waited for a
+    # worker, or for a stalled tick, was dropped with no ingestion_runs row.
+    # Within the 60 s grace it runs, once, and the grid does not move.
+    run = run_scheduler(monkeypatch, lateness=(30.0,))
+
+    assert run.statuses == ["success"] * 10
+    assert run.job.offsets == [0.0] + [300.0 * k + 30.0 for k in range(1, 10)]
+
+
+# --- production config: the 12 jobs, the pool, the misfire settings (F1-F3) ---
+
+EXPECTED_JOB_IDS = {
+    "ticker:AAPL:1d",
+    "ticker:MSFT:1d",
+    "ticker:GOOG:1d",
+    "ticker:BTCUSDT:1d",
+    "ticker:ETHUSDT:1d",
+    "salience:BTCUSDT:1m",
+    "salience:ETHUSDT:1m",
+    "resolver:signals",
+    "trader:mirror",
+    "inference:BTCUSDT:1m",
+    "inference:ETHUSDT:1m",
+    "events:AAPL:dividends",
+}
+ALL_JOB_FUNCTIONS = ("run_ticker_job", *OTHER_JOBS)
+
+
+def pool_size(executor) -> int:
+    return executor._pool._max_workers
+
+
+@pytest.fixture
+def production_service(monkeypatch):
+    """SchedulerService on the real config/watchlist.yaml with every feature
+    flag on, so all 12 jobs register. Started on the manual scheduler, never
+    driven: the jobs are registered and none has fired."""
+    monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "1")
+    clock = FakeClock(T0)
+    with ExitStack() as stack:
+        for module in CLOCKED_MODULES:
+            stack.enter_context(patch(f"{module}.datetime", clock.datetime_class()))
+        stack.enter_context(
+            patch("scheduler.service.BackgroundScheduler", ManualScheduler)
+        )
+        stack.enter_context(patch("scheduler.service.salience_enabled", lambda: True))
+        stack.enter_context(
+            patch("scheduler.service.trader_mirror_enabled", lambda: True)
+        )
+        for name in ALL_JOB_FUNCTIONS:
+            stack.enter_context(
+                patch(f"scheduler.service.jobs.{name}", lambda *a, **k: {})
+            )
+        stack.enter_context(
+            patch("scheduler.service.latest_success_times", return_value={})
+        )
+        stack.enter_context(patch("scheduler.service.record_ingestion_run"))
+
+        service = SchedulerService(watchlist=load_watchlist())
+        service.start()
+        try:
+            yield service
+        finally:
+            service.shutdown()
+
+
+def test_production_config_is_twelve_jobs_on_a_300_s_interval(production_service):
+    status = production_service.status()
+    scheduler = production_service._scheduler
+
+    assert set(status["jobs"]) == EXPECTED_JOB_IDS
+    assert len(status["jobs"]) == 12
+    assert status["interval_seconds"] == 300
+    for job_id in EXPECTED_JOB_IDS:
+        assert scheduler.get_job(job_id).trigger.interval == timedelta(seconds=300)
+
+
+def test_every_job_has_the_misfire_coalesce_and_instance_settings(production_service):
+    # max_instances=1 is also what bounds the pool: one run per job at most.
+    for job_id in EXPECTED_JOB_IDS:
+        job = production_service._scheduler.get_job(job_id)
+        assert job.max_instances == 1, job_id
+        assert job.coalesce is True, job_id
+        assert job.misfire_grace_time == 60, job_id
+
+
+def test_the_executor_has_one_worker_per_job(production_service):
+    # F1. APScheduler's default pool is 10 workers; with 12 jobs due in the
+    # same pass the 11th and 12th waited in the queue, past the 1 s grace.
+    requested = production_service._scheduler.requested_executors
+
+    assert set(requested) == {"default"}
+    assert pool_size(requested["default"]) == len(EXPECTED_JOB_IDS) == 12
+
+
+def test_first_fires_are_spread_out_not_simultaneous(production_service):
+    # F3. All 12 used to be due in the same millisecond, so every tick sent
+    # 4 Yahoo + 2 Binance + 2 freqtrade requests at once. The interval grid
+    # keeps whatever spread the first fires have.
+    scheduler = production_service._scheduler
+    first_fires = [
+        (scheduler.get_job(job_id).next_run_time - T0).total_seconds()
+        for job_id in production_service._job_ids
+    ]
+
+    assert len(first_fires) == 12
+    assert first_fires == sorted(first_fires)
+    assert min(b - a for a, b in zip(first_fires, first_fires[1:])) >= 1.0
+    assert first_fires[0] == 0.0  # the first job still starts at startup
+    assert first_fires[-1] <= 30.0  # and the last one soon after
+
+
+def test_an_empty_watchlist_still_starts(monkeypatch):
+    # The pool is sized from the job list; ThreadPoolExecutor rejects 0 workers.
+    monkeypatch.delenv("POSTGRES_WRITE_ENABLED", raising=False)
+    with (
+        patch("scheduler.service.BackgroundScheduler", ManualScheduler),
+        patch("scheduler.service.salience_enabled", lambda: False),
+        patch("scheduler.service.trader_mirror_enabled", lambda: False),
+    ):
+        service = SchedulerService(
+            watchlist=Watchlist(interval_seconds=INTERVAL, tickers=(), events=())
+        )
+        service.start()
+        try:
+            assert service.status()["jobs"] == {}
+            requested = service._scheduler.requested_executors["default"]
+            assert pool_size(requested) == 1
+        finally:
+            service.shutdown()
+
+
+def test_twelve_jobs_due_together_all_run_on_the_real_scheduler(monkeypatch):
+    # F1, end to end, real BackgroundScheduler, real threads, real pool. Every
+    # job stub waits for the other 11 (a 12-party barrier), so the run only
+    # completes if all 12 hold a worker at once. With a pool of 10 the first
+    # ten wait out the barrier timeout and fail, and the last two never join.
+    monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "1")
+    monkeypatch.setattr("scheduler.service.START_STAGGER_SECONDS", 0)
+    monkeypatch.setattr("scheduler.service.salience_enabled", lambda: True)
+    monkeypatch.setattr("scheduler.service.trader_mirror_enabled", lambda: True)
+    monkeypatch.setattr("scheduler.service.latest_success_times", lambda: {})
+    monkeypatch.setattr("scheduler.service.record_ingestion_run", lambda *a, **k: None)
+    barrier = threading.Barrier(12, timeout=5)
+
+    def rendezvous(*args, **kwargs):
+        barrier.wait()
+        return {}
+
+    for name in ALL_JOB_FUNCTIONS:
+        monkeypatch.setattr(f"scheduler.service.jobs.{name}", rendezvous)
+
+    service = SchedulerService(watchlist=load_watchlist())
+    service.start()
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            jobs = service.status()["jobs"]
+            if len(jobs) == 12 and all("last_success" in j for j in jobs.values()):
+                break
+            time.sleep(0.05)
+    finally:
+        service.shutdown()
+
+    jobs = service.status()["jobs"]
+    assert {j for j, r in jobs.items() if "last_success" in r} == EXPECTED_JOB_IDS
+    assert not any("last_error" in r for r in jobs.values())
