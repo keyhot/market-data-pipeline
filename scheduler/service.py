@@ -1,9 +1,10 @@
 import logging
 import os
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -17,6 +18,18 @@ from world.trader_events import trader_mirror_enabled
 SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
 
 logger = logging.getLogger(__name__)
+
+# A fire that a worker picks up this many seconds late still runs, once (with
+# coalesce, a backlog of late fires collapses into one). APScheduler's default
+# is 1 s, which silently drops a fire that merely waited for a free worker or a
+# slow tick; the next grid fire is a whole interval away.
+MISFIRE_GRACE_SECONDS = 60
+
+# First fires are spread this far apart so the jobs do not all hit their
+# upstreams (Yahoo, Binance, freqtrade) in the same millisecond every tick; the
+# fixed interval grid keeps the spread. Kept short: start() stays "run
+# immediately" for practical purposes (12 jobs finish starting in 11 s).
+START_STAGGER_SECONDS = 1
 
 
 def scheduler_enabled() -> bool:
@@ -108,6 +121,15 @@ class SchedulerService:
                 watchlist.interval_seconds,
             )
 
+        # One worker per job. Each job has max_instances=1, so at most
+        # len(self._job_ids) runs are in flight and none ever queues for a
+        # worker (APScheduler's default pool of 10 left the 11th and 12th job
+        # waiting, where the 1 s misfire grace dropped them without a trace).
+        # Added before start(), which only creates its default pool if none
+        # is registered. max(1, ...): ThreadPoolExecutor rejects 0 workers.
+        self._scheduler.add_executor(
+            ThreadPoolExecutor(max_workers=max(1, len(self._job_ids))), "default"
+        )
         self._scheduler.start()
         logger.info(
             "Scheduler started",
@@ -140,6 +162,7 @@ class SchedulerService:
     def _add_job(
         self, job_id: str, func: Callable, args: tuple, interval_seconds: int
     ) -> None:
+        stagger = len(self._job_ids) * START_STAGGER_SECONDS
         self._job_ids.append(job_id)
         self._startup_pending.add(job_id)
         self._scheduler.add_job(
@@ -149,8 +172,10 @@ class SchedulerService:
             id=job_id,
             coalesce=True,
             max_instances=1,
-            # First run at startup instead of waiting a full interval.
-            next_run_time=datetime.now(UTC),
+            misfire_grace_time=MISFIRE_GRACE_SECONDS,
+            # First run at startup instead of waiting a full interval, spread
+            # by START_STAGGER_SECONDS per job.
+            next_run_time=datetime.now(UTC) + timedelta(seconds=stagger),
         )
 
     def _run_job(self, job_id: str, func: Callable, args: tuple) -> None:
@@ -162,7 +187,8 @@ class SchedulerService:
         # is always a little under one interval old at the next fire and the
         # guard skipped every second run (audit-4 F1). The grid and
         # max_instances=1 keep runs one interval apart, give or take dispatch
-        # jitter (APScheduler drops a fire picked up more than 1 s late).
+        # jitter (APScheduler drops a fire picked up more than
+        # MISFIRE_GRACE_SECONDS late).
         with self._lock:
             startup_fire = job_id in self._startup_pending
             self._startup_pending.discard(job_id)

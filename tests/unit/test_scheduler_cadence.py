@@ -79,6 +79,13 @@ class ManualScheduler(BaseScheduler):
 
     def __init__(self):
         super().__init__(timezone=UTC)
+        # What the service asked for, by alias. The pool itself is swapped for
+        # the inline DebugExecutor so the fake clock stays single-threaded.
+        self.requested_executors = {}
+
+    def add_executor(self, executor, alias="default", **executor_opts):
+        self.requested_executors[alias] = executor
+        super().add_executor(DebugExecutor(), alias, **executor_opts)
 
     def shutdown(self, wait=True):
         super().shutdown(wait)
@@ -135,7 +142,7 @@ def run_scheduler(
     """Start a real SchedulerService on a fake clock and let `seconds` pass.
 
     `lateness` cycles per dispatch: how many seconds after its scheduled time
-    each fire is picked up (kept under APScheduler's 1 s misfire grace).
+    each fire is picked up (kept under the service's misfire grace, 60 s).
     `seeded_success_age` stands in for the ingestion_runs row a previous
     process left: its start was that many seconds before this start."""
     monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "1")
@@ -303,3 +310,4 @@ def test_a_failure_does_not_delay_the_retry_or_the_run_after_it(monkeypatch):
 
     assert run.statuses == ["error", "success", "success"]
     assert run.job.offsets == [0.0, 300.0, 600.0]
+
