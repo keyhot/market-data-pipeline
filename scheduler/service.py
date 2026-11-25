@@ -19,10 +19,12 @@ SCHEDULER_ENABLED_ENV = "SCHEDULER_ENABLED"
 
 logger = logging.getLogger(__name__)
 
-# A fire that a worker picks up this many seconds late still runs, once (with
-# coalesce, a backlog of late fires collapses into one). APScheduler's default
-# is 1 s, which silently drops a fire that merely waited for a free worker or a
-# slow tick; the next grid fire is a whole interval away.
+# A fire picked up at most this many seconds after its scheduled time still
+# runs. APScheduler's default is 1 s, which drops a fire that merely waited for
+# a free worker or a slow tick. With coalesce, a backlog of missed fires
+# collapses into the latest one, and that one must itself be within the grace:
+# after a stall longer than this past the latest missed fire the run is dropped
+# and the next grid fire, at most one interval away, takes over.
 MISFIRE_GRACE_SECONDS = 60
 
 # First fires are spread this far apart so the jobs do not all hit their

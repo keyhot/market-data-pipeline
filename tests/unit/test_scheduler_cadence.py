@@ -354,13 +354,32 @@ def pool_size(executor) -> int:
     return executor._pool._max_workers
 
 
+class ProductionRun:
+    def __init__(self, service, clock, fires):
+        self.service = service
+        self.clock = clock
+        self.fires = fires  # fake-clock time of every job body that ran
+
+
 @pytest.fixture
-def production_service(monkeypatch):
+def production_service(production_run):
+    """The service of production_run: registered, no job has fired yet."""
+    return production_run.service
+
+
+@pytest.fixture
+def production_run(monkeypatch):
     """SchedulerService on the real config/watchlist.yaml with every feature
-    flag on, so all 12 jobs register. Started on the manual scheduler, never
-    driven: the jobs are registered and none has fired."""
+    flag on, so all 12 jobs register. Started on the manual scheduler and not
+    driven until a test does it."""
     monkeypatch.setenv("POSTGRES_WRITE_ENABLED", "1")
     clock = FakeClock(T0)
+    fires: list[datetime] = []
+
+    def job_body(*args, **kwargs):
+        fires.append(clock.now)
+        return {}
+
     with ExitStack() as stack:
         for module in CLOCKED_MODULES:
             stack.enter_context(patch(f"{module}.datetime", clock.datetime_class()))
@@ -372,9 +391,7 @@ def production_service(monkeypatch):
             patch("scheduler.service.trader_mirror_enabled", lambda: True)
         )
         for name in ALL_JOB_FUNCTIONS:
-            stack.enter_context(
-                patch(f"scheduler.service.jobs.{name}", lambda *a, **k: {})
-            )
+            stack.enter_context(patch(f"scheduler.service.jobs.{name}", job_body))
         stack.enter_context(
             patch("scheduler.service.latest_success_times", return_value={})
         )
@@ -383,7 +400,7 @@ def production_service(monkeypatch):
         service = SchedulerService(watchlist=load_watchlist())
         service.start()
         try:
-            yield service
+            yield ProductionRun(service, clock, fires)
         finally:
             service.shutdown()
 
@@ -434,6 +451,40 @@ def test_first_fires_are_spread_out_not_simultaneous(production_service):
     assert first_fires[-1] <= 30.0  # and the last one soon after
 
 
+def test_the_spread_survives_on_every_later_tick(production_run):
+    # The grid keeps the spread: each job fires i s after the start, then every
+    # 300 s from there, so ticks never bunch up again.
+    drive(
+        production_run.service._scheduler,
+        production_run.clock,
+        T0 + timedelta(seconds=620),
+        (0.0,),
+    )
+
+    offsets = [(f - T0).total_seconds() for f in production_run.fires]
+    assert offsets == [i + 300.0 * tick for tick in range(3) for i in range(12)]
+
+
+def test_a_stall_over_two_fires_runs_the_backlog_once(monkeypatch):
+    # coalesce: the fires at 300 and 600 are both missed, the process wakes at
+    # 640 (40 s after the latest, inside the grace) and runs the job once.
+    run = run_scheduler(monkeypatch, lateness=(340.0, 0.0))
+
+    assert run.job.offsets == [0.0, 640.0, 900.0, 1540.0, 1800.0, 2440.0, 2700.0]
+    assert run.statuses == ["success"] * 7
+
+
+def test_a_stall_past_the_grace_drops_the_backlog_until_the_next_fire(monkeypatch):
+    # The documented bound of MISFIRE_GRACE_SECONDS: waking 100 s after the
+    # latest missed fire (600) is past the 60 s grace, so nothing runs and the
+    # next grid fire (900) takes over. Not a silent loss of the whole cadence:
+    # at most one interval without a run.
+    run = run_scheduler(monkeypatch, lateness=(400.0, 0.0))
+
+    assert run.job.offsets == [0.0, 900.0, 1800.0, 2700.0]
+    assert max(gaps(run.job.offsets)) <= 3 * INTERVAL
+
+
 def test_an_empty_watchlist_still_starts(monkeypatch):
     # The pool is sized from the job list; ThreadPoolExecutor rejects 0 workers.
     monkeypatch.delenv("POSTGRES_WRITE_ENABLED", raising=False)
@@ -464,7 +515,13 @@ def test_twelve_jobs_due_together_all_run_on_the_real_scheduler(monkeypatch):
     monkeypatch.setattr("scheduler.service.salience_enabled", lambda: True)
     monkeypatch.setattr("scheduler.service.trader_mirror_enabled", lambda: True)
     monkeypatch.setattr("scheduler.service.latest_success_times", lambda: {})
-    monkeypatch.setattr("scheduler.service.record_ingestion_run", lambda *a, **k: None)
+    recorded = []
+    monkeypatch.setattr(
+        "scheduler.service.record_ingestion_run",
+        lambda job_id, started, finished, status, **k: recorded.append(
+            (job_id, status)
+        ),
+    )
     barrier = threading.Barrier(12, timeout=5)
 
     def rendezvous(*args, **kwargs):
@@ -480,7 +537,9 @@ def test_twelve_jobs_due_together_all_run_on_the_real_scheduler(monkeypatch):
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             jobs = service.status()["jobs"]
-            if len(jobs) == 12 and all("last_success" in j for j in jobs.values()):
+            if len(jobs) == 12 and all(
+                "last_success" in j or "last_error" in j for j in jobs.values()
+            ):
                 break
             time.sleep(0.05)
     finally:
@@ -489,3 +548,4 @@ def test_twelve_jobs_due_together_all_run_on_the_real_scheduler(monkeypatch):
     jobs = service.status()["jobs"]
     assert {j for j, r in jobs.items() if "last_success" in r} == EXPECTED_JOB_IDS
     assert not any("last_error" in r for r in jobs.values())
+    assert sorted(recorded) == sorted((j, "success") for j in EXPECTED_JOB_IDS)
